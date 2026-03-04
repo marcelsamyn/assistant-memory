@@ -9,3 +9,4 @@ dist
 
 postgres_data/
 minio-data/
+package-lock.json

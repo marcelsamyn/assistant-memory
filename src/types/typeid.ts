@@ -14,6 +14,7 @@ export const ID_TYPE_NAMES = [
   "source_link",
   "user_profile",
   "message",
+  "scratchpad",
 ] as const;
 
 export const ID_TYPE_PREFIXES: Record<(typeof ID_TYPE_NAMES)[number], string> =
@@ -28,6 +29,7 @@ export const ID_TYPE_PREFIXES: Record<(typeof ID_TYPE_NAMES)[number], string> =
     source_link: "sln",
     user_profile: "upf",
     message: "msg",
+    scratchpad: "spad",
   } as const;
 
 export type IdType = (typeof ID_TYPE_NAMES)[number];
