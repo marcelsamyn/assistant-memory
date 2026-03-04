@@ -19,6 +19,16 @@ import {
   querySearchRequestSchema,
   type QuerySearchRequest,
 } from "~/lib/schemas/query-search";
+import {
+  scratchpadReadRequestSchema,
+  scratchpadWriteRequestSchema,
+  scratchpadEditRequestSchema,
+} from "~/lib/schemas/scratchpad";
+import {
+  readScratchpad,
+  writeScratchpad,
+  editScratchpad,
+} from "~/lib/scratchpad";
 
 const transports: { [sessionId: string]: SSEServerTransport } = {};
 
@@ -92,6 +102,46 @@ server.tool(
     };
   },
 );
+
+// Read scratchpad
+server.tool(
+  "read scratchpad",
+  scratchpadReadRequestSchema,
+  async ({ userId }) => {
+    const result = await readScratchpad({ userId });
+    return {
+      content: [{ type: "text", text: result.content || "(empty scratchpad)" }],
+    };
+  },
+);
+
+// Write scratchpad (overwrite or append)
+server.tool(
+  "write scratchpad",
+  scratchpadWriteRequestSchema,
+  async (params) => {
+    const result = await writeScratchpad(params);
+    return {
+      content: [
+        { type: "text", text: `Scratchpad updated.\n\n${result.content}` },
+      ],
+    };
+  },
+);
+
+// Edit scratchpad (replace text with safeguards)
+server.tool("edit scratchpad", scratchpadEditRequestSchema, async (params) => {
+  const result = await editScratchpad(params);
+  if (!result.applied) {
+    return {
+      content: [{ type: "text", text: `Edit failed: ${result.message}` }],
+      isError: true,
+    };
+  }
+  return {
+    content: [{ type: "text", text: `Edit applied.\n\n${result.content}` }],
+  };
+});
 
 export const addTransport = (transport: SSEServerTransport) => {
   transports[transport.sessionId] = transport;

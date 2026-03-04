@@ -310,3 +310,27 @@ export const userProfilesRelations = relations(userProfiles, ({ one }) => ({
     references: [users.id],
   }),
 }));
+
+export const scratchpads = pgTable(
+  "scratchpads",
+  {
+    id: typeId("scratchpad").primaryKey().notNull(),
+    userId: text()
+      .references(() => users.id)
+      .notNull(),
+    content: text().notNull().default(""),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    unique().on(table.userId),
+    index("scratchpads_user_id_idx").on(table.userId),
+  ],
+);
+
+export const scratchpadsRelations = relations(scratchpads, ({ one }) => ({
+  user: one(users, {
+    fields: [scratchpads.userId],
+    references: [users.id],
+  }),
+}));
