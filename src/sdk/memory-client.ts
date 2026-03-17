@@ -9,6 +9,15 @@ import {
   dreamResponseSchema,
 } from "../lib/schemas/dream.js";
 import {
+  ScratchpadReadRequest,
+  ScratchpadWriteRequest,
+  ScratchpadEditRequest,
+  ScratchpadResponse,
+  ScratchpadEditResponse,
+  scratchpadResponseSchema,
+  scratchpadEditResponseSchema,
+} from "../lib/schemas/scratchpad.js";
+import {
   IngestConversationRequest,
   IngestConversationResponse,
   ingestConversationResponseSchema,
@@ -180,5 +189,38 @@ export class MemoryClient {
 
   async dream(payload: DreamRequest): Promise<DreamResponse> {
     return this._fetch("POST", "/dream", dreamResponseSchema, payload);
+  }
+
+  async readScratchpad(
+    payload: ScratchpadReadRequest,
+  ): Promise<ScratchpadResponse> {
+    return this._fetch(
+      "POST",
+      "/scratchpad/read",
+      scratchpadResponseSchema,
+      payload,
+    );
+  }
+
+  async writeScratchpad(
+    payload: ScratchpadWriteRequest,
+  ): Promise<ScratchpadResponse> {
+    return this._fetch(
+      "POST",
+      "/scratchpad/write",
+      scratchpadResponseSchema,
+      payload,
+    );
+  }
+
+  async editScratchpad(
+    payload: ScratchpadEditRequest,
+  ): Promise<ScratchpadEditResponse> {
+    return this._fetch(
+      "POST",
+      "/scratchpad/edit",
+      scratchpadEditResponseSchema,
+      payload,
+    );
   }
 }
