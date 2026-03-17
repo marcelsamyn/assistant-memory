@@ -48,12 +48,33 @@ export interface SourceCreateInput {
  * Service for managing sources and raw payload storage.
  */
 export class SourceService {
+  private bucketReady: Promise<void> | null = null;
+
   constructor(
     private db: DrizzleDB,
     private minioClient: MinioClient,
     private bucket: string,
     private inlineThreshold = 1024, // bytes
   ) {}
+
+  /** Ensure the S3/MinIO bucket exists, creating it if necessary */
+  private ensureBucket(): Promise<void> {
+    if (!this.bucketReady) {
+      this.bucketReady = this.minioClient
+        .bucketExists(this.bucket)
+        .then((exists) => {
+          if (!exists) {
+            return this.minioClient.makeBucket(this.bucket);
+          }
+        })
+        .catch((err) => {
+          // Reset so next call retries
+          this.bucketReady = null;
+          throw err;
+        });
+    }
+    return this.bucketReady;
+  }
 
   /** Insert multiple sources with optional inline or blob payloads */
   async insertMany(inputs: SourceCreateInput[]): Promise<{
@@ -98,6 +119,7 @@ export class SourceService {
       .returning();
 
     // 2. Handle payloads
+    await this.ensureBucket();
     for (const row of inserted) {
       const lookupKey = makeLookupKey(row.userId, row.type, row.externalId);
       const input = inputLookup.get(lookupKey);
@@ -177,6 +199,7 @@ export class SourceService {
 
   /** Hard delete a source: remove blob then drop the DB row */
   async deleteHard(userId: string, sourceId: TypeId<"source">): Promise<void> {
+    await this.ensureBucket();
     const key = `${userId}/${sourceId}`;
     // delete blob, ignore errors
     try {
@@ -203,6 +226,7 @@ export class SourceService {
         and(eq(src.userId, userId), inArray(src.id, sourceIds)),
     });
     const results: RawResult[] = [];
+    await this.ensureBucket();
 
     for (const row of rows) {
       const meta = metadataSchema.parse(row.metadata ?? {});
