@@ -1,5 +1,9 @@
 import { generateEmbeddings } from "../embeddings";
-import { findOneHopNodes, findSimilarNodes } from "../graph";
+import {
+  findOneHopNodes,
+  findSimilarNodes,
+  fetchSourceIdsForNodes,
+} from "../graph";
 import { QueryGraphRequest, QueryGraphResponse } from "../schemas/query-graph";
 import { and, aliasedTable, eq, inArray, isNotNull } from "drizzle-orm";
 import { DrizzleDB } from "~/db";
@@ -72,8 +76,18 @@ export async function queryKnowledgeGraph(
       return { nodes: [], edges: [] };
     }
 
-    const edgeRows = await fetchEdgesBetweenNodeIds(db, userId, nodeIds);
-    return { nodes: nodeRowsClean, edges: edgeRows };
+    const [edgeRows, sourceIdMap] = await Promise.all([
+      fetchEdgesBetweenNodeIds(db, userId, nodeIds),
+      fetchSourceIdsForNodes(db, nodeIds),
+    ]);
+
+    return {
+      nodes: nodeRowsClean.map((n) => ({
+        ...n,
+        sourceIds: sourceIdMap.get(n.id) ?? [],
+      })),
+      edges: edgeRows,
+    };
   }
 
   // Query-based subgraph
@@ -128,6 +142,16 @@ export async function queryKnowledgeGraph(
     return { nodes: [], edges: [] };
   }
 
-  const edgeRows = await fetchEdgesBetweenNodeIds(db, userId, nodeIds);
-  return { nodes: Array.from(nodeMap.values()), edges: edgeRows };
+  const [edgeRows, sourceIdMap] = await Promise.all([
+    fetchEdgesBetweenNodeIds(db, userId, nodeIds),
+    fetchSourceIdsForNodes(db, nodeIds),
+  ]);
+
+  return {
+    nodes: Array.from(nodeMap.values()).map((n) => ({
+      ...n,
+      sourceIds: sourceIdMap.get(n.id) ?? [],
+    })),
+    edges: edgeRows,
+  };
 }

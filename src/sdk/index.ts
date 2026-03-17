@@ -11,3 +11,4 @@ export * from "../lib/schemas/summarize.js";
 export * from "../lib/schemas/cleanup.js";
 export * from "../lib/schemas/dream.js";
 export * from "../lib/schemas/scratchpad.js";
+export * from "../lib/schemas/node.js";

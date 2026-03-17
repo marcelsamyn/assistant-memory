@@ -13,6 +13,7 @@ export const queryGraphNodeSchema = z.object({
   nodeType: NodeTypeEnum,
   label: z.string(),
   description: z.string().nullable().optional(),
+  sourceIds: z.array(z.string()).optional(),
 });
 
 export const queryGraphEdgeSchema = z.object({

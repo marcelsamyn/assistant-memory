@@ -20,10 +20,22 @@ import {
   type QuerySearchRequest,
 } from "~/lib/schemas/query-search";
 import {
+  getNodeRequestSchema,
+  getNodeSourcesRequestSchema,
+  updateNodeRequestSchema,
+  deleteNodeRequestSchema,
+} from "~/lib/schemas/node";
+import {
   scratchpadReadRequestSchema,
   scratchpadWriteRequestSchema,
   scratchpadEditRequestSchema,
 } from "~/lib/schemas/scratchpad";
+import {
+  getNodeById,
+  getNodeSources,
+  updateNode,
+  deleteNode,
+} from "~/lib/node";
 import {
   readScratchpad,
   writeScratchpad,
@@ -142,6 +154,75 @@ server.tool("edit scratchpad", scratchpadEditRequestSchema, async (params) => {
     content: [{ type: "text", text: `Edit applied.\n\n${result.content}` }],
   };
 });
+
+// Get node by ID with edges and source IDs
+server.tool("get node", getNodeRequestSchema, async ({ userId, nodeId }) => {
+  const result = await getNodeById(userId, nodeId);
+  if (!result) {
+    return {
+      content: [{ type: "text", text: "Node not found" }],
+      isError: true,
+    };
+  }
+  return {
+    content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+  };
+});
+
+// Get raw source content for a node
+server.tool(
+  "get node sources",
+  getNodeSourcesRequestSchema,
+  async ({ userId, nodeId }) => {
+    const result = await getNodeSources(userId, nodeId);
+    if (result.sources.length === 0) {
+      return {
+        content: [
+          { type: "text", text: "No source content linked to this node" },
+        ],
+      };
+    }
+    return {
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+    };
+  },
+);
+
+// Update node label/description
+server.tool(
+  "update node",
+  updateNodeRequestSchema,
+  async ({ userId, nodeId, label, description }) => {
+    const result = await updateNode(userId, nodeId, { label, description });
+    if (!result) {
+      return {
+        content: [{ type: "text", text: "Node not found" }],
+        isError: true,
+      };
+    }
+    return {
+      content: [{ type: "text", text: `Node updated: ${JSON.stringify(result)}` }],
+    };
+  },
+);
+
+// Delete node by ID
+server.tool(
+  "delete node",
+  deleteNodeRequestSchema,
+  async ({ userId, nodeId }) => {
+    const deleted = await deleteNode(userId, nodeId);
+    if (!deleted) {
+      return {
+        content: [{ type: "text", text: "Node not found" }],
+        isError: true,
+      };
+    }
+    return {
+      content: [{ type: "text", text: "Node deleted successfully" }],
+    };
+  },
+);
 
 export const addTransport = (transport: SSEServerTransport) => {
   transports[transport.sessionId] = transport;

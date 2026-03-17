@@ -1,5 +1,10 @@
 import { generateEmbeddings } from "../embeddings";
-import { findOneHopNodes, findSimilarEdges, findSimilarNodes } from "../graph";
+import {
+  findOneHopNodes,
+  findSimilarEdges,
+  findSimilarNodes,
+  fetchSourceIdsForNodes,
+} from "../graph";
 import { rerankMultiple } from "../rerank";
 import {
   QuerySearchRequest,
@@ -48,11 +53,28 @@ export async function searchMemory(
 
   const connections = await findOneHopNodes(db, userId, Array.from(nodeIds));
 
+  // Collect all node IDs to batch-fetch sourceIds
+  const allNodeIds = [
+    ...similarNodes.map((n) => n.id),
+    ...connections.map((c) => c.id),
+  ];
+  const sourceIdMap = await fetchSourceIdsForNodes(db, allNodeIds);
+
+  // Attach sourceIds to nodes and connections
+  const similarNodesWithSources = similarNodes.map((n) => ({
+    ...n,
+    sourceIds: sourceIdMap.get(n.id) ?? [],
+  }));
+  const connectionsWithSources = connections.map((c) => ({
+    ...c,
+    sourceIds: sourceIdMap.get(c.id) ?? [],
+  }));
+
   const rerankedResults = await rerankMultiple(
     query,
     {
       similarNodes: {
-        items: similarNodes,
+        items: similarNodesWithSources,
         toDocument: (n) => `${n.label}: ${n.description}`,
       },
       similarEdges: {
@@ -62,7 +84,7 @@ export async function searchMemory(
           (e.description ? `: ${e.description}` : ""),
       },
       connections: {
-        items: connections,
+        items: connectionsWithSources,
         toDocument: (c) => `${c.label}: ${c.description}`,
       },
     },

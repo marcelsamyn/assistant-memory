@@ -18,6 +18,7 @@ import {
   nodeEmbeddings,
   edges,
   edgeEmbeddings,
+  sourceLinks,
 } from "~/db/schema";
 import { generateEmbeddings } from "~/lib/embeddings";
 import { type NodeType, type EdgeType, NodeTypeEnum } from "~/types/graph";
@@ -294,6 +295,36 @@ export async function findDayNode(
     )
     .limit(1);
   return day?.id ?? null;
+}
+
+/**
+ * Batch-fetch sourceLink mappings for a set of node IDs.
+ * Returns a Map from nodeId to array of source ID strings.
+ */
+export async function fetchSourceIdsForNodes(
+  db: DrizzleDB,
+  nodeIds: TypeId<"node">[],
+): Promise<Map<TypeId<"node">, string[]>> {
+  if (nodeIds.length === 0) return new Map();
+
+  const rows = await db
+    .select({
+      nodeId: sourceLinks.nodeId,
+      sourceId: sourceLinks.sourceId,
+    })
+    .from(sourceLinks)
+    .where(inArray(sourceLinks.nodeId, nodeIds));
+
+  const result = new Map<TypeId<"node">, string[]>();
+  for (const row of rows) {
+    const existing = result.get(row.nodeId);
+    if (existing) {
+      existing.push(row.sourceId);
+    } else {
+      result.set(row.nodeId, [row.sourceId]);
+    }
+  }
+  return result;
 }
 
 /**

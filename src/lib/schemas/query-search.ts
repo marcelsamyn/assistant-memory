@@ -22,6 +22,7 @@ export const nodeSearchResultSchema = z.object({
   label: z.string().nullable(),
   description: z.string().nullable(),
   similarity: z.number(),
+  sourceIds: z.array(z.string()).optional(),
 });
 
 export const edgeSearchResultSchema = z.object({
@@ -47,6 +48,7 @@ export const oneHopNodeSchema = z.object({
   edgeType: EdgeTypeEnum,
   sourceLabel: z.string().nullable(),
   targetLabel: z.string().nullable(),
+  sourceIds: z.array(z.string()).optional(),
 });
 
 // Define the discriminated union for search results

@@ -9,6 +9,20 @@ import {
   dreamResponseSchema,
 } from "../lib/schemas/dream.js";
 import {
+  GetNodeRequest,
+  GetNodeResponse,
+  getNodeResponseSchema,
+  GetNodeSourcesRequest,
+  GetNodeSourcesResponse,
+  getNodeSourcesResponseSchema,
+  UpdateNodeRequest,
+  UpdateNodeResponse,
+  updateNodeResponseSchema,
+  DeleteNodeRequest,
+  DeleteNodeResponse,
+  deleteNodeResponseSchema,
+} from "../lib/schemas/node.js";
+import {
   ScratchpadReadRequest,
   ScratchpadWriteRequest,
   ScratchpadEditRequest,
@@ -220,6 +234,39 @@ export class MemoryClient {
       "POST",
       "/scratchpad/edit",
       scratchpadEditResponseSchema,
+      payload,
+    );
+  }
+
+  async getNode(payload: GetNodeRequest): Promise<GetNodeResponse> {
+    return this._fetch("POST", "/node/get", getNodeResponseSchema, payload);
+  }
+
+  async getNodeSources(
+    payload: GetNodeSourcesRequest,
+  ): Promise<GetNodeSourcesResponse> {
+    return this._fetch(
+      "POST",
+      "/node/sources",
+      getNodeSourcesResponseSchema,
+      payload,
+    );
+  }
+
+  async updateNode(payload: UpdateNodeRequest): Promise<UpdateNodeResponse> {
+    return this._fetch(
+      "POST",
+      "/node/update",
+      updateNodeResponseSchema,
+      payload,
+    );
+  }
+
+  async deleteNode(payload: DeleteNodeRequest): Promise<DeleteNodeResponse> {
+    return this._fetch(
+      "POST",
+      "/node/delete",
+      deleteNodeResponseSchema,
       payload,
     );
   }
