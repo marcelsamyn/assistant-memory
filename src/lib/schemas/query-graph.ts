@@ -6,6 +6,7 @@ export const queryGraphRequestSchema = z.object({
   userId: z.string(),
   query: z.string().optional(),
   maxNodes: z.number().int().positive().default(100),
+  nodeTypes: z.array(NodeTypeEnum).optional(),
 });
 
 export const queryGraphNodeSchema = z.object({

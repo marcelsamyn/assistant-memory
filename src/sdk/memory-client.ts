@@ -21,7 +21,41 @@ import {
   DeleteNodeRequest,
   DeleteNodeResponse,
   deleteNodeResponseSchema,
+  CreateNodeRequest,
+  CreateNodeResponse,
+  createNodeResponseSchema,
 } from "../lib/schemas/node.js";
+import {
+  CreateEdgeRequest,
+  CreateEdgeResponse,
+  createEdgeResponseSchema,
+  DeleteEdgeRequest,
+  DeleteEdgeResponse,
+  deleteEdgeResponseSchema,
+  UpdateEdgeRequest,
+  UpdateEdgeResponse,
+  updateEdgeResponseSchema,
+} from "../lib/schemas/edge.js";
+import {
+  MergeNodesRequest,
+  MergeNodesResponse,
+  mergeNodesResponseSchema,
+} from "../lib/schemas/node-merge.js";
+import {
+  BatchDeleteNodesRequest,
+  BatchDeleteNodesResponse,
+  batchDeleteNodesResponseSchema,
+} from "../lib/schemas/node-batch-delete.js";
+import {
+  QueryAtlasNodesRequest,
+  QueryAtlasNodesResponse,
+  queryAtlasNodesResponseSchema,
+} from "../lib/schemas/query-atlas-nodes.js";
+import {
+  NodeNeighborhoodRequest,
+  NodeNeighborhoodResponse,
+  nodeNeighborhoodResponseSchema,
+} from "../lib/schemas/node-neighborhood.js";
 import {
   ScratchpadReadRequest,
   ScratchpadWriteRequest,
@@ -267,6 +301,84 @@ export class MemoryClient {
       "POST",
       "/node/delete",
       deleteNodeResponseSchema,
+      payload,
+    );
+  }
+
+  async createNode(payload: CreateNodeRequest): Promise<CreateNodeResponse> {
+    return this._fetch(
+      "POST",
+      "/node/create",
+      createNodeResponseSchema,
+      payload,
+    );
+  }
+
+  async createEdge(payload: CreateEdgeRequest): Promise<CreateEdgeResponse> {
+    return this._fetch(
+      "POST",
+      "/edge/create",
+      createEdgeResponseSchema,
+      payload,
+    );
+  }
+
+  async deleteEdge(payload: DeleteEdgeRequest): Promise<DeleteEdgeResponse> {
+    return this._fetch(
+      "POST",
+      "/edge/delete",
+      deleteEdgeResponseSchema,
+      payload,
+    );
+  }
+
+  async updateEdge(payload: UpdateEdgeRequest): Promise<UpdateEdgeResponse> {
+    return this._fetch(
+      "POST",
+      "/edge/update",
+      updateEdgeResponseSchema,
+      payload,
+    );
+  }
+
+  async mergeNodes(payload: MergeNodesRequest): Promise<MergeNodesResponse> {
+    return this._fetch(
+      "POST",
+      "/node/merge",
+      mergeNodesResponseSchema,
+      payload,
+    );
+  }
+
+  async batchDeleteNodes(
+    payload: BatchDeleteNodesRequest,
+  ): Promise<BatchDeleteNodesResponse> {
+    return this._fetch(
+      "POST",
+      "/node/batch-delete",
+      batchDeleteNodesResponseSchema,
+      payload,
+    );
+  }
+
+  async getAtlasNodeIds(
+    payload: QueryAtlasNodesRequest,
+  ): Promise<QueryAtlasNodesResponse> {
+    return this._fetch(
+      "POST",
+      "/query/atlas-nodes",
+      queryAtlasNodesResponseSchema,
+      payload,
+    );
+  }
+
+  async getNodeNeighborhood(
+    payload: NodeNeighborhoodRequest,
+  ): Promise<NodeNeighborhoodResponse> {
+    return this._fetch(
+      "POST",
+      "/node/neighborhood",
+      nodeNeighborhoodResponseSchema,
       payload,
     );
   }

@@ -66,6 +66,7 @@ export const updateNodeRequestSchema = z.object({
   nodeId: typeIdSchema("node"),
   label: z.string().optional(),
   description: z.string().optional(),
+  nodeType: NodeTypeEnum.optional(),
 });
 
 export const updateNodeResponseSchema = z.object({
@@ -93,3 +94,24 @@ export const deleteNodeResponseSchema = z.object({
 
 export type DeleteNodeRequest = z.infer<typeof deleteNodeRequestSchema>;
 export type DeleteNodeResponse = z.infer<typeof deleteNodeResponseSchema>;
+
+// --- Create Node ---
+
+export const createNodeRequestSchema = z.object({
+  userId: z.string(),
+  nodeType: NodeTypeEnum,
+  label: z.string().min(1),
+  description: z.string().optional(),
+});
+
+export const createNodeResponseSchema = z.object({
+  node: z.object({
+    id: typeIdSchema("node"),
+    nodeType: NodeTypeEnum,
+    label: z.string(),
+    description: z.string().nullable(),
+  }),
+});
+
+export type CreateNodeRequest = z.infer<typeof createNodeRequestSchema>;
+export type CreateNodeResponse = z.infer<typeof createNodeResponseSchema>;

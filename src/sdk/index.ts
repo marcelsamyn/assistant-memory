@@ -12,3 +12,8 @@ export * from "../lib/schemas/cleanup.js";
 export * from "../lib/schemas/dream.js";
 export * from "../lib/schemas/scratchpad.js";
 export * from "../lib/schemas/node.js";
+export * from "../lib/schemas/edge.js";
+export * from "../lib/schemas/node-merge.js";
+export * from "../lib/schemas/node-batch-delete.js";
+export * from "../lib/schemas/query-atlas-nodes.js";
+export * from "../lib/schemas/node-neighborhood.js";

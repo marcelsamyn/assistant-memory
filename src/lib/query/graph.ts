@@ -55,6 +55,17 @@ export async function queryKnowledgeGraph(
 
   // If no query -> return full labeled graph
   if (!query) {
+    let whereCondition = and(
+      eq(nodes.userId, userId),
+      isNotNull(nodeMetadata.label),
+    );
+    if (params.nodeTypes && params.nodeTypes.length > 0) {
+      whereCondition = and(
+        whereCondition,
+        inArray(nodes.nodeType, params.nodeTypes),
+      );
+    }
+
     const nodeRows = await db
       .select({
         id: nodes.id,
@@ -64,7 +75,7 @@ export async function queryKnowledgeGraph(
       })
       .from(nodes)
       .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-      .where(and(eq(nodes.userId, userId), isNotNull(nodeMetadata.label)));
+      .where(whereCondition);
 
     // Ensure label is string, not null
     const nodeRowsClean = nodeRows.map((n) => ({
@@ -109,8 +120,13 @@ export async function queryKnowledgeGraph(
     })
   ).filter((n) => n.label);
 
+  // Apply nodeTypes filter to seed results if specified
+  const filteredSeeds = params.nodeTypes?.length
+    ? seeds.filter((s) => params.nodeTypes!.includes(s.type))
+    : seeds;
+
   const nodeMap = new Map<TypeId<"node">, GraphNodeResult>();
-  seeds.forEach((s) => {
+  filteredSeeds.forEach((s) => {
     nodeMap.set(s.id, {
       id: s.id,
       nodeType: s.type,
@@ -119,9 +135,12 @@ export async function queryKnowledgeGraph(
     });
   });
 
-  let currentIds = seeds.map((s) => s.id);
+  let currentIds = filteredSeeds.map((s) => s.id);
   while (nodeMap.size < maxNodes && currentIds.length) {
-    const conns = await findOneHopNodes(db, userId, currentIds);
+    const rawConns = await findOneHopNodes(db, userId, currentIds);
+    const conns = params.nodeTypes?.length
+      ? rawConns.filter((c) => params.nodeTypes!.includes(c.type))
+      : rawConns;
     const nextIds: TypeId<"node">[] = [];
     for (const c of conns) {
       if (!nodeMap.has(c.id) && nodeMap.size < maxNodes) {
