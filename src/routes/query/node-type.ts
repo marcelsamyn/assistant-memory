@@ -51,7 +51,7 @@ export default defineEventHandler(async (event) => {
     for (const [type, group] of Object.entries(byType)) {
       formattedResult += `## ${type}\n`;
       group.forEach((n) => {
-        formattedResult += `- ${n.metadata.label}\n`;
+        formattedResult += `- ${n.metadata.label} (id: ${n.id})\n`;
       });
       formattedResult += `\n`;
     }

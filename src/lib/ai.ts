@@ -9,8 +9,8 @@ import { z } from "zod";
 export async function createCompletionClient(userId: string): Promise<OpenAI> {
   const { OpenAI } = await import("openai");
   return new OpenAI({
-    apiKey: env.OPENAI_API_KEY,
-    baseURL: env.OPENAI_API_BASE_URL,
+    apiKey: env.MEMORY_OPENAI_API_KEY,
+    baseURL: env.MEMORY_OPENAI_API_BASE_URL,
     defaultHeaders: {
       ...(env.HELICONE_API_KEY
         ? {

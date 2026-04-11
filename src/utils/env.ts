@@ -3,8 +3,8 @@ import { z } from "zod";
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
 
-  OPENAI_API_KEY: z.string().min(1),
-  OPENAI_API_BASE_URL: z.string().min(1),
+  MEMORY_OPENAI_API_KEY: z.string().min(1),
+  MEMORY_OPENAI_API_BASE_URL: z.string().min(1),
 
   MODEL_ID_GRAPH_EXTRACTION: z.string().min(1),
 

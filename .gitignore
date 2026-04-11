@@ -10,3 +10,6 @@ dist
 postgres_data/
 minio-data/
 package-lock.json
+
+# Obsidian sync manifest (contains local vault state)
+scripts/.obsidian-sync-manifest.json

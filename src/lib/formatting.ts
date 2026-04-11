@@ -104,14 +104,14 @@ export type SearchResults = RerankResult<SearchGroups>;
 
 // Helpers for formatting individual result items
 function formatSearchNode(node: NodeSearchResult): string {
-  return `<node type="${escapeXml(node.type)}" timestamp="${formatISO(node.timestamp)}">
+  return `<node id="${escapeXml(node.id)}" type="${escapeXml(node.type)}" timestamp="${formatISO(node.timestamp)}">
   <label>${escapeXml(node.label ?? "")}</label>
   <description>${escapeXml(node.description ?? "")}</description>
 </node>`;
 }
 
 function formatSearchEdge(edge: EdgeSearchResult): string {
-  return `<edge from="${escapeXml(edge.sourceLabel ?? "")}" to="${escapeXml(
+  return `<edge id="${escapeXml(edge.id)}" sourceNodeId="${escapeXml(edge.sourceNodeId)}" targetNodeId="${escapeXml(edge.targetNodeId)}" from="${escapeXml(edge.sourceLabel ?? "")}" to="${escapeXml(
     edge.targetLabel ?? "",
   )}" type="${escapeXml(edge.edgeType)}" timestamp="${formatISO(edge.timestamp)}">
   <description>${escapeXml(edge.description ?? "")}</description>
@@ -119,11 +119,12 @@ function formatSearchEdge(edge: EdgeSearchResult): string {
 }
 
 function formatSearchConnection(conn: OneHopNode): string {
-  return `<edge from="${escapeXml(conn.sourceLabel ?? "")}" to="${escapeXml(
+  return `<connected-node id="${escapeXml(conn.id)}" sourceNodeId="${escapeXml(conn.edgeSourceId)}" targetNodeId="${escapeXml(conn.edgeTargetId)}" from="${escapeXml(conn.sourceLabel ?? "")}" to="${escapeXml(
     conn.targetLabel ?? "",
   )}" type="${escapeXml(conn.edgeType)}" timestamp="${formatISO(conn.timestamp)}">
+  <label>${escapeXml(conn.label ?? "")}</label>
   <description>${escapeXml(conn.description ?? "")}</description>
-</edge>`;
+</connected-node>`;
 }
 
 function assertNever(value: never, message: string): never {

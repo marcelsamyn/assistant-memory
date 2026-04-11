@@ -84,7 +84,7 @@ export async function queryDayMemories(
       Array.from(map.values()).forEach((node) => {
         const label = node.metadata?.label ?? "Unnamed";
         const description = node.metadata?.description ?? "";
-        formatted += `- **${label}**: ${description}\n`;
+        formatted += `- **${label}** (id: ${node.id}): ${description}\n`;
       });
       formatted += "\n";
     }
