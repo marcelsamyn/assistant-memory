@@ -26,6 +26,7 @@ No new abstractions. `_fetch` + Zod validation handles everything.
 Create a memory node directly with a known type and label.
 
 **Request:**
+
 ```ts
 {
   userId: string
@@ -36,6 +37,7 @@ Create a memory node directly with a known type and label.
 ```
 
 **Response:**
+
 ```ts
 {
   node: { id: TypeId<"node">, nodeType: NodeType, label: string, description: string | null }
@@ -43,6 +45,7 @@ Create a memory node directly with a known type and label.
 ```
 
 **Behavior:**
+
 - Creates `nodes` row + `nodeMetadata` row
 - Generates embedding from `"${label}: ${description ?? ''}"`
 - Returns created node so frontend can select it immediately
@@ -52,6 +55,7 @@ Create a memory node directly with a known type and label.
 Create a typed edge between two existing nodes.
 
 **Request:**
+
 ```ts
 {
   userId: string
@@ -63,6 +67,7 @@ Create a typed edge between two existing nodes.
 ```
 
 **Response:**
+
 ```ts
 {
   edge: { id: TypeId<"edge">, sourceNodeId, targetNodeId, edgeType, description: string | null }
@@ -70,6 +75,7 @@ Create a typed edge between two existing nodes.
 ```
 
 **Behavior:**
+
 - Validates both nodes exist and belong to userId; 404 if not
 - Creates `edges` row
 - Generates edge embedding from `"${sourceLabel} ${edgeType} ${targetLabel}: ${description ?? ''}"`
@@ -80,19 +86,24 @@ Create a typed edge between two existing nodes.
 Delete a single edge by ID.
 
 **Request:**
+
 ```ts
 {
-  userId: string
-  edgeId: TypeId<"edge">
+  userId: string;
+  edgeId: TypeId<"edge">;
 }
 ```
 
 **Response:**
+
 ```ts
-{ deleted: true }
+{
+  deleted: true;
+}
 ```
 
 **Behavior:**
+
 - Validates edge belongs to userId
 - Deletes edge (cascade handles edge_embeddings)
 - Returns 404 if not found
@@ -102,6 +113,7 @@ Delete a single edge by ID.
 Update an edge's type, description, or endpoints.
 
 **Request:**
+
 ```ts
 {
   userId: string
@@ -114,6 +126,7 @@ Update an edge's type, description, or endpoints.
 ```
 
 **Response:**
+
 ```ts
 {
   edge: { id: TypeId<"edge">, sourceNodeId, targetNodeId, edgeType, description: string | null }
@@ -121,6 +134,7 @@ Update an edge's type, description, or endpoints.
 ```
 
 **Behavior:**
+
 - Validates edge ownership; 404 if not found
 - If new node IDs provided, validates they exist and belong to userId; 404 if not
 - Updates edge row
@@ -132,6 +146,7 @@ Update an edge's type, description, or endpoints.
 Merge multiple nodes into one.
 
 **Request:**
+
 ```ts
 {
   userId: string
@@ -142,6 +157,7 @@ Merge multiple nodes into one.
 ```
 
 **Response:**
+
 ```ts
 {
   node: { id: TypeId<"node">, nodeType: NodeType, label: string, description: string | null }
@@ -149,6 +165,7 @@ Merge multiple nodes into one.
 ```
 
 **Behavior:**
+
 - Validates all nodes belong to userId
 - First node in array is the survivor
 - Accepts optional label/description override; otherwise keeps survivor's existing values
@@ -166,19 +183,22 @@ Merge multiple nodes into one.
 Return node IDs associated with a given assistant's atlas.
 
 **Request:**
+
 ```ts
 {
-  userId: string
-  assistantId: string
+  userId: string;
+  assistantId: string;
 }
 ```
 
 **Response:**
+
 ```ts
 { nodeIds: string[] }
 ```
 
 **Behavior:**
+
 - Finds the assistant's Atlas node (via `ensureAssistantAtlasNode` or equivalent)
 - Returns IDs of all nodes connected to it via edges
 
@@ -187,6 +207,7 @@ Return node IDs associated with a given assistant's atlas.
 Add `nodeType: NodeTypeEnum.optional()` to `updateNodeRequestSchema`.
 
 **Behavior:**
+
 - When provided, updates `nodes.nodeType` in addition to metadata fields
 - No other changes to the update flow
 
@@ -195,19 +216,22 @@ Add `nodeType: NodeTypeEnum.optional()` to `updateNodeRequestSchema`.
 Atomic batch delete.
 
 **Request:**
+
 ```ts
 {
-  userId: string
-  nodeIds: TypeId<"node">[]
+  userId: string;
+  nodeIds: TypeId < "node" > [];
 }
 ```
 
 **Response:**
+
 ```ts
 { deleted: true, count: number }
 ```
 
 **Behavior:**
+
 - Wraps all deletes in a single transaction
 - Returns count of actually deleted nodes
 
@@ -218,6 +242,7 @@ Atomic batch delete.
 Add optional `nodeTypes: z.array(NodeTypeEnum).optional()` to `queryGraphRequestSchema`.
 
 **Behavior:**
+
 - When provided, adds `WHERE nodes.nodeType IN (...)` to the graph query
 - Server-side filtering replaces client-side filtering of the 200-node cap
 
@@ -226,6 +251,7 @@ Add optional `nodeTypes: z.array(NodeTypeEnum).optional()` to `queryGraphRequest
 Return the ego-graph around a focal node.
 
 **Request:**
+
 ```ts
 {
   userId: string
@@ -235,6 +261,7 @@ Return the ego-graph around a focal node.
 ```
 
 **Response:**
+
 ```ts
 { nodes: QueryGraphNode[], edges: QueryGraphEdge[] }
 ```
@@ -242,6 +269,7 @@ Return the ego-graph around a focal node.
 Same shape as `QueryGraphResponse` so the frontend needs no new type mappings.
 
 **Behavior:**
+
 - Depth 1: focal node + all one-hop neighbors + edges between them
 - Depth 2: extends one more hop from the depth-1 set
 - Includes the focal node itself in the response
@@ -249,6 +277,7 @@ Same shape as `QueryGraphResponse` so the frontend needs no new type mappings.
 ## New Files
 
 **Create:**
+
 - `src/lib/schemas/edge.ts`
 - `src/lib/schemas/node-merge.ts`
 - `src/lib/schemas/node-batch-delete.ts`
@@ -265,6 +294,7 @@ Same shape as `QueryGraphResponse` so the frontend needs no new type mappings.
 - `src/routes/query/atlas-nodes.ts`
 
 **Modify:**
+
 - `src/lib/schemas/node.ts` — add create schema, add nodeType to update schema
 - `src/lib/schemas/query-graph.ts` — add nodeTypes filter
 - `src/lib/node.ts` — add createNode, mergeNodes, batchDeleteNodes, getNodeNeighborhood, update updateNode

@@ -18,9 +18,7 @@ describe("Atlas Improvements", () => {
       expect(userAtlasContent).toContain(
         "Never include assistant speculation or assumptions",
       );
-      expect(userAtlasContent).toContain(
-        "Include specific dates (YYYY-MM-DD)",
-      );
+      expect(userAtlasContent).toContain("Include specific dates (YYYY-MM-DD)");
       expect(userAtlasContent).toContain(
         "Update immediately if the user corrects or contradicts",
       );

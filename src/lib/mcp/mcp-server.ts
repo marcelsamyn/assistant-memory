@@ -5,12 +5,24 @@ import {
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { saveMemory } from "~/lib/ingestion/save-document";
+import {
+  getNodeById,
+  getNodeSources,
+  updateNode,
+  deleteNode,
+} from "~/lib/node";
 import { queryDayMemories } from "~/lib/query/day";
 import { searchMemory } from "~/lib/query/search";
 import {
   ingestDocumentRequestSchema,
   type IngestDocumentRequest,
 } from "~/lib/schemas/ingest-document-request";
+import {
+  getNodeRequestSchema,
+  getNodeSourcesRequestSchema,
+  updateNodeRequestSchema,
+  deleteNodeRequestSchema,
+} from "~/lib/schemas/node";
 import {
   queryDayRequestSchema,
   type QueryDayRequest,
@@ -20,22 +32,10 @@ import {
   type QuerySearchRequest,
 } from "~/lib/schemas/query-search";
 import {
-  getNodeRequestSchema,
-  getNodeSourcesRequestSchema,
-  updateNodeRequestSchema,
-  deleteNodeRequestSchema,
-} from "~/lib/schemas/node";
-import {
   scratchpadReadRequestSchema,
   scratchpadWriteRequestSchema,
   scratchpadEditRequestSchema,
 } from "~/lib/schemas/scratchpad";
-import {
-  getNodeById,
-  getNodeSources,
-  updateNode,
-  deleteNode,
-} from "~/lib/node";
 import {
   readScratchpad,
   writeScratchpad,
@@ -201,7 +201,9 @@ server.tool(
       };
     }
     return {
-      content: [{ type: "text", text: `Node updated: ${JSON.stringify(result)}` }],
+      content: [
+        { type: "text", text: `Node updated: ${JSON.stringify(result)}` },
+      ],
     };
   },
 );

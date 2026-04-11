@@ -20,9 +20,14 @@
  *   OBSIDIAN_MANIFEST    - path to manifest file (default: scripts/.obsidian-sync-manifest.json)
  *   OBSIDIAN_DRY_RUN     - set to "true" to preview without ingesting
  */
-
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
 import { join, relative, extname } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -53,7 +58,10 @@ function loadConfig(): SyncConfig {
       const eqIdx = trimmed.indexOf("=");
       if (eqIdx === -1) continue;
       const key = trimmed.slice(0, eqIdx).trim();
-      const val = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, "");
+      const val = trimmed
+        .slice(eqIdx + 1)
+        .trim()
+        .replace(/^["']|["']$/g, "");
       if (!process.env[key]) process.env[key] = val;
     }
   }
@@ -64,7 +72,12 @@ function loadConfig(): SyncConfig {
   const userId = process.env["MEMORY_USER_ID"];
 
   const parseList = (val: string | undefined): string[] =>
-    val ? val.split(",").map((s) => s.trim()).filter(Boolean) : [];
+    val
+      ? val
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
 
   return {
     vaultPath,
@@ -111,7 +124,11 @@ function saveManifest(path: string, manifest: Manifest): void {
 // Vault reading
 // ---------------------------------------------------------------------------
 
-function collectMarkdownFiles(dir: string, rootDir: string, config: SyncConfig): string[] {
+function collectMarkdownFiles(
+  dir: string,
+  rootDir: string,
+  config: SyncConfig,
+): string[] {
   const results: string[] = [];
 
   for (const entry of readdirSync(dir)) {
@@ -187,7 +204,9 @@ function processFrontmatter(content: string): string {
   for (const line of frontmatter.split("\n")) {
     const tagMatch = line.match(/^tags:\s*\[(.+)\]$/);
     if (tagMatch) {
-      tags.push(...tagMatch[1]!.split(",").map((t) => t.trim().replace(/^#/, "")));
+      tags.push(
+        ...tagMatch[1]!.split(",").map((t) => t.trim().replace(/^#/, "")),
+      );
     }
     // Also handle YAML list format for tags
     const tagListMatch = line.match(/^\s*-\s*(.+)$/);
@@ -202,7 +221,8 @@ function processFrontmatter(content: string): string {
 
   const metadataLines: string[] = [];
   if (tags.length > 0) metadataLines.push(`Tags: ${tags.join(", ")}`);
-  if (aliases.length > 0) metadataLines.push(`Also known as: ${aliases.join(", ")}`);
+  if (aliases.length > 0)
+    metadataLines.push(`Also known as: ${aliases.join(", ")}`);
 
   if (metadataLines.length > 0) {
     return `${metadataLines.join("\n")}\n\n${body}`;
@@ -233,7 +253,9 @@ async function ingestDocument(
   config: SyncConfig,
   payload: IngestDocumentPayload,
 ): Promise<{ message: string; jobId: string }> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
   if (config.apiKey) headers["x-api-key"] = config.apiKey;
 
   const res = await fetch(`${config.apiUrl}/ingest/document`, {
@@ -308,7 +330,11 @@ async function main() {
   console.log();
 
   // Collect all markdown files
-  const files = collectMarkdownFiles(config.vaultPath, config.vaultPath, config);
+  const files = collectMarkdownFiles(
+    config.vaultPath,
+    config.vaultPath,
+    config,
+  );
   console.log(`Found ${files.length} markdown files in vault`);
 
   // Load manifest and detect changes
@@ -351,7 +377,10 @@ async function main() {
       console.log(`  skip (too short): ${change.relPath}`);
       skipped++;
       // Still update manifest so we don't re-check every run
-      manifest[change.relPath] = { hash: change.hash, lastSynced: new Date().toISOString() };
+      manifest[change.relPath] = {
+        hash: change.hash,
+        lastSynced: new Date().toISOString(),
+      };
       continue;
     }
 
@@ -369,7 +398,9 @@ async function main() {
     const documentId = `obsidian:${change.relPath}`;
 
     if (config.dryRun) {
-      console.log(`  [dry run] ${change.type}: ${change.relPath} (${wc} words)`);
+      console.log(
+        `  [dry run] ${change.type}: ${change.relPath} (${wc} words)`,
+      );
       ingested++;
       continue;
     }
@@ -385,7 +416,10 @@ async function main() {
         },
       });
       console.log(`  ${change.type}: ${change.relPath} → ${result.jobId}`);
-      manifest[change.relPath] = { hash: change.hash, lastSynced: new Date().toISOString() };
+      manifest[change.relPath] = {
+        hash: change.hash,
+        lastSynced: new Date().toISOString(),
+      };
       ingested++;
     } catch (err) {
       console.error(`  ERROR: ${change.relPath} — ${err}`);
@@ -409,9 +443,7 @@ async function main() {
     console.log(
       "Note: deleted files are removed from the manifest but their graph nodes are preserved.",
     );
-    console.log(
-      "Use the API to manually delete document nodes if needed.",
-    );
+    console.log("Use the API to manually delete document nodes if needed.");
   }
 
   // Save manifest

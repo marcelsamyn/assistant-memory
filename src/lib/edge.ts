@@ -1,5 +1,4 @@
 /** Edge operations: create, delete, update. */
-
 import { and, eq, inArray } from "drizzle-orm";
 import { nodes, nodeMetadata, edges, edgeEmbeddings } from "~/db/schema";
 import { generateEmbeddings } from "~/lib/embeddings";
@@ -57,7 +56,9 @@ export async function createEdge(
 }> {
   const db = await useDatabase();
 
-  if (!(await validateNodeOwnership(db, userId, [sourceNodeId, targetNodeId]))) {
+  if (
+    !(await validateNodeOwnership(db, userId, [sourceNodeId, targetNodeId]))
+  ) {
     throw new Error("One or both nodes not found");
   }
 
@@ -165,7 +166,10 @@ export async function updateEdge(
   const newSourceNodeId = updates.sourceNodeId ?? current.sourceNodeId;
   const newTargetNodeId = updates.targetNodeId ?? current.targetNodeId;
   const newEdgeType = updates.edgeType ?? current.edgeType;
-  const newDescription = updates.description !== undefined ? updates.description : current.description;
+  const newDescription =
+    updates.description !== undefined
+      ? updates.description
+      : current.description;
 
   const updateSet: Partial<{
     edgeType: EdgeType;
@@ -174,9 +178,15 @@ export async function updateEdge(
     targetNodeId: TypeId<"node">;
   }> = {
     ...(updates.edgeType !== undefined && { edgeType: updates.edgeType }),
-    ...(updates.description !== undefined && { description: updates.description }),
-    ...(updates.sourceNodeId !== undefined && { sourceNodeId: updates.sourceNodeId }),
-    ...(updates.targetNodeId !== undefined && { targetNodeId: updates.targetNodeId }),
+    ...(updates.description !== undefined && {
+      description: updates.description,
+    }),
+    ...(updates.sourceNodeId !== undefined && {
+      sourceNodeId: updates.sourceNodeId,
+    }),
+    ...(updates.targetNodeId !== undefined && {
+      targetNodeId: updates.targetNodeId,
+    }),
   };
 
   if (Object.keys(updateSet).length > 0) {

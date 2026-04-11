@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
 import { normalizeLabel } from "./label";
+import { describe, it, expect } from "vitest";
 
 describe("normalizeLabel", () => {
   it("lowercases and trims", () => {
