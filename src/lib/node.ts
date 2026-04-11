@@ -1,5 +1,5 @@
 /** Node operations: get, get sources, update, delete. */
-
+import type { GetNodeResponse, GetNodeSourcesResponse } from "./schemas/node";
 import { and, eq, or, inArray, aliasedTable, sql } from "drizzle-orm";
 import {
   nodes,
@@ -10,11 +10,15 @@ import {
   sources,
 } from "~/db/schema";
 import { generateEmbeddings } from "~/lib/embeddings";
-import { fetchSourceIdsForNodes, findOneHopNodes, fetchEdgesBetweenNodeIds } from "~/lib/graph";
+import {
+  fetchSourceIdsForNodes,
+  findOneHopNodes,
+  fetchEdgesBetweenNodeIds,
+} from "~/lib/graph";
 import { ensureUser } from "~/lib/ingestion/ensure-user";
-import type { NodeType } from "~/types/graph";
+import { normalizeLabel } from "~/lib/label";
 import { sourceService } from "~/lib/sources";
-import type { GetNodeResponse, GetNodeSourcesResponse } from "./schemas/node";
+import type { NodeType } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -108,9 +112,7 @@ export async function getNodeSources(
   if (linkedSources.length === 0) return { sources: [] };
 
   // Fetch raw content for each source
-  const sourceIds = linkedSources.map(
-    (s) => s.sourceId as TypeId<"source">,
-  );
+  const sourceIds = linkedSources.map((s) => s.sourceId as TypeId<"source">);
   const rawResults = await sourceService.fetchRaw(userId, sourceIds);
   const contentMap = new Map(
     rawResults.map((r) => [
@@ -134,7 +136,12 @@ export async function updateNode(
   userId: string,
   nodeId: TypeId<"node">,
   updates: { label?: string; description?: string; nodeType?: NodeType },
-): Promise<{ id: TypeId<"node">; nodeType: string; label: string | null; description: string | null } | null> {
+): Promise<{
+  id: TypeId<"node">;
+  nodeType: string;
+  label: string | null;
+  description: string | null;
+} | null> {
   const db = await useDatabase();
 
   // Verify ownership and fetch current state
@@ -168,7 +175,12 @@ export async function updateNode(
   await db
     .update(nodeMetadata)
     .set({
-      ...(updates.label !== undefined ? { label: updates.label } : {}),
+      ...(updates.label !== undefined
+        ? {
+            label: updates.label,
+            canonicalLabel: normalizeLabel(updates.label),
+          }
+        : {}),
       ...(updates.description !== undefined
         ? { description: updates.description }
         : {}),
@@ -176,7 +188,10 @@ export async function updateNode(
     .where(eq(nodeMetadata.id, row.metaId));
 
   // Re-generate embedding if label or description changed
-  if (newLabel && (updates.label !== undefined || updates.description !== undefined)) {
+  if (
+    newLabel &&
+    (updates.label !== undefined || updates.description !== undefined)
+  ) {
     const embText = `${newLabel}: ${newDescription ?? ""}`;
     const embResponse = await generateEmbeddings({
       model: "jina-embeddings-v3",
@@ -187,9 +202,7 @@ export async function updateNode(
     const embedding = embResponse.data[0]?.embedding;
     if (embedding) {
       // Delete old embedding and insert new one
-      await db
-        .delete(nodeEmbeddings)
-        .where(eq(nodeEmbeddings.nodeId, nodeId));
+      await db.delete(nodeEmbeddings).where(eq(nodeEmbeddings.nodeId, nodeId));
       await db.insert(nodeEmbeddings).values({
         nodeId,
         embedding,
@@ -227,7 +240,12 @@ export async function createNode(
   nodeType: NodeType,
   label: string,
   description?: string,
-): Promise<{ id: TypeId<"node">; nodeType: NodeType; label: string; description: string | null }> {
+): Promise<{
+  id: TypeId<"node">;
+  nodeType: NodeType;
+  label: string;
+  description: string | null;
+}> {
   const db = await useDatabase();
   await ensureUser(db, userId);
 
@@ -241,6 +259,7 @@ export async function createNode(
   await db.insert(nodeMetadata).values({
     nodeId: inserted.id,
     label,
+    canonicalLabel: normalizeLabel(label),
     description: description ?? null,
   });
 
@@ -268,7 +287,12 @@ export async function mergeNodes(
   userId: string,
   nodeIds: TypeId<"node">[],
   overrides?: { targetLabel?: string; targetDescription?: string },
-): Promise<{ id: TypeId<"node">; nodeType: string; label: string; description: string | null } | null> {
+): Promise<{
+  id: TypeId<"node">;
+  nodeType: string;
+  label: string;
+  description: string | null;
+} | null> {
   const db = await useDatabase();
 
   const foundNodes = await db
@@ -349,9 +373,7 @@ export async function mergeNodes(
           )
       `);
 
-      await tx
-        .delete(sourceLinks)
-        .where(eq(sourceLinks.nodeId, consumedId));
+      await tx.delete(sourceLinks).where(eq(sourceLinks.nodeId, consumedId));
     }
 
     // Delete consumed nodes
@@ -362,7 +384,11 @@ export async function mergeNodes(
     // Update survivor metadata
     await tx
       .update(nodeMetadata)
-      .set({ label: finalLabel, description: finalDescription })
+      .set({
+        label: finalLabel,
+        canonicalLabel: normalizeLabel(finalLabel),
+        description: finalDescription,
+      })
       .where(eq(nodeMetadata.nodeId, survivorId));
 
     // Delete self-referencing edges
@@ -383,7 +409,9 @@ export async function mergeNodes(
   });
   const embedding = embResponse.data[0]?.embedding;
   if (embedding) {
-    await db.delete(nodeEmbeddings).where(eq(nodeEmbeddings.nodeId, survivorId));
+    await db
+      .delete(nodeEmbeddings)
+      .where(eq(nodeEmbeddings.nodeId, survivorId));
     await db.insert(nodeEmbeddings).values({
       nodeId: survivorId,
       embedding,
@@ -418,8 +446,19 @@ export async function getNodeNeighborhood(
   nodeId: TypeId<"node">,
   depth: 1 | 2 = 1,
 ): Promise<{
-  nodes: { id: TypeId<"node">; nodeType: string; label: string; description: string | null; sourceIds: string[] }[];
-  edges: { source: TypeId<"node">; target: TypeId<"node">; edgeType: string; description: string | null }[];
+  nodes: {
+    id: TypeId<"node">;
+    nodeType: string;
+    label: string;
+    description: string | null;
+    sourceIds: string[];
+  }[];
+  edges: {
+    source: TypeId<"node">;
+    target: TypeId<"node">;
+    edgeType: string;
+    description: string | null;
+  }[];
 } | null> {
   const db = await useDatabase();
 
@@ -440,7 +479,12 @@ export async function getNodeNeighborhood(
   const allNodeIds = new Set<TypeId<"node">>([nodeId]);
   const nodeMap = new Map<
     TypeId<"node">,
-    { id: TypeId<"node">; nodeType: string; label: string; description: string | null }
+    {
+      id: TypeId<"node">;
+      nodeType: string;
+      label: string;
+      description: string | null;
+    }
   >();
   nodeMap.set(nodeId, {
     id: focal.id,

@@ -16,3 +16,15 @@ export const cleanupResponseSchema = z.object({
 
 export type CleanupRequest = z.infer<typeof cleanupRequestSchema>;
 export type CleanupResponse = z.infer<typeof cleanupResponseSchema>;
+
+export const dedupSweepRequestSchema = z.object({
+  userId: z.string().startsWith("user_"),
+});
+
+export const dedupSweepResponseSchema = z.object({
+  mergedGroups: z.number(),
+  mergedNodes: z.number(),
+});
+
+export type DedupSweepRequest = z.infer<typeof dedupSweepRequestSchema>;
+export type DedupSweepResponse = z.infer<typeof dedupSweepResponseSchema>;

@@ -56,18 +56,15 @@ export const nodeMetadata = pgTable(
     nodeId: typeId("node")
       .references(() => nodes.id, { onDelete: "cascade" })
       .notNull(),
-    label: text(), // Human-readable name/title
-    description: text(), // Longer text description
-    // Maybe add timestamps for when this metadata was last updated
-    // Temporal aspect - can be added here or via edges
-    // validFrom: timestamp('valid_from'),
-    // validTo: timestamp('valid_to'), // Null means currently valid
-    additionalData: jsonb(), // For type-specific structured data
+    label: text(),
+    canonicalLabel: text("canonical_label"),
+    description: text(),
+    additionalData: jsonb(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
-    // Index on nodeId
   },
   (table) => [
     index("node_metadata_node_id_idx").on(table.nodeId),
+    index("node_metadata_canonical_label_idx").on(table.canonicalLabel),
     unique().on(table.nodeId),
   ],
 );

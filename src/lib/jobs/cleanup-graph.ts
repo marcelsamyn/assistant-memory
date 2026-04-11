@@ -5,6 +5,7 @@ import {
   type EmbeddableEdge,
 } from "../embeddings-util";
 import { findOneHopNodes, findSimilarNodes } from "../graph";
+import { normalizeLabel } from "../label";
 import { TemporaryIdMapper } from "../temporary-id-mapper";
 import { sql, eq, gte, desc, and, inArray } from "drizzle-orm";
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
@@ -502,9 +503,12 @@ async function applyCleanupProposal(
         .returning({ id: nodes.id });
       const nodeId = inserted[0]?.id;
       if (!nodeId) continue;
-      await tx
-        .insert(nodeMetadata)
-        .values({ nodeId, label: n.label, description: n.description });
+      await tx.insert(nodeMetadata).values({
+        nodeId,
+        label: n.label,
+        canonicalLabel: normalizeLabel(n.label),
+        description: n.description,
+      });
       createdNodes.push({
         nodeId,
         label: n.label,
@@ -687,7 +691,7 @@ async function applyCleanupProposal(
 /**
  * Rewire edges from removeId to keepId for a given user
  */
-async function rewireNodeEdges(
+export async function rewireNodeEdges(
   tx: DrizzleDB,
   removeId: TypeId<"node">,
   keepId: TypeId<"node">,
@@ -742,7 +746,7 @@ async function rewireNodeEdges(
 /**
  * Rewire source_links entries from removeId to keepId
  */
-async function rewireSourceLinks(
+export async function rewireSourceLinks(
   tx: DrizzleDB,
   removeId: TypeId<"node">,
   keepId: TypeId<"node">,
@@ -765,7 +769,7 @@ async function rewireSourceLinks(
 /**
  * Delete a node for a given user; cascades remove related data
  */
-async function deleteNode(
+export async function deleteNode(
   tx: DrizzleDB,
   nodeId: TypeId<"node">,
   userId: string,

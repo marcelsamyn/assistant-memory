@@ -57,6 +57,13 @@
       "when": 1772622104832,
       "tag": "0007_illegal_lila_cheney",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1775920239473,
+      "tag": "0008_worthless_bullseye",
+      "breakpoints": true
     }
   ]
 }
