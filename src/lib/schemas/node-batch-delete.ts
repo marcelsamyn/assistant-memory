@@ -11,5 +11,9 @@ export const batchDeleteNodesResponseSchema = z.object({
   count: z.number().int().nonnegative(),
 });
 
-export type BatchDeleteNodesRequest = z.infer<typeof batchDeleteNodesRequestSchema>;
-export type BatchDeleteNodesResponse = z.infer<typeof batchDeleteNodesResponseSchema>;
+export type BatchDeleteNodesRequest = z.infer<
+  typeof batchDeleteNodesRequestSchema
+>;
+export type BatchDeleteNodesResponse = z.infer<
+  typeof batchDeleteNodesResponseSchema
+>;

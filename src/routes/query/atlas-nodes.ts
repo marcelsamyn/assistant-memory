@@ -1,11 +1,11 @@
+import { and, eq, or } from "drizzle-orm";
 import { defineEventHandler } from "h3";
+import { edges } from "~/db/schema";
 import { ensureAssistantAtlasNode } from "~/lib/atlas";
 import {
   queryAtlasNodesRequestSchema,
   queryAtlasNodesResponseSchema,
 } from "~/lib/schemas/query-atlas-nodes";
-import { and, eq, or } from "drizzle-orm";
-import { edges } from "~/db/schema";
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {

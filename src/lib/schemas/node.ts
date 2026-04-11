@@ -52,9 +52,7 @@ export const getNodeSourcesResponseSchema = z.object({
   sources: z.array(nodeSourceSchema),
 });
 
-export type GetNodeSourcesRequest = z.infer<
-  typeof getNodeSourcesRequestSchema
->;
+export type GetNodeSourcesRequest = z.infer<typeof getNodeSourcesRequestSchema>;
 export type GetNodeSourcesResponse = z.infer<
   typeof getNodeSourcesResponseSchema
 >;

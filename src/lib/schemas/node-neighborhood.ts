@@ -13,5 +13,9 @@ export const nodeNeighborhoodResponseSchema = z.object({
   edges: z.array(queryGraphEdgeSchema),
 });
 
-export type NodeNeighborhoodRequest = z.infer<typeof nodeNeighborhoodRequestSchema>;
-export type NodeNeighborhoodResponse = z.infer<typeof nodeNeighborhoodResponseSchema>;
+export type NodeNeighborhoodRequest = z.infer<
+  typeof nodeNeighborhoodRequestSchema
+>;
+export type NodeNeighborhoodResponse = z.infer<
+  typeof nodeNeighborhoodResponseSchema
+>;

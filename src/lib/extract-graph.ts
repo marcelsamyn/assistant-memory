@@ -4,8 +4,10 @@ import {
   generateAndInsertEdgeEmbeddings,
 } from "./embeddings-util";
 import { formatNodesForPrompt } from "./formatting";
-import { findSimilarNodes, findOneHopNodes } from "./graph";
+import { findSimilarNodes, findOneHopNodes, findNodesByType } from "./graph";
+import { normalizeLabel } from "./label";
 import { TemporaryIdMapper } from "./temporary-id-mapper";
+import { and, eq, inArray } from "drizzle-orm";
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
 import { z } from "zod";
 import { type DrizzleDB } from "~/db";
@@ -73,8 +75,8 @@ export async function extractGraph({
 }: ExtractGraphParams) {
   const db = await useDatabase();
 
-  const similarNodesRaw = (
-    await Promise.all([
+  const [embeddingSimilar, oneHopNeighbors, allPersonNodes] = await Promise.all(
+    [
       findSimilarNodes({
         userId,
         text: content,
@@ -82,19 +84,36 @@ export async function extractGraph({
         minimumSimilarity: 0.3,
       }),
       findOneHopNodes(db, userId, [linkedNodeId]),
-    ])
-  ).flat();
+      findNodesByType(userId, "Person"),
+    ],
+  );
 
-  const similarNodesForProcessing = similarNodesRaw.map((node) => ({
-    id: node.id,
-    type: node.type,
-    label: node.label,
-    description: node.description,
-    timestamp: node.timestamp.toISOString(),
-  }));
+  // Deduplicate by node ID: person nodes first (most duplicated type),
+  // then embedding results, then one-hop neighbors
+  const seenIds = new Set<TypeId<"node">>();
+  const similarNodesForProcessing: SimilarNodeForPrompt[] = [];
+
+  for (const node of [
+    ...allPersonNodes,
+    ...embeddingSimilar,
+    ...oneHopNeighbors,
+  ]) {
+    if (seenIds.has(node.id)) continue;
+    seenIds.add(node.id);
+    similarNodesForProcessing.push({
+      id: node.id,
+      type: node.type,
+      label: node.label,
+      description: node.description,
+      timestamp: node.timestamp.toISOString(),
+    });
+  }
+
+  // Cap to keep the prompt manageable
+  const cappedNodes = similarNodesForProcessing.slice(0, 150);
 
   const { nodesForPromptFormatting, idMap, nodeLabels } =
-    _prepareInitialNodeMappings(similarNodesForProcessing);
+    _prepareInitialNodeMappings(cappedNodes);
 
   const { createCompletionClient } = await import("./ai");
   const client = await createCompletionClient(userId);
@@ -313,8 +332,60 @@ async function _processAndInsertNewNodes(
 ): Promise<ProcessedNode[]> {
   const detailsOfNewlyCreatedNodes: ProcessedNode[] = [];
 
+  // Batch dedup: collect all canonical labels for nodes not already in idMap,
+  // then look them all up in one query instead of N queries in the loop.
+  const newLlmNodes = uniqueParsedLlmNodes.filter((n) => !idMap.has(n.id));
+  const canonicalLabels = newLlmNodes.map((n) => normalizeLabel(n.label));
+  const uniqueCanonicals = [...new Set(canonicalLabels)].filter(
+    (c) => c !== "",
+  );
+
+  // Single batch query for all potential matches
+  const existingMatches =
+    uniqueCanonicals.length > 0
+      ? await db
+          .select({
+            id: nodes.id,
+            nodeType: nodes.nodeType,
+            label: nodeMetadata.label,
+            canonicalLabel: nodeMetadata.canonicalLabel,
+          })
+          .from(nodes)
+          .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
+          .where(
+            and(
+              eq(nodes.userId, userId),
+              inArray(nodeMetadata.canonicalLabel, uniqueCanonicals),
+            ),
+          )
+      : [];
+
+  // Index by (nodeType, canonicalLabel) for O(1) lookup
+  const existingByKey = new Map<
+    string,
+    { id: TypeId<"node">; label: string | null }
+  >();
+  for (const match of existingMatches) {
+    const key = `${match.nodeType}|${match.canonicalLabel}`;
+    if (!existingByKey.has(key)) {
+      existingByKey.set(key, { id: match.id, label: match.label });
+    }
+  }
+
   for (const llmNode of uniqueParsedLlmNodes) {
     if (idMap.has(llmNode.id)) {
+      continue;
+    }
+
+    // Exact-match dedup: check batch results for existing node
+    const canonical = normalizeLabel(llmNode.label);
+    const existing = existingByKey.get(`${llmNode.type}|${canonical}`);
+
+    if (existing) {
+      idMap.set(llmNode.id, existing.id);
+      if (existing.label) {
+        nodeLabels.set(existing.id, existing.label);
+      }
       continue;
     }
 
@@ -334,12 +405,20 @@ async function _processAndInsertNewNodes(
     await db.insert(nodeMetadata).values({
       nodeId: insertedNodeRecord.id,
       label: llmNode.label,
+      canonicalLabel: canonical,
       description: llmNode.description,
       additionalData: {},
     });
 
     idMap.set(llmNode.id, insertedNodeRecord.id);
     nodeLabels.set(insertedNodeRecord.id, llmNode.label);
+
+    // Also add to batch lookup so subsequent LLM nodes with the same label
+    // won't try to insert again
+    existingByKey.set(`${llmNode.type}|${canonical}`, {
+      id: insertedNodeRecord.id,
+      label: llmNode.label,
+    });
 
     detailsOfNewlyCreatedNodes.push({
       id: insertedNodeRecord.id,

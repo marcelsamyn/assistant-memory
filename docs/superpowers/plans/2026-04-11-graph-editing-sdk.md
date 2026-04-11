@@ -13,6 +13,7 @@
 ### Task 1: Create Node — Schema + Lib + Route + SDK
 
 **Files:**
+
 - Modify: `src/lib/schemas/node.ts` — add createNode request/response schemas
 - Modify: `src/lib/node.ts` — add `createNode` function
 - Create: `src/routes/node/create.post.ts`
@@ -63,7 +64,12 @@ export async function createNode(
   nodeType: NodeType,
   label: string,
   description?: string,
-): Promise<{ id: TypeId<"node">; nodeType: NodeType; label: string; description: string | null }> {
+): Promise<{
+  id: TypeId<"node">;
+  nodeType: NodeType;
+  label: string;
+  description: string | null;
+}> {
   const db = await useDatabase();
   await ensureUser(db, userId);
 
@@ -150,6 +156,7 @@ Run: `pnpm run build`
 ### Task 2: Edge Schemas + Lib
 
 **Files:**
+
 - Create: `src/lib/schemas/edge.ts` — all edge CRUD schemas
 - Create: `src/lib/edge.ts` — createEdge, deleteEdge, updateEdge business logic
 
@@ -220,7 +227,6 @@ export type UpdateEdgeResponse = z.infer<typeof updateEdgeResponseSchema>;
 
 ```ts
 /** Edge operations: create, delete, update. */
-
 import { and, eq, inArray } from "drizzle-orm";
 import { nodes, nodeMetadata, edges, edgeEmbeddings } from "~/db/schema";
 import { generateEmbeddings } from "~/lib/embeddings";
@@ -278,7 +284,9 @@ export async function createEdge(
 }> {
   const db = await useDatabase();
 
-  if (!(await validateNodeOwnership(db, userId, [sourceNodeId, targetNodeId]))) {
+  if (
+    !(await validateNodeOwnership(db, userId, [sourceNodeId, targetNodeId]))
+  ) {
     throw new Error("One or both nodes not found");
   }
 
@@ -387,12 +395,16 @@ export async function updateEdge(
   const newSourceNodeId = updates.sourceNodeId ?? current.sourceNodeId;
   const newTargetNodeId = updates.targetNodeId ?? current.targetNodeId;
   const newEdgeType = updates.edgeType ?? current.edgeType;
-  const newDescription = updates.description !== undefined ? updates.description : current.description;
+  const newDescription =
+    updates.description !== undefined
+      ? updates.description
+      : current.description;
 
   // Build update set (only changed fields)
   const updateSet: Record<string, unknown> = {};
   if (updates.edgeType) updateSet.edgeType = updates.edgeType;
-  if (updates.description !== undefined) updateSet.description = updates.description;
+  if (updates.description !== undefined)
+    updateSet.description = updates.description;
   if (updates.sourceNodeId) updateSet.sourceNodeId = updates.sourceNodeId;
   if (updates.targetNodeId) updateSet.targetNodeId = updates.targetNodeId;
 
@@ -443,6 +455,7 @@ Run: `pnpm run build`
 ### Task 3: Edge Routes
 
 **Files:**
+
 - Create: `src/routes/edge/create.post.ts`
 - Create: `src/routes/edge/delete.post.ts`
 - Create: `src/routes/edge/update.post.ts`
@@ -542,6 +555,7 @@ Run: `pnpm run build`
 ### Task 4: Edge SDK Methods + Re-exports
 
 **Files:**
+
 - Modify: `src/sdk/memory-client.ts` — add edge methods
 - Modify: `src/sdk/index.ts` — re-export edge schemas
 
@@ -611,6 +625,7 @@ Run: `pnpm run build`
 ### Task 5: Merge Nodes — Schema + Lib + Route + SDK
 
 **Files:**
+
 - Create: `src/lib/schemas/node-merge.ts`
 - Modify: `src/lib/node.ts` — add `mergeNodes` function
 - Create: `src/routes/node/merge.post.ts`
@@ -662,7 +677,12 @@ export async function mergeNodes(
   userId: string,
   nodeIds: TypeId<"node">[],
   overrides?: { targetLabel?: string; targetDescription?: string },
-): Promise<{ id: TypeId<"node">; nodeType: string; label: string; description: string | null } | null> {
+): Promise<{
+  id: TypeId<"node">;
+  nodeType: string;
+  label: string;
+  description: string | null;
+} | null> {
   const db = await useDatabase();
 
   // Validate all nodes belong to userId
@@ -684,9 +704,10 @@ export async function mergeNodes(
   const survivorRow = foundNodes.find((n) => n.id === survivorId)!;
 
   const finalLabel = overrides?.targetLabel ?? survivorRow.label ?? "";
-  const finalDescription = overrides?.targetDescription !== undefined
-    ? overrides.targetDescription
-    : survivorRow.description;
+  const finalDescription =
+    overrides?.targetDescription !== undefined
+      ? overrides.targetDescription
+      : survivorRow.description;
 
   // Re-point edges from consumed nodes to survivor, dropping duplicates
   for (const consumedId of consumedIds) {
@@ -744,9 +765,7 @@ export async function mergeNodes(
     `);
 
     // Delete remaining duplicate source_links
-    await db
-      .delete(sourceLinks)
-      .where(eq(sourceLinks.nodeId, consumedId));
+    await db.delete(sourceLinks).where(eq(sourceLinks.nodeId, consumedId));
   }
 
   // Delete consumed nodes (cascade handles metadata, embeddings)
@@ -758,12 +777,7 @@ export async function mergeNodes(
   await db
     .update(nodeMetadata)
     .set({ label: finalLabel, description: finalDescription })
-    .where(
-      eq(
-        nodeMetadata.nodeId,
-        survivorId,
-      ),
-    );
+    .where(eq(nodeMetadata.nodeId, survivorId));
 
   // Re-generate survivor embedding
   const embText = `${finalLabel}: ${finalDescription ?? ""}`;
@@ -775,7 +789,9 @@ export async function mergeNodes(
   });
   const embedding = embResponse.data[0]?.embedding;
   if (embedding) {
-    await db.delete(nodeEmbeddings).where(eq(nodeEmbeddings.nodeId, survivorId));
+    await db
+      .delete(nodeEmbeddings)
+      .where(eq(nodeEmbeddings.nodeId, survivorId));
     await db.insert(nodeEmbeddings).values({
       nodeId: survivorId,
       embedding,
@@ -866,6 +882,7 @@ Run: `pnpm run build`
 ### Task 6: P1 — Update Node with nodeType + Get Atlas Node IDs
 
 **Files:**
+
 - Modify: `src/lib/schemas/node.ts` — add `nodeType` to update schema
 - Modify: `src/lib/node.ts` — update `updateNode` to handle nodeType
 - Modify: `src/routes/node/update.post.ts` — pass nodeType
@@ -903,15 +920,15 @@ export async function updateNode(
 Add after the ownership check, before the metadata update:
 
 ```ts
-  // Update node type if provided
-  if (updates.nodeType) {
-    await db
-      .update(nodes)
-      .set({ nodeType: updates.nodeType })
-      .where(eq(nodes.id, nodeId));
-  }
+// Update node type if provided
+if (updates.nodeType) {
+  await db
+    .update(nodes)
+    .set({ nodeType: updates.nodeType })
+    .where(eq(nodes.id, nodeId));
+}
 
-  const effectiveNodeType = updates.nodeType ?? row.nodeType;
+const effectiveNodeType = updates.nodeType ?? row.nodeType;
 ```
 
 And change the return to use `effectiveNodeType`:
@@ -933,7 +950,11 @@ Change the destructuring to include `nodeType` and pass it:
 export default defineEventHandler(async (event) => {
   const { userId, nodeId, label, description, nodeType } =
     updateNodeRequestSchema.parse(await readBody(event));
-  const result = await updateNode(userId, nodeId, { label, description, nodeType });
+  const result = await updateNode(userId, nodeId, {
+    label,
+    description,
+    nodeType,
+  });
   if (!result) {
     throw createError({ statusCode: 404, statusMessage: "Node not found" });
   }
@@ -955,21 +976,25 @@ export const queryAtlasNodesResponseSchema = z.object({
   nodeIds: z.array(z.string()),
 });
 
-export type QueryAtlasNodesRequest = z.infer<typeof queryAtlasNodesRequestSchema>;
-export type QueryAtlasNodesResponse = z.infer<typeof queryAtlasNodesResponseSchema>;
+export type QueryAtlasNodesRequest = z.infer<
+  typeof queryAtlasNodesRequestSchema
+>;
+export type QueryAtlasNodesResponse = z.infer<
+  typeof queryAtlasNodesResponseSchema
+>;
 ```
 
 - [ ] **Step 5: Create route `src/routes/query/atlas-nodes.ts`**
 
 ```ts
+import { and, eq, or } from "drizzle-orm";
 import { defineEventHandler } from "h3";
+import { edges } from "~/db/schema";
 import { ensureAssistantAtlasNode } from "~/lib/atlas";
 import {
   queryAtlasNodesRequestSchema,
   queryAtlasNodesResponseSchema,
 } from "~/lib/schemas/query-atlas-nodes";
-import { and, eq, or } from "drizzle-orm";
-import { edges } from "~/db/schema";
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
@@ -1050,6 +1075,7 @@ Run: `pnpm run build`
 ### Task 7: P1 — Batch Delete Nodes
 
 **Files:**
+
 - Create: `src/lib/schemas/node-batch-delete.ts`
 - Modify: `src/lib/node.ts` — add `batchDeleteNodes`
 - Create: `src/routes/node/batch-delete.post.ts`
@@ -1072,8 +1098,12 @@ export const batchDeleteNodesResponseSchema = z.object({
   count: z.number().int().nonnegative(),
 });
 
-export type BatchDeleteNodesRequest = z.infer<typeof batchDeleteNodesRequestSchema>;
-export type BatchDeleteNodesResponse = z.infer<typeof batchDeleteNodesResponseSchema>;
+export type BatchDeleteNodesRequest = z.infer<
+  typeof batchDeleteNodesRequestSchema
+>;
+export type BatchDeleteNodesResponse = z.infer<
+  typeof batchDeleteNodesResponseSchema
+>;
 ```
 
 - [ ] **Step 2: Add `batchDeleteNodes` to `src/lib/node.ts`**
@@ -1154,6 +1184,7 @@ Run: `pnpm run build`
 ### Task 8: P2 — Query Graph nodeTypes Filter
 
 **Files:**
+
 - Modify: `src/lib/schemas/query-graph.ts` — add `nodeTypes` field
 - Modify: `src/lib/query/graph.ts` — apply filter
 
@@ -1206,10 +1237,10 @@ In the query-based branch, pass `nodeTypes` as `excludeNodeTypes` inverted — a
 After `const seeds = ...`, add a filter only if `nodeTypes` is specified:
 
 ```ts
-  // Apply nodeTypes filter to seed results if specified
-  const filteredSeeds = params.nodeTypes?.length
-    ? seeds.filter((s) => params.nodeTypes!.includes(s.type))
-    : seeds;
+// Apply nodeTypes filter to seed results if specified
+const filteredSeeds = params.nodeTypes?.length
+  ? seeds.filter((s) => params.nodeTypes!.includes(s.type))
+  : seeds;
 ```
 
 Then use `filteredSeeds` instead of `seeds` for the rest of the function.
@@ -1223,6 +1254,7 @@ Run: `pnpm run build`
 ### Task 9: P2 — Node Neighborhood
 
 **Files:**
+
 - Create: `src/lib/schemas/node-neighborhood.ts`
 - Modify: `src/lib/node.ts` — add `getNodeNeighborhood`
 - Create: `src/routes/node/neighborhood.post.ts`
@@ -1247,8 +1279,12 @@ export const nodeNeighborhoodResponseSchema = z.object({
   edges: z.array(queryGraphEdgeSchema),
 });
 
-export type NodeNeighborhoodRequest = z.infer<typeof nodeNeighborhoodRequestSchema>;
-export type NodeNeighborhoodResponse = z.infer<typeof nodeNeighborhoodResponseSchema>;
+export type NodeNeighborhoodRequest = z.infer<
+  typeof nodeNeighborhoodRequestSchema
+>;
+export type NodeNeighborhoodResponse = z.infer<
+  typeof nodeNeighborhoodResponseSchema
+>;
 ```
 
 - [ ] **Step 2: Add `getNodeNeighborhood` to `src/lib/node.ts`**
@@ -1256,7 +1292,11 @@ export type NodeNeighborhoodResponse = z.infer<typeof nodeNeighborhoodResponseSc
 Add import:
 
 ```ts
-import { findOneHopNodes, fetchSourceIdsForNodes, fetchEdgesBetweenNodeIds } from "~/lib/graph";
+import {
+  findOneHopNodes,
+  fetchSourceIdsForNodes,
+  fetchEdgesBetweenNodeIds,
+} from "~/lib/graph";
 ```
 
 Note: `fetchEdgesBetweenNodeIds` is exported from `~/lib/graph` but also duplicated in `~/lib/query/graph`. Use the one from `~/lib/graph`.
@@ -1270,8 +1310,19 @@ export async function getNodeNeighborhood(
   nodeId: TypeId<"node">,
   depth: 1 | 2 = 1,
 ): Promise<{
-  nodes: { id: TypeId<"node">; nodeType: string; label: string; description: string | null; sourceIds: string[] }[];
-  edges: { source: TypeId<"node">; target: TypeId<"node">; edgeType: string; description: string | null }[];
+  nodes: {
+    id: TypeId<"node">;
+    nodeType: string;
+    label: string;
+    description: string | null;
+    sourceIds: string[];
+  }[];
+  edges: {
+    source: TypeId<"node">;
+    target: TypeId<"node">;
+    edgeType: string;
+    description: string | null;
+  }[];
 } | null> {
   const db = await useDatabase();
 
@@ -1291,7 +1342,15 @@ export async function getNodeNeighborhood(
   if (!focal) return null;
 
   const allNodeIds = new Set<TypeId<"node">>([nodeId]);
-  const nodeMap = new Map<TypeId<"node">, { id: TypeId<"node">; nodeType: string; label: string; description: string | null }>();
+  const nodeMap = new Map<
+    TypeId<"node">,
+    {
+      id: TypeId<"node">;
+      nodeType: string;
+      label: string;
+      description: string | null;
+    }
+  >();
   nodeMap.set(nodeId, {
     id: focal.id,
     nodeType: focal.nodeType,

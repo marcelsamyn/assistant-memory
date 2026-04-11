@@ -8,7 +8,11 @@ import {
 export default defineEventHandler(async (event) => {
   const { userId, nodeId, label, description, nodeType } =
     updateNodeRequestSchema.parse(await readBody(event));
-  const result = await updateNode(userId, nodeId, { label, description, nodeType });
+  const result = await updateNode(userId, nodeId, {
+    label,
+    description,
+    nodeType,
+  });
   if (!result) {
     throw createError({ statusCode: 404, statusMessage: "Node not found" });
   }

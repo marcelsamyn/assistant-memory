@@ -276,6 +276,35 @@ export async function findOneHopNodes(
     .limit(50);
 }
 
+/** Fetch all nodes of a given type for a user */
+export async function findNodesByType(
+  userId: string,
+  nodeType: NodeType,
+  limit = 200,
+): Promise<NodeSearchResult[]> {
+  const db = await useDatabase();
+  return db
+    .select({
+      id: nodes.id,
+      type: nodes.nodeType,
+      label: nodeMetadata.label,
+      description: nodeMetadata.description,
+      timestamp: nodes.createdAt,
+      similarity: sql<number>`1`.as("similarity"),
+    })
+    .from(nodes)
+    .innerJoin(nodeMetadata, eq(nodes.id, nodeMetadata.nodeId))
+    .where(
+      and(
+        eq(nodes.userId, userId),
+        eq(nodes.nodeType, nodeType),
+        isNotNull(nodeMetadata.label),
+      ),
+    )
+    .orderBy(desc(nodes.createdAt))
+    .limit(limit);
+}
+
 /** Helper to fetch the Temporal day node id for a given userId and date */
 export async function findDayNode(
   db: DrizzleDB,

@@ -101,6 +101,10 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
           `Ingested conversation ${conversationId} for user ${userId}.`,
         );
 
+        // Run dedup sweep after ingestion to clean up any duplicates
+        const { runDedupSweep } = await import("./jobs/dedup-sweep");
+        await runDedupSweep(userId);
+
         // Queue deep research job if there are messages
         if (messages.length > 0) {
           // Simple throttling: add a low probability to reduce job frequency
@@ -170,6 +174,12 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
           updateExisting,
         });
         console.log(`Ingested document ${documentId} for user ${userId}.`);
+
+        // Run dedup sweep after ingestion
+        const { runDedupSweep: runDocDedupSweep } = await import(
+          "./jobs/dedup-sweep"
+        );
+        await runDocDedupSweep(userId);
       } else if (job.name === "cleanup-graph") {
         const data = CleanupGraphJobInputSchema.parse({
           ...job.data,
@@ -192,6 +202,12 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         console.log(
           `Basic cleanup completed: truncated ${truncateResult.updatedCount} labels, generated ${embeddingsResult.generatedCount} embeddings`,
         );
+
+        // Run deterministic dedup sweep before LLM-based cleanup
+        const { runDedupSweep: runCleanupDedupSweep } = await import(
+          "./jobs/dedup-sweep"
+        );
+        await runCleanupDedupSweep(data.userId);
 
         // Then run the iterative graph cleanup
         const { runIterativeCleanup } = await import(
