@@ -9,8 +9,8 @@ export default defineEventHandler(async (event) => {
   const { userId, nodeIds, targetLabel, targetDescription } =
     mergeNodesRequestSchema.parse(await readBody(event));
   const result = await mergeNodes(userId, nodeIds, {
-    targetLabel,
-    targetDescription,
+    ...(targetLabel !== undefined && { targetLabel }),
+    ...(targetDescription !== undefined && { targetDescription }),
   });
   if (!result) {
     throw createError({

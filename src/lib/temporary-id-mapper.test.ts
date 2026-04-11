@@ -33,7 +33,7 @@ describe("TemporaryIdMapper", () => {
     expect(mapper.getId(items[0]!)).toBeUndefined();
     expect(mapper.getItem("id_1")).toBeUndefined();
 
-    const mapped = mapper.mapItems(items);
+    mapper.mapItems(items);
     expect(mapper.getId(items[0]!)).toBe(`id_${items[0]!.id}`);
     expect(mapper.getItem(`id_${items[1]!.id}`)).toBe(items[1]);
   });

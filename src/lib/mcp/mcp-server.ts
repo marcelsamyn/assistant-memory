@@ -4,6 +4,7 @@ import {
   ResourceTemplate,
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { formatSearchResultsAsXml } from "~/lib/formatting";
 import { saveMemory } from "~/lib/ingestion/save-document";
 import {
   getNodeById,
@@ -13,24 +14,15 @@ import {
 } from "~/lib/node";
 import { queryDayMemories } from "~/lib/query/day";
 import { searchMemory } from "~/lib/query/search";
-import {
-  ingestDocumentRequestSchema,
-  type IngestDocumentRequest,
-} from "~/lib/schemas/ingest-document-request";
+import { ingestDocumentRequestSchema } from "~/lib/schemas/ingest-document-request";
 import {
   getNodeRequestSchema,
   getNodeSourcesRequestSchema,
   updateNodeRequestSchema,
   deleteNodeRequestSchema,
 } from "~/lib/schemas/node";
-import {
-  queryDayRequestSchema,
-  type QueryDayRequest,
-} from "~/lib/schemas/query-day";
-import {
-  querySearchRequestSchema,
-  type QuerySearchRequest,
-} from "~/lib/schemas/query-search";
+import { queryDayRequestSchema } from "~/lib/schemas/query-day";
+import { querySearchRequestSchema } from "~/lib/schemas/query-search";
 import {
   scratchpadReadRequestSchema,
   scratchpadWriteRequestSchema,
@@ -72,9 +64,9 @@ server.resource(
 // Expose ingest document functionality as "save memory"
 server.tool(
   "save memory",
-  ingestDocumentRequestSchema,
-  async ({ userId, document }: IngestDocumentRequest) => {
-    await saveMemory({ userId, document });
+  ingestDocumentRequestSchema.shape,
+  async ({ userId, document }) => {
+    await saveMemory({ userId, document, updateExisting: false });
     return {
       content: [{ type: "text", text: "Memory saved" }],
     };
@@ -84,9 +76,9 @@ server.tool(
 // Expose search as "search memory"
 server.tool(
   "search memory",
-  querySearchRequestSchema,
-  async ({ userId, query, limit, excludeNodeTypes }: QuerySearchRequest) => {
-    const { formattedResult } = await searchMemory({
+  querySearchRequestSchema.shape,
+  async ({ userId, query, limit, excludeNodeTypes }) => {
+    const { searchResults } = await searchMemory({
       userId,
       query,
       limit,
@@ -94,7 +86,9 @@ server.tool(
     });
 
     return {
-      content: [{ type: "text", text: formattedResult }],
+      content: [
+        { type: "text", text: formatSearchResultsAsXml(searchResults) },
+      ],
     };
   },
 );
@@ -102,8 +96,8 @@ server.tool(
 // Expose day query as "retrieve memories relevant for today"
 server.tool(
   "retrieve memories relevant for today",
-  queryDayRequestSchema,
-  async ({ userId, date }: QueryDayRequest) => {
+  queryDayRequestSchema.shape,
+  async ({ userId, date }) => {
     const { formattedResult } = await queryDayMemories({
       userId,
       date,
@@ -118,7 +112,7 @@ server.tool(
 // Read scratchpad
 server.tool(
   "read scratchpad",
-  scratchpadReadRequestSchema,
+  scratchpadReadRequestSchema.shape,
   async ({ userId }) => {
     const result = await readScratchpad({ userId });
     return {
@@ -130,7 +124,7 @@ server.tool(
 // Write scratchpad (overwrite or append)
 server.tool(
   "write scratchpad",
-  scratchpadWriteRequestSchema,
+  scratchpadWriteRequestSchema.shape,
   async (params) => {
     const result = await writeScratchpad(params);
     return {
@@ -142,37 +136,45 @@ server.tool(
 );
 
 // Edit scratchpad (replace text with safeguards)
-server.tool("edit scratchpad", scratchpadEditRequestSchema, async (params) => {
-  const result = await editScratchpad(params);
-  if (!result.applied) {
+server.tool(
+  "edit scratchpad",
+  scratchpadEditRequestSchema.shape,
+  async (params) => {
+    const result = await editScratchpad(params);
+    if (!result.applied) {
+      return {
+        content: [{ type: "text", text: `Edit failed: ${result.message}` }],
+        isError: true,
+      };
+    }
     return {
-      content: [{ type: "text", text: `Edit failed: ${result.message}` }],
-      isError: true,
+      content: [{ type: "text", text: `Edit applied.\n\n${result.content}` }],
     };
-  }
-  return {
-    content: [{ type: "text", text: `Edit applied.\n\n${result.content}` }],
-  };
-});
+  },
+);
 
 // Get node by ID with edges and source IDs
-server.tool("get node", getNodeRequestSchema, async ({ userId, nodeId }) => {
-  const result = await getNodeById(userId, nodeId);
-  if (!result) {
+server.tool(
+  "get node",
+  getNodeRequestSchema.shape,
+  async ({ userId, nodeId }) => {
+    const result = await getNodeById(userId, nodeId);
+    if (!result) {
+      return {
+        content: [{ type: "text", text: "Node not found" }],
+        isError: true,
+      };
+    }
     return {
-      content: [{ type: "text", text: "Node not found" }],
-      isError: true,
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     };
-  }
-  return {
-    content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-  };
-});
+  },
+);
 
 // Get raw source content for a node
 server.tool(
   "get node sources",
-  getNodeSourcesRequestSchema,
+  getNodeSourcesRequestSchema.shape,
   async ({ userId, nodeId }) => {
     const result = await getNodeSources(userId, nodeId);
     if (result.sources.length === 0) {
@@ -191,9 +193,12 @@ server.tool(
 // Update node label/description
 server.tool(
   "update node",
-  updateNodeRequestSchema,
+  updateNodeRequestSchema.shape,
   async ({ userId, nodeId, label, description }) => {
-    const result = await updateNode(userId, nodeId, { label, description });
+    const result = await updateNode(userId, nodeId, {
+      ...(label !== undefined && { label }),
+      ...(description !== undefined && { description }),
+    });
     if (!result) {
       return {
         content: [{ type: "text", text: "Node not found" }],
@@ -211,7 +216,7 @@ server.tool(
 // Delete node by ID
 server.tool(
   "delete node",
-  deleteNodeRequestSchema,
+  deleteNodeRequestSchema.shape,
   async ({ userId, nodeId }) => {
     const deleted = await deleteNode(userId, nodeId);
     if (!deleted) {

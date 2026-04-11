@@ -4,7 +4,6 @@ import type {
   EdgeSearchResult,
   OneHopNode,
 } from "~/lib/graph";
-import type { RerankResult } from "~/lib/rerank";
 
 interface Message {
   content: string;
@@ -90,17 +89,16 @@ ${xmlItems}
 </items>`;
 }
 
-// Group definitions for reranked search results
-type SearchGroups = {
-  similarNodes: NodeSearchResult;
-  similarEdges: EdgeSearchResult;
-  connections: OneHopNode;
-};
-
 /**
  * Strongly-typed alias for reranked search results.
+ * Defined as an explicit union so TypeScript can narrow on `group` in switch statements.
  */
-export type SearchResults = RerankResult<SearchGroups>;
+export type SearchResultItem =
+  | { group: "similarNodes"; item: NodeSearchResult; relevance_score: number }
+  | { group: "similarEdges"; item: EdgeSearchResult; relevance_score: number }
+  | { group: "connections"; item: OneHopNode; relevance_score: number };
+
+export type SearchResults = SearchResultItem[];
 
 // Helpers for formatting individual result items
 function formatSearchNode(node: NodeSearchResult): string {
@@ -148,10 +146,8 @@ export function formatSearchResultsAsXml(results: SearchResults): string {
               return formatSearchConnection(r.item);
             default:
               return assertNever(
-                r.group,
-                `[formatSearchResultsAsXml] Unhandled search result group: ${String(
-                  r.group,
-                )}`,
+                r,
+                `[formatSearchResultsAsXml] Unhandled search result group`,
               );
           }
         })
@@ -181,10 +177,8 @@ export function formatSearchResultsWithIds(
                 return formatSearchConnection(r.item);
               default:
                 return assertNever(
-                  r.group,
-                  `[formatSearchResultsWithIds] Unhandled search result group: ${String(
-                    r.group,
-                  )}`,
+                  r,
+                  `[formatSearchResultsWithIds] Unhandled search result group`,
                 );
             }
           })();

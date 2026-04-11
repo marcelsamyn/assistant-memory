@@ -13,7 +13,7 @@ import { v7 as uuid } from "uuid";
  * This transport is only available in Node.js environments.
  */
 export class SSEServerTransport implements Transport {
-  private _stream: EventStream;
+  private _stream: EventStream | undefined;
   private _sessionId: string;
 
   onclose?: () => void;
@@ -88,7 +88,7 @@ export class SSEServerTransport implements Transport {
 
       body = await readRawBody(
         event,
-        (ct.parameters.charset ?? "utf8") as Encoding,
+        (ct.parameters["charset"] ?? "utf8") as Encoding,
       );
     } catch (error) {
       throw createError({

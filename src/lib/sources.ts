@@ -66,6 +66,7 @@ export class SourceService {
           if (!exists) {
             return this.minioClient.makeBucket(this.bucket);
           }
+          return;
         })
         .catch((err) => {
           // Reset so next call retries

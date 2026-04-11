@@ -189,10 +189,8 @@ async function runIterativeSearch(
     if (refinement.nextQuery) queue.push(refinement.nextQuery);
   }
 
-  return results.map((result) => {
-    delete result.tempId;
-    return result;
-  });
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  return results.map(({ tempId, ...rest }) => rest);
 }
 
 interface RefinementResult {
@@ -227,7 +225,7 @@ async function refineSearchResults(
   const resultsXml = formatSearchResultsWithIds(results);
 
   try {
-    return await performStructuredAnalysis({
+    return (await performStructuredAnalysis({
       userId,
       systemPrompt: "You refine background search results.",
       prompt: `<conversation>
@@ -246,7 +244,7 @@ ${resultsXml}
 Remove irrelevant results by listing their ids in dropIds. If more searching is needed, set done=false and provide nextQuery. If satisfied, set done=true.
 </system:instruction>`,
       schema,
-    });
+    })) as RefinementResult;
   } catch (error) {
     console.error("Failed to refine deep search results:", error);
     return { dropIds: [], done: true };
@@ -296,17 +294,17 @@ async function executeSearchWithEmbedding(
     // Build search result items without reranking
     const allResults: RerankResult<SearchGroups> = [
       ...similarNodes.map((n) => ({
-        group: "similarNodes",
+        group: "similarNodes" as const,
         item: n,
         relevance_score: n.similarity,
       })),
       ...similarEdges.map((e) => ({
-        group: "similarEdges",
+        group: "similarEdges" as const,
         item: e,
         relevance_score: e.similarity,
       })),
       ...connections.map((c) => ({
-        group: "connections",
+        group: "connections" as const,
         item: c,
         relevance_score: 0,
       })),
