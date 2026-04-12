@@ -101,6 +101,11 @@ import {
   scratchpadEditResponseSchema,
 } from "../lib/schemas/scratchpad.js";
 import {
+  QueryTimelineRequest,
+  QueryTimelineResponse,
+  queryTimelineResponseSchema,
+} from "../lib/schemas/query-timeline.js";
+import {
   SummarizeRequest,
   SummarizeResponse,
   summarizeResponseSchema,
@@ -223,6 +228,17 @@ export class MemoryClient {
       "POST",
       "/query/graph",
       queryGraphResponseSchema,
+      payload,
+    );
+  }
+
+  async queryTimeline(
+    payload: QueryTimelineRequest,
+  ): Promise<QueryTimelineResponse> {
+    return this._fetch(
+      "POST",
+      "/query/timeline",
+      queryTimelineResponseSchema,
       payload,
     );
   }
