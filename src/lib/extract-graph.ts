@@ -5,6 +5,7 @@ import {
 } from "./embeddings-util";
 import { formatNodesForPrompt } from "./formatting";
 import { findSimilarNodes, findOneHopNodes, findNodesByType } from "./graph";
+import { safeToISOString } from "./safe-date";
 import { normalizeLabel } from "./label";
 import { TemporaryIdMapper } from "./temporary-id-mapper";
 import { and, eq, inArray } from "drizzle-orm";
@@ -105,7 +106,7 @@ export async function extractGraph({
       type: node.type,
       label: node.label,
       description: node.description,
-      timestamp: node.timestamp.toISOString(),
+      timestamp: safeToISOString(node.timestamp),
     });
   }
 

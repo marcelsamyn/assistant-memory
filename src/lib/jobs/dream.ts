@@ -1,4 +1,5 @@
 import { addDays, formatISO } from "date-fns";
+import { safeToISOString } from "~/lib/safe-date";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import type { DrizzleDB } from "~/db";
@@ -91,7 +92,7 @@ async function handleTopic(
     label: n.label,
     description: n.description,
     tempId: n.id,
-    timestamp: n.timestamp.toISOString(),
+    timestamp: safeToISOString(n.timestamp),
   }));
   const context = formatNodesForPrompt(nodesForPrompt);
   const dream = await generateDreamContent(

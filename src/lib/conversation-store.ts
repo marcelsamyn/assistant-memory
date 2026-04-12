@@ -57,7 +57,9 @@ export async function loadConversationTurns(
       role: meta.role,
       name: meta.name,
       content: meta.rawContent,
-      timestamp: new Date(meta.timestamp),
+      timestamp: isNaN(new Date(meta.timestamp).getTime())
+        ? new Date()
+        : new Date(meta.timestamp),
     };
   });
 }
