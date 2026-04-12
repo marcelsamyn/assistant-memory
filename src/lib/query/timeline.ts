@@ -1,13 +1,13 @@
-import { and, eq, or, gte, lte, desc, inArray, sql } from "drizzle-orm";
-import { edges, nodeMetadata, nodes } from "~/db/schema";
-import { NodeTypeEnum } from "~/types/graph";
-import type { TypeId } from "~/types/typeid";
-import { useDatabase } from "~/utils/db";
 import {
   QueryTimelineRequest,
   QueryTimelineResponse,
 } from "../schemas/query-timeline";
 import { format, subDays } from "date-fns";
+import { and, eq, or, gte, lte, desc, inArray, sql, count } from "drizzle-orm";
+import { edges, nodeMetadata, nodes } from "~/db/schema";
+import { NodeTypeEnum } from "~/types/graph";
+import type { TypeId } from "~/types/typeid";
+import { useDatabase } from "~/utils/db";
 
 /**
  * Query a timeline of memories grouped by date.
@@ -20,51 +20,63 @@ import { format, subDays } from "date-fns";
 export async function queryTimeline(
   params: QueryTimelineRequest,
 ): Promise<QueryTimelineResponse> {
-  const {
-    userId,
-    limit = 30,
-    offset = 0,
-    nodeTypes,
-  } = params;
+  const { userId, limit = 30, offset = 0, nodeTypes } = params;
 
   const today = format(new Date(), "yyyy-MM-dd");
   const ninetyDaysAgo = format(subDays(new Date(), 90), "yyyy-MM-dd");
   const startDate = params.startDate ?? today;
   const endDate = params.endDate ?? ninetyDaysAgo;
 
+  // Normalize so rangeMin <= rangeMax regardless of param ordering
+  const rangeMin = startDate < endDate ? startDate : endDate;
+  const rangeMax = startDate < endDate ? endDate : startDate;
+
   const db = await useDatabase();
 
-  // Step 1: Find all Temporal day nodes in the date range.
-  // Temporal nodes have their label set to "YYYY-MM-DD".
-  // We sort descending (most recent first) so pagination goes backward in time.
-  const allDayNodes = await db
+  // Shared WHERE clause for day-node lookups
+  const dayNodeWhere = and(
+    eq(nodes.userId, userId),
+    eq(nodes.nodeType, NodeTypeEnum.enum.Temporal),
+    gte(nodeMetadata.label, rangeMin),
+    lte(nodeMetadata.label, rangeMax),
+  );
+
+  // Step 1: Count total days with data in the range (DB-level).
+  const [countResult] = await db
+    .select({ total: count() })
+    .from(nodes)
+    .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
+    .where(dayNodeWhere);
+
+  const totalDays = countResult?.total ?? 0;
+
+  if (totalDays === 0 || offset >= totalDays) {
+    return {
+      days: [],
+      totalDays,
+      hasMore: false,
+    };
+  }
+
+  // Step 2: Fetch the paginated day nodes (DB-level limit/offset).
+  // Most recent first so pagination scrolls backward in time.
+  const paginatedDayNodes = await db
     .select({
       id: nodes.id,
       label: nodeMetadata.label,
     })
     .from(nodes)
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-    .where(
-      and(
-        eq(nodes.userId, userId),
-        eq(nodes.nodeType, NodeTypeEnum.enum.Temporal),
-        // label is the date string: compare lexicographically
-        lte(nodeMetadata.label, startDate),
-        gte(nodeMetadata.label, endDate),
-      ),
-    )
-    .orderBy(desc(nodeMetadata.label));
-
-  const totalDays = allDayNodes.length;
-
-  // Step 2: Apply pagination to the day nodes.
-  const paginatedDayNodes = allDayNodes.slice(offset, offset + limit);
+    .where(dayNodeWhere)
+    .orderBy(desc(nodeMetadata.label))
+    .limit(limit)
+    .offset(offset);
 
   if (paginatedDayNodes.length === 0) {
     return {
       days: [],
       totalDays,
-      hasMore: offset + limit < totalDays,
+      hasMore: false,
     };
   }
 
@@ -114,15 +126,15 @@ export async function queryTimeline(
           WHEN ${inArray(edges.sourceNodeId, dayNodeIds)}
             THEN ${edges.targetNodeId}
           ELSE ${edges.sourceNodeId}
-        END NOT IN (${sql.join(dayNodeIds.map((id) => sql`${id}`), sql`, `)})`,
+        END NOT IN (${sql.join(
+          dayNodeIds.map((id) => sql`${id}`),
+          sql`, `,
+        )})`,
       ),
     );
 
   // Step 4: Group connected nodes by day node and build response.
-  const nodesByDay = new Map<
-    TypeId<"node">,
-    typeof connectedRows
-  >();
+  const nodesByDay = new Map<TypeId<"node">, typeof connectedRows>();
   for (const row of connectedRows) {
     const dayId = row.dayNodeId;
     const existing = nodesByDay.get(dayId);
@@ -150,7 +162,7 @@ export async function queryTimeline(
     let filteredNodes = allConnected;
     if (nodeTypes && nodeTypes.length > 0) {
       filteredNodes = allConnected.filter((r) =>
-        nodeTypes.includes(r.nodeType as typeof nodeTypes[number]),
+        nodeTypes.includes(r.nodeType as (typeof nodeTypes)[number]),
       );
     }
 

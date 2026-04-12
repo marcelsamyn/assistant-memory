@@ -92,6 +92,11 @@ import {
   querySearchResponseSchema,
 } from "../lib/schemas/query-search.js";
 import {
+  QueryTimelineRequest,
+  QueryTimelineResponse,
+  queryTimelineResponseSchema,
+} from "../lib/schemas/query-timeline.js";
+import {
   ScratchpadReadRequest,
   ScratchpadWriteRequest,
   ScratchpadEditRequest,
@@ -100,11 +105,6 @@ import {
   scratchpadResponseSchema,
   scratchpadEditResponseSchema,
 } from "../lib/schemas/scratchpad.js";
-import {
-  QueryTimelineRequest,
-  QueryTimelineResponse,
-  queryTimelineResponseSchema,
-} from "../lib/schemas/query-timeline.js";
 import {
   SummarizeRequest,
   SummarizeResponse,

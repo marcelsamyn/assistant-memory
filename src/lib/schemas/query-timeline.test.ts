@@ -1,8 +1,8 @@
-import { describe, it, expect } from "vitest";
 import {
   queryTimelineRequestSchema,
   queryTimelineResponseSchema,
 } from "./query-timeline";
+import { describe, it, expect } from "vitest";
 
 describe("queryTimelineRequestSchema", () => {
   it("accepts minimal request with only userId", () => {
