@@ -1,5 +1,4 @@
 import { addDays, formatISO } from "date-fns";
-import { safeToISOString } from "~/lib/safe-date";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import type { DrizzleDB } from "~/db";
@@ -8,6 +7,7 @@ import { crateTextCompletion, performStructuredAnalysis } from "~/lib/ai";
 import { generateEmbeddings } from "~/lib/embeddings";
 import { formatNodesForPrompt } from "~/lib/formatting";
 import { findSimilarNodes, type NodeSearchResult } from "~/lib/graph";
+import { safeToISOString } from "~/lib/safe-date";
 import { NodeTypeEnum } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";

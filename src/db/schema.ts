@@ -60,7 +60,9 @@ export const nodeMetadata = pgTable(
     canonicalLabel: text("canonical_label"),
     description: text(),
     additionalData: jsonb(),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [
     index("node_metadata_node_id_idx").on(table.nodeId),
@@ -316,8 +318,12 @@ export const scratchpads = pgTable(
       .references(() => users.id)
       .notNull(),
     content: text().notNull().default(""),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [
     unique().on(table.userId),
