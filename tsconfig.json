@@ -13,9 +13,11 @@
     "noUncheckedIndexedAccess": true,
     "useUnknownInCatchVariables": true,
     "exactOptionalPropertyTypes": true,
+    "skipLibCheck": true,
     "allowUnreachableCode": false,
     "allowUnusedLabels": false,
     "isolatedModules": true,
     "checkJs": true
-  }
+  },
+  "exclude": ["node_modules", "dist", ".output", ".cache", "eslint.config.mjs"]
 }
