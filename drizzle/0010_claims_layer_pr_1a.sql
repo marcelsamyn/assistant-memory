@@ -72,11 +72,11 @@ END $$;
 ALTER TABLE "claims" ADD COLUMN IF NOT EXISTS "object_value" text;--> statement-breakpoint
 ALTER TABLE "claims" ADD COLUMN IF NOT EXISTS "statement" text;--> statement-breakpoint
 ALTER TABLE "claims" ADD COLUMN IF NOT EXISTS "source_id" text;--> statement-breakpoint
-ALTER TABLE "claims" ADD COLUMN IF NOT EXISTS "stated_at" timestamp;--> statement-breakpoint
-ALTER TABLE "claims" ADD COLUMN IF NOT EXISTS "valid_from" timestamp;--> statement-breakpoint
-ALTER TABLE "claims" ADD COLUMN IF NOT EXISTS "valid_to" timestamp;--> statement-breakpoint
+ALTER TABLE "claims" ADD COLUMN IF NOT EXISTS "stated_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "claims" ADD COLUMN IF NOT EXISTS "valid_from" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "claims" ADD COLUMN IF NOT EXISTS "valid_to" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "claims" ADD COLUMN IF NOT EXISTS "status" varchar(30) DEFAULT 'active';--> statement-breakpoint
-ALTER TABLE "claims" ADD COLUMN IF NOT EXISTS "updated_at" timestamp DEFAULT now();--> statement-breakpoint
+ALTER TABLE "claims" ADD COLUMN IF NOT EXISTS "updated_at" timestamp with time zone DEFAULT now();--> statement-breakpoint
 
 -- Rename legacy `created_at` default column if the snapshot still tracks it
 -- unqualified; `created_at` already exists with correct defaults, nothing to do.
@@ -92,6 +92,30 @@ BEGIN
   ) THEN
     ALTER TABLE "claims"
       DROP CONSTRAINT "edges_sourceNodeId_targetNodeId_edge_type_unique";
+  END IF;
+END $$;
+--> statement-breakpoint
+
+-- Rename inherited FK constraints so live database names match the Drizzle
+-- snapshot generated after the table/column renames.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'edges_user_id_users_id_fk')
+     AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'claims_user_id_users_id_fk') THEN
+    ALTER TABLE "claims"
+      RENAME CONSTRAINT "edges_user_id_users_id_fk" TO "claims_user_id_users_id_fk";
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'edges_source_node_id_nodes_id_fk')
+     AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'claims_subject_node_id_nodes_id_fk') THEN
+    ALTER TABLE "claims"
+      RENAME CONSTRAINT "edges_source_node_id_nodes_id_fk" TO "claims_subject_node_id_nodes_id_fk";
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'edges_target_node_id_nodes_id_fk')
+     AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'claims_object_node_id_nodes_id_fk') THEN
+    ALTER TABLE "claims"
+      RENAME CONSTRAINT "edges_target_node_id_nodes_id_fk" TO "claims_object_node_id_nodes_id_fk";
   END IF;
 END $$;
 --> statement-breakpoint
@@ -232,7 +256,7 @@ CREATE INDEX IF NOT EXISTS "claims_source_id_idx"
   ON "claims" ("source_id");--> statement-breakpoint
 
 -- 11. Rename `edge_embeddings` → `claim_embeddings`; rename the FK column
---     `edge_id` → `claim_id`.
+--     `edge_id` → `claim_id`; drop the legacy FK before TypeID rewrites.
 DO $$
 BEGIN
   IF EXISTS (
@@ -260,17 +284,6 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'edge_embeddings_edge_id_edges_id_fk') THEN
     ALTER TABLE "claim_embeddings"
       DROP CONSTRAINT "edge_embeddings_edge_id_edges_id_fk";
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.table_constraints
-    WHERE table_schema = 'public' AND table_name = 'claim_embeddings'
-      AND constraint_name = 'claim_embeddings_claim_id_claims_id_fk'
-  ) THEN
-    ALTER TABLE "claim_embeddings"
-      ADD CONSTRAINT "claim_embeddings_claim_id_claims_id_fk"
-      FOREIGN KEY ("claim_id") REFERENCES "public"."claims"("id")
-      ON DELETE CASCADE ON UPDATE NO ACTION;
   END IF;
 END $$;
 --> statement-breakpoint
@@ -302,6 +315,21 @@ UPDATE "claim_embeddings"
 UPDATE "claim_embeddings"
    SET "claim_id" = 'claim_' || substring("claim_id" from 6)
  WHERE "claim_id" LIKE 'edge_%';--> statement-breakpoint
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints
+    WHERE table_schema = 'public' AND table_name = 'claim_embeddings'
+      AND constraint_name = 'claim_embeddings_claim_id_claims_id_fk'
+  ) THEN
+    ALTER TABLE "claim_embeddings"
+      ADD CONSTRAINT "claim_embeddings_claim_id_claims_id_fk"
+      FOREIGN KEY ("claim_id") REFERENCES "public"."claims"("id")
+      ON DELETE CASCADE ON UPDATE NO ACTION;
+  END IF;
+END $$;
+--> statement-breakpoint
 
 -- 13. Aliases: add normalized_alias_text + UNIQUE constraint.
 ALTER TABLE "aliases"

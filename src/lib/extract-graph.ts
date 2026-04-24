@@ -6,6 +6,7 @@ import {
 import { formatNodesForPrompt } from "./formatting";
 import { findSimilarNodes, findOneHopNodes, findNodesByType } from "./graph";
 import { normalizeLabel } from "./label";
+import { safeToISOString } from "./safe-date";
 import { TemporaryIdMapper } from "./temporary-id-mapper";
 import { and, eq, inArray } from "drizzle-orm";
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
@@ -105,7 +106,7 @@ export async function extractGraph({
       type: node.type,
       label: node.label,
       description: node.description,
-      timestamp: node.timestamp.toISOString(),
+      timestamp: safeToISOString(node.timestamp),
     });
   }
 

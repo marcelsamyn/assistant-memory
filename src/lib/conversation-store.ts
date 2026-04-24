@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DrizzleDB } from "~/db";
+import { safeToDate } from "~/lib/safe-date";
 import { TypeId } from "~/types/typeid";
 
 // Schema to parse stored metadata for conversation messages
@@ -57,7 +58,7 @@ export async function loadConversationTurns(
       role: meta.role,
       name: meta.name,
       content: meta.rawContent,
-      timestamp: new Date(meta.timestamp),
+      timestamp: safeToDate(meta.timestamp),
     };
   });
 }

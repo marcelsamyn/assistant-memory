@@ -1,9 +1,9 @@
-import { formatISO } from "date-fns";
 import type {
   NodeSearchResult,
   EdgeSearchResult,
   OneHopNode,
 } from "~/lib/graph";
+import { safeFormatISO } from "~/lib/safe-date";
 
 interface Message {
   content: string;
@@ -19,7 +19,7 @@ export function formatConversationAsXml(messages: Message[]): string {
   return messages
     .map(
       (message, index) =>
-        `<message id="${index}" role="${message.role}" ${message.name ? `name="${message.name}"` : ""} timestamp="${formatISO(message.timestamp)}">
+        `<message id="${index}" role="${message.role}" ${message.name ? `name="${message.name}"` : ""} timestamp="${safeFormatISO(message.timestamp)}">
       <content>${message.content.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</content>
     </message>`,
     )
@@ -102,7 +102,7 @@ export type SearchResults = SearchResultItem[];
 
 // Helpers for formatting individual result items
 function formatSearchNode(node: NodeSearchResult): string {
-  return `<node id="${escapeXml(node.id)}" type="${escapeXml(node.type)}" timestamp="${formatISO(node.timestamp)}">
+  return `<node id="${escapeXml(node.id)}" type="${escapeXml(node.type)}" timestamp="${safeFormatISO(node.timestamp)}">
   <label>${escapeXml(node.label ?? "")}</label>
   <description>${escapeXml(node.description ?? "")}</description>
 </node>`;
@@ -111,7 +111,7 @@ function formatSearchNode(node: NodeSearchResult): string {
 function formatSearchEdge(edge: EdgeSearchResult): string {
   return `<edge id="${escapeXml(edge.id)}" sourceNodeId="${escapeXml(edge.sourceNodeId)}" targetNodeId="${escapeXml(edge.targetNodeId)}" from="${escapeXml(edge.sourceLabel ?? "")}" to="${escapeXml(
     edge.targetLabel ?? "",
-  )}" type="${escapeXml(edge.edgeType)}" timestamp="${formatISO(edge.timestamp)}">
+  )}" type="${escapeXml(edge.edgeType)}" timestamp="${safeFormatISO(edge.timestamp)}">
   <description>${escapeXml(edge.description ?? "")}</description>
 </edge>`;
 }
@@ -119,7 +119,7 @@ function formatSearchEdge(edge: EdgeSearchResult): string {
 function formatSearchConnection(conn: OneHopNode): string {
   return `<connected-node id="${escapeXml(conn.id)}" sourceNodeId="${escapeXml(conn.edgeSourceId)}" targetNodeId="${escapeXml(conn.edgeTargetId)}" from="${escapeXml(conn.sourceLabel ?? "")}" to="${escapeXml(
     conn.targetLabel ?? "",
-  )}" type="${escapeXml(conn.edgeType)}" timestamp="${formatISO(conn.timestamp)}">
+  )}" type="${escapeXml(conn.edgeType)}" timestamp="${safeFormatISO(conn.timestamp)}">
   <label>${escapeXml(conn.label ?? "")}</label>
   <description>${escapeXml(conn.description ?? "")}</description>
 </connected-node>`;
