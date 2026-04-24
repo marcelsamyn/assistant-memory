@@ -6,9 +6,11 @@ const TYPE_ID_LENGTH = 26;
 export const ID_TYPE_NAMES = [
   "node",
   "edge",
+  "claim",
   "node_metadata",
   "node_embedding",
   "edge_embedding",
+  "claim_embedding",
   "source",
   "alias",
   "source_link",
@@ -21,9 +23,11 @@ export const ID_TYPE_PREFIXES: Record<(typeof ID_TYPE_NAMES)[number], string> =
   {
     node: "node",
     edge: "edge",
+    claim: "claim",
     node_metadata: "nmeta",
     node_embedding: "nemb",
     edge_embedding: "eemb",
+    claim_embedding: "cemb",
     source: "src",
     alias: "alias",
     source_link: "sln",
