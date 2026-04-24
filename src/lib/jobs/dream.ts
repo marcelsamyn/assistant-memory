@@ -7,6 +7,7 @@ import { crateTextCompletion, performStructuredAnalysis } from "~/lib/ai";
 import { generateEmbeddings } from "~/lib/embeddings";
 import { formatNodesForPrompt } from "~/lib/formatting";
 import { findSimilarNodes, type NodeSearchResult } from "~/lib/graph";
+import { safeToISOString } from "~/lib/safe-date";
 import { NodeTypeEnum } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
@@ -91,7 +92,7 @@ async function handleTopic(
     label: n.label,
     description: n.description,
     tempId: n.id,
-    timestamp: n.timestamp.toISOString(),
+    timestamp: safeToISOString(n.timestamp),
   }));
   const context = formatNodesForPrompt(nodesForPrompt);
   const dream = await generateDreamContent(

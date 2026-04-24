@@ -3,6 +3,7 @@ import { formatConversationAsXml } from "../formatting";
 import { ensureSourceNode } from "../ingestion/ensure-source-node";
 import { ensureUser } from "../ingestion/ensure-user";
 import { insertNewSources } from "../ingestion/insert-new-sources";
+import { safeToISOString } from "../safe-date";
 import { z } from "zod";
 import { DrizzleDB } from "~/db";
 import { type ConversationTurn } from "~/lib/conversation-store";
@@ -106,7 +107,7 @@ async function initializeConversation(
         rawContent: m.content,
         role: m.role,
         name: m.name,
-        timestamp: m.timestamp.toISOString(),
+        timestamp: safeToISOString(m.timestamp),
       },
     })),
   });

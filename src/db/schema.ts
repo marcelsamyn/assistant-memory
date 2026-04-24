@@ -27,7 +27,7 @@ export const nodes = pgTable(
       .references(() => users.id)
       .notNull(),
     nodeType: varchar("node_type", { length: 50 }).notNull().$type<NodeType>(),
-    createdAt: timestamp().defaultNow().notNull(),
+    createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
     // Index on (userId, nodeType) might be useful
   },
   (table) => [
@@ -60,7 +60,9 @@ export const nodeMetadata = pgTable(
     canonicalLabel: text("canonical_label"),
     description: text(),
     additionalData: jsonb(),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [
     index("node_metadata_node_id_idx").on(table.nodeId),
@@ -96,7 +98,7 @@ export const edges = pgTable(
     // Temporal aspect for relationships
     // validFrom: timestamp('valid_from'),
     // validTo: timestamp('valid_to'),
-    createdAt: timestamp().defaultNow().notNull(),
+    createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
     // Indexes on (userId, sourceNodeId), (userId, targetNodeId), (userId, edgeType)
   },
   (table) => [
@@ -139,7 +141,7 @@ export const nodeEmbeddings = pgTable(
       .notNull(),
     embedding: vector("embedding", { dimensions: 1024 }).notNull(), // Dimension depends on model
     modelName: varchar("model_name", { length: 100 }).notNull(),
-    createdAt: timestamp().defaultNow().notNull(),
+    createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
     // Unique constraint on (nodeId, modelName)? Or allow multiple embeddings per node? Let's start with unique.
   },
   (table) => [
@@ -167,7 +169,7 @@ export const edgeEmbeddings = pgTable(
       .notNull(),
     embedding: vector("embedding", { dimensions: 1024 }).notNull(), // Same dimension as node embeddings
     modelName: varchar("model_name", { length: 100 }).notNull(),
-    createdAt: timestamp().defaultNow().notNull(),
+    createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
     index("edge_embeddings_embedding_idx").using(
@@ -196,7 +198,7 @@ export const aliases = pgTable("aliases", {
   canonicalNodeId: typeId("node")
     .references(() => nodes.id, { onDelete: "cascade" })
     .notNull(), // The node this alias refers to
-  createdAt: timestamp().defaultNow().notNull(),
+  createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
   // Index on (userId, aliasText) for fast lookups
   // Index on (userId, canonicalNodeId)
 });
@@ -226,12 +228,12 @@ export const sources = pgTable(
     parentSource: typeId("source"),
 
     metadata: jsonb(), // e.g., Notion page title, chat participants
-    lastIngestedAt: timestamp(),
+    lastIngestedAt: timestamp({ withTimezone: true }),
     status: varchar("status", { length: 20 })
       .default("pending")
       .$type<SourceStatus>(), // e.g., 'pending', 'processing', 'completed', 'failed', 'summarized'
-    createdAt: timestamp().defaultNow().notNull(),
-    deletedAt: timestamp("deleted_at"),
+    createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     contentType: varchar("content_type", { length: 100 }),
     contentLength: integer("content_length"),
   },
@@ -268,7 +270,7 @@ export const sourceLinks = pgTable(
       .notNull(), // The ID of the node or edge
     // Optional: more specific location within the source (e.g., block ID, line number, timestamp in audio)
     specificLocation: text(),
-    createdAt: timestamp().defaultNow().notNull(),
+    createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
     unique().on(table.sourceId, table.nodeId),
@@ -296,8 +298,8 @@ export const userProfiles = pgTable("user_profiles", {
     .references(() => users.id)
     .notNull(),
   content: text().notNull(), // The descriptive text
-  lastUpdatedAt: timestamp().defaultNow().notNull(),
-  createdAt: timestamp().defaultNow().notNull(),
+  lastUpdatedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
   // Index on (userId)
 });
 
@@ -316,8 +318,12 @@ export const scratchpads = pgTable(
       .references(() => users.id)
       .notNull(),
     content: text().notNull().default(""),
-    updatedAt: timestamp("updated_at").defaultNow().notNull(),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [
     unique().on(table.userId),
