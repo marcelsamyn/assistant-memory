@@ -1,5 +1,5 @@
 import { typeIdSchema } from "../../types/typeid.js";
-import { queryGraphNodeSchema, queryGraphEdgeSchema } from "./query-graph.js";
+import { queryGraphNodeSchema, queryGraphClaimSchema } from "./query-graph.js";
 import { z } from "zod";
 
 export const nodeNeighborhoodRequestSchema = z.object({
@@ -10,7 +10,7 @@ export const nodeNeighborhoodRequestSchema = z.object({
 
 export const nodeNeighborhoodResponseSchema = z.object({
   nodes: z.array(queryGraphNodeSchema),
-  edges: z.array(queryGraphEdgeSchema),
+  claims: z.array(queryGraphClaimSchema),
 });
 
 export type NodeNeighborhoodRequest = z.infer<

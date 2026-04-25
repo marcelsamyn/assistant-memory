@@ -1,7 +1,7 @@
 import { generateEmbeddings } from "../embeddings";
 import {
   findOneHopNodes,
-  findSimilarEdges,
+  findSimilarClaims,
   findSimilarNodes,
   fetchSourceIdsForNodes,
 } from "../graph";
@@ -30,7 +30,7 @@ export async function searchMemory(
   const embedding = embeddingsResponse.data[0]?.embedding;
   if (!embedding) throw new Error("Failed to generate embedding");
 
-  const [similarNodes, similarEdges] = await Promise.all([
+  const [similarNodes, similarClaims] = await Promise.all([
     findSimilarNodes({
       userId,
       embedding,
@@ -38,7 +38,7 @@ export async function searchMemory(
       excludeNodeTypes,
       minimumSimilarity: 0.4,
     }),
-    findSimilarEdges({
+    findSimilarClaims({
       userId,
       embedding,
       limit,
@@ -48,7 +48,11 @@ export async function searchMemory(
 
   const nodeIds = new Set([
     ...similarNodes.map((node) => node.id),
-    ...similarEdges.flatMap((edge) => [edge.sourceNodeId, edge.targetNodeId]),
+    ...similarClaims.flatMap((claim) =>
+      claim.objectNodeId
+        ? [claim.subjectNodeId, claim.objectNodeId]
+        : [claim.subjectNodeId],
+    ),
   ]);
 
   const connections = await findOneHopNodes(db, userId, Array.from(nodeIds));
@@ -77,11 +81,9 @@ export async function searchMemory(
         items: similarNodesWithSources,
         toDocument: (n) => `${n.label}: ${n.description}`,
       },
-      similarEdges: {
-        items: similarEdges,
-        toDocument: (e) =>
-          `${e.sourceLabel ?? ""} -> ${e.targetLabel ?? ""}: ${e.edgeType}` +
-          (e.description ? `: ${e.description}` : ""),
+      similarClaims: {
+        items: similarClaims,
+        toDocument: (e) => `${e.predicate}: ${e.statement}`,
       },
       connections: {
         items: connectionsWithSources,

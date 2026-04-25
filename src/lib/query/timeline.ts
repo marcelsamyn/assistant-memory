@@ -4,7 +4,7 @@ import {
 } from "../schemas/query-timeline";
 import { format, subDays } from "date-fns";
 import { and, eq, or, gte, lte, desc, inArray, sql, count } from "drizzle-orm";
-import { edges, nodeMetadata, nodes } from "~/db/schema";
+import { claims, nodeMetadata, nodes } from "~/db/schema";
 import { NodeTypeEnum } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
@@ -88,44 +88,45 @@ export async function queryTimeline(
     .select({
       dayNodeId: sql<TypeId<"node">>`
         CASE
-          WHEN ${inArray(edges.sourceNodeId, dayNodeIds)}
-            THEN ${edges.sourceNodeId}
-          ELSE ${edges.targetNodeId}
+          WHEN ${inArray(claims.subjectNodeId, dayNodeIds)}
+            THEN ${claims.subjectNodeId}
+          ELSE ${claims.objectNodeId}
         END
       `.as("day_node_id"),
       id: nodes.id,
       nodeType: nodes.nodeType,
       label: nodeMetadata.label,
       description: nodeMetadata.description,
-      edgeType: edges.edgeType,
+      predicate: claims.predicate,
       createdAt: nodes.createdAt,
     })
-    .from(edges)
+    .from(claims)
     .innerJoin(
       nodes,
       eq(
         nodes.id,
         sql`CASE
-          WHEN ${inArray(edges.sourceNodeId, dayNodeIds)}
-            THEN ${edges.targetNodeId}
-          ELSE ${edges.sourceNodeId}
+          WHEN ${inArray(claims.subjectNodeId, dayNodeIds)}
+            THEN ${claims.objectNodeId}
+          ELSE ${claims.subjectNodeId}
         END`,
       ),
     )
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
     .where(
       and(
-        eq(edges.userId, userId),
+        eq(claims.userId, userId),
+        eq(claims.status, "active"),
         eq(nodes.userId, userId),
         or(
-          inArray(edges.sourceNodeId, dayNodeIds),
-          inArray(edges.targetNodeId, dayNodeIds),
+          inArray(claims.subjectNodeId, dayNodeIds),
+          inArray(claims.objectNodeId, dayNodeIds),
         ),
         // Exclude the day nodes themselves from results
         sql`CASE
-          WHEN ${inArray(edges.sourceNodeId, dayNodeIds)}
-            THEN ${edges.targetNodeId}
-          ELSE ${edges.sourceNodeId}
+          WHEN ${inArray(claims.subjectNodeId, dayNodeIds)}
+            THEN ${claims.objectNodeId}
+          ELSE ${claims.subjectNodeId}
         END NOT IN (${sql.join(
           dayNodeIds.map((id) => sql`${id}`),
           sql`, `,
@@ -183,7 +184,7 @@ export async function queryTimeline(
         label: r.label,
         description: r.description,
         nodeType: r.nodeType,
-        edgeType: r.edgeType,
+        predicate: r.predicate,
         createdAt: r.createdAt,
       })),
     };

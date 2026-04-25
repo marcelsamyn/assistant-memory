@@ -1,8 +1,8 @@
 import { ensureDayNode } from "../temporal";
 import { and, eq } from "drizzle-orm";
 import { DrizzleDB } from "~/db";
-import { edges, nodes, sourceLinks, NodeSelect } from "~/db/schema";
-import { EdgeTypeEnum, NodeType } from "~/types/graph";
+import { claims, nodes, sourceLinks, NodeSelect } from "~/db/schema";
+import { NodeType } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
 
 interface EnsureSourceNodeParams {
@@ -79,17 +79,18 @@ export async function ensureSourceNode({
       );
     }
 
-    // Link to day node
+    // Link to day node with a sourced relationship claim.
     const dayNodeId = await ensureDayNode(db, userId, timestamp);
-    await db
-      .insert(edges)
-      .values({
-        userId,
-        edgeType: EdgeTypeEnum.enum.OCCURRED_ON,
-        sourceNodeId: newNode.id,
-        targetNodeId: dayNodeId,
-      })
-      .onConflictDoNothing();
+    await db.insert(claims).values({
+      userId,
+      predicate: "OCCURRED_ON",
+      subjectNodeId: newNode.id,
+      objectNodeId: dayNodeId,
+      statement: `${nodeType} source occurred on ${timestamp.toISOString().slice(0, 10)}`,
+      sourceId,
+      statedAt: timestamp,
+      status: "active",
+    });
 
     graphNode = newNode;
   }

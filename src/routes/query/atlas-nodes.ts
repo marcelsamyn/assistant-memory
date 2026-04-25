@@ -1,6 +1,6 @@
 import { and, eq, or } from "drizzle-orm";
 import { defineEventHandler } from "h3";
-import { edges } from "~/db/schema";
+import { claims } from "~/db/schema";
 import { ensureAssistantAtlasNode } from "~/lib/atlas";
 import {
   queryAtlasNodesRequestSchema,
@@ -15,26 +15,29 @@ export default defineEventHandler(async (event) => {
   const db = await useDatabase();
   const atlasNodeId = await ensureAssistantAtlasNode(db, userId, assistantId);
 
-  const edgeRows = await db
+  const claimRows = await db
     .select({
-      sourceNodeId: edges.sourceNodeId,
-      targetNodeId: edges.targetNodeId,
+      subjectNodeId: claims.subjectNodeId,
+      objectNodeId: claims.objectNodeId,
     })
-    .from(edges)
+    .from(claims)
     .where(
       and(
-        eq(edges.userId, userId),
+        eq(claims.userId, userId),
+        eq(claims.status, "active"),
         or(
-          eq(edges.sourceNodeId, atlasNodeId),
-          eq(edges.targetNodeId, atlasNodeId),
+          eq(claims.subjectNodeId, atlasNodeId),
+          eq(claims.objectNodeId, atlasNodeId),
         ),
       ),
     );
 
   const nodeIds = new Set<string>();
-  for (const row of edgeRows) {
-    if (row.sourceNodeId !== atlasNodeId) nodeIds.add(row.sourceNodeId);
-    if (row.targetNodeId !== atlasNodeId) nodeIds.add(row.targetNodeId);
+  for (const row of claimRows) {
+    if (row.subjectNodeId !== atlasNodeId) nodeIds.add(row.subjectNodeId);
+    if (row.objectNodeId && row.objectNodeId !== atlasNodeId) {
+      nodeIds.add(row.objectNodeId);
+    }
   }
 
   return queryAtlasNodesResponseSchema.parse({

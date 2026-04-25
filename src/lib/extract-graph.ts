@@ -1,7 +1,7 @@
 import { debugGraph } from "./debug-utils";
 import {
   generateAndInsertNodeEmbeddings,
-  generateAndInsertEdgeEmbeddings,
+  generateAndInsertClaimEmbeddings,
 } from "./embeddings-util";
 import { formatNodesForPrompt } from "./formatting";
 import { findSimilarNodes, findOneHopNodes, findNodesByType } from "./graph";
@@ -12,29 +12,32 @@ import { and, eq, inArray } from "drizzle-orm";
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
 import { z } from "zod";
 import { type DrizzleDB } from "~/db";
-import { edges, nodeMetadata, nodes } from "~/db/schema";
-import { EdgeTypeEnum, NodeTypeEnum, SourceType } from "~/types/graph";
+import { claims, nodeMetadata, nodes, sourceLinks } from "~/db/schema";
+import {
+  NodeTypeEnum,
+  RelationshipPredicateEnum,
+  SourceType,
+} from "~/types/graph";
 import { type TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
 const llmNodeSchema = z.object({
-  id: z.string().describe("id to reference in edges"),
+  id: z.string().describe("id to reference in claims"),
   type: NodeTypeEnum.describe("one of the allowed node types"),
   label: z.string().describe("human-readable name/title"),
   description: z.string().describe("longer text description").optional(),
 });
 type LlmOutputNode = z.infer<typeof llmNodeSchema>;
 
-const llmEdgeSchema = z.object({
-  sourceId: z.string().describe("id of staring node"),
-  targetId: z.string().describe("id of ending node"),
-  type: EdgeTypeEnum.describe("one of the allowed edge types"),
-  description: z
-    .string()
-    .describe("short description of the edge (if it represents a 'fact')")
-    .optional(),
+const llmRelationshipClaimSchema = z.object({
+  subjectId: z.string().describe("id of the subject node"),
+  objectId: z.string().describe("id of the object node"),
+  predicate: RelationshipPredicateEnum.describe(
+    "one of the allowed predicates",
+  ),
+  statement: z.string().describe("short sentence stating the sourced claim"),
 });
-type LlmOutputEdge = z.infer<typeof llmEdgeSchema>;
+type LlmOutputRelationshipClaim = z.infer<typeof llmRelationshipClaimSchema>;
 
 interface NodeForLLMPrompt {
   id: string;
@@ -63,6 +66,8 @@ interface SimilarNodeForPrompt {
 interface ExtractGraphParams {
   userId: string;
   sourceType: SourceType;
+  sourceId: TypeId<"source">;
+  statedAt: Date;
   linkedNodeId: TypeId<"node">;
   content: string;
 }
@@ -71,6 +76,8 @@ interface ExtractGraphParams {
 export async function extractGraph({
   userId,
   sourceType,
+  sourceId,
+  statedAt,
   linkedNodeId,
   content,
 }: ExtractGraphParams) {
@@ -127,7 +134,7 @@ ${
   nodesForPromptFormatting.length > 0
     ? `
 - Do NOT extract anything from the context—only from the ${sourceType} given at the end. The context is only provided to help you understand the ${sourceType} better.
-- I've provided some existing nodes that may be relevant to this ${sourceType}. If any of these nodes match entities in the ${sourceType}, use their 'tempId' (e.g., existing_person_1) in your 'nodes' or 'edges' if you refer to them. DO NOT create new nodes for these if they match.
+	- I've provided some existing nodes that may be relevant to this ${sourceType}. If any of these nodes match entities in the ${sourceType}, use their 'tempId' (e.g., existing_person_1) in your 'nodes' or 'relationshipClaims' if you refer to them. DO NOT create new nodes for these if they match.
 
 <context>
 ${formatNodesForPrompt(nodesForPromptFormatting)}
@@ -171,12 +178,11 @@ For each element, create a node with:
 - A concise label (name/title)
 - A brief description providing context (optional)
 
-Then, link these nodes with edges.
-- Edges are mainly used to represent "facts" about nodes. For example, if you have a Person node and an Event node, you can create an edge from the Person node to the Event node to represent the fact that the person participated in the event.
-- ONLY create edges for facts explicitly stated by the user, not assistant assumptions
-- Edges are unique by source node, target node, and edge type
-- In the edge description for facts, give a succinct description of the fact. Add some minimal context to aid retrieval, but keep it concise.
-- Ideally, edges link to already-existing nodes. If the node isn't existing, create it.
+	Then, link these nodes with relationship claims.
+	- Claims represent sourced facts about nodes. For example, if you have a Person node and an Event node, create a claim from the Person node to the Event node with predicate PARTICIPATED_IN.
+	- ONLY create claims for facts explicitly stated by the user, not assistant assumptions.
+	- In the claim statement, write one concise sentence that can stand alone as the sourced assertion.
+	- Ideally, edges link to already-existing nodes. If the node isn't existing, create it.
 
 Rules of the graph:
 - Nodes are unique by type and label
@@ -187,7 +193,7 @@ Rules of the graph:
 - Don't create nodes for things that should be represented by edges.
 - Avoid redundant or duplicate information - if a fact is already represented, don't create another node or edge for it
 
-Then create edges between these nodes to represent their relationships using the appropriate edge types.
+	Then create relationshipClaims between these nodes to represent their relationships using the appropriate predicates.
 
 Focus on extracting the most significant and meaningful information that the USER provided. Quality and accuracy are more important than quantity.`;
 
@@ -197,7 +203,7 @@ Focus on extracting the most significant and meaningful information that the USE
     response_format: zodResponseFormat(
       z.object({
         nodes: z.array(llmNodeSchema),
-        edges: z.array(llmEdgeSchema),
+        relationshipClaims: z.array(llmRelationshipClaimSchema),
       }),
       "subgraph",
     ),
@@ -209,7 +215,9 @@ Focus on extracting the most significant and meaningful information that the USE
   }
 
   const uniqueParsedLlmNodes = _deduplicateLlmNodes(parsedLlmOutput.nodes);
-  const uniqueParsedLlmEdges = _deduplicateLlmEdges(parsedLlmOutput.edges);
+  const uniqueParsedLlmClaims = _deduplicateLlmClaims(
+    parsedLlmOutput.relationshipClaims,
+  );
 
   const detailsOfNewlyCreatedNodes = await _processAndInsertNewNodes(
     db,
@@ -219,56 +227,45 @@ Focus on extracting the most significant and meaningful information that the USE
     nodeLabels,
   );
 
-  // Create edges linking new nodes to the provided linkedNodeId
-  if (linkedNodeId && detailsOfNewlyCreatedNodes.length > 0) {
+  if (detailsOfNewlyCreatedNodes.length > 0) {
     await db
-      .insert(edges)
+      .insert(sourceLinks)
       .values(
         detailsOfNewlyCreatedNodes.map((newNode) => ({
-          userId,
-          sourceNodeId: newNode.id,
-          targetNodeId: linkedNodeId,
-          edgeType: EdgeTypeEnum.enum.MENTIONED_IN,
-          description: null,
+          sourceId,
+          nodeId: newNode.id,
         })),
       )
       .onConflictDoNothing();
   }
 
-  const insertedEdgeRecords = await _processAndInsertLlmEdges(
+  const insertedClaimRecords = await _processAndInsertLlmClaims(
     db,
     userId,
-    uniqueParsedLlmEdges,
+    sourceId,
+    statedAt,
+    uniqueParsedLlmClaims,
     idMap,
   );
 
-  const edgesToEmbed = insertedEdgeRecords
-    .map((edgeRecord) => {
-      const sourceLabel = nodeLabels.get(edgeRecord.sourceNodeId);
-      const targetLabel = nodeLabels.get(edgeRecord.targetNodeId);
-
-      if (!sourceLabel || !targetLabel || !edgeRecord.description) return null;
-
-      return {
-        edgeId: edgeRecord.id,
-        edgeType: edgeRecord.edgeType,
-        description: edgeRecord.description,
-        sourceLabel,
-        targetLabel,
-      };
-    })
-    .filter((e): e is NonNullable<typeof e> => e !== null);
+  const claimsToEmbed = insertedClaimRecords.map((claimRecord) => ({
+    claimId: claimRecord.id,
+    predicate: claimRecord.predicate,
+    statement: claimRecord.statement,
+    status: claimRecord.status,
+    statedAt: claimRecord.statedAt,
+  }));
 
   await Promise.all([
-    generateAndInsertEdgeEmbeddings(db, edgesToEmbed),
+    generateAndInsertClaimEmbeddings(db, claimsToEmbed),
     generateAndInsertNodeEmbeddings(db, detailsOfNewlyCreatedNodes),
   ]);
 
-  debugGraph(detailsOfNewlyCreatedNodes, insertedEdgeRecords);
+  debugGraph(detailsOfNewlyCreatedNodes, insertedClaimRecords);
 
   return {
     newNodesCreated: detailsOfNewlyCreatedNodes.length,
-    edgesCreated: insertedEdgeRecords.length,
+    claimsCreated: insertedClaimRecords.length,
   };
 }
 
@@ -281,12 +278,14 @@ function _deduplicateLlmNodes(llmNodes: LlmOutputNode[]): LlmOutputNode[] {
   });
 }
 
-function _deduplicateLlmEdges(llmEdges: LlmOutputEdge[]): LlmOutputEdge[] {
-  const seenEdgeKeys = new Set<string>();
-  return llmEdges.filter((e) => {
-    const key = `${e.sourceId}|${e.targetId}|${e.type}`;
-    if (seenEdgeKeys.has(key)) return false;
-    seenEdgeKeys.add(key);
+function _deduplicateLlmClaims(
+  llmClaims: LlmOutputRelationshipClaim[],
+): LlmOutputRelationshipClaim[] {
+  const seenClaimKeys = new Set<string>();
+  return llmClaims.filter((claim) => {
+    const key = `${claim.subjectId}|${claim.objectId}|${claim.predicate}|${claim.statement}`;
+    if (seenClaimKeys.has(key)) return false;
+    seenClaimKeys.add(key);
     return true;
   });
 }
@@ -431,45 +430,48 @@ async function _processAndInsertNewNodes(
   return detailsOfNewlyCreatedNodes;
 }
 
-async function _processAndInsertLlmEdges(
+async function _processAndInsertLlmClaims(
   db: DrizzleDB,
   userId: string,
-  uniqueParsedLlmEdges: LlmOutputEdge[],
+  sourceId: TypeId<"source">,
+  statedAt: Date,
+  uniqueParsedLlmClaims: LlmOutputRelationshipClaim[],
   idMap: Map<string, TypeId<"node">>,
-): Promise<Array<typeof edges.$inferSelect>> {
-  const edgeInserts: Array<typeof edges.$inferInsert> = [];
+): Promise<Array<typeof claims.$inferSelect>> {
+  const claimInserts: Array<typeof claims.$inferInsert> = [];
 
-  for (const llmEdge of uniqueParsedLlmEdges) {
-    const sourceNodeId = idMap.get(llmEdge.sourceId);
-    const targetNodeId = idMap.get(llmEdge.targetId);
+  for (const llmClaim of uniqueParsedLlmClaims) {
+    const subjectNodeId = idMap.get(llmClaim.subjectId);
+    const objectNodeId = idMap.get(llmClaim.objectId);
 
-    if (!sourceNodeId || !targetNodeId) {
+    if (!subjectNodeId || !objectNodeId) {
       console.warn(
-        `Skipping edge with invalid node references: ${llmEdge.sourceId} -> ${llmEdge.targetId}`,
+        `Skipping claim with invalid node references: ${llmClaim.subjectId} -> ${llmClaim.objectId}`,
       );
       continue;
     }
 
-    edgeInserts.push({
+    claimInserts.push({
       userId,
-      sourceNodeId,
-      targetNodeId,
-      edgeType: llmEdge.type,
-      description: llmEdge.description,
+      subjectNodeId,
+      objectNodeId,
+      predicate: llmClaim.predicate,
+      statement: llmClaim.statement,
+      description: llmClaim.statement,
+      sourceId,
+      statedAt,
+      status: "active",
     });
   }
 
-  if (edgeInserts.length === 0) {
+  if (claimInserts.length === 0) {
     return [];
   }
 
-  const insertedEdgeRecords = await db
-    .insert(edges)
-    .values(edgeInserts)
-    .onConflictDoNothing({
-      target: [edges.sourceNodeId, edges.targetNodeId, edges.edgeType],
-    })
+  const insertedClaimRecords = await db
+    .insert(claims)
+    .values(claimInserts)
     .returning();
 
-  return insertedEdgeRecords;
+  return insertedClaimRecords;
 }

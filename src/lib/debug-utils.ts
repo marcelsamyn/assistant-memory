@@ -9,7 +9,7 @@ export function debug(...args: unknown[]) {
 }
 
 /**
- * Pretty-print nodes and edges for debugging.
+ * Pretty-print nodes and claims for debugging.
  */
 export function debugGraph<
   N extends {
@@ -19,12 +19,12 @@ export function debugGraph<
     nodeType: unknown;
   },
   E extends {
-    sourceNodeId: unknown;
-    targetNodeId: unknown;
-    edgeType: unknown;
-    description?: string | undefined | null;
+    subjectNodeId: unknown;
+    objectNodeId?: unknown;
+    predicate: unknown;
+    statement: string;
   },
->(nodes: N[], edges: E[]) {
+>(nodes: N[], claims: E[]) {
   if (!env.DEBUG_LOGS) return;
   console.group("🪵 Debug Graph 🔍");
   console.group("Nodes");
@@ -34,10 +34,10 @@ export function debugGraph<
     ),
   );
   console.groupEnd();
-  console.group("Edges");
-  edges.forEach((e) =>
+  console.group("Claims");
+  claims.forEach((claim) =>
     console.log(
-      `• ${e.sourceNodeId} → ${e.targetNodeId} (${e.edgeType}): ${e.description}`,
+      `• ${claim.subjectNodeId} → ${claim.objectNodeId ?? "(value)"} (${claim.predicate}): ${claim.statement}`,
     ),
   );
   console.groupEnd();

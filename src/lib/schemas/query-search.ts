@@ -1,4 +1,8 @@
-import { EdgeTypeEnum, NodeTypeEnum } from "../../types/graph.js";
+import {
+  ClaimStatusEnum,
+  NodeTypeEnum,
+  PredicateEnum,
+} from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
 import { rerankResultItemSchema } from "../schemas/rerank.js";
 import { z } from "zod";
@@ -25,14 +29,19 @@ export const nodeSearchResultSchema = z.object({
   sourceIds: z.array(z.string()).optional(),
 });
 
-export const edgeSearchResultSchema = z.object({
-  id: typeIdSchema("edge"),
-  sourceNodeId: typeIdSchema("node"),
-  targetNodeId: typeIdSchema("node"),
-  sourceLabel: z.string().nullable(),
-  targetLabel: z.string().nullable(),
-  edgeType: EdgeTypeEnum,
+export const claimSearchResultSchema = z.object({
+  id: typeIdSchema("claim"),
+  subjectNodeId: typeIdSchema("node"),
+  objectNodeId: typeIdSchema("node").nullable(),
+  objectValue: z.string().nullable(),
+  subjectLabel: z.string().nullable(),
+  objectLabel: z.string().nullable(),
+  predicate: PredicateEnum,
+  statement: z.string(),
   description: z.string().nullable(),
+  sourceId: typeIdSchema("source"),
+  status: ClaimStatusEnum,
+  statedAt: z.coerce.date(),
   similarity: z.number(),
   timestamp: z.coerce.date(),
 });
@@ -43,11 +52,12 @@ export const oneHopNodeSchema = z.object({
   timestamp: z.coerce.date(),
   label: z.string().nullable(),
   description: z.string().nullable(),
-  edgeSourceId: typeIdSchema("node"),
-  edgeTargetId: typeIdSchema("node"),
-  edgeType: EdgeTypeEnum,
-  sourceLabel: z.string().nullable(),
-  targetLabel: z.string().nullable(),
+  claimSubjectId: typeIdSchema("node"),
+  claimObjectId: typeIdSchema("node"),
+  predicate: PredicateEnum,
+  statement: z.string(),
+  subjectLabel: z.string().nullable(),
+  objectLabel: z.string().nullable(),
   sourceIds: z.array(z.string()).optional(),
 });
 
@@ -56,8 +66,8 @@ export const searchResultItemSchema = z.discriminatedUnion("group", [
   rerankResultItemSchema(nodeSearchResultSchema).extend({
     group: z.literal("similarNodes"),
   }),
-  rerankResultItemSchema(edgeSearchResultSchema).extend({
-    group: z.literal("similarEdges"),
+  rerankResultItemSchema(claimSearchResultSchema).extend({
+    group: z.literal("similarClaims"),
   }),
   rerankResultItemSchema(oneHopNodeSchema).extend({
     group: z.literal("connections"),

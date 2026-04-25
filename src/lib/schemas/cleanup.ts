@@ -7,7 +7,7 @@ export const cleanupRequestSchema = z.object({
   semanticNeighborLimit: z.number().int().positive().default(15),
   graphHopDepth: z.union([z.literal(1), z.literal(2)]).default(2),
   maxSubgraphNodes: z.number().int().positive().default(200),
-  maxSubgraphEdges: z.number().int().positive().default(200),
+  maxSubgraphClaims: z.number().int().positive().default(200),
 });
 
 export const cleanupResponseSchema = z.object({

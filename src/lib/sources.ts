@@ -283,3 +283,47 @@ export const sourceService = new SourceService(
   }),
   env.SOURCES_BUCKET,
 );
+
+/**
+ * Return the per-user synthetic source used for system-authored claims.
+ */
+export async function ensureSystemSource(
+  database: DrizzleDB,
+  userId: string,
+  type: Extract<SourceType, "manual" | "legacy_migration">,
+): Promise<TypeId<"source">> {
+  const externalId = `${type}:${userId}`;
+  const [inserted] = await database
+    .insert(sources)
+    .values({
+      userId,
+      type,
+      externalId,
+      status: "completed",
+      lastIngestedAt: new Date(),
+    })
+    .onConflictDoNothing({
+      target: [sources.userId, sources.type, sources.externalId],
+    })
+    .returning({ id: sources.id });
+
+  if (inserted) return inserted.id;
+
+  const [existing] = await database
+    .select({ id: sources.id })
+    .from(sources)
+    .where(
+      and(
+        eq(sources.userId, userId),
+        eq(sources.type, type),
+        eq(sources.externalId, externalId),
+      ),
+    )
+    .limit(1);
+
+  if (!existing) {
+    throw new Error(`Failed to ensure ${type} source for user ${userId}`);
+  }
+
+  return existing.id;
+}

@@ -1,4 +1,4 @@
-import { EdgeTypeEnum, NodeTypeEnum } from "../../types/graph.js";
+import { NodeTypeEnum, PredicateEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
 import { z } from "zod";
 
@@ -17,7 +17,7 @@ export const queryDayResponseNodeSchema = z.object({
     label: z.string().nullable(),
     description: z.string().nullable(),
   }),
-  edgeType: EdgeTypeEnum,
+  predicate: PredicateEnum,
 });
 
 export const queryDayResponseSchema = z.object({

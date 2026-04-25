@@ -1,8 +1,9 @@
 import { ensureUser } from "./ingestion/ensure-user";
+import { ensureSystemSource } from "./sources";
 import { and, eq } from "drizzle-orm";
 import { DrizzleDB } from "~/db";
-import { nodes, nodeMetadata, edges } from "~/db/schema";
-import { NodeTypeEnum, EdgeTypeEnum } from "~/types/graph";
+import { nodes, nodeMetadata, claims } from "~/db/schema";
+import { NodeTypeEnum } from "~/types/graph";
 import { type TypeId } from "~/types/typeid";
 
 /**
@@ -161,11 +162,16 @@ export async function ensureAssistantAtlasNode(
   await db
     .insert(nodeMetadata)
     .values({ nodeId: atlasNodeId, label: assistantId, description: "" });
-  await db.insert(edges).values({
+  const sourceId = await ensureSystemSource(db, userId, "manual");
+  await db.insert(claims).values({
     userId,
-    sourceNodeId: atlasNodeId,
-    targetNodeId: assistantNodeId,
-    edgeType: EdgeTypeEnum.enum.OWNED_BY,
+    subjectNodeId: atlasNodeId,
+    objectNodeId: assistantNodeId,
+    predicate: "OWNED_BY",
+    statement: `Atlas ${assistantId} is owned by assistant ${assistantId}.`,
+    sourceId,
+    statedAt: new Date(),
+    status: "active",
   });
   return atlasNodeId;
 }

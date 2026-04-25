@@ -1,4 +1,15 @@
 import {
+  CreateClaimRequest,
+  CreateClaimResponse,
+  createClaimResponseSchema,
+  DeleteClaimRequest,
+  DeleteClaimResponse,
+  deleteClaimResponseSchema,
+  UpdateClaimRequest,
+  UpdateClaimResponse,
+  updateClaimResponseSchema,
+} from "../lib/schemas/claim.js";
+import {
   CleanupRequest,
   CleanupResponse,
   cleanupResponseSchema,
@@ -8,17 +19,6 @@ import {
   DreamResponse,
   dreamResponseSchema,
 } from "../lib/schemas/dream.js";
-import {
-  CreateEdgeRequest,
-  CreateEdgeResponse,
-  createEdgeResponseSchema,
-  DeleteEdgeRequest,
-  DeleteEdgeResponse,
-  deleteEdgeResponseSchema,
-  UpdateEdgeRequest,
-  UpdateEdgeResponse,
-  updateEdgeResponseSchema,
-} from "../lib/schemas/edge.js";
 import {
   IngestConversationRequest,
   IngestConversationResponse,
@@ -330,29 +330,29 @@ export class MemoryClient {
     );
   }
 
-  async createEdge(payload: CreateEdgeRequest): Promise<CreateEdgeResponse> {
+  async createClaim(payload: CreateClaimRequest): Promise<CreateClaimResponse> {
     return this._fetch(
       "POST",
-      "/edge/create",
-      createEdgeResponseSchema,
+      "/claim/create",
+      createClaimResponseSchema,
       payload,
     );
   }
 
-  async deleteEdge(payload: DeleteEdgeRequest): Promise<DeleteEdgeResponse> {
+  async deleteClaim(payload: DeleteClaimRequest): Promise<DeleteClaimResponse> {
     return this._fetch(
       "POST",
-      "/edge/delete",
-      deleteEdgeResponseSchema,
+      "/claim/delete",
+      deleteClaimResponseSchema,
       payload,
     );
   }
 
-  async updateEdge(payload: UpdateEdgeRequest): Promise<UpdateEdgeResponse> {
+  async updateClaim(payload: UpdateClaimRequest): Promise<UpdateClaimResponse> {
     return this._fetch(
       "POST",
-      "/edge/update",
-      updateEdgeResponseSchema,
+      "/claim/update",
+      updateClaimResponseSchema,
       payload,
     );
   }

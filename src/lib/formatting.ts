@@ -1,6 +1,6 @@
 import type {
   NodeSearchResult,
-  EdgeSearchResult,
+  ClaimSearchResult,
   OneHopNode,
 } from "~/lib/graph";
 import { safeFormatISO } from "~/lib/safe-date";
@@ -95,7 +95,7 @@ ${xmlItems}
  */
 export type SearchResultItem =
   | { group: "similarNodes"; item: NodeSearchResult; relevance_score: number }
-  | { group: "similarEdges"; item: EdgeSearchResult; relevance_score: number }
+  | { group: "similarClaims"; item: ClaimSearchResult; relevance_score: number }
   | { group: "connections"; item: OneHopNode; relevance_score: number };
 
 export type SearchResults = SearchResultItem[];
@@ -108,19 +108,20 @@ function formatSearchNode(node: NodeSearchResult): string {
 </node>`;
 }
 
-function formatSearchEdge(edge: EdgeSearchResult): string {
-  return `<edge id="${escapeXml(edge.id)}" sourceNodeId="${escapeXml(edge.sourceNodeId)}" targetNodeId="${escapeXml(edge.targetNodeId)}" from="${escapeXml(edge.sourceLabel ?? "")}" to="${escapeXml(
-    edge.targetLabel ?? "",
-  )}" type="${escapeXml(edge.edgeType)}" timestamp="${safeFormatISO(edge.timestamp)}">
-  <description>${escapeXml(edge.description ?? "")}</description>
-</edge>`;
+function formatSearchClaim(claim: ClaimSearchResult): string {
+  return `<claim id="${escapeXml(claim.id)}" subjectNodeId="${escapeXml(claim.subjectNodeId)}" objectNodeId="${escapeXml(claim.objectNodeId ?? "")}" subject="${escapeXml(claim.subjectLabel ?? "")}" object="${escapeXml(
+    claim.objectLabel ?? claim.objectValue ?? "",
+  )}" predicate="${escapeXml(claim.predicate)}" sourceId="${escapeXml(claim.sourceId)}" status="${escapeXml(claim.status)}" statedAt="${safeFormatISO(claim.statedAt)}">
+  <statement>${escapeXml(claim.statement)}</statement>
+</claim>`;
 }
 
 function formatSearchConnection(conn: OneHopNode): string {
-  return `<connected-node id="${escapeXml(conn.id)}" sourceNodeId="${escapeXml(conn.edgeSourceId)}" targetNodeId="${escapeXml(conn.edgeTargetId)}" from="${escapeXml(conn.sourceLabel ?? "")}" to="${escapeXml(
-    conn.targetLabel ?? "",
-  )}" type="${escapeXml(conn.edgeType)}" timestamp="${safeFormatISO(conn.timestamp)}">
+  return `<connected-node id="${escapeXml(conn.id)}" subjectNodeId="${escapeXml(conn.claimSubjectId)}" objectNodeId="${escapeXml(conn.claimObjectId)}" subject="${escapeXml(conn.subjectLabel ?? "")}" object="${escapeXml(
+    conn.objectLabel ?? "",
+  )}" predicate="${escapeXml(conn.predicate)}" timestamp="${safeFormatISO(conn.timestamp)}">
   <label>${escapeXml(conn.label ?? "")}</label>
+  <statement>${escapeXml(conn.statement)}</statement>
   <description>${escapeXml(conn.description ?? "")}</description>
 </connected-node>`;
 }
@@ -140,8 +141,8 @@ export function formatSearchResultsAsXml(results: SearchResults): string {
           switch (r.group) {
             case "similarNodes":
               return formatSearchNode(r.item);
-            case "similarEdges":
-              return formatSearchEdge(r.item);
+            case "similarClaims":
+              return formatSearchClaim(r.item);
             case "connections":
               return formatSearchConnection(r.item);
             default:
@@ -171,8 +172,8 @@ export function formatSearchResultsWithIds(
             switch (r.group) {
               case "similarNodes":
                 return formatSearchNode(r.item);
-              case "similarEdges":
-                return formatSearchEdge(r.item);
+              case "similarClaims":
+                return formatSearchClaim(r.item);
               case "connections":
                 return formatSearchConnection(r.item);
               default:

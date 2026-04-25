@@ -109,13 +109,13 @@ export async function ingestDocument({
     return;
   }
 
-  const sourceNodeId = insertedSourceInternalIds[0]!;
+  const sourceId = insertedSourceInternalIds[0]!;
 
   // Ensure a graph node exists for this document source
   const documentNodeId = await ensureSourceNode({
     db,
     userId,
-    sourceId: sourceNodeId,
+    sourceId,
     timestamp,
     nodeType: NodeTypeEnum.enum.Document,
   });
@@ -124,6 +124,8 @@ export async function ingestDocument({
   await extractGraph({
     userId,
     sourceType: "document",
+    sourceId,
+    statedAt: timestamp,
     linkedNodeId: documentNodeId,
     content, // Pass the raw document content for graph extraction
   });

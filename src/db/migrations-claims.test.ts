@@ -1,25 +1,3 @@
-/**
- * Migration test for the claims-first layer (PR 1a).
- *
- * Runs the drizzle migrator against an ephemeral Postgres database,
- * seeds a synthetic pre-migration edges state, applies all migrations
- * (including the new 0009_claims_layer_pr_1a), and asserts:
- *
- * - Table/column renames landed (`edges` → `claims`, `source_node_id`
- *   → `subject_node_id`, etc.).
- * - Structural predicates (`MENTIONED_IN`, `CAPTURED_IN`, `INVALIDATED_ON`)
- *   are removed.
- * - Remaining claims are backfilled with a `legacy_migration` source,
- *   templated statement, stated_at = created_at, status = 'active',
- *   and `metadata.backfilled = true`.
- * - `edge_*` TypeIDs have been rewritten to `claim_*` / `cemb_*`.
- * - Aliases gained `normalized_alias_text` and the new UNIQUE constraint.
- * - A second application of migration 0009 is a safe no-op (idempotent).
- *
- * The test requires a reachable Postgres server on the dev docker port
- * (5431); it creates an isolated database per run so it coexists with
- * the dev server without cross-contamination.
- */
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -47,10 +25,9 @@ async function isServerReachable(): Promise<boolean> {
 }
 
 const SERVER_AVAILABLE = await isServerReachable();
-
 const describeIfServer = SERVER_AVAILABLE ? describe : describe.skip;
 
-describeIfServer("migration 0009 (claims layer, PR 1a)", () => {
+describeIfServer("migration 0010 (claims layer, PR 1a)", () => {
   const dbName = `memory_claims_mig_test_${Date.now()}_${Math.floor(
     Math.random() * 1e6,
   )}`;
@@ -65,7 +42,6 @@ describeIfServer("migration 0009 (claims layer, PR 1a)", () => {
   afterAll(async () => {
     const admin = new Client({ connectionString: adminDsn() });
     await admin.connect();
-    // Terminate any lingering connections before dropping.
     await admin.query(
       `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
        WHERE datname = $1 AND pid <> pg_backend_pid()`,
@@ -75,21 +51,14 @@ describeIfServer("migration 0009 (claims layer, PR 1a)", () => {
     await admin.end();
   });
 
-  it(
-    "applies cleanly on a seeded pre-migration edges snapshot and is idempotent on rerun",
-    async () => {
-      const client = new Client({ connectionString: dsnFor(dbName) });
-      await client.connect();
+  it("cuts over edges to sourced claims, preserves source links, and is idempotent", async () => {
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
 
-      try {
-        await client.query(`CREATE EXTENSION IF NOT EXISTS "vector"`);
+    try {
+      await client.query(`CREATE EXTENSION IF NOT EXISTS "vector"`);
 
-        // -----------------------------------------------------------------
-        // Seed a minimal pre-migration snapshot: just the shape migration
-        // 0009 needs to transform. This mirrors what migrations 0001–0008
-        // would have produced, but slimmed to the tables the test exercises.
-        // -----------------------------------------------------------------
-        await client.query(`
+      await client.query(`
           CREATE TABLE "users" ("id" text PRIMARY KEY NOT NULL);
           CREATE TABLE "nodes" (
             "id" text PRIMARY KEY NOT NULL,
@@ -122,6 +91,14 @@ describeIfServer("migration 0009 (claims layer, PR 1a)", () => {
             "content_length" integer,
             CONSTRAINT sources_user_type_external_unique
               UNIQUE ("user_id", "type", "external_id")
+          );
+          CREATE TABLE "source_links" (
+            "id" text PRIMARY KEY NOT NULL,
+            "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
+            "node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+            "specific_location" text,
+            "created_at" timestamp DEFAULT now() NOT NULL,
+            CONSTRAINT source_links_source_node_unique UNIQUE ("source_id", "node_id")
           );
           CREATE TABLE "edges" (
             "id" text PRIMARY KEY NOT NULL,
@@ -161,209 +138,252 @@ describeIfServer("migration 0009 (claims layer, PR 1a)", () => {
           );
         `);
 
-        // Seed data: one user, two nodes, three edges. One edge uses the
-        // structural predicate `MENTIONED_IN` and must disappear post-migration.
-        await client.query(`
+      await client.query(`
           INSERT INTO "users" ("id") VALUES ('user_A');
           INSERT INTO "nodes" ("id", "user_id", "node_type", "created_at")
             VALUES
-              ('node_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'user_A', 'Person',  '2026-01-01T00:00:00Z'),
-              ('node_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'user_A', 'Object',  '2026-01-01T00:00:00Z');
+              ('node_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'user_A', 'Person',       '2026-01-01T00:00:00Z'),
+              ('node_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'user_A', 'Object',       '2026-01-01T00:00:00Z'),
+              ('node_cccccccccccccccccccccccccc', 'user_A', 'Conversation', '2026-01-01T00:00:00Z');
           INSERT INTO "node_metadata" ("id", "node_id", "label")
             VALUES
               ('nmeta_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'node_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'Alice'),
-              ('nmeta_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'node_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'MacBook Pro');
+              ('nmeta_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'node_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'MacBook Pro'),
+              ('nmeta_cccccccccccccccccccccccccc', 'node_cccccccccccccccccccccccccc', 'Conversation');
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status", "created_at")
+            VALUES ('src_realconversation________', 'user_A', 'conversation', 'conv_A', 'completed', '2026-02-01T00:00:00Z');
+          INSERT INTO "source_links" ("id", "source_id", "node_id", "created_at")
+            VALUES ('sln_conversation_____________', 'src_realconversation________', 'node_cccccccccccccccccccccccccc', '2026-02-01T00:00:00Z');
           INSERT INTO "edges" ("id", "user_id", "source_node_id", "target_node_id", "edge_type", "description", "created_at")
             VALUES
-              ('edge_keepowned_________________', 'user_A', 'node_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'node_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'OWNED_BY',       'owns the laptop', '2026-02-01T00:00:00Z'),
-              ('edge_dropmention_______________', 'user_A', 'node_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'node_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'MENTIONED_IN',   NULL,              '2026-02-02T00:00:00Z'),
-              ('edge_keeptagged________________', 'user_A', 'node_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'node_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'TAGGED_WITH',    NULL,              '2026-02-03T00:00:00Z');
-          INSERT INTO "aliases" ("id", "user_id", "alias_text", "canonical_node_id")
+              ('edge_keepowned_________________', 'user_A', 'node_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'node_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'OWNED_BY',     'owns the laptop', '2026-02-01T00:00:00Z'),
+              ('edge_dropmention_______________', 'user_A', 'node_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'node_cccccccccccccccccccccccccc', 'MENTIONED_IN', NULL,              '2026-02-02T00:00:00Z'),
+              ('edge_keeptagged________________', 'user_A', 'node_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'node_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'TAGGED_WITH',  NULL,              '2026-02-03T00:00:00Z');
+          INSERT INTO "edge_embeddings" ("id", "edge_id", "embedding", "model_name")
             VALUES
-              ('alias_mbp______________________', 'user_A', '  MBP  ',       'node_bbbbbbbbbbbbbbbbbbbbbbbbbb'),
-              ('alias_macbook__________________', 'user_A', 'MacBook Pro',   'node_bbbbbbbbbbbbbbbbbbbbbbbbbb');
+              ('eemb_keepowned_________________', 'edge_keepowned_________________', array_fill(0::real, ARRAY[1024])::vector, 'test-model'),
+              ('eemb_dropmention_______________', 'edge_dropmention_______________', array_fill(0::real, ARRAY[1024])::vector, 'test-model');
+          INSERT INTO "aliases" ("id", "user_id", "alias_text", "canonical_node_id", "created_at")
+            VALUES
+              ('alias_mbp______________________', 'user_A', '  MBP  ',       'node_bbbbbbbbbbbbbbbbbbbbbbbbbb', '2026-02-01T00:00:00Z'),
+              ('alias_mbp_duplicate____________', 'user_A', 'mbp',           'node_bbbbbbbbbbbbbbbbbbbbbbbbbb', '2026-02-02T00:00:00Z'),
+              ('alias_macbook__________________', 'user_A', 'MacBook Pro',   'node_bbbbbbbbbbbbbbbbbbbbbbbbbb', '2026-02-03T00:00:00Z');
         `);
 
-        // -----------------------------------------------------------------
-        // Load and apply only migration 0009 directly. We do not invoke the
-        // drizzle migrator because it would first try to apply 0001..0008
-        // on top of our hand-seeded schema and the CREATE TABLE statements
-        // would collide. The point of this test is to prove the 0009 step
-        // transforms a realistic pre-migration state correctly.
-        // -----------------------------------------------------------------
-        const fs = await import("node:fs/promises");
-        const path = await import("node:path");
-        const migrationPath = path.join(
-          process.cwd(),
-          "drizzle",
-          "0009_claims_layer_pr_1a.sql",
-        );
-        const migrationSql = await fs.readFile(migrationPath, "utf8");
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      const migrationPath = path.join(
+        process.cwd(),
+        "drizzle",
+        "0010_claims_layer_pr_1a.sql",
+      );
+      const migrationSql = await fs.readFile(migrationPath, "utf8");
+      const applyMigration = async () => {
+        const statements = migrationSql
+          .split("--> statement-breakpoint")
+          .map((statement) => statement.trim())
+          .filter((statement) => statement.length > 0);
+        for (const statement of statements) {
+          await client.query(statement);
+        }
+      };
 
-        const applyMigration = async () => {
-          const statements = migrationSql
-            .split("--> statement-breakpoint")
-            .map((s) => s.trim())
-            .filter((s) => s.length > 0);
-          for (const statement of statements) {
-            await client.query(statement);
-          }
-        };
+      await client.query("BEGIN");
+      await applyMigration();
+      await client.query("COMMIT");
 
-        await client.query("BEGIN");
-        await applyMigration();
-        await client.query("COMMIT");
-
-        // -----------------------------------------------------------------
-        // Post-state assertions.
-        // -----------------------------------------------------------------
-        const tables = await client.query<{ table_name: string }>(
-          `SELECT table_name FROM information_schema.tables
+      const tables = await client.query<{ table_name: string }>(
+        `SELECT table_name FROM information_schema.tables
            WHERE table_schema='public' AND table_type='BASE TABLE'
            ORDER BY table_name`,
-        );
-        const tableNames = tables.rows.map((r) => r.table_name);
-        expect(tableNames).toContain("claims");
-        expect(tableNames).toContain("claim_embeddings");
-        expect(tableNames).not.toContain("edges"); // edges is now a view
-        expect(tableNames).not.toContain("edge_embeddings");
+      );
+      const tableNames = tables.rows.map((row) => row.table_name);
+      expect(tableNames).toContain("claims");
+      expect(tableNames).toContain("claim_embeddings");
+      expect(tableNames).not.toContain("edges");
+      expect(tableNames).not.toContain("edge_embeddings");
 
-        const views = await client.query<{ table_name: string }>(
-          `SELECT table_name FROM information_schema.views
+      const views = await client.query<{ table_name: string }>(
+        `SELECT table_name FROM information_schema.views
            WHERE table_schema='public'
            ORDER BY table_name`,
-        );
-        const viewNames = views.rows.map((r) => r.table_name);
-        expect(viewNames).toContain("edges");
-        expect(viewNames).toContain("edge_embeddings");
+      );
+      const viewNames = views.rows.map((row) => row.table_name);
+      expect(viewNames).not.toContain("edges");
+      expect(viewNames).not.toContain("edge_embeddings");
 
-        const claimsColumns = await client.query<{ column_name: string }>(
-          `SELECT column_name FROM information_schema.columns
+      const claimsColumns = await client.query<{ column_name: string }>(
+        `SELECT column_name FROM information_schema.columns
            WHERE table_schema='public' AND table_name='claims'`,
-        );
-        const claimsColNames = claimsColumns.rows.map((r) => r.column_name);
-        expect(claimsColNames).toContain("subject_node_id");
-        expect(claimsColNames).toContain("object_node_id");
-        expect(claimsColNames).toContain("predicate");
-        expect(claimsColNames).toContain("object_value");
-        expect(claimsColNames).toContain("statement");
-        expect(claimsColNames).toContain("source_id");
-        expect(claimsColNames).toContain("stated_at");
-        expect(claimsColNames).toContain("valid_from");
-        expect(claimsColNames).toContain("valid_to");
-        expect(claimsColNames).toContain("status");
-        expect(claimsColNames).toContain("updated_at");
-        expect(claimsColNames).not.toContain("source_node_id");
-        expect(claimsColNames).not.toContain("target_node_id");
-        expect(claimsColNames).not.toContain("edge_type");
+      );
+      const claimsColNames = claimsColumns.rows.map((row) => row.column_name);
+      expect(claimsColNames).toEqual(
+        expect.arrayContaining([
+          "subject_node_id",
+          "object_node_id",
+          "object_value",
+          "predicate",
+          "statement",
+          "source_id",
+          "stated_at",
+          "valid_from",
+          "valid_to",
+          "status",
+          "updated_at",
+        ]),
+      );
+      expect(claimsColNames).not.toContain("source_node_id");
+      expect(claimsColNames).not.toContain("target_node_id");
+      expect(claimsColNames).not.toContain("edge_type");
 
-        // Structural predicate rows are gone; only the two factual rows
-        // remain and both are backfilled.
-        const claimRows = await client.query<{
-          id: string;
-          predicate: string;
-          statement: string;
-          source_id: string;
-          stated_at: Date;
-          status: string;
-          metadata: Record<string, unknown>;
-        }>(
-          `SELECT id, predicate, statement, source_id, stated_at, status, metadata
-             FROM claims
-             ORDER BY created_at`,
-        );
-        expect(claimRows.rows).toHaveLength(2);
-        expect(
-          claimRows.rows.every((r) => r.id.startsWith("claim_")),
-        ).toBe(true);
-        expect(
-          claimRows.rows.every((r) => r.predicate !== "MENTIONED_IN"),
-        ).toBe(true);
-        expect(claimRows.rows.every((r) => r.status === "active")).toBe(true);
-        expect(
-          claimRows.rows.every((r) => r.source_id.startsWith("src_")),
-        ).toBe(true);
-        expect(
-          claimRows.rows.every((r) => r.metadata?.["backfilled"] === true),
-        ).toBe(true);
-        expect(claimRows.rows.every((r) => r.statement.length > 0)).toBe(true);
-        // Templated statement should contain the subject label.
-        expect(
-          claimRows.rows.every((r) => r.statement.includes("Alice")),
-        ).toBe(true);
+      const claimRows = await client.query<{
+        id: string;
+        predicate: string;
+        statement: string;
+        source_id: string;
+        status: string;
+        metadata: Record<string, unknown>;
+      }>(
+        `SELECT id, predicate, statement, source_id, status, metadata
+           FROM claims
+           ORDER BY created_at`,
+      );
+      expect(claimRows.rows).toHaveLength(2);
+      expect(claimRows.rows.map((row) => row.predicate)).toEqual([
+        "OWNED_BY",
+        "TAGGED_WITH",
+      ]);
+      expect(claimRows.rows.every((row) => row.id.startsWith("claim_"))).toBe(
+        true,
+      );
+      expect(claimRows.rows.every((row) => row.status === "active")).toBe(true);
+      expect(
+        claimRows.rows.every(
+          (row) => row.source_id === "src_realconversation________",
+        ),
+      ).toBe(true);
+      expect(
+        claimRows.rows.every((row) => row.metadata?.["backfilled"] === true),
+      ).toBe(true);
+      expect(
+        claimRows.rows.every((row) => row.statement.includes("Alice")),
+      ).toBe(true);
 
-        const sources = await client.query<{
-          id: string;
-          user_id: string;
-          type: string;
-        }>(`SELECT id, user_id, type FROM sources WHERE type = 'legacy_migration'`);
-        expect(sources.rows).toHaveLength(1);
-        expect(sources.rows[0]!.user_id).toBe("user_A");
+      const sourceLinks = await client.query<{
+        source_id: string;
+        node_id: string;
+      }>(`SELECT source_id, node_id FROM source_links ORDER BY node_id`);
+      expect(sourceLinks.rows).toEqual(
+        expect.arrayContaining([
+          {
+            source_id: "src_realconversation________",
+            node_id: "node_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+          },
+          {
+            source_id: "src_realconversation________",
+            node_id: "node_cccccccccccccccccccccccccc",
+          },
+        ]),
+      );
 
-        // All claims should point at the synthetic per-user source.
-        expect(
-          claimRows.rows.every((r) => r.source_id === sources.rows[0]!.id),
-        ).toBe(true);
+      const legacySources = await client.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM sources WHERE type = 'legacy_migration'`,
+      );
+      expect(legacySources.rows[0]!.count).toBe("0");
 
-        // Aliases: normalized_alias_text backfilled; constraint exists.
-        const aliases = await client.query<{
-          alias_text: string;
-          normalized_alias_text: string;
-        }>(`SELECT alias_text, normalized_alias_text FROM aliases ORDER BY id`);
-        expect(aliases.rows).toHaveLength(2);
-        for (const row of aliases.rows) {
-          expect(row.normalized_alias_text).toBe(
-            row.alias_text.trim().toLowerCase(),
-          );
-        }
-        const aliasUnique = await client.query<{ constraint_name: string }>(
-          `SELECT constraint_name FROM information_schema.table_constraints
-           WHERE table_schema='public' AND table_name='aliases'
-             AND constraint_type='UNIQUE'`,
-        );
-        expect(
-          aliasUnique.rows.map((r) => r.constraint_name),
-        ).toContain("aliases_user_normalized_canonical_unique");
+      const embeddings = await client.query<{
+        id: string;
+        claim_id: string;
+      }>(`SELECT id, claim_id FROM claim_embeddings ORDER BY id`);
+      expect(embeddings.rows).toEqual([
+        {
+          id: "cemb_keepowned_________________",
+          claim_id: "claim_keepowned_________________",
+        },
+      ]);
 
-        // Edges view echoes the legacy column names over claims data.
-        const viaView = await client.query<{
-          source_node_id: string;
-          target_node_id: string;
-          edge_type: string;
-        }>(`SELECT source_node_id, target_node_id, edge_type FROM edges`);
-        expect(viaView.rows).toHaveLength(2);
-        expect(
-          viaView.rows.every((r) =>
-            r.source_node_id.startsWith("node_") && r.target_node_id.startsWith("node_"),
-          ),
-        ).toBe(true);
+      const aliases = await client.query<{
+        alias_text: string;
+        normalized_alias_text: string;
+      }>(`SELECT alias_text, normalized_alias_text FROM aliases ORDER BY id`);
+      expect(aliases.rows).toHaveLength(2);
+      expect(
+        aliases.rows.map((row) => row.normalized_alias_text).sort(),
+      ).toEqual(["macbook pro", "mbp"]);
 
-        // ---------------------------------------------------------------
-        // Rerun 0009. Must be a no-op — no errors, no duplicate rows, no
-        // extra legacy_migration source.
-        // ---------------------------------------------------------------
-        await client.query("BEGIN");
-        await applyMigration();
-        await client.query("COMMIT");
+      const indexes = await client.query<{ indexname: string }>(
+        `SELECT indexname FROM pg_indexes WHERE schemaname='public' ORDER BY indexname`,
+      );
+      const indexNames = indexes.rows.map((row) => row.indexname);
+      expect(indexNames).toEqual(
+        expect.arrayContaining([
+          "claims_user_id_subject_node_id_idx",
+          "claims_user_id_object_node_id_idx",
+          "claims_user_id_predicate_idx",
+          "claims_user_id_status_stated_at_idx",
+          "claims_user_id_subject_status_idx",
+          "claims_user_id_object_status_idx",
+          "claims_source_id_idx",
+        ]),
+      );
+      expect(indexNames).not.toContain("edges_user_id_source_node_id_idx");
 
-        const rerunClaimCount = await client.query<{ count: string }>(
-          `SELECT COUNT(*)::text AS count FROM claims`,
-        );
-        expect(rerunClaimCount.rows[0]!.count).toBe("2");
+      await expect(
+        client.query(`
+            INSERT INTO claims (
+              id, user_id, subject_node_id, object_node_id, object_value,
+              predicate, statement, source_id, stated_at, status
+            )
+            VALUES (
+              'claim_badboth___________________', 'user_A',
+              'node_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'node_bbbbbbbbbbbbbbbbbbbbbbbbbb',
+              'bad', 'HAS_STATUS', 'bad shape',
+              'src_realconversation________', now(), 'active'
+            )
+          `),
+      ).rejects.toThrow();
 
-        const rerunSourceCount = await client.query<{ count: string }>(
-          `SELECT COUNT(*)::text AS count FROM sources WHERE type='legacy_migration'`,
-        );
-        expect(rerunSourceCount.rows[0]!.count).toBe("1");
+      await expect(
+        client.query(`
+            INSERT INTO claims (
+              id, user_id, subject_node_id, predicate, statement,
+              source_id, stated_at, status
+            )
+            VALUES (
+              'claim_badneither________________', 'user_A',
+              'node_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'HAS_STATUS', 'bad shape',
+              'src_realconversation________', now(), 'active'
+            )
+          `),
+      ).rejects.toThrow();
 
-        const rerunAliases = await client.query<{ count: string }>(
-          `SELECT COUNT(*)::text AS count FROM aliases WHERE normalized_alias_text IS NULL`,
-        );
-        expect(rerunAliases.rows[0]!.count).toBe("0");
-      } finally {
-        await client.end();
-      }
-    },
-    30_000,
-  );
+      await client.query("BEGIN");
+      await applyMigration();
+      await client.query("COMMIT");
+
+      const rerunCounts = await client.query<{
+        claims: string;
+        sources: string;
+        source_links: string;
+        aliases: string;
+        claim_embeddings: string;
+      }>(
+        `SELECT
+            (SELECT COUNT(*)::text FROM claims) AS claims,
+            (SELECT COUNT(*)::text FROM sources) AS sources,
+            (SELECT COUNT(*)::text FROM source_links) AS source_links,
+            (SELECT COUNT(*)::text FROM aliases) AS aliases,
+            (SELECT COUNT(*)::text FROM claim_embeddings) AS claim_embeddings`,
+      );
+      expect(rerunCounts.rows[0]).toMatchObject({
+        claims: "2",
+        sources: "1",
+        source_links: "2",
+        aliases: "2",
+        claim_embeddings: "1",
+      });
+    } finally {
+      await client.end();
+    }
+  }, 30_000);
 });

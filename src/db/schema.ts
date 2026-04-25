@@ -1,6 +1,7 @@
 import { typeId } from "./typeid";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import {
+  check,
   pgTable,
   varchar,
   timestamp,
@@ -13,8 +14,8 @@ import {
 } from "drizzle-orm/pg-core";
 import {
   ClaimStatus,
-  EdgeType,
   NodeType,
+  Predicate,
   SourceStatus,
   SourceType,
 } from "~/types/graph";
@@ -84,22 +85,6 @@ export const nodeMetadataRelations = relations(nodeMetadata, ({ one }) => ({
   }),
 }));
 
-/**
- * Claims table — evolved from the legacy `edges` table.
- *
- * Every factual memory is a sourced, time-aware, lifecycle-tracked assertion.
- * See docs/2026-04-24-claims-layer-design.md for the full model.
- *
- * During the PR 1a → PR 1b transition, TypeScript property names keep the
- * legacy edge-shaped spelling (`sourceNodeId`, `targetNodeId`, `edgeType`,
- * `description`, `metadata`, `createdAt`) so existing consumers stay green
- * without per-file rewrites. The underlying SQL columns already use the
- * final names (`subject_node_id`, `object_node_id`, `predicate`, etc.).
- *
- * PR 1b will rename these TS properties to match the design doc
- * (`subjectNodeId`, `objectNodeId`, `predicate`) and delete the legacy
- * `edges` / `edgeEmbeddings` re-exports at the bottom of this file.
- */
 export const claims = pgTable(
   "claims",
   {
@@ -107,33 +92,32 @@ export const claims = pgTable(
     userId: text()
       .references(() => users.id)
       .notNull(),
-    // TS name kept as `sourceNodeId` for back-compat; SQL column is `subject_node_id`.
-    sourceNodeId: typeId("node", { name: "subject_node_id" })
+    subjectNodeId: typeId("node", { name: "subject_node_id" })
       .references(() => nodes.id, { onDelete: "cascade" })
       .notNull(),
-    // TS name kept as `targetNodeId` for back-compat; SQL column is `object_node_id`.
-    // Remains NOT NULL during PR 1a because no attribute claims exist yet.
-    // PR 2 will alter this to nullable when attribute claims land.
-    targetNodeId: typeId("node", { name: "object_node_id" })
-      .references(() => nodes.id, { onDelete: "cascade" })
-      .notNull(),
+    objectNodeId: typeId("node", { name: "object_node_id" }).references(
+      () => nodes.id,
+      { onDelete: "cascade" },
+    ),
     objectValue: text("object_value"),
-    // TS name kept as `edgeType` for back-compat; SQL column is `predicate` (widened to 80).
-    edgeType: varchar("predicate", { length: 80 }).notNull().$type<EdgeType>(),
-    // New claim columns. Nullable in TS so PR 1a consumers don't have to
-    // supply them; PR 1b inserts them everywhere and flips to NOT NULL.
-    statement: text(),
+    predicate: varchar("predicate", { length: 80 })
+      .notNull()
+      .$type<Predicate>(),
+    statement: text().notNull(),
     description: text(),
     metadata: jsonb(),
-    sourceId: typeId("source").references(() => sources.id, {
-      onDelete: "cascade",
-    }),
-    statedAt: timestamp("stated_at", { withTimezone: true }),
+    sourceId: typeId("source")
+      .references(() => sources.id, {
+        onDelete: "cascade",
+      })
+      .notNull(),
+    statedAt: timestamp("stated_at", { withTimezone: true }).notNull(),
     validFrom: timestamp("valid_from", { withTimezone: true }),
     validTo: timestamp("valid_to", { withTimezone: true }),
     status: varchar("status", { length: 30 })
       .$type<ClaimStatus>()
-      .default("active"),
+      .default("active")
+      .notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -142,15 +126,15 @@ export const claims = pgTable(
       .notNull(),
   },
   (table) => [
-    index("claims_user_id_source_node_id_idx").on(
+    index("claims_user_id_subject_node_id_idx").on(
       table.userId,
-      table.sourceNodeId,
+      table.subjectNodeId,
     ),
-    index("claims_user_id_target_node_id_idx").on(
+    index("claims_user_id_object_node_id_idx").on(
       table.userId,
-      table.targetNodeId,
+      table.objectNodeId,
     ),
-    index("claims_user_id_edge_type_idx").on(table.userId, table.edgeType),
+    index("claims_user_id_predicate_idx").on(table.userId, table.predicate),
     index("claims_user_id_status_stated_at_idx").on(
       table.userId,
       table.status,
@@ -158,10 +142,17 @@ export const claims = pgTable(
     ),
     index("claims_user_id_subject_status_idx").on(
       table.userId,
-      table.sourceNodeId,
+      table.subjectNodeId,
       table.status,
     ),
+    index("claims_user_id_object_status_idx")
+      .on(table.userId, table.objectNodeId, table.status)
+      .where(sql`${table.objectNodeId} IS NOT NULL`),
     index("claims_source_id_idx").on(table.sourceId),
+    check(
+      "claims_object_shape_xor_ck",
+      sql`(("object_node_id" IS NOT NULL AND "object_value" IS NULL) OR ("object_node_id" IS NULL AND "object_value" IS NOT NULL))`,
+    ),
   ],
 );
 
@@ -170,12 +161,12 @@ export const claimsRelations = relations(claims, ({ one }) => ({
     fields: [claims.userId],
     references: [users.id],
   }),
-  sourceNode: one(nodes, {
-    fields: [claims.sourceNodeId],
+  subjectNode: one(nodes, {
+    fields: [claims.subjectNodeId],
     references: [nodes.id],
   }),
-  targetNode: one(nodes, {
-    fields: [claims.targetNodeId],
+  objectNode: one(nodes, {
+    fields: [claims.objectNodeId],
     references: [nodes.id],
   }),
   source: one(sources, {
@@ -183,14 +174,6 @@ export const claimsRelations = relations(claims, ({ one }) => ({
     references: [sources.id],
   }),
 }));
-
-/**
- * Transitional alias for PR 1a. Consumers that still import `edges` /
- * `edgesRelations` continue to compile; PR 1b removes these re-exports
- * alongside the predicate / subject / object rename in consumer code.
- */
-export const edges = claims;
-export const edgesRelations = claimsRelations;
 
 // --- Embeddings & Search ---
 
@@ -222,17 +205,11 @@ export const nodeEmbeddingsRelations = relations(nodeEmbeddings, ({ one }) => ({
   }),
 }));
 
-/**
- * Claim embeddings — evolved from the legacy `edge_embeddings` table.
- *
- * TS property `edgeId` kept for back-compat; SQL column is `claim_id`.
- * PR 1b renames to `claimId` alongside consumer rewrites.
- */
 export const claimEmbeddings = pgTable(
   "claim_embeddings",
   {
     id: typeId("claim_embedding").primaryKey().notNull(),
-    edgeId: typeId("claim", { name: "claim_id" })
+    claimId: typeId("claim", { name: "claim_id" })
       .references(() => claims.id, { onDelete: "cascade" })
       .notNull(),
     embedding: vector("embedding", { dimensions: 1024 }).notNull(),
@@ -244,7 +221,7 @@ export const claimEmbeddings = pgTable(
       "hnsw",
       table.embedding.op("vector_cosine_ops"),
     ),
-    index("claim_embeddings_claim_id_idx").on(table.edgeId),
+    index("claim_embeddings_claim_id_idx").on(table.claimId),
   ],
 );
 
@@ -252,15 +229,11 @@ export const claimEmbeddingsRelations = relations(
   claimEmbeddings,
   ({ one }) => ({
     claim: one(claims, {
-      fields: [claimEmbeddings.edgeId],
+      fields: [claimEmbeddings.claimId],
       references: [claims.id],
     }),
   }),
 );
-
-// Transitional alias for PR 1a; removed in PR 1b.
-export const edgeEmbeddings = claimEmbeddings;
-export const edgeEmbeddingsRelations = claimEmbeddingsRelations;
 
 // --- Aliases & Identity Resolution ---
 

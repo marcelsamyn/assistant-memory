@@ -44,7 +44,7 @@ function harvestNewSeeds(result: CleanupGraphResult): TypeId<"node">[] {
   const otherIds = Array.from(
     new Set<TypeId<"node">>([
       ...result.createdNodes.map((n) => n.nodeId),
-      ...result.addedEdges.flatMap((e) => [e.source, e.target]),
+      ...result.addedClaims.flatMap((claim) => [claim.subject, claim.object]),
     ]),
   );
   return [...keepIds, ...otherIds];
@@ -101,7 +101,7 @@ export async function runIterativeCleanup(
     console.debug(
       `[cleanup-iter] Successful iteration ${successCount}: merges=${
         result.merged.length
-      }, adds=${result.addedEdges.length}, creates=${result.createdNodes.length}`,
+      }, adds=${result.addedClaims.length}, creates=${result.createdNodes.length}`,
     );
 
     // mark seeds as processed

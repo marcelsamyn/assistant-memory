@@ -1,6 +1,6 @@
 /** Deterministic dedup sweep: finds exact-label duplicate nodes and merges them. */
 import {
-  rewireNodeEdges,
+  rewireNodeClaims,
   rewireSourceLinks,
   deleteNode,
 } from "./cleanup-graph";
@@ -63,7 +63,7 @@ async function mergeGroup(
   if (!keepId || removeIds.length === 0) return 0;
 
   for (const removeId of removeIds) {
-    await rewireNodeEdges(tx, removeId, keepId, userId);
+    await rewireNodeClaims(tx, removeId, keepId, userId);
     await rewireSourceLinks(tx, removeId, keepId);
     await deleteNode(tx, removeId, userId);
   }

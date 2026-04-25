@@ -1,4 +1,4 @@
-import { EdgeTypeEnum, NodeTypeEnum } from "../../types/graph.js";
+import { NodeTypeEnum, PredicateEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
 import { z } from "zod";
 
@@ -24,7 +24,7 @@ export const queryTimelineNodeSchema = z.object({
   label: z.string().nullable(),
   description: z.string().nullable(),
   nodeType: NodeTypeEnum,
-  edgeType: EdgeTypeEnum,
+  predicate: PredicateEnum,
   createdAt: z.coerce.date(),
 });
 

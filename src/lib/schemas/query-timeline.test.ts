@@ -82,7 +82,7 @@ describe("queryTimelineResponseSchema", () => {
               label: "Meeting with team",
               description: "Weekly standup meeting",
               nodeType: "Event",
-              edgeType: "OCCURRED_ON",
+              predicate: "OCCURRED_ON",
               createdAt: "2025-01-15T10:00:00.000Z",
             },
           ],

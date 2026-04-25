@@ -45,7 +45,7 @@ export async function ingestConversation({
   conversationId,
   messages,
 }: IngestConversationParams): Promise<{ insertedTurns: ConversationTurn[] }> {
-  const { sourceNodeId, insertedTurns } = await initializeConversation(
+  const { sourceId, insertedTurns } = await initializeConversation(
     db,
     userId,
     conversationId,
@@ -59,13 +59,15 @@ export async function ingestConversation({
   const conversationNodeId = await ensureSourceNode({
     db,
     userId,
-    sourceId: sourceNodeId,
+    sourceId,
     timestamp: firstTurn.timestamp,
     nodeType: NodeTypeEnum.enum.Conversation,
   });
   await extractGraph({
     userId,
     sourceType: "conversation",
+    sourceId,
+    statedAt: firstTurn.timestamp,
     linkedNodeId: conversationNodeId,
     content: formatConversationAsXml(insertedTurns),
   });
@@ -81,7 +83,7 @@ export async function ingestConversation({
  * @param userId ID of the user
  * @param conversationId External conversation identifier
  * @param messages Array of incoming messages
- * @returns `sourceNodeId` (internal PK) and `insertedTurns` (only newly created turns)
+ * @returns parent `sourceId` and `insertedTurns` (only newly created turns)
  */
 async function initializeConversation(
   db: DrizzleDB,
@@ -89,11 +91,11 @@ async function initializeConversation(
   conversationId: string,
   messages: Message[],
 ): Promise<{
-  sourceNodeId: TypeId<"source">;
+  sourceId: TypeId<"source">;
   insertedTurns: ConversationTurn[];
 }> {
   await ensureUser(db, userId);
-  const { sourceNodeId, newSourceSourceIds } = await insertNewSources({
+  const { sourceId, newSourceSourceIds } = await insertNewSources({
     db,
     userId,
     parentSourceType: "conversation",
@@ -120,5 +122,5 @@ async function initializeConversation(
       name: m.name,
       timestamp: m.timestamp,
     }));
-  return { sourceNodeId, insertedTurns };
+  return { sourceId, insertedTurns };
 }

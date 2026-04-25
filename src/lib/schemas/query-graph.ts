@@ -1,4 +1,8 @@
-import { EdgeTypeEnum, NodeTypeEnum } from "../../types/graph.js";
+import {
+  ClaimStatusEnum,
+  NodeTypeEnum,
+  PredicateEnum,
+} from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
 import { z } from "zod";
 
@@ -17,16 +21,21 @@ export const queryGraphNodeSchema = z.object({
   sourceIds: z.array(z.string()).optional(),
 });
 
-export const queryGraphEdgeSchema = z.object({
-  source: typeIdSchema("node"),
-  target: typeIdSchema("node"),
-  edgeType: EdgeTypeEnum,
+export const queryGraphClaimSchema = z.object({
+  id: typeIdSchema("claim"),
+  subject: typeIdSchema("node"),
+  object: typeIdSchema("node"),
+  predicate: PredicateEnum,
+  statement: z.string(),
   description: z.string().nullable().optional(),
+  sourceId: typeIdSchema("source"),
+  statedAt: z.coerce.date(),
+  status: ClaimStatusEnum,
 });
 
 export const queryGraphResponseSchema = z.object({
   nodes: z.array(queryGraphNodeSchema),
-  edges: z.array(queryGraphEdgeSchema),
+  claims: z.array(queryGraphClaimSchema),
 });
 
 export type QueryGraphRequest = z.infer<typeof queryGraphRequestSchema>;

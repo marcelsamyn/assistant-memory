@@ -9,10 +9,10 @@ import {
 } from "../formatting";
 import {
   findOneHopNodes,
-  findSimilarEdges,
+  findSimilarClaims,
   findSimilarNodes,
   type NodeSearchResult,
-  type EdgeSearchResult,
+  type ClaimSearchResult,
   type OneHopNode,
 } from "../graph";
 import { type RerankResult } from "../rerank";
@@ -29,7 +29,7 @@ import { shuffleArray } from "~/utils/shuffle";
 // Group definitions for reranked search results
 type SearchGroups = {
   similarNodes: NodeSearchResult;
-  similarEdges: EdgeSearchResult;
+  similarClaims: ClaimSearchResult;
   connections: OneHopNode;
 };
 
@@ -267,15 +267,14 @@ async function executeSearchWithEmbedding(
   limit: number,
 ): Promise<RerankResult<SearchGroups> | null> {
   try {
-    // Find similar nodes and edges
-    const [similarNodes, similarEdges] = await Promise.all([
+    const [similarNodes, similarClaims] = await Promise.all([
       findSimilarNodes({
         userId,
         embedding,
         limit,
         minimumSimilarity: 0.35, // Lower threshold for deep search
       }),
-      findSimilarEdges({
+      findSimilarClaims({
         userId,
         embedding,
         limit,
@@ -286,7 +285,11 @@ async function executeSearchWithEmbedding(
     // Get one-hop connections
     const nodeIds = new Set([
       ...similarNodes.map((node) => node.id),
-      ...similarEdges.flatMap((edge) => [edge.sourceNodeId, edge.targetNodeId]),
+      ...similarClaims.flatMap((claim) =>
+        claim.objectNodeId
+          ? [claim.subjectNodeId, claim.objectNodeId]
+          : [claim.subjectNodeId],
+      ),
     ]);
 
     const connections = await findOneHopNodes(db, userId, Array.from(nodeIds));
@@ -298,10 +301,10 @@ async function executeSearchWithEmbedding(
         item: n,
         relevance_score: n.similarity,
       })),
-      ...similarEdges.map((e) => ({
-        group: "similarEdges" as const,
-        item: e,
-        relevance_score: e.similarity,
+      ...similarClaims.map((claim) => ({
+        group: "similarClaims" as const,
+        item: claim,
+        relevance_score: claim.similarity,
       })),
       ...connections.map((c) => ({
         group: "connections" as const,

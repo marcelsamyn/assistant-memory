@@ -1,7 +1,7 @@
 import { findDayNode } from "../graph";
 import { QueryDayRequest, QueryDayResponse } from "../schemas/query-day";
 import { and, eq, ne, or } from "drizzle-orm";
-import { edges, nodeMetadata, nodes } from "~/db/schema";
+import { claims, nodeMetadata, nodes } from "~/db/schema";
 import { useDatabase } from "~/utils/db";
 
 /**
@@ -30,26 +30,27 @@ export async function queryDayMemories(
         label: nodeMetadata.label,
         description: nodeMetadata.description,
       },
-      edgeType: edges.edgeType,
+      predicate: claims.predicate,
     })
     .from(nodes)
     .innerJoin(
-      edges,
+      claims,
       or(
         and(
-          eq(edges.sourceNodeId, dayNodeId),
-          eq(edges.targetNodeId, nodes.id),
+          eq(claims.subjectNodeId, dayNodeId),
+          eq(claims.objectNodeId, nodes.id),
         ),
         and(
-          eq(edges.targetNodeId, dayNodeId),
-          eq(edges.sourceNodeId, nodes.id),
+          eq(claims.objectNodeId, dayNodeId),
+          eq(claims.subjectNodeId, nodes.id),
         ),
       ),
     )
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
     .where(
       and(
-        eq(edges.userId, userId),
+        eq(claims.userId, userId),
+        eq(claims.status, "active"),
         eq(nodes.userId, userId),
         ne(nodes.id, dayNodeId),
       ),
@@ -67,7 +68,7 @@ export async function queryDayMemories(
       Record<string, (typeof connectedNodes)[number][]>
     >(
       (acc, node) => {
-        const key: string = node.edgeType ?? "Unknown"; // 'key' is now explicitly a string
+        const key: string = node.predicate ?? "Unknown"; // 'key' is now explicitly a string
         (acc[key] ??= []).push(node);
         return acc;
       },
@@ -75,8 +76,8 @@ export async function queryDayMemories(
     );
 
     let formatted = `# Memories from ${date}\n\n`;
-    for (const [edgeType, nodes] of Object.entries(nodesByEdge)) {
-      formatted += `## ${edgeType}\n\n`;
+    for (const [predicate, nodes] of Object.entries(nodesByEdge)) {
+      formatted += `## ${predicate}\n\n`;
       const map = new Map<string, (typeof connectedNodes)[number]>();
       nodes.forEach((n) => {
         if (!map.has(n.id)) map.set(n.id, n);

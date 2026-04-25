@@ -23,30 +23,9 @@ export const NodeTypeEnum = z.enum([
 
 export type NodeType = z.infer<typeof NodeTypeEnum>;
 
-export const EdgeTypeEnum = z.enum([
-  "PARTICIPATED_IN",
-  "OCCURRED_AT",
-  "OCCURRED_ON",
-  "INVOLVED_ITEM",
-  "EXHIBITED_EMOTION",
-  "TAGGED_WITH",
-  "OWNED_BY",
-  "MENTIONED_IN",
-  "PRECEDES",
-  "FOLLOWS",
-  "RELATED_TO",
-  "CAPTURED_IN",
-  "INVALIDATED_ON",
-]);
-
-export type EdgeType = z.infer<typeof EdgeTypeEnum>;
-
 // =============================================================
 // CLAIM PREDICATES & STATUS
 // =============================================================
-// Claims-first memory layer (see docs/2026-04-24-claims-layer-design.md).
-// `EdgeTypeEnum` is retained for transitional code paths and is scheduled
-// for removal in PR 1b once all consumers have been migrated to claims.
 
 export const ClaimStatusEnum = z.enum([
   "active",

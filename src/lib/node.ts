@@ -5,7 +5,7 @@ import {
   nodes,
   nodeMetadata,
   nodeEmbeddings,
-  edges,
+  claims,
   sourceLinks,
   sources,
 } from "~/db/schema";
@@ -13,7 +13,7 @@ import { generateEmbeddings } from "~/lib/embeddings";
 import {
   fetchSourceIdsForNodes,
   findOneHopNodes,
-  fetchEdgesBetweenNodeIds,
+  fetchClaimsBetweenNodeIds,
 } from "~/lib/graph";
 import { ensureUser } from "~/lib/ingestion/ensure-user";
 import { normalizeLabel } from "~/lib/label";
@@ -22,7 +22,7 @@ import type { NodeType } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
-/** Fetch a single node by ID with all its edges and source IDs. */
+/** Fetch a single node by ID with all active claims and source IDs. */
 export async function getNodeById(
   userId: string,
   nodeId: TypeId<"node">,
@@ -44,27 +44,33 @@ export async function getNodeById(
 
   if (!row) return null;
 
-  // Fetch all edges touching this node (both directions)
+  // Fetch all active claims touching this node (subject or object).
   const srcMeta = aliasedTable(nodeMetadata, "srcMeta");
   const tgtMeta = aliasedTable(nodeMetadata, "tgtMeta");
 
-  const edgeRows = await db
+  const claimRows = await db
     .select({
-      id: edges.id,
-      sourceNodeId: edges.sourceNodeId,
-      targetNodeId: edges.targetNodeId,
-      edgeType: edges.edgeType,
-      description: edges.description,
-      sourceLabel: srcMeta.label,
-      targetLabel: tgtMeta.label,
+      id: claims.id,
+      subjectNodeId: claims.subjectNodeId,
+      objectNodeId: claims.objectNodeId,
+      objectValue: claims.objectValue,
+      predicate: claims.predicate,
+      statement: claims.statement,
+      description: claims.description,
+      subjectLabel: srcMeta.label,
+      objectLabel: tgtMeta.label,
+      sourceId: claims.sourceId,
+      status: claims.status,
+      statedAt: claims.statedAt,
     })
-    .from(edges)
-    .leftJoin(srcMeta, eq(srcMeta.nodeId, edges.sourceNodeId))
-    .leftJoin(tgtMeta, eq(tgtMeta.nodeId, edges.targetNodeId))
+    .from(claims)
+    .leftJoin(srcMeta, eq(srcMeta.nodeId, claims.subjectNodeId))
+    .leftJoin(tgtMeta, eq(tgtMeta.nodeId, claims.objectNodeId))
     .where(
       and(
-        eq(edges.userId, userId),
-        or(eq(edges.sourceNodeId, nodeId), eq(edges.targetNodeId, nodeId)),
+        eq(claims.userId, userId),
+        eq(claims.status, "active"),
+        or(eq(claims.subjectNodeId, nodeId), eq(claims.objectNodeId, nodeId)),
       ),
     );
 
@@ -77,7 +83,7 @@ export async function getNodeById(
       description: row.description ?? null,
       sourceIds: sourceIdMap.get(nodeId) ?? [],
     },
-    edges: edgeRows,
+    claims: claimRows,
   };
 }
 
@@ -219,7 +225,7 @@ export async function updateNode(
   };
 }
 
-/** Delete a node by ID. Cascading FKs handle edges, embeddings, sourceLinks. */
+/** Delete a node by ID. Cascading FKs handle claims, embeddings, sourceLinks. */
 export async function deleteNode(
   userId: string,
   nodeId: TypeId<"node">,
@@ -320,46 +326,40 @@ export async function mergeNodes(
 
   await db.transaction(async (tx) => {
     for (const consumedId of consumedIds) {
-      // Re-point edges where consumed is source
-      await tx.execute(sql`
-        UPDATE edges
-        SET source_node_id = ${survivorId}
-        WHERE source_node_id = ${consumedId}
-          AND user_id = ${userId}
-          AND NOT EXISTS (
-            SELECT 1 FROM edges e2
-            WHERE e2.source_node_id = ${survivorId}
-              AND e2.target_node_id = edges.target_node_id
-              AND e2.edge_type = edges.edge_type
-          )
-      `);
-
-      // Re-point edges where consumed is target
-      await tx.execute(sql`
-        UPDATE edges
-        SET target_node_id = ${survivorId}
-        WHERE target_node_id = ${consumedId}
-          AND user_id = ${userId}
-          AND NOT EXISTS (
-            SELECT 1 FROM edges e2
-            WHERE e2.source_node_id = edges.source_node_id
-              AND e2.target_node_id = ${survivorId}
-              AND e2.edge_type = edges.edge_type
-          )
-      `);
-
-      // Delete remaining duplicate edges
       await tx
-        .delete(edges)
+        .update(claims)
+        .set({ subjectNodeId: survivorId, updatedAt: new Date() })
         .where(
-          and(
-            eq(edges.userId, userId),
-            or(
-              eq(edges.sourceNodeId, consumedId),
-              eq(edges.targetNodeId, consumedId),
-            ),
-          ),
+          and(eq(claims.userId, userId), eq(claims.subjectNodeId, consumedId)),
         );
+
+      await tx
+        .update(claims)
+        .set({ objectNodeId: survivorId, updatedAt: new Date() })
+        .where(
+          and(eq(claims.userId, userId), eq(claims.objectNodeId, consumedId)),
+        );
+
+      await tx.execute(sql`
+        DELETE FROM claims
+        WHERE user_id = ${userId}
+          AND subject_node_id = ${survivorId}
+          AND object_node_id = ${survivorId}
+      `);
+
+      await tx.execute(sql`
+        DELETE FROM claims c
+        USING claims kept
+        WHERE c.user_id = ${userId}
+          AND kept.user_id = c.user_id
+          AND kept.id <> c.id
+          AND kept.subject_node_id = c.subject_node_id
+          AND kept.predicate = c.predicate
+          AND kept.source_id = c.source_id
+          AND kept.object_node_id IS NOT DISTINCT FROM c.object_node_id
+          AND kept.object_value IS NOT DISTINCT FROM c.object_value
+          AND (kept.created_at, kept.id) < (c.created_at, c.id)
+      `);
 
       // Consolidate source_links
       await tx.execute(sql`
@@ -391,11 +391,12 @@ export async function mergeNodes(
       })
       .where(eq(nodeMetadata.nodeId, survivorId));
 
-    // Delete self-referencing edges
+    // Delete self-referencing relationship claims
     await tx.execute(sql`
-      DELETE FROM edges
-      WHERE source_node_id = ${survivorId}
-        AND target_node_id = ${survivorId}
+      DELETE FROM claims
+      WHERE user_id = ${userId}
+        AND subject_node_id = ${survivorId}
+        AND object_node_id = ${survivorId}
     `);
   });
 
@@ -453,11 +454,16 @@ export async function getNodeNeighborhood(
     description: string | null;
     sourceIds: string[];
   }[];
-  edges: {
-    source: TypeId<"node">;
-    target: TypeId<"node">;
-    edgeType: string;
+  claims: {
+    id: TypeId<"claim">;
+    subject: TypeId<"node">;
+    object: TypeId<"node"> | null;
+    predicate: string;
+    statement: string;
     description: string | null;
+    sourceId: TypeId<"source">;
+    statedAt: Date;
+    status: string;
   }[];
 } | null> {
   const db = await useDatabase();
@@ -525,8 +531,8 @@ export async function getNodeNeighborhood(
   }
 
   const ids = Array.from(allNodeIds);
-  const [edgeRows, sourceIdMap] = await Promise.all([
-    fetchEdgesBetweenNodeIds(db, userId, ids),
+  const [claimRows, sourceIdMap] = await Promise.all([
+    fetchClaimsBetweenNodeIds(db, userId, ids),
     fetchSourceIdsForNodes(db, ids),
   ]);
 
@@ -535,6 +541,6 @@ export async function getNodeNeighborhood(
       ...n,
       sourceIds: sourceIdMap.get(n.id) ?? [],
     })),
-    edges: edgeRows,
+    claims: claimRows,
   };
 }

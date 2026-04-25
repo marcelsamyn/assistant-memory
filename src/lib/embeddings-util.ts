@@ -1,7 +1,8 @@
 import { generateEmbeddings } from "./embeddings";
 import { DrizzleDB } from "~/db";
-import { nodeEmbeddings, edgeEmbeddings } from "~/db/schema";
-import type { EdgeType } from "~/types/graph";
+import { nodeEmbeddings, claimEmbeddings } from "~/db/schema";
+import { claimEmbeddingText } from "~/lib/claim";
+import type { ClaimStatus, Predicate } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
 
 export interface EmbeddableNode {
@@ -10,12 +11,12 @@ export interface EmbeddableNode {
   description?: string | null | undefined;
 }
 
-export interface EmbeddableEdge {
-  edgeId: TypeId<"edge">;
-  edgeType: EdgeType;
-  description?: string | null | undefined;
-  sourceLabel: string;
-  targetLabel: string;
+export interface EmbeddableClaim {
+  claimId: TypeId<"claim">;
+  predicate: Predicate;
+  statement: string;
+  status: ClaimStatus;
+  statedAt: Date;
 }
 
 /**
@@ -60,18 +61,21 @@ export async function generateAndInsertNodeEmbeddings(
 }
 
 /**
- * Given an array of edges with descriptions, generates and inserts embeddings for each.
- * Skips edges with missing descriptions.
+ * Given an array of claims, generates and inserts embeddings for each.
  */
-export async function generateAndInsertEdgeEmbeddings(
+export async function generateAndInsertClaimEmbeddings(
   db: DrizzleDB,
-  edges: EmbeddableEdge[],
+  claims: EmbeddableClaim[],
 ) {
-  const validEdges = edges.filter((e) => e.description?.trim());
-  if (validEdges.length === 0) return;
+  if (claims.length === 0) return;
 
-  const embeddingInputs = validEdges.map(
-    (e) => `${e.sourceLabel} ${e.edgeType} ${e.targetLabel}: ${e.description}`,
+  const embeddingInputs = claims.map((claim) =>
+    claimEmbeddingText({
+      predicate: claim.predicate,
+      statement: claim.statement,
+      status: claim.status,
+      statedAt: claim.statedAt,
+    }),
   );
 
   const embeddings = await generateEmbeddings({
@@ -81,20 +85,20 @@ export async function generateAndInsertEdgeEmbeddings(
     truncate: true,
   });
 
-  if (embeddings.data.length !== validEdges.length) {
-    throw new Error("Failed to generate embeddings for all edges");
+  if (embeddings.data.length !== claims.length) {
+    throw new Error("Failed to generate embeddings for all claims");
   }
 
-  for (let i = 0; i < validEdges.length; i++) {
+  for (let i = 0; i < claims.length; i++) {
     const embedding = embeddings.data[i]?.embedding;
     if (!embedding) {
       console.warn(
-        `No embedding generated for edge: ${validEdges[i]!.edgeId} (${validEdges[i]!.edgeType})`,
+        `No embedding generated for claim: ${claims[i]!.claimId} (${claims[i]!.predicate})`,
       );
       continue;
     }
-    await db.insert(edgeEmbeddings).values({
-      edgeId: validEdges[i]!.edgeId,
+    await db.insert(claimEmbeddings).values({
+      claimId: claims[i]!.claimId,
       embedding,
       modelName: "jina-embeddings-v3",
     });

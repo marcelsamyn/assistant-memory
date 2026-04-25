@@ -4,8 +4,10 @@ import {
   desc,
   cosineDistance,
   and,
+  gt,
   or,
   inArray,
+  isNull,
   isNotNull,
   not,
   notInArray,
@@ -16,12 +18,17 @@ import {
   nodes,
   nodeMetadata,
   nodeEmbeddings,
-  edges,
-  edgeEmbeddings,
+  claims,
+  claimEmbeddings,
   sourceLinks,
 } from "~/db/schema";
 import { generateEmbeddings } from "~/lib/embeddings";
-import { type NodeType, type EdgeType, NodeTypeEnum } from "~/types/graph";
+import {
+  type ClaimStatus,
+  type NodeType,
+  type Predicate,
+  NodeTypeEnum,
+} from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -46,11 +53,12 @@ export interface OneHopNode {
   label: string | null;
   description: string | null;
 
-  edgeSourceId: TypeId<"node">;
-  edgeTargetId: TypeId<"node">;
-  edgeType: EdgeType;
-  sourceLabel: string | null;
-  targetLabel: string | null;
+  claimSubjectId: TypeId<"node">;
+  claimObjectId: TypeId<"node">;
+  predicate: Predicate;
+  statement: string;
+  subjectLabel: string | null;
+  objectLabel: string | null;
 }
 
 /** Node enriched with connections */
@@ -84,18 +92,26 @@ export type FindSimilarNodesOptions = SimilaritySearchBase & {
   excludeNodeTypes?: NodeType[];
 };
 
-/** Options for semantic search on edges */
-export type FindSimilarEdgesOptions = SimilaritySearchBase;
+/** Options for semantic search on claims */
+export type FindSimilarClaimsOptions = SimilaritySearchBase & {
+  statuses?: ClaimStatus[];
+  asOf?: Date;
+};
 
-/** Edge metadata with similarity */
-export interface EdgeSearchResult {
-  id: TypeId<"edge">;
-  sourceNodeId: TypeId<"node">;
-  targetNodeId: TypeId<"node">;
-  sourceLabel: string | null;
-  targetLabel: string | null;
-  edgeType: EdgeType;
+/** Claim metadata with similarity */
+export interface ClaimSearchResult {
+  id: TypeId<"claim">;
+  subjectNodeId: TypeId<"node">;
+  objectNodeId: TypeId<"node"> | null;
+  objectValue: string | null;
+  subjectLabel: string | null;
+  objectLabel: string | null;
+  predicate: Predicate;
+  statement: string;
   description: string | null;
+  sourceId: TypeId<"source">;
+  status: ClaimStatus;
+  statedAt: Date;
   similarity: number;
   timestamp: Date;
 }
@@ -164,22 +180,30 @@ export async function findSimilarNodes(
     .limit(limit);
 }
 
-/** Semantic search for edges via embeddings */
-export async function findSimilarEdges(
-  opts: FindSimilarEdgesOptions,
-): Promise<EdgeSearchResult[]> {
-  const { userId, limit = 10, minimumSimilarity } = opts;
+/** Semantic search for claims via embeddings */
+export async function findSimilarClaims(
+  opts: FindSimilarClaimsOptions,
+): Promise<ClaimSearchResult[]> {
+  const {
+    userId,
+    limit = 10,
+    minimumSimilarity,
+    statuses = ["active"],
+    asOf = new Date(),
+  } = opts;
 
   const emb =
     "embedding" in opts
       ? opts.embedding
       : await generateTextEmbedding(opts.text);
-  const similarity = sql<number>`1 - (${cosineDistance(edgeEmbeddings.embedding, emb)})`;
+  const similarity = sql<number>`1 - (${cosineDistance(claimEmbeddings.embedding, emb)})`;
   const db = await useDatabase();
 
   // Base conditions
   let whereCondition = and(
-    eq(edges.userId, userId),
+    eq(claims.userId, userId),
+    inArray(claims.status, statuses),
+    or(isNull(claims.validTo), gt(claims.validTo, asOf)),
     sql`${similarity} IS NOT NULL`,
   );
 
@@ -191,27 +215,35 @@ export async function findSimilarEdges(
     );
   }
 
-  const fromNodeMetadata = aliasedTable(nodeMetadata, "fromNodeMetadata");
-  const targetNodeMetadata = aliasedTable(nodeMetadata, "targetNodeMetadata");
+  const subjectNodeMetadata = aliasedTable(nodeMetadata, "subjectNodeMetadata");
+  const objectNodeMetadata = aliasedTable(nodeMetadata, "objectNodeMetadata");
 
   return db
     .select({
-      id: edges.id,
-      sourceNodeId: edges.sourceNodeId,
-      targetNodeId: edges.targetNodeId,
-      sourceLabel: fromNodeMetadata.label,
-      targetLabel: targetNodeMetadata.label,
-      edgeType: edges.edgeType,
-      description: edges.description,
+      id: claims.id,
+      subjectNodeId: claims.subjectNodeId,
+      objectNodeId: claims.objectNodeId,
+      objectValue: claims.objectValue,
+      subjectLabel: subjectNodeMetadata.label,
+      objectLabel: objectNodeMetadata.label,
+      predicate: claims.predicate,
+      statement: claims.statement,
+      description: claims.description,
+      sourceId: claims.sourceId,
+      status: claims.status,
+      statedAt: claims.statedAt,
       similarity,
-      timestamp: edges.createdAt,
+      timestamp: claims.createdAt,
     })
-    .from(edgeEmbeddings)
-    .innerJoin(edges, eq(edgeEmbeddings.edgeId, edges.id))
-    .leftJoin(fromNodeMetadata, eq(fromNodeMetadata.nodeId, edges.sourceNodeId))
+    .from(claimEmbeddings)
+    .innerJoin(claims, eq(claimEmbeddings.claimId, claims.id))
     .leftJoin(
-      targetNodeMetadata,
-      eq(targetNodeMetadata.nodeId, edges.targetNodeId),
+      subjectNodeMetadata,
+      eq(subjectNodeMetadata.nodeId, claims.subjectNodeId),
+    )
+    .leftJoin(
+      objectNodeMetadata,
+      eq(objectNodeMetadata.nodeId, claims.objectNodeId),
     )
     .where(whereCondition)
     .orderBy(desc(similarity))
@@ -227,28 +259,31 @@ export async function findOneHopNodes(
   if (nodeIds.length === 0) return [];
   const sub = db
     .select({
-      sourceId: edges.sourceNodeId,
-      targetId: edges.targetNodeId,
-      edgeType: edges.edgeType,
+      subjectId: claims.subjectNodeId,
+      objectId: sql<TypeId<"node">>`${claims.objectNodeId}`.as("objectId"),
+      predicate: claims.predicate,
+      statement: claims.statement,
       nodeId: sql<
         TypeId<"node">
-      >`CASE WHEN ${inArray(edges.sourceNodeId, nodeIds)} THEN ${edges.targetNodeId} ELSE ${edges.sourceNodeId} END`.as(
+      >`CASE WHEN ${inArray(claims.subjectNodeId, nodeIds)} THEN ${claims.objectNodeId} ELSE ${claims.subjectNodeId} END`.as(
         "nodeId",
       ),
     })
-    .from(edges)
+    .from(claims)
     .where(
       and(
-        eq(edges.userId, userId),
+        eq(claims.userId, userId),
+        eq(claims.status, "active"),
+        isNotNull(claims.objectNodeId),
         or(
-          inArray(edges.sourceNodeId, nodeIds),
-          inArray(edges.targetNodeId, nodeIds),
+          inArray(claims.subjectNodeId, nodeIds),
+          inArray(claims.objectNodeId, nodeIds),
         ),
       ),
     )
     .as("e");
 
-  // alias metadata for source/target labels
+  // alias metadata for subject/object labels
   const srcMeta = aliasedTable(nodeMetadata, "srcMeta");
   const tgtMeta = aliasedTable(nodeMetadata, "tgtMeta");
 
@@ -260,17 +295,18 @@ export async function findOneHopNodes(
       description: nodeMetadata.description,
       timestamp: nodes.createdAt,
 
-      edgeType: sub.edgeType,
-      edgeSourceId: sub.sourceId,
-      edgeTargetId: sub.targetId,
-      sourceLabel: srcMeta.label,
-      targetLabel: tgtMeta.label,
+      predicate: sub.predicate,
+      statement: sub.statement,
+      claimSubjectId: sub.subjectId,
+      claimObjectId: sub.objectId,
+      subjectLabel: srcMeta.label,
+      objectLabel: tgtMeta.label,
     })
     .from(sub)
     .innerJoin(nodes, eq(nodes.id, sub.nodeId))
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-    .leftJoin(srcMeta, eq(srcMeta.nodeId, sub.sourceId))
-    .leftJoin(tgtMeta, eq(tgtMeta.nodeId, sub.targetId))
+    .leftJoin(srcMeta, eq(srcMeta.nodeId, sub.subjectId))
+    .leftJoin(tgtMeta, eq(tgtMeta.nodeId, sub.objectId))
     .where(and(not(inArray(nodes.id, nodeIds)), isNotNull(nodeMetadata.label)))
     .orderBy(nodes.id)
     .limit(50);
@@ -357,10 +393,10 @@ export async function fetchSourceIdsForNodes(
 }
 
 /**
- * Helper to fetch all edges between a set of node IDs for a user.
- * Returns edges where both source and target are in nodeIds and both have non-null labels.
+ * Helper to fetch all relationship claims between a set of node IDs for a user.
+ * Returns claims where both subject and object are in nodeIds and both have non-null labels.
  */
-export async function fetchEdgesBetweenNodeIds(
+export async function fetchClaimsBetweenNodeIds(
   db: DrizzleDB,
   userId: string,
   nodeIds: TypeId<"node">[],
@@ -370,19 +406,25 @@ export async function fetchEdgesBetweenNodeIds(
   const tgt = aliasedTable(nodeMetadata, "tgt");
   return db
     .select({
-      source: edges.sourceNodeId,
-      target: edges.targetNodeId,
-      edgeType: edges.edgeType,
-      description: edges.description,
+      id: claims.id,
+      subject: claims.subjectNodeId,
+      object: sql<TypeId<"node">>`${claims.objectNodeId}`.as("object"),
+      predicate: claims.predicate,
+      statement: claims.statement,
+      description: claims.description,
+      sourceId: claims.sourceId,
+      statedAt: claims.statedAt,
+      status: claims.status,
     })
-    .from(edges)
-    .innerJoin(src, eq(src.nodeId, edges.sourceNodeId))
-    .innerJoin(tgt, eq(tgt.nodeId, edges.targetNodeId))
+    .from(claims)
+    .innerJoin(src, eq(src.nodeId, claims.subjectNodeId))
+    .innerJoin(tgt, eq(tgt.nodeId, claims.objectNodeId))
     .where(
       and(
-        eq(edges.userId, userId),
-        inArray(edges.sourceNodeId, nodeIds),
-        inArray(edges.targetNodeId, nodeIds),
+        eq(claims.userId, userId),
+        eq(claims.status, "active"),
+        inArray(claims.subjectNodeId, nodeIds),
+        inArray(claims.objectNodeId, nodeIds),
         isNotNull(src.label),
         isNotNull(tgt.label),
       ),

@@ -3,11 +3,11 @@ import {
   findOneHopNodes,
   findSimilarNodes,
   fetchSourceIdsForNodes,
+  fetchClaimsBetweenNodeIds,
 } from "../graph";
 import { QueryGraphRequest, QueryGraphResponse } from "../schemas/query-graph";
-import { and, aliasedTable, eq, inArray, isNotNull } from "drizzle-orm";
-import { DrizzleDB } from "~/db";
-import { nodes, nodeMetadata, edges } from "~/db/schema";
+import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { nodes, nodeMetadata } from "~/db/schema";
 import type { NodeType } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
@@ -17,34 +17,6 @@ interface GraphNodeResult {
   nodeType: NodeType;
   label: string;
   description: string | null;
-}
-
-async function fetchEdgesBetweenNodeIds(
-  db: DrizzleDB,
-  userId: string,
-  nodeIds: TypeId<"node">[],
-) {
-  const src = aliasedTable(nodeMetadata, "src");
-  const tgt = aliasedTable(nodeMetadata, "tgt");
-  return db
-    .select({
-      source: edges.sourceNodeId,
-      target: edges.targetNodeId,
-      edgeType: edges.edgeType,
-      description: edges.description,
-    })
-    .from(edges)
-    .innerJoin(src, eq(src.nodeId, edges.sourceNodeId))
-    .innerJoin(tgt, eq(tgt.nodeId, edges.targetNodeId))
-    .where(
-      and(
-        eq(edges.userId, userId),
-        inArray(edges.sourceNodeId, nodeIds),
-        inArray(edges.targetNodeId, nodeIds),
-        isNotNull(src.label),
-        isNotNull(tgt.label),
-      ),
-    );
 }
 
 export async function queryKnowledgeGraph(
@@ -84,11 +56,11 @@ export async function queryKnowledgeGraph(
     }));
     const nodeIds = nodeRowsClean.map((n) => n.id);
     if (nodeIds.length === 0) {
-      return { nodes: [], edges: [] };
+      return { nodes: [], claims: [] };
     }
 
-    const [edgeRows, sourceIdMap] = await Promise.all([
-      fetchEdgesBetweenNodeIds(db, userId, nodeIds),
+    const [claimRows, sourceIdMap] = await Promise.all([
+      fetchClaimsBetweenNodeIds(db, userId, nodeIds),
       fetchSourceIdsForNodes(db, nodeIds),
     ]);
 
@@ -97,7 +69,7 @@ export async function queryKnowledgeGraph(
         ...n,
         sourceIds: sourceIdMap.get(n.id) ?? [],
       })),
-      edges: edgeRows,
+      claims: claimRows,
     };
   }
 
@@ -158,11 +130,11 @@ export async function queryKnowledgeGraph(
 
   const nodeIds = Array.from(nodeMap.keys());
   if (nodeIds.length === 0) {
-    return { nodes: [], edges: [] };
+    return { nodes: [], claims: [] };
   }
 
-  const [edgeRows, sourceIdMap] = await Promise.all([
-    fetchEdgesBetweenNodeIds(db, userId, nodeIds),
+  const [claimRows, sourceIdMap] = await Promise.all([
+    fetchClaimsBetweenNodeIds(db, userId, nodeIds),
     fetchSourceIdsForNodes(db, nodeIds),
   ]);
 
@@ -171,6 +143,6 @@ export async function queryKnowledgeGraph(
       ...n,
       sourceIds: sourceIdMap.get(n.id) ?? [],
     })),
-    edges: edgeRows,
+    claims: claimRows,
   };
 }

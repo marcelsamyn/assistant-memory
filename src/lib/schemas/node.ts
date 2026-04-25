@@ -1,4 +1,8 @@
-import { EdgeTypeEnum, NodeTypeEnum } from "../../types/graph.js";
+import {
+  ClaimStatusEnum,
+  NodeTypeEnum,
+  PredicateEnum,
+} from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
 import { z } from "zod";
 
@@ -9,14 +13,19 @@ export const getNodeRequestSchema = z.object({
   nodeId: typeIdSchema("node"),
 });
 
-export const getNodeEdgeSchema = z.object({
-  id: typeIdSchema("edge"),
-  sourceNodeId: typeIdSchema("node"),
-  targetNodeId: typeIdSchema("node"),
-  edgeType: EdgeTypeEnum,
+export const getNodeClaimSchema = z.object({
+  id: typeIdSchema("claim"),
+  subjectNodeId: typeIdSchema("node"),
+  objectNodeId: typeIdSchema("node").nullable(),
+  objectValue: z.string().nullable(),
+  predicate: PredicateEnum,
+  statement: z.string(),
   description: z.string().nullable(),
-  sourceLabel: z.string().nullable(),
-  targetLabel: z.string().nullable(),
+  subjectLabel: z.string().nullable(),
+  objectLabel: z.string().nullable(),
+  sourceId: typeIdSchema("source"),
+  status: ClaimStatusEnum,
+  statedAt: z.coerce.date(),
 });
 
 export const getNodeResponseSchema = z.object({
@@ -28,7 +37,7 @@ export const getNodeResponseSchema = z.object({
     createdAt: z.coerce.date(),
     sourceIds: z.array(z.string()),
   }),
-  edges: z.array(getNodeEdgeSchema),
+  claims: z.array(getNodeClaimSchema),
 });
 
 export type GetNodeRequest = z.infer<typeof getNodeRequestSchema>;

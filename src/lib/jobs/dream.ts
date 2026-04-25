@@ -2,7 +2,7 @@ import { addDays, formatISO } from "date-fns";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import type { DrizzleDB } from "~/db";
-import { nodes, nodeMetadata, nodeEmbeddings, edges } from "~/db/schema";
+import { nodes, nodeMetadata, nodeEmbeddings } from "~/db/schema";
 import { crateTextCompletion, performStructuredAnalysis } from "~/lib/ai";
 import { generateEmbeddings } from "~/lib/embeddings";
 import { formatNodesForPrompt } from "~/lib/formatting";
@@ -244,11 +244,5 @@ async function persistDream(
     nodeId: newNode.id,
     modelName: "jina-embeddings-v3",
     embedding: emb.data[0]!.embedding,
-  });
-  await db.insert(edges).values({
-    userId,
-    sourceNodeId: dayId,
-    targetNodeId: newNode.id,
-    edgeType: "CAPTURED_IN",
   });
 }

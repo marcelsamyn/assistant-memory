@@ -20,7 +20,7 @@ export async function insertNewSources(params: {
   parentSourceId: string;
   childSourceType: SourceType;
   childSources: SourceInput[];
-}): Promise<{ sourceNodeId: TypeId<"node">; newSourceSourceIds: string[] }> {
+}): Promise<{ sourceId: TypeId<"source">; newSourceSourceIds: string[] }> {
   const {
     db,
     userId,
@@ -78,5 +78,5 @@ export async function insertNewSources(params: {
   });
   const newSourceSourceIds = insertedRows.map((r) => r.externalId);
 
-  return { sourceNodeId: parentSource.id, newSourceSourceIds };
+  return { sourceId: parentSource.id, newSourceSourceIds };
 }

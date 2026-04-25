@@ -1,11 +1,12 @@
 import { createCompletionClient } from "../ai";
 import {
+  generateAndInsertClaimEmbeddings,
   generateAndInsertNodeEmbeddings,
-  generateAndInsertEdgeEmbeddings,
-  type EmbeddableEdge,
+  type EmbeddableClaim,
 } from "../embeddings-util";
 import { findOneHopNodes, findSimilarNodes } from "../graph";
 import { normalizeLabel } from "../label";
+import { ensureSystemSource } from "../sources";
 import { TemporaryIdMapper } from "../temporary-id-mapper";
 import { sql, eq, gte, desc, and, inArray } from "drizzle-orm";
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
@@ -13,13 +14,13 @@ import { z } from "zod";
 import { DrizzleDB } from "~/db";
 import {
   nodes,
-  edges,
+  claims,
   nodeMetadata,
   sourceLinks,
   nodeEmbeddings,
 } from "~/db/schema";
-import { EdgeTypeEnum, NodeTypeEnum } from "~/types/graph";
-import type { EdgeType, NodeType } from "~/types/graph";
+import { NodeTypeEnum, RelationshipPredicateEnum } from "~/types/graph";
+import type { NodeType, RelationshipPredicate } from "~/types/graph";
 import { TypeId, typeIdSchema } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -30,7 +31,7 @@ export const CleanupGraphJobInputSchema = z.object({
   semanticNeighborLimit: z.number().int().positive().default(15),
   graphHopDepth: z.union([z.literal(1), z.literal(2)]).default(2),
   maxSubgraphNodes: z.number().int().positive().default(100),
-  maxSubgraphEdges: z.number().int().positive().default(150),
+  maxSubgraphClaims: z.number().int().positive().default(150),
   llmModelId: z.string(),
   seedIds: z
     .array(typeIdSchema("node"))
@@ -56,15 +57,15 @@ export interface GraphNode {
 /**
  * Core graph types
  */
-export interface GraphEdge {
-  source: TypeId<"node">;
-  target: TypeId<"node">;
-  type: EdgeType;
-  description?: string;
+export interface GraphClaim {
+  subject: TypeId<"node">;
+  object: TypeId<"node">;
+  predicate: RelationshipPredicate;
+  statement: string;
 }
 export interface Subgraph {
   nodes: GraphNode[];
-  edges: GraphEdge[];
+  claims: GraphClaim[];
 }
 
 /**
@@ -73,15 +74,15 @@ export interface Subgraph {
 export interface TempNode extends GraphNode {
   tempId: string;
 }
-export interface TempEdge {
-  sourceTemp: string;
-  targetTemp: string;
-  type: EdgeType;
-  description: string;
+export interface TempClaim {
+  subjectTemp: string;
+  objectTemp: string;
+  predicate: RelationshipPredicate;
+  statement: string;
 }
 export interface TempSubgraph {
   nodes: TempNode[];
-  edges: TempEdge[];
+  claims: TempClaim[];
 }
 
 export const CleanupProposalSchema = z.object({
@@ -105,15 +106,13 @@ export const CleanupProposalSchema = z.object({
   additions: z
     .array(
       z.object({
-        source: z.string().describe("Temp ID of source node"),
-        target: z.string().describe("Temp ID of target node"),
-        type: EdgeTypeEnum.describe("Type of edge"),
-        description: z
-          .string()
-          .describe("Concise description of the edge's meaning"),
+        subject: z.string().describe("Temp ID of subject node"),
+        object: z.string().describe("Temp ID of object node"),
+        predicate: RelationshipPredicateEnum.describe("Claim predicate"),
+        statement: z.string().describe("Concise sentence stating the claim"),
       }),
     )
-    .describe("New edges to add"),
+    .describe("New claims to add"),
   newNodes: z
     .array(
       z.object({
@@ -148,10 +147,10 @@ export interface CleanupGraphResult {
     label: string;
     description?: string;
   }>;
-  addedEdges: Array<{
-    source: TypeId<"node">;
-    target: TypeId<"node">;
-    type: EdgeType;
+  addedClaims: Array<{
+    subject: TypeId<"node">;
+    object: TypeId<"node">;
+    predicate: RelationshipPredicate;
   }>;
   createdNodes: Array<{
     nodeId: TypeId<"node">;
@@ -181,7 +180,7 @@ export async function cleanupGraphIteration(
     semanticNeighborLimit,
     graphHopDepth,
     maxSubgraphNodes,
-    maxSubgraphEdges,
+    maxSubgraphClaims,
     llmModelId,
     minSubgraphNodes = 5,
   } = params;
@@ -192,7 +191,7 @@ export async function cleanupGraphIteration(
     semanticNeighborLimit,
     graphHopDepth,
     maxSubgraphNodes,
-    maxSubgraphEdges,
+    maxSubgraphClaims,
   );
   if (sub.nodes.length < minSubgraphNodes) {
     console.debug(
@@ -224,12 +223,12 @@ export async function fetchEntryNodes(
   const db = await useDatabase();
   const rows = await db
     .select({
-      nodeId: edges.sourceNodeId,
+      nodeId: claims.subjectNodeId,
       count: sql<number>`COUNT(*)`.as("count"),
     })
-    .from(edges)
-    .where(and(eq(edges.userId, userId), gte(edges.createdAt, since)))
-    .groupBy(edges.sourceNodeId)
+    .from(claims)
+    .where(and(eq(claims.userId, userId), gte(claims.createdAt, since)))
+    .groupBy(claims.subjectNodeId)
     .orderBy(desc(sql`count`))
     .limit(limit);
   return rows.map((r) => r.nodeId);
@@ -244,7 +243,7 @@ async function buildSubgraph(
   semanticLimit: number,
   hopDepth: number,
   maxNodes: number,
-  maxEdges: number,
+  maxClaims: number,
 ): Promise<Subgraph> {
   const db = await useDatabase();
   // load seed metadata
@@ -292,7 +291,7 @@ async function buildSubgraph(
       }
     }
   }
-  const edgesList: GraphEdge[] = [];
+  const claimsList: GraphClaim[] = [];
   // Expand connections
   let currentIds = Array.from(nodeMap.keys());
   for (let hop = 1; hop <= hopDepth; hop++) {
@@ -308,33 +307,35 @@ async function buildSubgraph(
         });
         nextIds.push(c.id);
       }
-      edgesList.push({
-        source: c.edgeSourceId,
-        target: c.edgeTargetId,
-        type: c.edgeType,
-        description: c.description ?? "",
+      claimsList.push({
+        subject: c.claimSubjectId,
+        object: c.claimObjectId,
+        predicate: c.predicate as RelationshipPredicate,
+        statement: c.statement,
       });
     }
     currentIds = nextIds;
     if (!currentIds.length) break;
   }
-  // dedupe edges
-  const unique: GraphEdge[] = [];
+  // dedupe claims
+  const unique: GraphClaim[] = [];
   const seen = new Set<string>();
-  for (const e of edgesList) {
-    const key = `${e.source}|${e.target}|${e.type}`;
+  for (const claim of claimsList) {
+    const key = `${claim.subject}|${claim.object}|${claim.predicate}|${claim.statement}`;
     if (!seen.has(key)) {
       seen.add(key);
-      unique.push(e);
+      unique.push(claim);
     }
   }
-  // trim nodes & edges, ensuring edges only reference kept nodes
+  // trim nodes & claims, ensuring claims only reference kept nodes
   const nodesArr = Array.from(nodeMap.values()).slice(0, maxNodes);
   const nodeIdsSet = new Set(nodesArr.map((n) => n.id));
-  const edgesArr = unique
-    .filter((e) => nodeIdsSet.has(e.source) && nodeIdsSet.has(e.target))
-    .slice(0, maxEdges);
-  return { nodes: nodesArr, edges: edgesArr };
+  const claimsArr = unique
+    .filter(
+      (claim) => nodeIdsSet.has(claim.subject) && nodeIdsSet.has(claim.object),
+    )
+    .slice(0, maxClaims);
+  return { nodes: nodesArr, claims: claimsArr };
 }
 
 /**
@@ -348,17 +349,17 @@ function toTempSubgraph(sub: Subgraph): {
     (_item, idx) => `temp_node_${idx + 1}`,
   );
   const tempNodes = mapper.mapItems(sub.nodes);
-  const tempEdges: TempEdge[] = sub.edges.map((e) => {
-    const src = sub.nodes.find((n) => n.id === e.source)!;
-    const tgt = sub.nodes.find((n) => n.id === e.target)!;
+  const tempClaims: TempClaim[] = sub.claims.map((claim) => {
+    const src = sub.nodes.find((n) => n.id === claim.subject)!;
+    const tgt = sub.nodes.find((n) => n.id === claim.object)!;
     return {
-      sourceTemp: mapper.getId(src)!,
-      targetTemp: mapper.getId(tgt)!,
-      type: e.type,
-      description: e.description ?? "",
+      subjectTemp: mapper.getId(src)!,
+      objectTemp: mapper.getId(tgt)!,
+      predicate: claim.predicate,
+      statement: claim.statement,
     };
   });
-  return { tempSubgraph: { nodes: tempNodes, edges: tempEdges }, mapper };
+  return { tempSubgraph: { nodes: tempNodes, claims: tempClaims }, mapper };
 }
 
 /**
@@ -382,13 +383,13 @@ async function proposeGraphCleanup(
         `<node tempId="${n.tempId}" label="${n.label}" type="${n.type}">${n.description}</node>`,
     )
     .join("\n");
-  const edgesList = temp.edges
+  const claimsList = temp.claims
     .map(
-      (e) =>
-        `<edge source="${e.sourceTemp}" target="${e.targetTemp}" type="${e.type}">${e.description}</edge>`,
+      (claim) =>
+        `<claim subject="${claim.subjectTemp}" object="${claim.objectTemp}" predicate="${claim.predicate}">${claim.statement}</claim>`,
     )
     .join("\n");
-  const prompt = `You are a graph cleaning assistant. Your task is to analyze this subgraph and propose improvements to ensure accuracy, remove redundancies, and maintain data quality.
+  const prompt = `You are a graph cleaning assistant. Your task is to analyze this claim subgraph and propose improvements to ensure accuracy, remove redundancies, and maintain data quality.
 ${
   userAtlas
     ? `
@@ -426,14 +427,14 @@ ${userAtlas}
    - Prefer user-stated facts over inferred information
    - Always prefer atlas information over graph nodes when they conflict
 
-5. **Improve Connections**: Add missing edges between related nodes that should be connected
+	5. **Improve Connections**: Add missing claims between related nodes that should be connected
 
-6. **Remove Redundant Edges**: Don't create edges that duplicate existing relationships
+	6. **Remove Redundant Claims**: Don't create claims that duplicate existing relationships
 
 **Your Response Should Include:**
 - **merges**: Pairs of temp IDs where nodes are duplicates (remove will be merged into keep)
 - **deletes**: Temp IDs of nodes to completely remove (speculative, outdated, or unclear)
-- **additions**: New edges to add (with concise, factual descriptions)
+- **additions**: New claims to add (with concise, factual statements)
 - **newNodes**: Any new nodes needed (only if genuinely missing and factual)
 
 **Important**: Be aggressive about removing redundant and speculative information. Quality and accuracy are more important than quantity.
@@ -441,9 +442,9 @@ ${userAtlas}
 Nodes:
 ${nodesList}
 
-Edges:
-${edgesList}
-`;
+Claims:
+${claimsList}
+	`;
   const completion = await client.beta.chat.completions.parse({
     messages: [{ role: "user", content: prompt }],
     model: modelId,
@@ -466,10 +467,11 @@ async function applyCleanupProposal(
   db: Awaited<ReturnType<typeof useDatabase>>,
   userId: string,
 ): Promise<CleanupGraphResult> {
+  const cleanupSourceId = await ensureSystemSource(db, userId, "manual");
   return db.transaction(async (tx) => {
     const merged: CleanupGraphResult["merged"] = [];
     const removed: CleanupGraphResult["removed"] = [];
-    const addedEdgesResult: CleanupGraphResult["addedEdges"] = [];
+    const addedClaimsResult: CleanupGraphResult["addedClaims"] = [];
     const createdNodes: Array<
       CleanupGraphResult["createdNodes"][number] & { tempId?: string }
     > = [];
@@ -483,15 +485,15 @@ async function applyCleanupProposal(
     const newDeletes = Array.from(
       new Set(proposal.deletes.map((d) => remap.get(d.tempId) ?? d.tempId)),
     ).map((tempId) => ({ tempId }));
-    // Rewrite additions with remapped IDs, drop self-edges
-    const newEdgesToCreate = proposal.additions
-      .map(({ source, target, type, description }) => ({
-        source: remap.get(source) ?? source,
-        target: remap.get(target) ?? target,
-        type,
-        description,
+    // Rewrite additions with remapped IDs, drop self-claims
+    const newClaimsToCreate = proposal.additions
+      .map(({ subject, object, predicate, statement }) => ({
+        subject: remap.get(subject) ?? subject,
+        object: remap.get(object) ?? object,
+        predicate,
+        statement,
       }))
-      .filter((e) => e.source !== e.target);
+      .filter((claim) => claim.subject !== claim.object);
     // Keep newNodes as-is
     const newNodesToCreate = [...proposal.newNodes];
 
@@ -524,7 +526,7 @@ async function applyCleanupProposal(
       if (!keepNode || !removeNode) continue;
       const keepId = keepNode.id;
       const removeId = removeNode.id;
-      await rewireNodeEdges(tx, removeId, keepId, userId);
+      await rewireNodeClaims(tx, removeId, keepId, userId);
       await rewireSourceLinks(tx, removeId, keepId);
       await deleteNode(tx, removeId, userId);
       merged.push({
@@ -537,49 +539,51 @@ async function applyCleanupProposal(
       });
     }
 
-    // Step 3: Additions (new edges)
-    const edgeInserts: Array<typeof edges.$inferInsert> = [];
-    for (const e of newEdgesToCreate) {
-      const srcNodeOriginal = mapper.getItem(e.source);
-      const tgtNodeOriginal = mapper.getItem(e.target);
+    // Step 3: Additions (new claims)
+    const claimInserts: Array<typeof claims.$inferInsert> = [];
+    for (const claim of newClaimsToCreate) {
+      const srcNodeOriginal = mapper.getItem(claim.subject);
+      const tgtNodeOriginal = mapper.getItem(claim.object);
 
-      const srcNodeNew = createdNodes.find((cn) => cn.tempId === e.source);
-      const tgtNodeNew = createdNodes.find((cn) => cn.tempId === e.target);
+      const srcNodeNew = createdNodes.find((cn) => cn.tempId === claim.subject);
+      const tgtNodeNew = createdNodes.find((cn) => cn.tempId === claim.object);
 
       const srcId = srcNodeOriginal?.id ?? srcNodeNew?.nodeId;
       const tgtId = tgtNodeOriginal?.id ?? tgtNodeNew?.nodeId;
 
       if (!srcId || !tgtId) {
         console.warn(
-          `Skipping edge creation due to missing node mapping: ${e.source} -> ${e.target}`,
+          `Skipping claim creation due to missing node mapping: ${claim.subject} -> ${claim.object}`,
         );
         continue;
       }
-      edgeInserts.push({
+      claimInserts.push({
         userId,
-        sourceNodeId: srcId,
-        targetNodeId: tgtId,
-        edgeType: e.type,
-        description: e.description,
+        subjectNodeId: srcId,
+        objectNodeId: tgtId,
+        predicate: claim.predicate,
+        statement: claim.statement,
+        description: claim.statement,
+        sourceId: cleanupSourceId,
+        statedAt: new Date(),
+        status: "active",
         metadata: {},
       });
     }
 
-    let insertedEdgeRecords: Array<typeof edges.$inferSelect> = [];
-    if (edgeInserts.length > 0) {
-      insertedEdgeRecords = await tx
-        .insert(edges)
-        .values(edgeInserts)
-        .onConflictDoNothing({
-          target: [edges.sourceNodeId, edges.targetNodeId, edges.edgeType],
-        })
+    let insertedClaimRecords: Array<typeof claims.$inferSelect> = [];
+    if (claimInserts.length > 0) {
+      insertedClaimRecords = await tx
+        .insert(claims)
+        .values(claimInserts)
         .returning();
 
-      for (const r of insertedEdgeRecords) {
-        addedEdgesResult.push({
-          source: r.sourceNodeId,
-          target: r.targetNodeId,
-          type: r.edgeType,
+      for (const r of insertedClaimRecords) {
+        if (!r.objectNodeId) continue;
+        addedClaimsResult.push({
+          subject: r.subjectNodeId,
+          object: r.objectNodeId,
+          predicate: r.predicate as RelationshipPredicate,
         });
       }
     }
@@ -611,61 +615,20 @@ async function applyCleanupProposal(
       });
     }
 
-    // Step 5: Generate embeddings for new nodes and edges
-    const newNodesLookup = new Map(
-      createdNodes.map((n) => [
-        n.nodeId,
-        { label: n.label, description: n.description },
-      ]),
-    );
-
+    // Step 5: Generate embeddings for new nodes and claims
     // Run embedding generation concurrently
     await Promise.all([
-      // Generate and insert edge embeddings
-      generateAndInsertEdgeEmbeddings(
+      generateAndInsertClaimEmbeddings(
         tx,
-        insertedEdgeRecords
-          .map(
-            (edgeRecord: typeof edges.$inferSelect): EmbeddableEdge | null => {
-              const sourceNodeMappedEntry = mapper
-                .entries()
-                .find(
-                  ({ item }: { item: GraphNode }) =>
-                    item.id === edgeRecord.sourceNodeId,
-                );
-              const targetNodeMappedEntry = mapper
-                .entries()
-                .find(
-                  ({ item }: { item: GraphNode }) =>
-                    item.id === edgeRecord.targetNodeId,
-                );
-              const sourceNodeOriginal = sourceNodeMappedEntry?.item;
-              const targetNodeOriginal = targetNodeMappedEntry?.item;
-
-              const sourceLabel =
-                sourceNodeOriginal?.label ??
-                newNodesLookup.get(edgeRecord.sourceNodeId)?.label;
-              const targetLabel =
-                targetNodeOriginal?.label ??
-                newNodesLookup.get(edgeRecord.targetNodeId)?.label;
-
-              if (!sourceLabel || !targetLabel) {
-                console.warn(
-                  `Skipping embedding for edge ${edgeRecord.id}: missing label or description is not a string.`,
-                );
-                return null;
-              }
-
-              return {
-                edgeId: edgeRecord.id,
-                edgeType: edgeRecord.edgeType,
-                description: edgeRecord.description,
-                sourceLabel,
-                targetLabel,
-              };
-            },
-          )
-          .filter((e): e is EmbeddableEdge => e !== null),
+        insertedClaimRecords.map(
+          (claimRecord): EmbeddableClaim => ({
+            claimId: claimRecord.id,
+            predicate: claimRecord.predicate,
+            statement: claimRecord.statement,
+            status: claimRecord.status,
+            statedAt: claimRecord.statedAt,
+          }),
+        ),
       ),
       // Generate and insert node embeddings
       generateAndInsertNodeEmbeddings(
@@ -682,65 +645,51 @@ async function applyCleanupProposal(
     return {
       merged,
       removed,
-      addedEdges: addedEdgesResult,
+      addedClaims: addedClaimsResult,
       createdNodes: createdNodes,
     };
   });
 }
 
 /**
- * Rewire edges from removeId to keepId for a given user
+ * Rewire claims from removeId to keepId for a given user.
  */
-export async function rewireNodeEdges(
+export async function rewireNodeClaims(
   tx: DrizzleDB,
   removeId: TypeId<"node">,
   keepId: TypeId<"node">,
   userId: string,
 ) {
-  // Out-going edges
-  const outEdges = await tx
-    .select()
-    .from(edges)
-    .where(and(eq(edges.sourceNodeId, removeId), eq(edges.userId, userId)));
-  for (const edge of outEdges) {
-    await tx
-      .insert(edges)
-      .values({
-        userId: edge.userId,
-        sourceNodeId: keepId,
-        targetNodeId: edge.targetNodeId,
-        edgeType: edge.edgeType,
-        metadata: edge.metadata,
-      })
-      .onConflictDoNothing({
-        target: [edges.sourceNodeId, edges.targetNodeId, edges.edgeType],
-      });
-  }
   await tx
-    .delete(edges)
-    .where(and(eq(edges.sourceNodeId, removeId), eq(edges.userId, userId)));
-  // In-coming edges
-  const inEdges = await tx
-    .select()
-    .from(edges)
-    .where(and(eq(edges.targetNodeId, removeId), eq(edges.userId, userId)));
-  for (const edge of inEdges) {
-    await tx
-      .insert(edges)
-      .values({
-        userId: edge.userId,
-        sourceNodeId: edge.sourceNodeId,
-        targetNodeId: keepId,
-        edgeType: edge.edgeType,
-        metadata: edge.metadata,
-      })
-      .onConflictDoNothing({
-        target: [edges.sourceNodeId, edges.targetNodeId, edges.edgeType],
-      });
-  }
+    .update(claims)
+    .set({ subjectNodeId: keepId, updatedAt: new Date() })
+    .where(and(eq(claims.subjectNodeId, removeId), eq(claims.userId, userId)));
+
   await tx
-    .delete(edges)
-    .where(and(eq(edges.targetNodeId, removeId), eq(edges.userId, userId)));
+    .update(claims)
+    .set({ objectNodeId: keepId, updatedAt: new Date() })
+    .where(and(eq(claims.objectNodeId, removeId), eq(claims.userId, userId)));
+
+  await tx.execute(sql`
+    DELETE FROM claims
+    WHERE user_id = ${userId}
+      AND subject_node_id = ${keepId}
+      AND object_node_id = ${keepId}
+  `);
+
+  await tx.execute(sql`
+    DELETE FROM claims c
+    USING claims kept
+    WHERE c.user_id = ${userId}
+      AND kept.user_id = c.user_id
+      AND kept.id <> c.id
+      AND kept.subject_node_id = c.subject_node_id
+      AND kept.predicate = c.predicate
+      AND kept.source_id = c.source_id
+      AND kept.object_node_id IS NOT DISTINCT FROM c.object_node_id
+      AND kept.object_value IS NOT DISTINCT FROM c.object_value
+      AND (kept.created_at, kept.id) < (c.created_at, c.id)
+  `);
 }
 
 /**
@@ -789,7 +738,7 @@ function logCleanupSummary(
   console.info(
     `[CLEANUP] user=${params.userId} seeds=${params.entryNodeLimit} hops=${params.graphHopDepth} ` +
       `merged=${result.merged.length} removed=${result.removed.length} ` +
-      `addedEdges=${result.addedEdges.length} createdNodes=${result.createdNodes.length}`,
+      `addedClaims=${result.addedClaims.length} createdNodes=${result.createdNodes.length}`,
   );
 }
 
@@ -822,12 +771,12 @@ export function logProposalOverview(
   }
 
   if (proposal.additions.length) {
-    console.log("Additions:");
-    proposal.additions.forEach(({ source, target, type, description }) => {
-      const sNode = mapper.getItem(source as TypeId<"node">);
-      const tNode = mapper.getItem(target as TypeId<"node">);
+    console.log("Claim additions:");
+    proposal.additions.forEach(({ subject, object, predicate, statement }) => {
+      const sNode = mapper.getItem(subject as TypeId<"node">);
+      const tNode = mapper.getItem(object as TypeId<"node">);
       console.log(
-        ` - Add Edge: ${sNode?.label || ""} -> ${tNode?.label || ""} (${type}) - ${description}`,
+        ` - Add Claim: ${sNode?.label || ""} -> ${tNode?.label || ""} (${predicate}) - ${statement}`,
       );
     });
   }

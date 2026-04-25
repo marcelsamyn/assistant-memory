@@ -4,6 +4,7 @@ dist
 .nitro
 .cache
 .output
+.claude/worktrees/
 .env
 .DS_Store
 
