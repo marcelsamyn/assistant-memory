@@ -1,4 +1,4 @@
-import { typeId } from "./typeid";
+import { typeId, typeIdNoDefault } from "./typeid";
 import { relations, sql } from "drizzle-orm";
 import {
   check,
@@ -11,11 +11,14 @@ import {
   index,
   unique,
   integer,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import {
+  AssertedByKind,
   ClaimStatus,
   NodeType,
   Predicate,
+  Scope,
   SourceStatus,
   SourceType,
 } from "~/types/graph";
@@ -95,10 +98,9 @@ export const claims = pgTable(
     subjectNodeId: typeId("node", { name: "subject_node_id" })
       .references(() => nodes.id, { onDelete: "cascade" })
       .notNull(),
-    objectNodeId: typeId("node", { name: "object_node_id" }).references(
-      () => nodes.id,
-      { onDelete: "cascade" },
-    ),
+    objectNodeId: typeIdNoDefault("node", {
+      name: "object_node_id",
+    }).references(() => nodes.id, { onDelete: "cascade" }),
     objectValue: text("object_value"),
     predicate: varchar("predicate", { length: 80 })
       .notNull()
@@ -111,6 +113,22 @@ export const claims = pgTable(
         onDelete: "cascade",
       })
       .notNull(),
+    scope: varchar("scope", { length: 16 })
+      .notNull()
+      .$type<Scope>()
+      .default("personal"),
+    assertedByKind: varchar("asserted_by_kind", { length: 24 })
+      .notNull()
+      .$type<AssertedByKind>(),
+    assertedByNodeId: typeIdNoDefault("node", {
+      name: "asserted_by_node_id",
+    }).references(() => nodes.id, { onDelete: "set null" }),
+    supersededByClaimId: typeIdNoDefault("claim", {
+      name: "superseded_by_claim_id",
+    }).references((): AnyPgColumn => claims.id, { onDelete: "set null" }),
+    contradictedByClaimId: typeIdNoDefault("claim", {
+      name: "contradicted_by_claim_id",
+    }).references((): AnyPgColumn => claims.id, { onDelete: "set null" }),
     statedAt: timestamp("stated_at", { withTimezone: true }).notNull(),
     validFrom: timestamp("valid_from", { withTimezone: true }),
     validTo: timestamp("valid_to", { withTimezone: true }),
@@ -135,10 +153,17 @@ export const claims = pgTable(
       table.objectNodeId,
     ),
     index("claims_user_id_predicate_idx").on(table.userId, table.predicate),
-    index("claims_user_id_status_stated_at_idx").on(
+    index("claims_user_scope_status_stated_at_idx").on(
       table.userId,
+      table.scope,
       table.status,
       table.statedAt,
+    ),
+    index("claims_user_scope_kind_status_idx").on(
+      table.userId,
+      table.scope,
+      table.assertedByKind,
+      table.status,
     ),
     index("claims_user_id_subject_status_idx").on(
       table.userId,
@@ -152,6 +177,15 @@ export const claims = pgTable(
     check(
       "claims_object_shape_xor_ck",
       sql`(("object_node_id" IS NOT NULL AND "object_value" IS NULL) OR ("object_node_id" IS NULL AND "object_value" IS NOT NULL))`,
+    ),
+    check("claims_scope_ck", sql`"scope" IN ('personal', 'reference')`),
+    check(
+      "claims_asserted_by_kind_ck",
+      sql`"asserted_by_kind" IN ('user', 'user_confirmed', 'assistant_inferred', 'participant', 'document_author', 'system')`,
+    ),
+    check(
+      "claims_asserted_by_node_consistency_ck",
+      sql`(("asserted_by_kind" = 'participant' AND "asserted_by_node_id" IS NOT NULL) OR "asserted_by_kind" <> 'participant')`,
     ),
   ],
 );
@@ -168,6 +202,20 @@ export const claimsRelations = relations(claims, ({ one }) => ({
   objectNode: one(nodes, {
     fields: [claims.objectNodeId],
     references: [nodes.id],
+  }),
+  assertedByNode: one(nodes, {
+    fields: [claims.assertedByNodeId],
+    references: [nodes.id],
+  }),
+  supersededByClaim: one(claims, {
+    fields: [claims.supersededByClaimId],
+    references: [claims.id],
+    relationName: "claimSupersession",
+  }),
+  contradictedByClaim: one(claims, {
+    fields: [claims.contradictedByClaimId],
+    references: [claims.id],
+    relationName: "claimContradiction",
   }),
   source: one(sources, {
     fields: [claims.sourceId],
@@ -282,7 +330,11 @@ export const sources = pgTable(
       .notNull(),
     type: varchar("type", { length: 50 }).notNull().$type<SourceType>(),
     externalId: text().notNull(),
-    parentSource: typeId("source"),
+    parentSource: typeIdNoDefault("source"),
+    scope: varchar("scope", { length: 16 })
+      .notNull()
+      .$type<Scope>()
+      .default("personal"),
 
     metadata: jsonb(), // e.g., Notion page title, chat participants
     lastIngestedAt: timestamp({ withTimezone: true }),
@@ -298,6 +350,7 @@ export const sources = pgTable(
     unique().on(table.userId, table.type, table.externalId),
     index("sources_user_id_idx").on(table.userId),
     index("sources_status_idx").on(table.status),
+    check("sources_scope_ck", sql`"scope" IN ('personal', 'reference')`),
   ],
 );
 

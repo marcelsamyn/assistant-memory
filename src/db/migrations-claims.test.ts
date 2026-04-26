@@ -387,3 +387,208 @@ describeIfServer("migration 0010 (claims layer, PR 1a)", () => {
     }
   }, 30_000);
 });
+
+describeIfServer("migration 0011 (claims phase 2b foundation)", () => {
+  const dbName = `memory_claims_2b_mig_test_${Date.now()}_${Math.floor(
+    Math.random() * 1e6,
+  )}`;
+
+  beforeAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE "${dbName}"`);
+    await admin.end();
+  });
+
+  afterAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(
+      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+       WHERE datname = $1 AND pid <> pg_backend_pid()`,
+      [dbName],
+    );
+    await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+    await admin.end();
+  });
+
+  it("adds scope, provenance, transition pointers, and is idempotent", async () => {
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+
+    try {
+      await client.query(`
+        CREATE TABLE "users" ("id" text PRIMARY KEY NOT NULL);
+        CREATE TABLE "nodes" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "node_type" varchar(50) NOT NULL,
+          "created_at" timestamp DEFAULT now() NOT NULL
+        );
+        CREATE TABLE "sources" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "type" varchar(50) NOT NULL,
+          "external_id" text NOT NULL,
+          "status" varchar(20) DEFAULT 'pending',
+          "created_at" timestamp DEFAULT now() NOT NULL,
+          CONSTRAINT sources_user_type_external_unique
+            UNIQUE ("user_id", "type", "external_id")
+        );
+        CREATE TABLE "claims" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "subject_node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+          "object_node_id" text REFERENCES "nodes"("id") ON DELETE CASCADE,
+          "object_value" text,
+          "predicate" varchar(80) NOT NULL,
+          "statement" text NOT NULL,
+          "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
+          "stated_at" timestamp with time zone NOT NULL,
+          "valid_from" timestamp with time zone,
+          "valid_to" timestamp with time zone,
+          "status" varchar(30) DEFAULT 'active' NOT NULL,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+          "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+          CONSTRAINT "claims_object_shape_xor_ck"
+            CHECK (num_nonnulls("object_node_id", "object_value") = 1)
+        );
+        CREATE INDEX "claims_user_id_status_stated_at_idx"
+          ON "claims" ("user_id", "status", "stated_at");
+      `);
+
+      await client.query(`
+        INSERT INTO "users" ("id") VALUES ('user_A');
+        INSERT INTO "nodes" ("id", "user_id", "node_type")
+          VALUES
+            ('node_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'user_A', 'Person'),
+            ('node_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'user_A', 'Object');
+        INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+          VALUES
+            ('src_manual_____________________', 'user_A', 'manual', 'manual:user_A', 'completed'),
+            ('src_message____________________', 'user_A', 'conversation_message', 'msg_A', 'completed');
+        INSERT INTO "claims" (
+          "id", "user_id", "subject_node_id", "object_node_id", "object_value",
+          "predicate", "statement", "source_id", "stated_at", "status"
+        )
+        VALUES
+          (
+            'claim_systemowned______________',
+            'user_A',
+            'node_aaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'node_bbbbbbbbbbbbbbbbbbbbbbbbbb',
+            NULL,
+            'OWNED_BY',
+            'System ownership claim.',
+            'src_manual_____________________',
+            '2026-04-01T00:00:00Z',
+            'active'
+          ),
+          (
+            'claim_userpreference___________',
+            'user_A',
+            'node_aaaaaaaaaaaaaaaaaaaaaaaaaa',
+            NULL,
+            'tea',
+            'HAS_PREFERENCE',
+            'User likes tea.',
+            'src_message____________________',
+            '2026-04-02T00:00:00Z',
+            'active'
+          );
+      `);
+
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      const migrationSql = await fs.readFile(
+        path.join(
+          process.cwd(),
+          "drizzle",
+          "0011_claims_phase_2b_foundation.sql",
+        ),
+        "utf8",
+      );
+      const applyMigration = async () => {
+        const statements = migrationSql
+          .split("--> statement-breakpoint")
+          .map((statement) => statement.trim())
+          .filter((statement) => statement.length > 0);
+        for (const statement of statements) {
+          await client.query(statement);
+        }
+      };
+
+      await client.query("BEGIN");
+      await applyMigration();
+      await client.query("COMMIT");
+
+      const claimColumns = await client.query<{ column_name: string }>(
+        `SELECT column_name FROM information_schema.columns
+           WHERE table_schema='public' AND table_name='claims'`,
+      );
+      expect(claimColumns.rows.map((row) => row.column_name)).toEqual(
+        expect.arrayContaining([
+          "scope",
+          "asserted_by_kind",
+          "asserted_by_node_id",
+          "superseded_by_claim_id",
+          "contradicted_by_claim_id",
+        ]),
+      );
+
+      const rows = await client.query<{
+        id: string;
+        scope: string;
+        asserted_by_kind: string;
+      }>(`SELECT id, scope, asserted_by_kind FROM claims ORDER BY id`);
+      expect(rows.rows).toEqual([
+        {
+          id: "claim_systemowned______________",
+          scope: "personal",
+          asserted_by_kind: "system",
+        },
+        {
+          id: "claim_userpreference___________",
+          scope: "personal",
+          asserted_by_kind: "user",
+        },
+      ]);
+
+      const indexes = await client.query<{ indexname: string }>(
+        `SELECT indexname FROM pg_indexes
+           WHERE schemaname='public' AND tablename='claims'
+           ORDER BY indexname`,
+      );
+      const indexNames = indexes.rows.map((row) => row.indexname);
+      expect(indexNames).toContain("claims_user_scope_status_stated_at_idx");
+      expect(indexNames).toContain("claims_user_scope_kind_status_idx");
+      expect(indexNames).not.toContain("claims_user_id_status_stated_at_idx");
+
+      await expect(
+        client.query(`
+          INSERT INTO "claims" (
+            "id", "user_id", "subject_node_id", "object_value",
+            "predicate", "statement", "source_id", "asserted_by_kind", "stated_at"
+          )
+          VALUES (
+            'claim_badparticipant___________',
+            'user_A',
+            'node_aaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'pending',
+            'HAS_STATUS',
+            'Bad participant claim.',
+            'src_message____________________',
+            'participant',
+            '2026-04-03T00:00:00Z'
+          )
+        `),
+      ).rejects.toThrow();
+
+      await client.query("BEGIN");
+      await applyMigration();
+      await client.query("COMMIT");
+    } finally {
+      await client.end();
+    }
+  });
+});

@@ -78,6 +78,13 @@
       "when": 1777038854487,
       "tag": "0010_claims_layer_pr_1a",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1777201790677,
+      "tag": "0011_claims_phase_2b_foundation",
+      "breakpoints": true
     }
   ]
 }
