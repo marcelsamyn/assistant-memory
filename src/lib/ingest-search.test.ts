@@ -237,6 +237,7 @@ describeIfServer("ingest -> search end-to-end", () => {
                               predicate: "PARTICIPATED_IN",
                               statement: `${personLabel} is working on the ${projectLabel} project.`,
                               sourceRef: "msg_1",
+                              assertionKind: "user",
                             },
                             {
                               subjectId: "project_1",
@@ -244,6 +245,7 @@ describeIfServer("ingest -> search end-to-end", () => {
                               predicate: "RELATED_TO",
                               statement: `${projectLabel} is a project at ${orgLabel}.`,
                               sourceRef: "msg_1",
+                              assertionKind: "user",
                             },
                           ],
                           attributeClaims: [
@@ -253,6 +255,7 @@ describeIfServer("ingest -> search end-to-end", () => {
                               objectValue: "in_progress",
                               statement: `${projectLabel} is currently in progress.`,
                               sourceRef: "msg_1",
+                              assertionKind: "user",
                             },
                           ],
                           aliases: [

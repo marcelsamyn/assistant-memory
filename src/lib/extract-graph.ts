@@ -17,6 +17,7 @@ import { type DrizzleDB } from "~/db";
 import { claims, nodeMetadata, nodes, sourceLinks, sources } from "~/db/schema";
 import {
   AssertedByKind,
+  AssertedByKindEnum,
   AttributePredicateEnum,
   NodeTypeEnum,
   RelationshipPredicateEnum,
@@ -46,6 +47,12 @@ const llmRelationshipClaimSchema = z.object({
     .string()
     .min(1)
     .describe("source reference that supports the claim"),
+  assertionKind: AssertedByKindEnum.describe(
+    "who asserted this claim (see CRITICAL EXTRACTION RULES)",
+  ),
+  // Accepted but ignored in this phase — no speaker map yet, so participant
+  // claims are rejected downstream until transcript ingestion lands.
+  assertedBySpeakerLabel: z.string().optional(),
   statedAt: z.string().datetime().optional(),
   validFrom: z.string().datetime().optional(),
   validTo: z.string().datetime().optional(),
@@ -61,6 +68,12 @@ const llmAttributeClaimSchema = z.object({
     .string()
     .min(1)
     .describe("source reference that supports the claim"),
+  assertionKind: AssertedByKindEnum.describe(
+    "who asserted this claim (see CRITICAL EXTRACTION RULES)",
+  ),
+  // Accepted but ignored in this phase — no speaker map yet, so participant
+  // claims are rejected downstream until transcript ingestion lands.
+  assertedBySpeakerLabel: z.string().optional(),
   statedAt: z.string().datetime().optional(),
   validFrom: z.string().datetime().optional(),
   validTo: z.string().datetime().optional(),
@@ -228,6 +241,26 @@ When extracting from conversations:
 - Prioritize user's own statements about themselves, their experiences, preferences, and circumstances
 - Be especially cautious with information only mentioned by the assistant - verify if the user confirmed it
 
+EVERY claim (relationship and attribute) MUST include an "assertionKind" field. Use:
+${
+  sourceType === "document"
+    ? `- "document_author" — for ALL claims extracted from this document. The document text is the asserter.`
+    : `- "user" — the user explicitly stated this fact themselves (default for user-stated content).
+- "user_confirmed" — the assistant said something and the user explicitly agreed (e.g., user replied "yes", "right", "exactly", "correct").
+- "assistant_inferred" — used ONLY if you decide to extract something that the assistant said and the user did NOT confirm. Prefer to NOT extract these at all; if you must, mark them with this kind so they are demoted later.
+- NEVER use "user" for an assistant-only statement.
+- Do NOT emit "participant" — multi-party transcript ingestion is not yet supported.`
+}
+
+Few-shot examples:
+${
+  sourceType === "document"
+    ? `- Document text: "The Eiffel Tower is located in Paris." → relationship claim with assertionKind: "document_author".`
+    : `- User says "I started working at Acme last week." → assertionKind: "user".
+- Assistant: "So you live in Paris now?" User: "Yes." → assertionKind: "user_confirmed" for the (user, LIVES_IN, Paris) claim (if extracted).
+- Assistant: "It sounds like you might be a software engineer." User does not respond. → do NOT extract. If you must, assertionKind: "assistant_inferred".`
+}
+
 Extract, for example, the following elements:
 1. People mentioned by the user (real or fictional)
 2. Locations the user discussed or mentioned
@@ -389,7 +422,7 @@ function _deduplicateLlmClaims(
 ): LlmOutputRelationshipClaim[] {
   const seenClaimKeys = new Set<string>();
   return llmClaims.filter((claim) => {
-    const key = `${claim.subjectId}|${claim.objectId}|${claim.predicate}|${claim.statement}|${claim.sourceRef}`;
+    const key = `${claim.subjectId}|${claim.objectId}|${claim.predicate}|${claim.statement}|${claim.sourceRef}|${claim.assertionKind}`;
     if (seenClaimKeys.has(key)) return false;
     seenClaimKeys.add(key);
     return true;
@@ -401,7 +434,7 @@ function _deduplicateLlmAttributeClaims(
 ): LlmOutputAttributeClaim[] {
   const seenClaimKeys = new Set<string>();
   return llmClaims.filter((claim) => {
-    const key = `${claim.subjectId}|${claim.predicate}|${claim.objectValue}|${claim.statement}|${claim.sourceRef}`;
+    const key = `${claim.subjectId}|${claim.predicate}|${claim.objectValue}|${claim.statement}|${claim.sourceRef}|${claim.assertionKind}`;
     if (seenClaimKeys.has(key)) return false;
     seenClaimKeys.add(key);
     return true;
@@ -576,7 +609,6 @@ async function _processAndInsertLlmClaims(
     userId,
     [...sourceRefMap.values()].map((sourceRef) => sourceRef.sourceId),
   );
-  const assertedByKind = _defaultAssertedByKind(sourceType);
 
   for (const llmClaim of uniqueParsedLlmClaims) {
     const subjectNodeId = idMap.get(llmClaim.subjectId);
@@ -609,6 +641,9 @@ async function _processAndInsertLlmClaims(
       );
       continue;
     }
+
+    const assertedByKind = _resolveAssertedByKind(llmClaim, sourceType);
+    if (assertedByKind === null) continue;
 
     claimInserts.push({
       userId,
@@ -657,6 +692,9 @@ async function _processAndInsertLlmClaims(
       );
       continue;
     }
+
+    const assertedByKind = _resolveAssertedByKind(llmClaim, sourceType);
+    if (assertedByKind === null) continue;
 
     claimInserts.push({
       userId,
@@ -708,6 +746,42 @@ async function _fetchSourceScopeMap(
 function _defaultAssertedByKind(sourceType: SourceType): AssertedByKind {
   if (sourceType === "document") return "document_author";
   return "user";
+}
+
+/**
+ * Resolve the per-claim `assertedByKind`, defending against missing or
+ * unsupported values from the LLM.
+ *
+ * - Null/undefined kind → fall back to per-sourceType default and warn.
+ * - `participant` → unsupported until transcript ingestion lands; skip and warn.
+ * - Otherwise → use the LLM's value.
+ *
+ * Returns `null` if the claim should be skipped.
+ */
+function _resolveAssertedByKind(
+  llmClaim: {
+    assertionKind?: AssertedByKind | undefined;
+    assertedBySpeakerLabel?: string | undefined;
+    sourceRef: string;
+  },
+  sourceType: SourceType,
+): AssertedByKind | null {
+  if (!llmClaim.assertionKind) {
+    const fallback = _defaultAssertedByKind(sourceType);
+    console.warn(
+      `LLM omitted assertionKind for claim from sourceRef ${llmClaim.sourceRef}; falling back to ${fallback}.`,
+    );
+    return fallback;
+  }
+
+  if (llmClaim.assertionKind === "participant") {
+    console.warn(
+      `Skipping participant claim from sourceRef ${llmClaim.sourceRef}: transcript ingestion not yet supported.`,
+    );
+    return null;
+  }
+
+  return llmClaim.assertionKind;
 }
 
 async function _processAndInsertLlmAliases(

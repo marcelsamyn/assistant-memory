@@ -213,6 +213,7 @@ describeIfServer("extractGraph claim-native insertion", () => {
                               predicate: "TAGGED_WITH",
                               statement: "Alice discussed Project Falcon.",
                               sourceRef: "msg_1",
+                              assertionKind: "user",
                             },
                             {
                               subjectId: "existing_person_1",
@@ -220,6 +221,7 @@ describeIfServer("extractGraph claim-native insertion", () => {
                               predicate: "RELATED_TO",
                               statement: "This claim has a bad source.",
                               sourceRef: "missing_msg",
+                              assertionKind: "user",
                             },
                           ],
                           attributeClaims: [
@@ -230,6 +232,7 @@ describeIfServer("extractGraph claim-native insertion", () => {
                               statement: "Alice completed Project Falcon.",
                               sourceRef: "msg_1",
                               statedAt: statedAt.toISOString(),
+                              assertionKind: "user",
                             },
                             {
                               subjectId: "existing_person_1",
@@ -237,6 +240,7 @@ describeIfServer("extractGraph claim-native insertion", () => {
                               objectValue: "bad decorated source ref",
                               statement: "This claim copied the timestamp too.",
                               sourceRef: "msg_1 (2026-04-25T10:00:00.000Z)",
+                              assertionKind: "user",
                             },
                           ],
                           aliases: [
