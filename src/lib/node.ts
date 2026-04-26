@@ -9,6 +9,7 @@ import {
   sourceLinks,
   sources,
 } from "~/db/schema";
+import { listAliasesForNodeIds } from "~/lib/alias";
 import { generateEmbeddings } from "~/lib/embeddings";
 import {
   fetchSourceIdsForNodes,
@@ -75,6 +76,7 @@ export async function getNodeById(
     );
 
   const sourceIdMap = await fetchSourceIdsForNodes(db, [nodeId]);
+  const aliasMap = await listAliasesForNodeIds(db, userId, [nodeId]);
 
   return {
     node: {
@@ -82,6 +84,11 @@ export async function getNodeById(
       label: row.label ?? null,
       description: row.description ?? null,
       sourceIds: sourceIdMap.get(nodeId) ?? [],
+      aliases: (aliasMap.get(nodeId) ?? []).map((alias) => ({
+        id: alias.id,
+        aliasText: alias.aliasText,
+        createdAt: alias.createdAt,
+      })),
     },
     claims: claimRows,
   };
@@ -137,11 +144,11 @@ export async function getNodeSources(
   };
 }
 
-/** Update a node's label, description, and/or nodeType. Re-generates embedding. */
+/** Update a node's label and/or nodeType. Re-generates embedding on label changes. */
 export async function updateNode(
   userId: string,
   nodeId: TypeId<"node">,
-  updates: { label?: string; description?: string; nodeType?: NodeType },
+  updates: { label?: string; nodeType?: NodeType },
 ): Promise<{
   id: TypeId<"node">;
   nodeType: string;
@@ -175,30 +182,20 @@ export async function updateNode(
 
   const effectiveNodeType = updates.nodeType ?? row.nodeType;
   const newLabel = updates.label ?? row.label;
-  const newDescription = updates.description ?? row.description;
 
-  // Update metadata
-  await db
-    .update(nodeMetadata)
-    .set({
-      ...(updates.label !== undefined
-        ? {
-            label: updates.label,
-            canonicalLabel: normalizeLabel(updates.label),
-          }
-        : {}),
-      ...(updates.description !== undefined
-        ? { description: updates.description }
-        : {}),
-    })
-    .where(eq(nodeMetadata.id, row.metaId));
+  if (updates.label !== undefined) {
+    await db
+      .update(nodeMetadata)
+      .set({
+        label: updates.label,
+        canonicalLabel: normalizeLabel(updates.label),
+      })
+      .where(eq(nodeMetadata.id, row.metaId));
+  }
 
-  // Re-generate embedding if label or description changed
-  if (
-    newLabel &&
-    (updates.label !== undefined || updates.description !== undefined)
-  ) {
-    const embText = `${newLabel}: ${newDescription ?? ""}`;
+  // Re-generate embedding if label changed
+  if (newLabel && updates.label !== undefined) {
+    const embText = `${newLabel}: ${row.description ?? ""}`;
     const embResponse = await generateEmbeddings({
       model: "jina-embeddings-v3",
       task: "retrieval.passage",
@@ -221,7 +218,7 @@ export async function updateNode(
     id: row.id,
     nodeType: effectiveNodeType,
     label: newLabel ?? null,
-    description: newDescription ?? null,
+    description: row.description ?? null,
   };
 }
 

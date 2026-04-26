@@ -69,6 +69,7 @@ interface ExtractGraphParams {
   sourceId: TypeId<"source">;
   statedAt: Date;
   linkedNodeId: TypeId<"node">;
+  sourceRefs?: Array<{ externalId: string; sourceId: TypeId<"source"> }>;
   content: string;
 }
 

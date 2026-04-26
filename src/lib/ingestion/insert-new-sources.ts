@@ -13,6 +13,11 @@ export interface SourceInput {
   metadata?: SourceCreateInput["metadata"];
 }
 
+export interface InsertedSourceRef {
+  externalId: string;
+  sourceId: TypeId<"source">;
+}
+
 export async function insertNewSources(params: {
   db: DrizzleDB;
   userId: string;
@@ -20,7 +25,11 @@ export async function insertNewSources(params: {
   parentSourceId: string;
   childSourceType: SourceType;
   childSources: SourceInput[];
-}): Promise<{ sourceId: TypeId<"source">; newSourceSourceIds: string[] }> {
+}): Promise<{
+  sourceId: TypeId<"source">;
+  newSourceSourceIds: string[];
+  sourceRefs: InsertedSourceRef[];
+}> {
   const {
     db,
     userId,
@@ -77,6 +86,10 @@ export async function insertNewSources(params: {
     where: (src, { inArray }) => inArray(src.id, newInternalIds),
   });
   const newSourceSourceIds = insertedRows.map((r) => r.externalId);
+  const sourceRefs = insertedRows.map((row) => ({
+    externalId: row.externalId,
+    sourceId: row.id,
+  }));
 
-  return { sourceId: parentSource.id, newSourceSourceIds };
+  return { sourceId: parentSource.id, newSourceSourceIds, sourceRefs };
 }

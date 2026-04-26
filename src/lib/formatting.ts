@@ -6,6 +6,7 @@ import type {
 import { safeFormatISO } from "~/lib/safe-date";
 
 interface Message {
+  id?: string | undefined;
   content: string;
   role: string;
   name?: string | undefined;
@@ -17,12 +18,14 @@ interface Message {
  */
 export function formatConversationAsXml(messages: Message[]): string {
   return messages
-    .map(
-      (message, index) =>
-        `<message id="${index}" role="${message.role}" ${message.name ? `name="${message.name}"` : ""} timestamp="${safeFormatISO(message.timestamp)}">
-      <content>${message.content.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</content>
-    </message>`,
-    )
+    .map((message, index) => {
+      const messageId = message.id ?? String(index);
+      const nameAttribute =
+        message.name !== undefined ? ` name="${escapeXml(message.name)}"` : "";
+      return `<message id="${escapeXml(messageId)}" role="${escapeXml(message.role)}"${nameAttribute} timestamp="${escapeXml(safeFormatISO(message.timestamp))}">
+      <content>${escapeXml(message.content)}</content>
+    </message>`;
+    })
     .join("\n");
 }
 

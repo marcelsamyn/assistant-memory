@@ -45,7 +45,7 @@ export async function ingestConversation({
   conversationId,
   messages,
 }: IngestConversationParams): Promise<{ insertedTurns: ConversationTurn[] }> {
-  const { sourceId, insertedTurns } = await initializeConversation(
+  const { sourceId, insertedTurns, sourceRefs } = await initializeConversation(
     db,
     userId,
     conversationId,
@@ -69,6 +69,7 @@ export async function ingestConversation({
     sourceId,
     statedAt: firstTurn.timestamp,
     linkedNodeId: conversationNodeId,
+    sourceRefs,
     content: formatConversationAsXml(insertedTurns),
   });
   return { insertedTurns };
@@ -93,9 +94,10 @@ async function initializeConversation(
 ): Promise<{
   sourceId: TypeId<"source">;
   insertedTurns: ConversationTurn[];
+  sourceRefs: Array<{ externalId: string; sourceId: TypeId<"source"> }>;
 }> {
   await ensureUser(db, userId);
-  const { sourceId, newSourceSourceIds } = await insertNewSources({
+  const { sourceId, newSourceSourceIds, sourceRefs } = await insertNewSources({
     db,
     userId,
     parentSourceType: "conversation",
@@ -122,5 +124,11 @@ async function initializeConversation(
       name: m.name,
       timestamp: m.timestamp,
     }));
-  return { sourceId, insertedTurns };
+  return {
+    sourceId,
+    insertedTurns,
+    sourceRefs: sourceRefs.filter((sourceRef) =>
+      newSourceSourceIds.includes(sourceRef.externalId),
+    ),
+  };
 }

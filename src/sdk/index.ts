@@ -13,6 +13,7 @@ export * from "../lib/schemas/dream.js";
 export * from "../lib/schemas/scratchpad.js";
 export * from "../lib/schemas/node.js";
 export * from "../lib/schemas/claim.js";
+export * from "../lib/schemas/alias.js";
 export * from "../lib/schemas/node-merge.js";
 export * from "../lib/schemas/node-batch-delete.js";
 export * from "../lib/schemas/query-atlas-nodes.js";

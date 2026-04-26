@@ -127,6 +127,7 @@ export async function ingestDocument({
     sourceId,
     statedAt: timestamp,
     linkedNodeId: documentNodeId,
+    sourceRefs: [{ externalId: documentId, sourceId }],
     content, // Pass the raw document content for graph extraction
   });
 

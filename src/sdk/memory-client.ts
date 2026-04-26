@@ -1,4 +1,12 @@
 import {
+  CreateAliasRequest,
+  CreateAliasResponse,
+  createAliasResponseSchema,
+  DeleteAliasRequest,
+  DeleteAliasResponse,
+  deleteAliasResponseSchema,
+} from "../lib/schemas/alias.js";
+import {
   CreateClaimRequest,
   CreateClaimResponse,
   createClaimResponseSchema,
@@ -353,6 +361,24 @@ export class MemoryClient {
       "POST",
       "/claim/update",
       updateClaimResponseSchema,
+      payload,
+    );
+  }
+
+  async createAlias(payload: CreateAliasRequest): Promise<CreateAliasResponse> {
+    return this._fetch(
+      "POST",
+      "/alias/create",
+      createAliasResponseSchema,
+      payload,
+    );
+  }
+
+  async deleteAlias(payload: DeleteAliasRequest): Promise<DeleteAliasResponse> {
+    return this._fetch(
+      "POST",
+      "/alias/delete",
+      deleteAliasResponseSchema,
       payload,
     );
   }

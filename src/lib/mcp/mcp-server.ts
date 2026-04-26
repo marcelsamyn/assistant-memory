@@ -190,14 +190,14 @@ server.tool(
   },
 );
 
-// Update node label/description
+// Update node label/type
 server.tool(
   "update node",
   updateNodeRequestSchema.shape,
-  async ({ userId, nodeId, label, description }) => {
+  async ({ userId, nodeId, label, nodeType }) => {
     const result = await updateNode(userId, nodeId, {
       ...(label !== undefined && { label }),
-      ...(description !== undefined && { description }),
+      ...(nodeType !== undefined && { nodeType }),
     });
     if (!result) {
       return {

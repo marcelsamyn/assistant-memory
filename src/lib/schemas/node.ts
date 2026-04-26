@@ -36,6 +36,13 @@ export const getNodeResponseSchema = z.object({
     description: z.string().nullable(),
     createdAt: z.coerce.date(),
     sourceIds: z.array(z.string()),
+    aliases: z.array(
+      z.object({
+        id: typeIdSchema("alias"),
+        aliasText: z.string(),
+        createdAt: z.coerce.date(),
+      }),
+    ),
   }),
   claims: z.array(getNodeClaimSchema),
 });
@@ -72,7 +79,6 @@ export const updateNodeRequestSchema = z.object({
   userId: z.string(),
   nodeId: typeIdSchema("node"),
   label: z.string().optional(),
-  description: z.string().optional(),
   nodeType: NodeTypeEnum.optional(),
 });
 
