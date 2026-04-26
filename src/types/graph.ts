@@ -19,6 +19,7 @@ export const NodeTypeEnum = z.enum([
   "Document",
   "Feedback",
   "Idea",
+  "Task",
 ]);
 
 export type NodeType = z.infer<typeof NodeTypeEnum>;
@@ -36,8 +37,33 @@ export const ClaimStatusEnum = z.enum([
 
 export type ClaimStatus = z.infer<typeof ClaimStatusEnum>;
 
+export const ScopeEnum = z.enum(["personal", "reference"]);
+
+export type Scope = z.infer<typeof ScopeEnum>;
+
+export const AssertedByKindEnum = z.enum([
+  "user",
+  "user_confirmed",
+  "assistant_inferred",
+  "participant",
+  "document_author",
+  "system",
+]);
+
+export type AssertedByKind = z.infer<typeof AssertedByKindEnum>;
+
+export const TaskStatusEnum = z.enum([
+  "pending",
+  "in_progress",
+  "done",
+  "abandoned",
+]);
+
+export type TaskStatus = z.infer<typeof TaskStatusEnum>;
+
 export const AttributePredicateEnum = z.enum([
   "HAS_STATUS",
+  "HAS_TASK_STATUS",
   "HAS_PREFERENCE",
   "HAS_GOAL",
   "MADE_DECISION",
@@ -53,6 +79,7 @@ export const RelationshipPredicateEnum = z.enum([
   "EXHIBITED_EMOTION",
   "TAGGED_WITH",
   "OWNED_BY",
+  "DUE_ON",
   "PRECEDES",
   "FOLLOWS",
   "RELATED_TO",
@@ -72,7 +99,9 @@ export type SourceType =
   | "conversation_message"
   | "document"
   | "legacy_migration"
-  | "manual";
+  | "manual"
+  | "meeting_transcript"
+  | "external_conversation";
 
 export type SourceStatus =
   | "pending"

@@ -7,20 +7,89 @@ Replace the current node-and-edge graph with a claims-first model in which every
 The target behaviours this design makes reachable:
 
 - Distinguish when something was said, when it was true, and whether it is still current.
-- Trace every factual memory to source evidence.
+- Trace every factual memory to source evidence and to the speaker/author who originated it.
 - Avoid re-creating the same entity because identity resolution can use aliases and attribute profiles, not just labels.
 - Keep entity descriptions generic and reusable; episode-specific facts live in claims.
-- Give assistants a persistent context layer (Atlas) that is derived from long-lived claims, not hand-written narrative.
+- Distinguish facts about the user from reference material the user has chosen to make available.
+- Distinguish open commitments from generic status, so completed work doesn't resurface as pending.
+- Give assistants a persistent context layer that is derived from long-lived claims and shipped as ready-to-use sectioned bundles, not raw graph soup.
+
+## Revisions
+
+### 2026-04-26 — Architectural refinement
+
+After a second design pass focused on operational coverage, the design adds five concepts on top of the original 2026-04-24 design. Each is structural, not optional:
+
+1. **Predicate Policy Registry** — every predicate declares its cardinality, lifecycle behavior, atlas eligibility, and default retrieval section. Lifecycle and read-model code consult the registry; new predicates are a row, not a subsystem.
+2. **Scope on sources/claims** — `personal | reference`. Default retrieval, Atlas, and identity resolution honor scope. Reference material does not bleed into personal context.
+3. **Structured provenance (`assertedBy`)** — discriminated kind plus optional speaker/author node id. Replaces the prompt-only "user-stated vs. assistant-inferred" rule with a typed claim-level field that retrieval, Atlas, lifecycle, and cleanup all read.
+4. **Tasks / commitments as a first-class node type with `HAS_TASK_STATUS`** — distinct from generic `HAS_STATUS`. Single-current-value lifecycle. Drives an `open_commitments` read-model section that never lists completed work as pending.
+5. **Read Models layer** — the SDK/MCP product is a sectioned `ContextBundle` (atlas, open commitments, reference lens, evidence) with usage hints baked in, not raw claims. Atlas dissolves into one section among several. Raw graph endpoints remain available for visualization and exploration tooling.
+
+What remains valid from the 2026-04-24 baseline (no change):
+
+- Claims as the single substrate; edges removed.
+- Migration plan, typeid prefix changes, embedding-text-without-labels.
+- Aliases as resolution hints (not claims) with normalized text.
+- Profile synthesis pattern for node descriptions.
+- Eval harness scaffold and the six regression stories (extended below).
+
+What changed in spirit:
+
+- Atlas is not one artifact. It is one section in a context bundle assembled at conversation bootstrap; `open_commitments`, `reference_lens`, and `recent_supersessions` are sibling sections.
+- Lifecycle behavior is no longer per-predicate hardcoded in the engine — it is registry-driven. The engine looks up `cardinality` and `lifecycle` per predicate and acts accordingly.
+- Identity resolution is scope-bounded; cross-scope merges are forbidden.
+- The user note (2026-04-26) that **the raw graph stays queryable for visualization tooling** is load-bearing: read models are additive, not a replacement for direct claim/node queries.
+
+### Implementation status (2026-04-26)
+
+What has already landed against this design:
+
+- **Phase 1 — schema + provenance backbone** (commits `0f0e04d`, `b598d59`, `a4d23fd`):
+
+  - `claims` table replacing `edges`, with `subject/object`, `objectValue`, `statement`, `sourceId`, `statedAt`, `validFrom`, `validTo`, `status`, `metadata`, object-shape XOR check, indexes per the data model below.
+  - `claim_embeddings` rename, label-free embedding text.
+  - TypeID prefix migration (`edge_*` → `claim_*`, `eemb_*` → `cemb_*`).
+  - Aliases table with `normalized_alias_text` and the `(userId, normalizedAliasText, canonicalNodeId)` unique constraint.
+  - `/edge/*` removed, `/claim/*` and `/alias/*` live (`src/routes/claim/*`, `src/routes/alias/*`).
+  - Manual source per user (`legacy_migration` and `manual` source types).
+  - System-authored claims for Atlas / Dream / `OCCURRED_ON` day linkage.
+
+- **Phase 2a — claims-native extraction** (commit `f5d7181`):
+  - Extraction LLM emits `nodes`, `relationshipClaims`, `attributeClaims`, `aliases` (`src/lib/extract-graph.ts`).
+  - Source-ref threading: `formatConversationAsXml` carries external message IDs; `insertNewSources` returns `{externalId → internal sourceId}`; extraction consumes the map and rejects unresolvable refs.
+  - Source-scoped replacement on reprocessing (`_deleteExistingClaimsForSources`).
+  - Lifecycle engine v1 for `HAS_STATUS` supersession (`src/lib/claims/lifecycle.ts`) with statedAt-ordered recomputation per subject.
+  - Alias extraction & upsert via `createAlias` / `normalizeAliasText`.
+
+What is still open relative to this design:
+
+- All five 2026-04-26 additions: registry, scope, provenance, tasks, read models. None of these have schema or wiring yet.
+- Profile synthesis and identity resolution upgrade (Phase 3 of the plan) are not yet started.
+- Cleanup rewrite to claim operations + alias operations + contradiction detection (Phase 4) is not yet started.
+- Eval harness has scaffolding only; the six regression stories are not all in place.
+
+## Architectural Spine
+
+The system rests on five substrates, each with a single well-defined responsibility:
+
+1. **Claims** — sourced, time-aware assertions. Storage substrate. One table, one shape.
+2. **Predicate Policy Registry** — typed declaration of cardinality, lifecycle, atlas eligibility, retrieval section per predicate. Behavior substrate.
+3. **Scope** — source-level `personal | reference` tag, denormalized onto each claim at insert. Trust/separation substrate.
+4. **Provenance (`assertedBy`)** — discriminated kind plus optional node id. Trust/authorship substrate.
+5. **Read Models** — derived sectioned context bundles assembled from claims, nodes, and aliases for the SDK/MCP surface. Product substrate.
+
+Raw graph access (nodes, claims, neighborhood traversal, manual editing) remains a first-class SDK surface for visualization and exploration. Read-model APIs are additive.
 
 ## Core Decision
 
-Claims are the single source of truth for factual memory. The existing `edges` table evolves into `claims` in place. No parallel system during transition, no eventual deprecation, no dual-authoring.
+Claims are the single source of truth for factual memory. The existing `edges` table evolved into `claims` in place. No parallel system, no dual-authoring.
 
-Rationale in one paragraph: a relationship claim and an edge are both `(subject, predicate, object)` triples. Provenance, stated time, validity, and lifecycle status are metadata about the assertion, not about the relation itself. Carrying both tables would be duplication. Carrying only edges leaves time and provenance unrepresentable. Carrying only claims gives the full model with one shape.
+A relationship claim and an edge are both `(subject, predicate, object)` triples. Provenance, stated time, validity, and lifecycle status are metadata about the assertion, not about the relation itself.
 
 ## Final-State Data Model
 
-### `claims` (evolved from `edges`)
+### `claims`
 
 ```ts
 claims = pgTable("claims", {
@@ -47,13 +116,27 @@ claims = pgTable("claims", {
     .references(() => sources.id, { onDelete: "cascade" })
     .notNull(),
 
+  // 2026-04-26 additions:
+  scope: varchar("scope", { length: 16 }).notNull().default("personal"),
+  assertedByKind: varchar("asserted_by_kind", { length: 24 }).notNull(),
+  assertedByNodeId: typeId("node").references(() => nodes.id, {
+    onDelete: "set null",
+  }),
+
+  supersededByClaimId: typeId("claim").references(() => claims.id, {
+    onDelete: "set null",
+  }),
+  contradictedByClaimId: typeId("claim").references(() => claims.id, {
+    onDelete: "set null",
+  }),
+
   statedAt: timestamp("stated_at").notNull(),
   validFrom: timestamp("valid_from"),
   validTo: timestamp("valid_to"),
 
   status: varchar("status", { length: 30 })
-    .notNull()
     .$type<ClaimStatus>()
+    .notNull()
     .default("active"),
 
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -63,82 +146,99 @@ claims = pgTable("claims", {
 
 Constraints:
 
-- `CHECK (object_node_id IS NOT NULL OR object_value IS NOT NULL)` — at least one object shape.
-- `CHECK (NOT (object_node_id IS NOT NULL AND object_value IS NOT NULL))` — exactly one.
-- The `UNIQUE(source_node_id, target_node_id, edge_type)` constraint from `edges` is dropped. Multiple claims per triple are expected over time.
+- `CHECK (object_node_id IS NOT NULL XOR object_value IS NOT NULL)` — exactly one object shape (already present).
+- `CHECK (scope IN ('personal','reference'))`.
+- `CHECK (asserted_by_kind IN ('user','user_confirmed','assistant_inferred','participant','document_author','system'))`.
+- `CHECK (asserted_by_kind = 'participant' => asserted_by_node_id IS NOT NULL)` — speaker claims carry a node id; document authors may carry one when modeled.
 
-Indexes:
+Indexes (additions to the existing set):
 
-- `(userId, status, statedAt)`
-- `(userId, subjectNodeId, status)`
-- `(userId, objectNodeId, status)` (partial, where `objectNodeId IS NOT NULL`)
-- `(sourceId)`
+- `(userId, scope, status, statedAt)` — replaces the existing `(userId, status, statedAt)` to make scope filtering free on the hot read path.
+- `(userId, scope, assertedByKind, status)` — for "exclude assistant_inferred" defaults.
+- `(userId, predicate, status)` — already present; keep.
 
 Field notes:
 
-- `statement` is the human-readable sentence used for embeddings and review. Authored by the extraction LLM for new claims; templated for backfilled legacy rows.
-- `description` and `metadata` are preserved from the old `edges` schema for compatibility; both remain optional and are not load-bearing.
-- `sourceId` is required. A factual memory without evidence is not a claim. Backfilled legacy rows cite a synthetic per-user `legacy_migration` source and carry `metadata.backfilled = true` so retrieval can down-weight them.
-- `statedAt` is when the source stated the claim (for messages, the message timestamp; for documents, the document ingestion time; for legacy rows, the original `edges.createdAt`).
-- `validFrom` / `validTo` describe when the assertion applies, if known. Often null.
-- `status` is system-owned. Extraction models never write status; only the lifecycle engine and cleanup pipeline do.
+- `scope` is denormalized from the claim's source at insert time. Sources are immutable on `scope` — set at registration, never updated — so the denormalization is safe.
+- `assertedByKind` is required. Default retrieval excludes `assistant_inferred`. Atlas excludes `assistant_inferred` and `reference`-scope claims regardless.
+- `assertedByNodeId` is the speaker (for `participant`) or author (for `document_author`). For `participant`, it is the Person node mapped from the speaker label. For `document_author`, it is optional (some books we ingest, we don't bother modeling the author as a node).
+- `supersededByClaimId` and `contradictedByClaimId` give explainability: "why is this not pending anymore?" → "because claim X marked it done." They are set by the lifecycle engine and the cleanup pipeline respectively.
+- All other fields keep their 2026-04-24 semantics.
 
-### `claim_embeddings` (renamed from `edge_embeddings`)
+### `claim_embeddings`
 
-```ts
-claimEmbeddings = pgTable("claim_embeddings", {
-  id: typeId("claim_embedding").primaryKey().notNull(),
-  claimId: typeId("claim")
-    .references(() => claims.id, { onDelete: "cascade" })
-    .notNull(),
-  embedding: vector("embedding", { dimensions: 1024 }).notNull(),
-  modelName: varchar("model_name", { length: 100 }).notNull(),
-  createdAt: timestamp().defaultNow().notNull(),
-});
-```
-
-Embedding text excludes node labels. Format: `{predicate} {statement} status={status} statedAt={statedAt}`. Decoupling embeddings from node labels removes the requirement to regenerate embeddings whenever a touching node is merged.
+Unchanged from 2026-04-24. Embedding text excludes node labels.
 
 ### `nodes` and `nodeMetadata`
 
-Unchanged in shape. The `nodeMetadata.description` field remains a column but changes ownership: extraction may write an initial seed description, and profile synthesis owns durable rewrites. See [Node Descriptions](#node-descriptions).
+Unchanged in shape. `nodeMetadata.description` ownership belongs to **profile synthesis**; extraction may seed.
 
-Legacy descriptions are preserved as seed content for profile synthesis and overwritten as active claims accumulate.
+A new `Task` value joins `NodeTypeEnum`. See [Tasks & Commitments](#tasks--commitments).
 
 ### `aliases`
 
-Add `normalizedAliasText`. `aliasText` preserves display casing; `normalizedAliasText` stores `trim().toLowerCase()` for matching. Add `UNIQUE(userId, normalizedAliasText, canonicalNodeId)`. Aliases become a first-class resolution and formatting signal. See [Aliases](#aliases).
+Unchanged in shape. Used by extraction (alias hints), identity resolution (signal 2), node formatting (display), and transcript ingestion (speaker label resolution).
+
+### `sources`
+
+Adds:
+
+```ts
+scope: varchar("scope", { length: 16 }).notNull().default("personal"),
+```
+
+Constraint: `CHECK (scope IN ('personal','reference'))`. Source `scope` is set at registration and never updated. New `SourceType` values: `meeting_transcript`, `external_conversation` (multi-party non-meeting). Existing types default to `scope=personal`. Reference ingestion paths set `scope=reference` explicitly at the API boundary.
+
+`userSelfAliases` (per-user config, stored on `userProfiles.metadata` or a small new table) — the labels by which the user appears in transcripts and external conversations (e.g., "Marcel," "Marcel S," "MS"). Used by transcript ingestion to map `participant:user` to `assertedByKind = "user"` (not `participant`).
 
 ### `sourceLinks`
 
-Unchanged. Still maps structural node-to-source relationships (e.g., a `Conversation` node to its `conversation` source). This is distinct from claim-level provenance: `sourceLinks` answers "what node represents this source" and "what sources mention this node structurally"; claim `sourceId` answers "what evidence supports this assertion."
+Unchanged. Structural node-to-source linkage; distinct from claim-level `sourceId`.
 
 ### Removed structures
 
-- `edges` table (renamed and extended into `claims`).
-- `edge_embeddings` table (renamed to `claim_embeddings`).
-- `EdgeType` enum (absorbed into a unified predicate vocabulary; see below).
-- Structural predicate values `MENTIONED_IN`, `CAPTURED_IN`, `INVALIDATED_ON` are removed from the factual-memory vocabulary; `MENTIONED_IN` / `CAPTURED_IN` become queries over `claims.sourceId` and `sourceLinks`; `INVALIDATED_ON` is replaced by `status = 'superseded' | 'contradicted' | 'retracted'`.
+- `edges`, `edge_embeddings`, `EdgeType` (already removed in Phase 1).
+- Structural predicates `MENTIONED_IN`, `CAPTURED_IN`, `INVALIDATED_ON` (already removed; replaced by `sourceLinks` queries and `status`).
 
 ### Not introduced
 
-- No generic `HAS_PROPERTY` predicate. Descriptive facts whose value is an entity (`owns a MacBook Pro`) become relationship claims with the value as a node. Low-query descriptive facts without an entity form (`blue eyes`, `left-handed`) may live in the node profile via description synthesis. The trade-off is intentional: descriptions are derived summaries and may duplicate or compress sourced information; cleanup is responsible for reconciling them against active claims when rewriting.
+- No generic `HAS_PROPERTY`. Same rationale as 2026-04-24.
+- No transition log table. `supersededByClaimId` / `contradictedByClaimId` plus row-level `updatedAt` are sufficient for audit; if we ever need a full event stream we add it then.
 
 ## Types
 
 ```ts
 export const ClaimStatusEnum = z.enum([
-  "active", // accepted evidence; included in current-state queries by default
-  "superseded", // replaced by a newer active claim for the same subject+predicate (attribute case)
-  "contradicted", // explicitly contradicted by a later user statement
-  "retracted", // manually retracted via admin API or cleanup pipeline
+  "active",
+  "superseded",
+  "contradicted",
+  "retracted",
+]);
+
+export const ScopeEnum = z.enum(["personal", "reference"]);
+
+export const AssertedByKindEnum = z.enum([
+  "user", // user stated it directly
+  "user_confirmed", // assistant proposed, user explicitly confirmed
+  "assistant_inferred", // assistant said it; user did not push back; not promoted
+  "participant", // a non-user speaker in a multi-party source; carries nodeId
+  "document_author", // an external document; optional nodeId
+  "system", // system-authored (Atlas/Dream/day linkage)
 ]);
 
 export const AttributePredicateEnum = z.enum([
-  "HAS_STATUS", // supersedes: yes (overall current state per subject)
-  "HAS_PREFERENCE", // supersedes: no
-  "HAS_GOAL", // supersedes: no
-  "MADE_DECISION", // supersedes: no (decisions accumulate; context carries the scope)
+  "HAS_STATUS", // single_current_value, supersedes, feeds atlas
+  "HAS_TASK_STATUS", // single_current_value, supersedes, drives open_commitments
+  "HAS_PREFERENCE", // multi_value, no auto-supersession, feeds atlas
+  "HAS_GOAL", // multi_value, no auto-supersession, feeds atlas
+  "MADE_DECISION", // append_only, no auto-supersession
+]);
+
+export const TaskStatusEnum = z.enum([
+  "pending",
+  "in_progress",
+  "done",
+  "abandoned",
 ]);
 
 export const RelationshipPredicateEnum = z.enum([
@@ -149,9 +249,10 @@ export const RelationshipPredicateEnum = z.enum([
   "EXHIBITED_EMOTION",
   "TAGGED_WITH",
   "OWNED_BY",
+  "DUE_ON", // 2026-04-26: Task → Temporal node
   "PRECEDES",
   "FOLLOWS",
-  "RELATED_TO", // fallback; discouraged, not a default
+  "RELATED_TO",
 ]);
 
 export const PredicateEnum = z.union([
@@ -160,378 +261,708 @@ export const PredicateEnum = z.union([
 ]);
 ```
 
-`active` means accepted evidence, not "currently true forever." Currentness is determined from the combination of `status`, `validFrom`, `validTo`, and query `asOf`.
+## Predicate Policy Registry
+
+The single declarative table that every lifecycle, atlas, and retrieval consumer reads from.
+
+```ts
+type Cardinality = "single_current_value" | "multi_value" | "append_only";
+type LifecycleRule = "supersede_previous" | "none";
+type RetrievalSection =
+  | "atlas"
+  | "open_commitments"
+  | "preferences"
+  | "evidence"
+  | "none";
+
+interface PredicatePolicy {
+  predicate: Predicate;
+  cardinality: Cardinality;
+  lifecycle: LifecycleRule;
+  feedsAtlas: boolean;
+  retrievalSection: RetrievalSection;
+  forceRefreshOnSupersede: boolean;
+}
+
+const PREDICATE_POLICIES: Record<Predicate, PredicatePolicy> = {
+  HAS_STATUS: {
+    cardinality: "single_current_value",
+    lifecycle: "supersede_previous",
+    feedsAtlas: true,
+    retrievalSection: "atlas",
+    forceRefreshOnSupersede: true,
+  },
+  HAS_TASK_STATUS: {
+    cardinality: "single_current_value",
+    lifecycle: "supersede_previous",
+    feedsAtlas: false,
+    retrievalSection: "open_commitments",
+    forceRefreshOnSupersede: true,
+  },
+  HAS_PREFERENCE: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: true,
+    retrievalSection: "preferences",
+    forceRefreshOnSupersede: false,
+  },
+  HAS_GOAL: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: true,
+    retrievalSection: "preferences",
+    forceRefreshOnSupersede: false,
+  },
+  MADE_DECISION: {
+    cardinality: "append_only",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  // Relationship predicates — all multi_value / no lifecycle / not in Atlas / surfaced as evidence:
+  PARTICIPATED_IN: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  OCCURRED_AT: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  OCCURRED_ON: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  INVOLVED_ITEM: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  EXHIBITED_EMOTION: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  TAGGED_WITH: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  OWNED_BY: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  DUE_ON: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "open_commitments",
+    forceRefreshOnSupersede: false,
+  },
+  PRECEDES: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  FOLLOWS: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  RELATED_TO: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+};
+```
+
+Consumers:
+
+- **Lifecycle engine** reads `cardinality` and `lifecycle`. The current `applyClaimLifecycle` recomputes from-scratch for `HAS_STATUS`; it generalizes to "for each predicate with `cardinality = single_current_value`, recompute supersession per subject." `HAS_TASK_STATUS` joins automatically.
+- **Atlas synthesis** filters claims to predicates with `feedsAtlas = true`.
+- **Read-model assemblers** group claims by `retrievalSection`.
+- **Atlas refresh trigger** reads `forceRefreshOnSupersede` to decide whether a supersession on a given claim invalidates cached read-model artifacts immediately or waits for the next scheduled refresh.
+
+The registry lives in `src/lib/claims/predicate-policies.ts` (single source of truth, exported as a const). Adding a predicate is a PR against this file plus the enum in `src/types/graph.ts`. No subsystem changes are needed for predicates that fit existing cardinality/lifecycle slots.
+
+## Scope (Personal vs Reference)
+
+Two scopes, set at the source level and inherited by claims:
+
+- **`personal`** — claims about the user, their life, work, relationships. Sources: conversation, conversation_message, document (when registered as personal), meeting_transcript, external_conversation, manual, legacy_migration.
+- **`reference`** — claims about the world, ideas, frameworks, content from books and articles the user has chosen to make available. Sources: document (when registered as reference).
+
+Behavior:
+
+- **Default retrieval (`searchMemory`)** filters to `scope = personal`. Reference is reachable only via the explicit `searchReference` MCP tool / SDK method.
+- **Atlas / read-model bootstrap** excludes `scope = reference` from the personal sections (`atlas`, `open_commitments`, `preferences`). Reference may appear as its own optional `reference_lens` section if and when we build derivation for it; we do not build that in this revision.
+- **Identity resolution is scope-bounded.** A candidate node from a `reference` source cannot merge with a `personal` node and vice versa. Prevents the "Marcus the friend ↔ Marcus Aurelius the author" collision.
+- **Profile synthesis and dedup sweep are scope-bounded** for the same reason.
+- **Cross-scope reference is allowed at the claim level** — a `personal` claim with `subject = user_node, predicate = TAGGED_WITH, objectValue = "stoic"` is fine; what's not allowed is the user's preference being inferred from a reference source. That's the assertion-level rule, enforced by extraction (see below).
+
+Set at API boundary:
+
+- `POST /source/register { type, scope, ... }` requires `scope`. Conversation/document ingestion defaults to `personal` if not supplied; reference ingestion paths must set `reference` explicitly.
+- The decision is one-shot: sources are immutable on `scope`.
+
+## Provenance (`assertedBy`)
+
+Every claim carries `assertedByKind` (required) and optionally `assertedByNodeId`.
+
+```ts
+type AssertedBy =
+  | { kind: "user" }
+  | { kind: "user_confirmed" }
+  | { kind: "assistant_inferred" }
+  | { kind: "participant"; nodeId: TypeId<"node"> } // person who said it (multi-party sources)
+  | { kind: "document_author"; nodeId?: TypeId<"node"> }
+  | { kind: "system" };
+```
+
+Producer rules at extraction:
+
+- **Conversation ingestion** (existing two-role conversation):
+  - User-stated text → `kind: "user"`.
+  - Assistant-stated text the user did not push back on → **not extracted by default**, per the existing 2026-04-24 rule. If a downstream policy ever opts in to extract assistant inferences, they ship as `kind: "assistant_inferred"` — never as `user`.
+  - User explicitly confirms an assistant statement (e.g., "yes, that's right") → `kind: "user_confirmed"` on the resulting claim. The extraction prompt is updated to recognize confirmation patterns and emit `assertionKind: "user_confirmed"` per claim.
+- **Multi-party sources** (`meeting_transcript`, `external_conversation`):
+  - Speaker mapped to user-self → `kind: "user"`.
+  - Other speakers → `kind: "participant"` with `nodeId = speakerNode`.
+  - See [Multi-Party Sources & Speaker Mapping](#multi-party-sources--speaker-mapping).
+- **Document ingestion**:
+  - All extracted claims → `kind: "document_author"`. `nodeId` set if the source registration carries an author node id; otherwise null.
+- **System-authored claims** (Atlas `OWNED_BY`, Dream `OWNED_BY`, day linkage `OCCURRED_ON`):
+  - `kind: "system"`.
+
+Consumers:
+
+- **Default retrieval** filters out `kind = "assistant_inferred"`.
+- **Atlas / read-model bootstrap** filters out `kind ∈ {"assistant_inferred", "document_author"}` and `scope = reference`.
+- **Lifecycle engine** refuses to let an `assistant_inferred` claim supersede a `user` or `user_confirmed` claim for the same subject+predicate. Within the registry's `single_current_value` recomputation, that is a sort key amendment: among ties, prefer higher-trust kinds; if `assistant_inferred` is the only candidate against a prior `user`, the prior wins and the new claim is dropped to `superseded` immediately.
+- **Cleanup pipeline** receives `assistant_inferred` and `document_author` claims as the first review queue.
+- **Identity resolution signal 4 (claim-profile)** weights `user`/`user_confirmed` claims higher than `participant` claims (a friend's statement about themselves is reliable; a friend's statement about another friend is suggestive but not authoritative).
+
+Promotion path:
+
+- A later user statement that confirms a prior `assistant_inferred` claim does not edit the prior claim. It produces a new `user`-asserted claim that supersedes (for `single_current_value` predicates) or coexists with (for `multi_value` predicates) the prior. This keeps history intact.
+
+## Tasks & Commitments
+
+Tasks are the canonical case where a memory layer that doesn't track lifecycle actively misleads the user — completed work resurfaces as pending. Treating them as first-class is what makes the pending-vs-done bug solvable.
+
+### Data shape
+
+- New `NodeType`: `Task`.
+- New attribute predicate: `HAS_TASK_STATUS` with `objectValue ∈ TaskStatusEnum`.
+- New relationship predicate: `DUE_ON` (Task → Temporal node).
+- Reuse existing relationship predicates: `OWNED_BY` (Task → Person, who owns/will-do it), `RELATED_TO` (Task → arbitrary node it references), `OCCURRED_ON` (Task → Temporal node, for the date the task was raised — already used elsewhere).
+
+A pending task ingested from a meeting where Jane assigned Marcel to write the spec by Friday looks like:
+
+```
+node: Task("Write the spec")
+claims:
+  HAS_TASK_STATUS=pending     stated by Jane in transcript          assertedBy: participant:jane
+  OWNED_BY → user_self        stated by Jane in transcript          assertedBy: participant:jane
+  DUE_ON → Temporal("2026-05-01")
+```
+
+When Marcel says "I sent the spec" the next day, ingestion should produce:
+
+```
+HAS_TASK_STATUS=done   stated by user in chat   assertedBy: user
+```
+
+The lifecycle engine, driven by the registry's `single_current_value + supersede_previous` rule for `HAS_TASK_STATUS`, supersedes the prior `pending` claim and writes `supersededByClaimId` on it.
+
+### Identity resolution for short-lived tasks
+
+The hardest part. Tasks are low-centrality, label-fuzzy, and short-lived — exactly the wrong shape for embedding-based identity resolution. Two mechanisms compensate:
+
+1. **Open-tasks context injection at extraction.** The extraction call receives `currentlyOpenTasks: [{ id, label, ownerLabel, dueOn?, statedAt }]` for the user, and the prompt instructs the model: "if the source mentions completing, abandoning, or progressing one of these existing tasks, emit a `HAS_TASK_STATUS` attribute claim on that task's id rather than creating a new Task node." This is the same mechanical pattern as the source-ref map: hand the model the right ids, tell it to use them.
+2. **Alias support.** Task nodes can carry aliases (e.g., "the spec," "spec doc") so future references resolve through the existing alias system.
+
+If the model still fails to link, the dedup/cleanup pass remains the safety net (a duplicate Task node with the same owner and overlapping label is a strong merge candidate).
+
+### Retrieval
+
+- The `getOpenCommitments(userId, { ownedBy?, dueBefore? })` API queries Task nodes whose latest `HAS_TASK_STATUS` is `pending` or `in_progress`. Returns Task cards with owner, due date, source ref, and the relevant claim list.
+- `getConversationBootstrapContext` includes `open_commitments` as a section. Its rendering rule: never list `done` or `abandoned` tasks as pending. Done tasks may appear in a sibling `recent_supersessions` section ("you completed X yesterday") for one bootstrap cycle, so the assistant has acknowledgment material without re-asking.
+- Atlas refresh: any supersession on `HAS_TASK_STATUS` triggers immediate invalidation of the user's `open_commitments` cache (registry's `forceRefreshOnSupersede = true`).
+
+## Multi-Party Sources & Speaker Mapping
+
+The memory layer is responsible for handling messy transcript data; callers may not be able to provide clean structure.
+
+### Source shape
+
+- New `SourceType`s: `meeting_transcript`, `external_conversation`.
+- A parent source for the transcript; per-utterance child sources (same pattern as conversation/message).
+- `formatConversationAsXml` (already preserves external IDs) is reused for transcripts; the external ID format becomes `{utteranceIndex}` or whatever the caller hands us, and the speaker label is rendered as an attribute.
+
+### Ingestion pipeline
+
+`ingestTranscript({ content, scope: "personal", optionalHints? })`:
+
+1. **Detect/segment.** If the input is structured (utterances supplied), use it. Otherwise, run a structural-LLM pass that segments raw text into `[{ speakerLabel, text, optionalTimestamp }]` utterances.
+2. **Extract speaker labels.** From the segmentation output.
+3. **Resolve speakers.**
+   - Match each label against `userSelfAliases` for the ingesting user → `assertedByKind = "user"`.
+   - Match against the alias system (`normalizedAliasText` → `canonicalNodeId`, scoped to `Person`).
+   - Unresolved labels → create placeholder `Person` nodes with `metadata.unresolvedSpeaker = true`. These are queued for cleanup with high priority.
+   - Optional `knownParticipants` hints in the API call are a perf shortcut — they pre-populate the speaker map without the alias lookup. Not required.
+4. **Insert per-utterance child sources.** Each child source carries the resolved speaker via `metadata.speakerNodeId`.
+5. **Run extraction** with the speaker map injected into the prompt. Each emitted claim's `assertionKind` is filled from the speaker mapping (user-self → `user`; mapped person → `participant` with that node's id).
+6. **Lifecycle and embeddings** as for any other ingestion.
+
+### Extraction prompt rules for transcripts
+
+- Claims about a speaker, asserted by that same speaker, are direct: subject = speaker, `assertedBy = participant:speaker`.
+- Claims about another participant, asserted by speaker A, still have subject = the other participant; `assertedBy = participant:A`. Retrieval / cleanup downweights "X said Y about Z" style claims relative to "X said Y about themselves."
+- Embedded reported speech ("Bob said that Carol said …") is **not** modeled with nested claim structures. The raw transcript is queryable; only assertions the extractor is willing to attach to the speaker get emitted.
+- Commitments and assignments produce Task nodes with `HAS_TASK_STATUS=pending` and `OWNED_BY → assignee`. If the user is the assignee, the task surfaces in `open_commitments` for the user.
+
+### Identity resolution exposure
+
+Transcripts are where the alias system gets stress-tested. The four-signal resolution (Phase 3 of the plan) plus the speaker-label-as-alias-source flow above is the entire defense; nothing transcript-specific beyond that.
 
 ## Migration Plan
 
-1. `ALTER TABLE edges RENAME TO claims`.
-2. `ALTER TABLE claims` column renames:
-   - `source_node_id` → `subject_node_id`
-   - `target_node_id` → `object_node_id` (also made nullable)
-   - `edge_type` → `predicate` (widened from `varchar(50)` to `varchar(80)`)
-3. Add columns: `object_value`, `statement`, `source_id`, `stated_at`, `valid_from`, `valid_to`, `status` (default `'active'`), `updated_at` (default `NOW()`).
-4. Drop `UNIQUE(source_node_id, target_node_id, edge_type)`.
-5. Delete rows with `predicate IN ('MENTIONED_IN', 'CAPTURED_IN', 'INVALIDATED_ON')`. These are structural, not factual; their equivalents come from `sourceLinks` and `status`. The remaining existing predicates map 1:1 into `RelationshipPredicateEnum`.
-6. Backfill every remaining row:
-   - `statement` = templated sentence: `"{subjectLabel} {predicateAsReadable} {objectLabel or objectValue}{: description if present}"`. Done in a backfill job that joins to `node_metadata`.
-   - `source_id` = per-user synthetic source of type `legacy_migration` (created once per user as part of the migration).
-   - `stated_at` = `created_at`.
-   - `status` = `'active'`.
-   - `updated_at` = `created_at`.
-   - `metadata` = `coalesce(metadata, '{}'::jsonb) || '{"backfilled": true}'::jsonb`.
-7. Apply `NOT NULL` to `statement`, `source_id`, `stated_at`, `status`.
-8. Add `CHECK` constraints on object shape.
-9. Add new indexes.
-10. `ALTER TABLE edge_embeddings RENAME TO claim_embeddings`; `ALTER TABLE claim_embeddings RENAME COLUMN edge_id TO claim_id`.
-11. TypeID prefix migration:
+Phase 1 of this plan is already on `main`. The 2026-04-26 additions need their own forward-only migration:
 
-- Add `"claim"` and `"claim_embedding"` to `ID_TYPE_NAMES`.
-- Add prefixes `claim: "claim"` and `claim_embedding: "cemb"` to `ID_TYPE_PREFIXES`.
-- Keep `"edge"` and `"edge_embedding"` available until the migration code and all imports no longer reference them.
-- Update schema references from `typeId("edge")` to `typeId("claim")`.
-- Update schema references from `typeId("edge_embedding")` to `typeId("claim_embedding")`.
-- Rewrite claim row IDs from `edge_*` to `claim_*`.
-- Rewrite embedding row IDs from `eemb_*` to `cemb_*`.
-- Rewrite `claim_embeddings.claim_id` from `edge_*` to `claim_*`.
-- Rewrite known JSON metadata references only where they are structured and test-covered; do not attempt broad string replacement inside arbitrary JSON blobs.
-- Old external refs to `edge_*` IDs will not resolve after migration; this is an acknowledged break.
+```sql
+-- Sources scope
+ALTER TABLE sources ADD COLUMN scope varchar(16) NOT NULL DEFAULT 'personal';
+ALTER TABLE sources ADD CONSTRAINT sources_scope_ck CHECK (scope IN ('personal','reference'));
 
-12. Add source types used by system-owned provenance: `"legacy_migration"` and `"manual"`.
-13. Drop `EdgeType` enum export; add the unified predicate enums.
-14. `ALTER TABLE aliases ADD COLUMN normalized_alias_text text`.
-15. Backfill `normalized_alias_text = trim(lower(alias_text))`.
-16. Add `UNIQUE(user_id, normalized_alias_text, canonical_node_id)`.
+-- Claims scope (denormalized)
+ALTER TABLE claims ADD COLUMN scope varchar(16) NOT NULL DEFAULT 'personal';
+UPDATE claims c SET scope = s.scope FROM sources s WHERE c.source_id = s.id AND c.scope <> s.scope;
+ALTER TABLE claims ADD CONSTRAINT claims_scope_ck CHECK (scope IN ('personal','reference'));
 
-The DDL runs once. Row backfill and source creation can be batched per user to bound lock windows and make failures recoverable.
+-- Provenance
+ALTER TABLE claims ADD COLUMN asserted_by_kind varchar(24);
+ALTER TABLE claims ADD COLUMN asserted_by_node_id text REFERENCES nodes(id) ON DELETE SET NULL;
+-- Backfill: every existing claim is treated as user-stated unless it's a system-authored linkage.
+UPDATE claims SET asserted_by_kind = 'system'
+  WHERE source_id IN (SELECT id FROM sources WHERE type IN ('manual'))
+    AND predicate IN ('OWNED_BY','OCCURRED_ON');
+UPDATE claims SET asserted_by_kind = 'user' WHERE asserted_by_kind IS NULL;
+ALTER TABLE claims ALTER COLUMN asserted_by_kind SET NOT NULL;
+ALTER TABLE claims ADD CONSTRAINT claims_asserted_by_kind_ck CHECK (
+  asserted_by_kind IN ('user','user_confirmed','assistant_inferred','participant','document_author','system')
+);
+ALTER TABLE claims ADD CONSTRAINT claims_asserted_by_node_consistency_ck CHECK (
+  (asserted_by_kind IN ('participant') AND asserted_by_node_id IS NOT NULL)
+  OR asserted_by_kind <> 'participant'
+);
+
+-- Transition pointers
+ALTER TABLE claims ADD COLUMN superseded_by_claim_id text REFERENCES claims(id) ON DELETE SET NULL;
+ALTER TABLE claims ADD COLUMN contradicted_by_claim_id text REFERENCES claims(id) ON DELETE SET NULL;
+
+-- Indexes
+CREATE INDEX claims_user_scope_status_stated_at_idx ON claims (user_id, scope, status, stated_at);
+CREATE INDEX claims_user_scope_kind_status_idx ON claims (user_id, scope, asserted_by_kind, status);
+DROP INDEX IF EXISTS claims_user_id_status_stated_at_idx;
+```
+
+Idempotency: each step guarded by `IF NOT EXISTS` / column-existence checks.
+
+The existing 2026-04-24 migration (Phase 1) is unchanged.
 
 ## Extraction Pipeline
 
-### Source-Ref Threading (pre-work)
+Existing (already landed Phase 2a) flow:
 
-These three fixes are preconditions for claim insertion with real provenance.
+1. `formatConversationAsXml` preserves external message IDs.
+2. `insertNewSources` returns `{ externalId → internal sourceId }`.
+3. `extractGraph` consumes the source-ref map; rejects unresolvable refs.
+4. LLM emits `nodes`, `relationshipClaims`, `attributeClaims`, `aliases`.
+5. `_processAndInsertLlmClaims` inserts; `_processAndInsertLlmAliases` upserts; `applyClaimLifecycle` runs; embeddings generated.
 
-1. `formatConversationAsXml` preserves the external message ID in the `id` attribute (currently uses sequential index — `src/lib/formatting.ts:22`).
-2. `insertNewSources` returns a map of `externalId → internal source TypeId` for the inserted child sources (currently returns only external IDs — `src/lib/ingestion/insert-new-sources.ts:79`).
-3. `extractGraph` accepts the source-ref map and passes it into the extraction prompt so the LLM can cite specific messages (currently receives only `content` — `src/lib/extract-graph.ts:62-75`).
+2026-04-26 additions to the extraction call:
 
-### LLM Extraction Schema
+### Extra inputs to the extraction prompt
+
+- **Speaker map** (transcript / external_conversation only): `{ "Marcel": user, "Jane": person:<nodeId>, "Speaker 3": placeholder:<nodeId> }`.
+- **Currently open tasks** (all conversation paths): `[{ id, label, owner, dueOn?, statedAt }]` for tasks owned by the user (or any active participant for multi-party sources). Cap at N=20, ordered by recency. Tells the model to resolve "I sent the spec" against an existing task id rather than creating a new Task.
+- **User self-aliases**: passed implicitly through the speaker map.
+
+### LLM extraction schema (additions)
 
 ```ts
-const llmNodeSchema = z.object({
-  id: z.string().min(1), // temporary id, resolved after LLM call
-  type: NodeTypeEnum,
-  label: z.string().min(1),
-  description: z.string().min(1).optional(),
-});
-
-const relationshipClaimSchema = z.object({
+const llmRelationshipClaimSchema = z.object({
   subjectId: z.string().min(1),
   predicate: RelationshipPredicateEnum,
   objectId: z.string().min(1),
   statement: z.string().min(1),
-  sourceRef: z.string().min(1), // external message ID or document ID
+  sourceRef: z.string().min(1),
+  assertionKind: AssertedByKindEnum, // NEW
+  assertedBySpeakerLabel: z.string().optional(), // NEW; resolved post-LLM via speaker map
   statedAt: z.string().datetime().optional(),
   validFrom: z.string().datetime().optional(),
   validTo: z.string().datetime().optional(),
 });
 
-const attributeClaimSchema = z.object({
+const llmAttributeClaimSchema = z.object({
   subjectId: z.string().min(1),
   predicate: AttributePredicateEnum,
   objectValue: z.string().min(1),
   statement: z.string().min(1),
   sourceRef: z.string().min(1),
+  assertionKind: AssertedByKindEnum, // NEW
+  assertedBySpeakerLabel: z.string().optional(), // NEW
   statedAt: z.string().datetime().optional(),
   validFrom: z.string().datetime().optional(),
   validTo: z.string().datetime().optional(),
 });
-
-const aliasSchema = z.object({
-  subjectId: z.string().min(1), // refers to a node id in this extraction batch
-  aliasText: z.string().min(1),
-});
-
-const llmExtractionSchema = z.object({
-  nodes: z.array(llmNodeSchema),
-  relationshipClaims: z.array(relationshipClaimSchema),
-  attributeClaims: z.array(attributeClaimSchema),
-  aliases: z.array(aliasSchema),
-});
 ```
 
-Notable removals vs. the current schema:
+The post-LLM resolver maps `assertedBySpeakerLabel` (a string the LLM copies from the prompt's speaker list) to a `nodeId`. Claims with `kind = "participant"` and an unresolvable label are rejected, not silently attached.
 
-- Node `description` is no longer treated as factual storage. It may be emitted as an initial seed, then rewritten by profile synthesis.
-- The LLM no longer emits a separate `edges` array. All assertions come through claims.
-
-### Extraction Rules (prompt content)
-
-- Extract only user-stated or user-confirmed information.
-- Assistant-only suggestions are not user claims unless the user confirmed them.
-- Prefer a few high-signal claims over exhaustive extraction.
-- Capture explicit dates and validity windows when present.
-- Relationships between durable entities → `relationshipClaims`.
-- Status, preference, goal, and decision facts → `attributeClaims`.
-- Node descriptions may be emitted as seed summaries, but factual assertions still belong in claims.
-- When the user refers to the same entity by multiple names in the source (e.g., "my wife Jane (Mom)", "MBP" for "MacBook Pro"), emit each additional reference as an `alias` pointing at the canonical node id.
-- Every claim must cite a `sourceRef` corresponding to a message ID in the provided conversation (or the document ID for document ingestion).
-
-### Insertion Flow
+### Insertion flow (revised)
 
 1. Parse LLM output with Zod.
-2. Resolve candidate nodes to canonical nodes using the upgraded identity resolution (see [Identity Resolution](#identity-resolution)).
-3. Resolve each `sourceRef` to a real `sourceId` via the source-ref map. Claims with unresolvable source refs are rejected, not silently attached to a fallback.
-4. Enter a transaction per ingested source.
-5. If reprocessing a source (source-scoped replacement): delete existing claims where `sourceId = <this source>` before inserting new ones. This preserves idempotency without accumulating duplicates.
-6. Insert claims with `status = 'active'`.
-7. Upsert aliases (normalized text, dedup via the unique constraint). Aliases are not sourced assertions; they are resolution hints.
-8. Run the lifecycle engine (below) against newly inserted claims.
-9. Generate claim embeddings.
-10. Enqueue a profile-synthesis job for any subject node whose active attribute claim set changed beyond a threshold (≥ 1 new attribute claim or any supersession).
+2. Resolve candidate nodes (signal-1 label match for now; signal-2..4 land in Phase 3).
+3. Resolve `sourceRef` to `sourceId` (unchanged).
+4. Resolve `assertedBySpeakerLabel` via speaker map; reject on failure for `participant`/`document_author` kinds.
+5. Stamp `scope` on each claim from the source's scope.
+6. Per ingested source, in a transaction:
+   - Source-scoped replacement: `DELETE FROM claims WHERE source_id IN (...)` for the sources being reprocessed.
+   - Insert claims with `status='active'`, full provenance, scope.
+   - Upsert aliases.
+   - Run lifecycle engine (registry-driven; see below).
+   - Generate claim embeddings.
+   - Enqueue profile-synthesis jobs (Phase 3).
+   - Enqueue read-model invalidations for affected user (only if any registry-`forceRefreshOnSupersede` predicate fired).
 
 ## Lifecycle Engine
 
-Runs synchronously after claim insertion. Input: a batch of newly inserted active claims. Output: status transitions on prior claims.
+Existing engine (`src/lib/claims/lifecycle.ts`) hardcodes `HAS_STATUS`. Generalizes to:
 
-Rules:
+- Read `PREDICATE_POLICIES`. For each predicate where `cardinality = "single_current_value"` and `lifecycle = "supersede_previous"`, recompute supersession per `(userId, subjectNodeId, predicate)` triple.
+- The recomputation pass is the existing `recomputeStatusLifecycleForSubject`, parameterized by predicate. Sort by `statedAt` then `createdAt` then `id`. Among ties, prefer `assertedByKind` of `user`/`user_confirmed` over `assistant_inferred`.
+- For the latest claim per triple: `status = 'active'`, `validTo = null` (unless explicitly set).
+- For prior claims: `status = 'superseded'`, `validTo = nextClaim.statedAt`, **`supersededByClaimId = nextClaim.id`** (new in 2026-04-26).
+- Reject promotions that violate trust: an `assistant_inferred` claim cannot supersede a `user` claim. The engine demotes the new claim to `status = 'superseded'` immediately and does not change the prior.
 
-**Attribute claims with single-valued predicates** (`HAS_STATUS`): `HAS_STATUS` represents the subject's overall current state, not a typed property bag. For each new active status claim with subject `S`, mark prior active `HAS_STATUS` claims on `S` as `superseded`. The new claim's `validFrom` defaults to its `statedAt` if not set. The superseded claim's `validTo` is set to the new claim's `statedAt`.
+Multi-valued and append-only predicates: no supersession. Explicit `validTo` from extraction still ends an assertion's apply window.
 
-Validity fields answer "when did this assertion apply?" The status lifecycle answers "which current-state assertion has been replaced?" They are related but not duplicates: `validTo` can exclude a claim from current queries, while `status = 'superseded'` records that a newer claim replaced it.
-
-**Attribute claims with multi-valued predicates** (`HAS_PREFERENCE`, `HAS_GOAL`, `MADE_DECISION`): no auto-supersession. Coexisting active claims are expected. Explicit contradictions come from cleanup or manual retraction.
-
-**Relationship claims**: no auto-supersession by default (relationships are almost always many-valued). Explicit `validTo` from the extraction LLM ends an assertion. Contradictions come from cleanup.
-
-Status transitions are recorded by updating `status` and `updatedAt`. There is no separate transition log; the row-level `updatedAt` plus the claim's `createdAt` is sufficient to reconstruct the history for audit.
+Status transitions write `updatedAt` and the appropriate transition pointer column. No separate transition log.
 
 ## Identity Resolution
 
-Current implementation is `(nodeType, canonicalLabel)` exact match only (`src/lib/extract-graph.ts:326-431`). The upgrade uses four signals, applied in order of cheapness:
+Unchanged in spirit from 2026-04-24. Refinements:
 
-1. **Canonical label match.** Exact match on `(userId, nodeType, canonicalLabel)`. Fast path.
-2. **Alias match.** Exact match on `(userId, normalizedAliasText)`, constrained to matching `nodeType`. Catches "Mom → Jane" and "MBP → MacBook Pro" cleanly.
-3. **Embedding similarity.** For candidates still unresolved, compare the candidate's label embedding against existing node embeddings of the same type. Above a high threshold (e.g., 0.85), merge; between a middle threshold (e.g., 0.7) and high, hand off to claim-profile check.
-4. **Claim-profile compatibility.** When label/alias/embedding is ambiguous, compare the candidate's provisional claims against the existing node's active claim profile. Compatible profiles (overlapping attributes, no contradictions) support merge; contradicting profiles (different `HAS_STATUS`, different `OWNED_BY`) support keeping separate.
+- **Scope-bounded**: signals 1–4 only consider candidates with the same `scope` as the candidate node (where the candidate's scope is determined by the scope of the source it is being created from).
+- **Signal 2 (alias)** now also handles transcript speaker labels, since the speaker-mapping step writes to the alias table when resolving previously-unknown speakers.
+- **Signal 4 (claim profile)** weights claims by `assertedByKind` — `user`/`user_confirmed` count more than `participant`; `assistant_inferred` and `document_author` are excluded from the profile for compatibility comparison.
 
-All four signals ship together with conservative thresholds. Threshold tuning is an ongoing activity driven by the eval harness.
-
-A background re-evaluation pass runs after each ingestion: for each newly affected node, if the claim profile now passes the similarity + compatibility bar against another existing node, enqueue a proposed merge for the cleanup pipeline to confirm or reject. No automatic merges from the background pass; merges require either the extraction pipeline's direct resolution or cleanup's LLM review.
+Background re-evaluation pass and conservative thresholds: unchanged.
 
 ## Aliases
 
-The `aliases` table becomes the authoritative name-variant store. It is currently unused in code; the alias system is built out fresh as part of this architecture.
+Unchanged from 2026-04-24. The 2026-04-26 additions reinforce the existing role:
 
-### Authoring
-
-1. **Extraction LLM** emits aliases alongside nodes and claims when the source text shows multiple names for the same entity.
-2. **Cleanup merge** and **dedup sweep merge**: when a merge folds node `A` into node `B`, `A`'s canonical label becomes an alias on `B`, and `A`'s existing aliases rewire to `B`.
-3. **Manual API**: `POST /alias/create` with `{ canonicalNodeId, aliasText }`; `POST /alias/delete` with `{ aliasId }`.
-
-### Storage and normalization
-
-- `aliasText` preserves the user-facing spelling and casing.
-- `normalizedAliasText` is computed on insert as `trim().toLowerCase()` and used for matching.
-- The unique constraint on `(userId, normalizedAliasText, canonicalNodeId)` prevents duplicate aliases without losing display fidelity.
-- Aliases are not claims. They carry no source, no time, no lifecycle. They are resolution hints, written only by trusted paths.
-- Aliases cascade on node delete; rewire on node merge (see [Dedup / Cleanup](#dedup--cleanup)).
-
-### Consumption
-
-1. **Identity resolution** signal 2 (see above).
-2. **Node formatting for downstream LLMs**: when a node is formatted for retrieval context, aliases are included inline — `Jane Doe (also: Mom, J)`. The formatting helper batches alias lookups across all nodes in a retrieval response.
-3. **Atlas** may cite alias sets for high-centrality nodes to keep the persistent context compact.
+- Transcript speaker mapping writes to aliases when it resolves "Jane" to an existing node.
+- Task aliases are now in scope (e.g., "the spec," "spec doc" → `Task` node).
+- Identity resolution is scope-bounded, so a single `Person` node cannot accidentally accumulate aliases from a `reference` source.
 
 ## Node Descriptions
 
-Node `description` stays a first-class free-form field. Extraction may write a seed description, but durable ownership belongs to the **profile synthesis** job.
+Unchanged from 2026-04-24.
 
-### Why keep descriptions
+A small clarification: profile synthesis sees only `personal`-scope claims for `personal`-scope nodes. `reference`-scope nodes have descriptions sourced from the document itself (extraction's seed description); profile synthesis for reference nodes is out of scope for this design — if we ever build it, it operates on reference-scope claims only.
 
-Claims give structure; descriptions give gestalt — role, nuance, cross-references, the bits that don't fit a predicate. A small sub-graph with good descriptions carries much more usable context than the same graph with empty descriptions.
+## Read Models & Context Bundles
 
-### Profile synthesis
-
-- **Trigger**: enqueued from the extraction insertion flow whenever a node's active attribute claim set changed beyond a threshold. Also runnable on demand for any node.
-- **Inputs**: the node's existing description; all active attribute claims on the node; up to N high-centrality relationship claims; the node's aliases.
-- **Output**: a short paragraph characterizing the entity as a durable profile, not a recent-events log. The prompt instructs the model to write the _gist_ of who/what this is.
-- **Invariant**: every statement in the synthesized description must be supported by the input claims or the prior description. The prompt explicitly forbids inventing facts.
-
-### Initial descriptions
-
-New nodes should get a useful description as soon as possible. If profile synthesis is not available at insertion time, the extraction path may write an initial description from the same source context that created the node. That description is allowed to be imperfect; it is seed material, not the factual substrate.
-
-Once profile synthesis runs, it may rewrite the description from active claims, relationship context, aliases, and the prior description. This may duplicate information already present in claims, and that is acceptable because descriptions are optimized for compact context rather than storage normalization.
-
-Cleanup must treat descriptions as derived summaries. When cleanup rewrites a description, it should check for unsupported, stale, or contradicted statements against active claims and either remove them or preserve them only as clearly historical context.
-
-### Why not only per-message
-
-Per-message authoring is the cause of the "episode-specific" drift the direction doc flagged: a description written during one conversation bakes in that conversation's frame. Periodic synthesis from claims breaks that loop — episodes live in claims with `statedAt`; the description sees only the accumulated profile.
-
-Legacy descriptions are preserved until profile synthesis overwrites them. The migration does not touch existing descriptions.
-
-## Atlas
-
-Atlas today is a single free-text node updated by a manual job and used as "ground truth" in cleanup (`src/lib/atlas.ts`, `src/lib/jobs/atlas-user.ts`). It is disconnected from the graph it is meant to summarize, which is the bug.
-
-Claims-first Atlas: Atlas is the persistent context layer defined in the direction doc's four-layer model. It is derived, not authored.
-
-Derivation: Atlas content is generated from the user's long-lived, high-signal active claims — specifically `HAS_PREFERENCE`, `HAS_GOAL`, and `HAS_STATUS` claims with high subject centrality (measured by number of relationship claims touching the subject) and long time-in-effect. The derivation runs on a schedule and after significant ingestion events. Manual override is supported via an editable "pinned context" field stored on `userProfiles.content`; the Atlas assembly concatenates the pinned context with the derived body.
-
-This gives assistants a reliable permanent-ish context (the user's stated preferences, goals, and stable statuses) that is always available, independent of per-query semantic retrieval.
-
-## Retrieval / Search
-
-`searchMemory` (src/lib/query/search.ts:18-98) is rewritten to query claims instead of edges:
-
-- `findSimilarNodes` unchanged; node formatting now includes aliases (`Label (also: alias1, alias2)`).
-- `findSimilarEdges` becomes `findSimilarClaims` with options:
+The product surface for assistants is a sectioned `ContextBundle`. The graph is internal machinery.
 
 ```ts
-interface FindSimilarClaimsOptions extends SimilaritySearchBase {
-  statuses?: ClaimStatus[]; // default ["active"]
-  asOf?: Date; // default now
-  subjectNodeIds?: TypeId<"node">[];
-  includePastValid?: boolean; // default false
+interface ContextSection {
+  kind:
+    | "atlas"
+    | "open_commitments"
+    | "preferences"
+    | "recent_supersessions"
+    | "evidence"
+    | "reference_lens"
+    | "pinned";
+  content: string; // rendered text the LLM consumes
+  usage: string; // hint that goes to the LLM about how to interpret this section
+  evidenceRefs?: { claimId: TypeId<"claim">; sourceId: TypeId<"source"> }[];
+}
+
+interface ContextBundle {
+  sections: ContextSection[];
+  asOf: Date;
 }
 ```
 
-Defaults filter out claims whose `validTo` is before `asOf`.
+### Sections and rules
 
-- `findOneHopNodes` queries claims for neighbors (subject or object side), filtering by `status = 'active'` and validity.
-- Rerank pipeline unchanged; inputs now include claim results with their `sourceId` for evidence lookup.
+- **`pinned`** — `userProfiles.content`. Manual override; concatenated first.
+- **`atlas`** — synthesized from `feedsAtlas = true` claims with `scope = personal` and `assertedByKind ∈ {user, user_confirmed}`. Rank by subject centrality and time-in-effect. Output budgeted to ~500 tokens.
+- **`open_commitments`** — Task nodes with latest `HAS_TASK_STATUS ∈ {pending, in_progress}` owned by the user. Rendered as a compact list with owner, due date, source. Usage hint: "Pending or in-progress only. Do not surface as 'todo' anything not in this list."
+- **`recent_supersessions`** — claims that transitioned to `superseded`, `done`, `contradicted`, or `retracted` in the last N hours (default 24). One bootstrap cycle of acknowledgment material. Usage hint: "These are recently completed or invalidated. Do not re-prompt them."
+- **`preferences`** — active `HAS_PREFERENCE` and `HAS_GOAL` claims for the user; same trust filters as `atlas`.
+- **`reference_lens`** — empty by default in this revision. Reserved slot for future reference distillation if a real workflow emerges.
+- **`evidence`** — populated only by the search APIs, not bootstrap.
 
-Search response shape adds `sourceIds` per claim result so callers can fetch evidence via the existing source API. Retrieval de-prioritizes claims with `metadata.backfilled = true` on score ties — backfilled claims are lower-trust by construction.
+### APIs
+
+- `getConversationBootstrapContext(userId, { asOf? })` — assembled at session start. Sections: `pinned`, `atlas`, `open_commitments`, `recent_supersessions`, `preferences`. Default `asOf = now`.
+- `searchMemory(userId, query, { scope = "personal", asOf?, includePastValid? })` — ranked node cards + supporting claim evidence. Default scope `personal`. Reference scope reachable but normally callers use `searchReference`.
+- `searchReference(userId, query, { asOf? })` — explicit reference retrieval. The MCP tool description tells the LLM: "Use for ideas, frameworks, content from books and articles in the user's corpus. Does not contain personal facts about the user."
+- `getEntityContext(userId, nodeId)` — node card for a specific entity.
+- `getOpenCommitments(userId, { ownedBy?, dueBefore? })` — registry-driven view; used by bootstrap and on-demand.
+
+### Node card shape
+
+The unit returned by search and entity APIs:
+
+```ts
+interface NodeCard {
+  nodeId: TypeId<"node">;
+  type: NodeType;
+  label: string;
+  aliases: string[];
+  scope: "personal" | "reference";
+  summary: string; // from profile synthesis (nodeMetadata.description)
+  currentFacts: string[]; // active single_current_value attribute claims, rendered
+  preferencesGoals?: string[]; // multi_value attribute claims
+  openCommitments?: TaskCardLite[];
+  recentEvidence: ClaimRef[]; // top-N relevant active claims, statement + sourceId
+  reference?: { author?: string; title?: string }; // when scope=reference
+}
+```
+
+Claims are not returned raw outside of `recentEvidence`. Token efficiency is the read API's responsibility, not the assistant's.
+
+### Raw graph access remains
+
+The MCP/SDK keeps the existing endpoints for visualization and exploration:
+
+- `POST /node/get`, `POST /node/neighborhood`, `POST /query/graph`, `POST /query/timeline`, `POST /query/day`.
+- These return claim and node data directly (with the new `scope` and `assertedBy` fields included). Callers building visualization tools depend on them. Read-model APIs are additive, not a replacement.
+
+## Retrieval / Search
+
+`searchMemory` (`src/lib/query/search.ts`) is updated:
+
+- Default `WHERE` adds `scope = $scope` (default `personal`) and `assertedByKind <> 'assistant_inferred'`.
+- `findSimilarClaims` honors the new defaults; an `includeReference` and `includeAssistantInferred` opt-in keeps deep-debug paths possible.
+- Rerank pipeline unchanged in shape; inputs include claim results with `sourceId` and `assertedByKind` so the reranker can downweight participant-asserted claims about third parties when configured.
+- `findOneHopNodes` adds the same scope filter.
+
+`searchReference` is a separate function (and a separate MCP tool) that filters to `scope = reference` and returns reference node cards with `author`/`title` populated.
 
 ## Manual Editing APIs
 
-Updated surface:
-
-- `POST /node/create`, `POST /node/update`, `POST /node/delete`, `POST /node/merge`, `POST /node/batch-delete`: unchanged in purpose. Description updates are allowed only through trusted synthesis or admin paths, not routine graph edits.
-- `POST /edge/*` endpoints removed.
-- `POST /claim/create`: accepts subject, predicate, object (node or value), statement, and optional stated/valid times. System assigns a `manual` source per user. Status defaults to `active` and lifecycle runs.
-- `POST /claim/update`: accepts status transitions (`retracted` only from user input; `active` → `retracted` is the only user-settable transition). Other fields are immutable; to change a claim, retract the old one and create a new one.
-- `POST /claim/delete`: hard delete. Intended for cleanup workflows, not routine use.
-- `POST /alias/create`: `{ canonicalNodeId, aliasText }`. Normalization and unique constraint apply.
-- `POST /alias/delete`: `{ aliasId }`.
-- `POST /node/get` response shape: returns active claims with the node as subject or object, grouped, plus the node's aliases.
-- `POST /node/merge`: rewires claims (subject and object side) and aliases; promotes the removed node's label to an alias on the kept node. See [Dedup / Cleanup](#dedup--cleanup).
+- `POST /claim/create`: accepts subject, predicate, object, statement, optional times. System assigns `manual` source per user. `scope = personal` (manual entries are always personal). `assertedByKind = "user"`. Status defaults `active`; lifecycle runs.
+- `POST /claim/update`: status transition (`active → retracted` only).
+- `POST /claim/delete`: hard delete; cleanup workflows.
+- `POST /alias/create`, `POST /alias/delete`: unchanged.
+- `POST /node/get`: returns the node card shape (alias-annotated, summary, claim groupings).
+- `POST /node/merge`: rewires claims (subject and object) and aliases; promotes removed label to alias on kept node. Scope-bounded — refuses to merge across scopes (returns 4xx with a clear message).
+- `POST /source/register`: requires `scope` (default `personal` if omitted). Used for document and reference ingestion.
+- `POST /transcript/ingest`: new entry point for `meeting_transcript` and `external_conversation` ingestion. Accepts raw text or pre-segmented utterances, optional `knownParticipants` hints, optional `userSelfAliases` overrides.
 
 ## Dedup / Cleanup
 
 ### Dedup sweep
 
-`runDedupSweep` (src/lib/jobs/dedup-sweep.ts) behavior on merge, updated:
+Behavior unchanged in spirit; updates:
 
-- `rewireNodeClaims` replaces `rewireNodeEdges`: updates claims where the removed node is subject or object, pointing them at the kept node.
-- Duplicate claims after rewiring (same `subjectNodeId`, `predicate`, `objectNodeId` or `objectValue`, `sourceId`) are deduplicated, keeping the earliest `createdAt`.
-- `rewireNodeAliases`: updates alias rows where `canonicalNodeId` is the removed node, pointing them at the kept node; adds the removed node's canonical label as an alias on the kept node. Conflicts resolved by the unique constraint (duplicates dropped).
-- `rewireSourceLinks` unchanged.
-- Claim embeddings do not need regeneration post-merge because the embedding text no longer includes node labels.
+- Refuses cross-scope merges (matches identity resolution).
+- Considers `assertedByKind` when deduplicating claims after rewiring — claims that differ only in provenance are preserved (a `user`-asserted claim and a `participant`-asserted claim about the same fact are both kept; their union is the evidence base).
 
 ### LLM-guided cleanup
 
-`runCleanupGraphJob` (src/lib/jobs/cleanup-graph.ts) proposes operations over claims instead of edges. Operations:
+Operations:
 
-- `merge_nodes`: unchanged semantics; also triggers alias rewiring and label-as-alias promotion.
-- `retract_claim`: marks a claim `retracted` (not deleted).
-- `contradict_claim`: marks a claim `contradicted` and requires a citation to the contradicting claim.
-- `add_claim`: creates a new active claim (with cleanup's synthetic source).
-- `add_alias` / `remove_alias`: explicit alias operations when the LLM spots a name variant pair.
+- `merge_nodes` (scope-bounded).
+- `retract_claim` (sets `status = 'retracted'`).
+- `contradict_claim` (sets `status = 'contradicted'`, requires citation, fills `contradictedByClaimId`).
+- `add_claim` (cleanup's synthetic source; `assertedByKind = 'system'`).
+- `add_alias` / `remove_alias`.
+- `promote_assertion` (new): converts an `assistant_inferred` claim to `user_confirmed` when the cleanup pass finds explicit corroboration. Implemented as a write to a new claim that supersedes (single-valued) or coexists (multi-valued).
 
-The cleanup prompt is updated to use Atlas as structured persistent context (itself derived) rather than free-text narrative. The prompt is also updated for contradiction detection: the cleanup pass is the only place contradictions between coexisting active multi-valued claims are caught, so the prompt calls them out explicitly with examples.
+The cleanup prompt is updated to emit `assertionKind` for `add_claim` operations and to use the bootstrap context (Atlas + open commitments + preferences) as structured persistent context.
 
-When cleanup rewrites node descriptions, it treats them as derived summaries over claims and aliases. It should remove unsupported current-state language, preserve useful generic identity information, and avoid turning one episode into the whole entity profile.
+## Operational Contracts
 
-Cleanup preserves sourced history: old claims are marked, not deleted.
+Every concept lands with the full path filled in. The matrix below is the gate: a concept doesn't ship without all rows.
+
+### `HAS_TASK_STATUS` and the Task node type
+
+| Slot                | Wiring                                                                                                                                                                                                  |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Producer            | Extraction LLM emits `attributeClaim` with predicate `HAS_TASK_STATUS` and `objectValue ∈ TaskStatusEnum`; manual `/claim/create` accepts it. Background re-evaluation never auto-emits status changes. |
+| Validation          | `attributeClaimSchema` (Zod) constrains predicate + objectValue. Insertion path validates Task node type for the subject.                                                                               |
+| Storage             | `claims` row with `subject = Task node`, `predicate = 'HAS_TASK_STATUS'`, `objectValue` enum string, scope=personal, assertedBy from extraction.                                                        |
+| Lifecycle           | Registry: `single_current_value + supersede_previous + forceRefreshOnSupersede=true`. Engine recomputes per `(user, taskNode, HAS_TASK_STATUS)`. Sets `supersededByClaimId` on prior.                   |
+| Atlas               | Excluded (`feedsAtlas: false`).                                                                                                                                                                         |
+| Default retrieval   | Surfaced only via `getOpenCommitments` and the `open_commitments` bootstrap section. Latest status only; `done`/`abandoned` excluded from "open" list.                                                  |
+| Reference retrieval | N/A (Tasks are personal-scope).                                                                                                                                                                         |
+| Read surface        | `open_commitments` section in `getConversationBootstrapContext`; `getOpenCommitments` API; Task cards in `getEntityContext`.                                                                            |
+| Eval                | Regression story: pending → done across sessions; bootstrap on day 2 omits the done task and includes it in `recent_supersessions` for one cycle, then drops.                                           |
+
+### `scope` (sources + claims)
+
+| Slot                | Wiring                                                                                                                                                                                                                  |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Producer            | Source registration API requires `scope`; defaults `personal`. Claims inherit on insert (denormalized).                                                                                                                 |
+| Validation          | `CHECK` constraints on both tables; Zod enums at API boundaries.                                                                                                                                                        |
+| Storage             | `sources.scope`, `claims.scope`.                                                                                                                                                                                        |
+| Lifecycle           | None directly; scope is immutable.                                                                                                                                                                                      |
+| Atlas               | Filters to `scope = personal` only.                                                                                                                                                                                     |
+| Default retrieval   | `searchMemory` defaults to `scope = personal`.                                                                                                                                                                          |
+| Reference retrieval | `searchReference` filters to `scope = reference`.                                                                                                                                                                       |
+| Read surface        | Bootstrap excludes reference; node cards expose `scope`; reference nodes carry `author`/`title`. Identity resolution and dedup are scope-bounded.                                                                       |
+| Eval                | Regression story: ingest a reference document; bootstrap excludes any `HAS_PREFERENCE`-shaped claims from it; `searchReference` returns its content; `searchMemory` does not. Cross-scope merge attempt fails with 4xx. |
+
+### `assertedBy` (kind + nodeId)
+
+| Slot                | Wiring                                                                                                                                                                                                                                                                                             |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Producer            | Extraction emits `assertionKind` per claim. Speaker map resolves `assertedBySpeakerLabel` to `nodeId` for `participant` kind. System-authored claims (Atlas/Dream/day) hardcode `kind: "system"`. Manual `/claim/create` hardcodes `kind: "user"`.                                                 |
+| Validation          | Zod enum + post-LLM speaker resolution; `participant` claims with unresolvable labels are rejected. DB CHECK enforces `nodeId` presence for `participant`.                                                                                                                                         |
+| Storage             | `claims.asserted_by_kind`, `claims.asserted_by_node_id`.                                                                                                                                                                                                                                           |
+| Lifecycle           | Sort tiebreaker: `user`/`user_confirmed` preferred over `assistant_inferred`. `assistant_inferred` cannot supersede `user`/`user_confirmed`.                                                                                                                                                       |
+| Atlas               | Excludes `assistant_inferred`, `document_author`.                                                                                                                                                                                                                                                  |
+| Default retrieval   | Excludes `assistant_inferred`. Reranker may downweight `participant`-about-third-party.                                                                                                                                                                                                            |
+| Reference retrieval | Returns `document_author` claims.                                                                                                                                                                                                                                                                  |
+| Read surface        | Node cards expose evidence with `assertedBy` so the LLM (and visualization) can see who said it.                                                                                                                                                                                                   |
+| Eval                | Regression stories: assistant fabrication fixture (claim either not extracted or `kind=assistant_inferred` and excluded from bootstrap and default search); user confirmation fixture (claim's `kind` flips on the next supersession); transcript fixture (claims attributed to correct speakers). |
+
+### Multi-party transcripts & speaker mapping
+
+| Slot              | Wiring                                                                                                                                                                                                                   |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Producer          | `POST /transcript/ingest` (new). Memory layer detects/segments raw text into utterances, extracts speaker labels, resolves via `userSelfAliases` + alias system, creates placeholder Person nodes for unresolved labels. |
+| Validation        | At source registration; failed speaker resolutions are non-fatal (placeholder nodes), but flagged for cleanup.                                                                                                           |
+| Storage           | Parent transcript source + per-utterance child sources, each with `metadata.speakerNodeId`; alias rows when speakers are first resolved.                                                                                 |
+| Lifecycle         | None at the speaker layer; resulting claims follow standard lifecycle.                                                                                                                                                   |
+| Atlas             | Indirect — transcript-derived claims about the user feed Atlas the same way conversation claims do.                                                                                                                      |
+| Default retrieval | Indirect; speaker info is exposed via claim `assertedBy`.                                                                                                                                                                |
+| Read surface      | Node cards for the participants surface; transcripts visible via existing source-link queries; visualization can render the participant graph.                                                                           |
+| Eval              | Regression story: meeting transcript with three speakers including the user; claims correctly attributed; Marcel-assigned task becomes a personal `open_commitment`.                                                     |
+
+### Read models / `ContextBundle`
+
+| Slot                | Wiring                                                                                                                                  |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Producer            | New assemblers in `src/lib/context/` per section. Each section's predicates and filters come from the registry.                         |
+| Validation          | Zod schemas for the bundle response.                                                                                                    |
+| Storage             | Cached per user with invalidation on registry-`forceRefreshOnSupersede` events; stored alongside the existing Atlas node.               |
+| Lifecycle           | Insertion flow enqueues invalidation when relevant claims change.                                                                       |
+| Atlas               | The `atlas` section IS the renamed Atlas.                                                                                               |
+| Default retrieval   | The bundle is returned by `getConversationBootstrapContext` and friends.                                                                |
+| Reference retrieval | `searchReference` is a separate API; not part of the bootstrap bundle.                                                                  |
+| Read surface        | MCP tools mirror the SDK methods; tool descriptions are part of the design (see [MCP Tool Descriptions](#mcp-tool-descriptions) below). |
+| Eval                | Regression story: every section's filters honored; bundle stays under token budget; raw graph endpoints still return claim data.        |
+
+### MCP Tool Descriptions
+
+The text the assistant sees is part of the design (it's the only signal it has about when to use what):
+
+- `bootstrap_memory`: "Returns the user's persistent memory context for this conversation. Treat its sections as authoritative for the user's stable facts, current preferences, open commitments, and recently completed work. Do not re-prompt completed items as pending."
+- `search_memory`: "Searches the user's personal memory for facts about themselves, their work, their relationships, and their commitments. Use when you need specific information about the user."
+- `search_reference`: "Searches the user's reference corpus — books, articles, and documents they've ingested for ideas and frameworks. Use when reasoning about ideas, frameworks, or content the user wants you to draw on. Does not contain personal facts about the user."
+- `get_entity`: "Returns a compact card for a known entity (person, project, task, etc.) including its summary, current facts, and recent supporting evidence."
+- `list_open_commitments`: "Returns the user's currently open tasks and commitments. Always uses the latest status; never returns completed work."
+
+These strings live in code (`src/lib/mcp/mcp-server.ts`), under code review, with eval coverage that verifies they're present and unchanged in tool registration.
 
 ## Eval Harness
 
-The eval harness is part of this architecture, not an add-on. Without it, the six regression stories in the direction doc are untested claims about quality; with it, they are measurable and the feedback loops that calibrate thresholds (identity resolution, profile-synthesis cadence, cleanup prompt quality) have ground truth to close against.
+Location and structure unchanged from 2026-04-24. Six regression stories from the original design, plus 2026-04-26 additions:
 
-Location: `src/evals/memory/*`.
+7. **Pending task across sessions** — meeting transcript creates a Task with `HAS_TASK_STATUS=pending` owned by the user; next-day chat says "I sent the spec"; bootstrap on day 3 does NOT list the task as open.
+8. **Assistant fabrication** — assistant says "you mentioned you're vegetarian"; user does not confirm; bootstrap on next day does not include `is vegetarian` as a personal fact; default search does not return it.
+9. **Reference scope isolation** — ingest a Marcus Aurelius excerpt as `scope=reference`; bootstrap context contains no claims sourced from it; `searchReference` returns it; `searchMemory` does not; identity resolution does not merge "Marcus" the friend with "Marcus Aurelius."
+10. **Multi-party transcript** — meeting with Marcel, Jane, Bob; "Jane will send the budget by Friday" produces a Task owned by Jane (not Marcel); claims about Bob asserted by Jane carry `assertedBy: participant:jane`.
+11. **Cross-scope merge attempt** — try to merge a personal Person node with a reference Author node; API returns 4xx; no rows changed.
 
-Fixtures: small hand-authored conversation transcripts plus expected post-ingestion state (active claims, node labels, alias sets, identity resolution outcomes).
-
-Regression stories as test cases:
-
-1. **Project starts, then completes** — a `HAS_STATUS` claim on a project node is superseded by a later one; current-state queries return only the new status.
-2. **Project is renamed** — an alias is added; identity resolution merges references to both names.
-3. **Same person, nickname and full name** — alias + claim-profile-aware resolution merges despite label mismatch.
-4. **Assistant suggestion not confirmed** — no claim created from an assistant-only statement.
-5. **User correction supersedes earlier belief** — the correction's claim supersedes the prior.
-6. **Old current-state item expires** — a claim with `validTo` in the past is excluded from `asOf = now` queries.
-
-Each test asserts specific claim counts and statuses post-ingestion. Tests use a test database on a non-default port per CLAUDE.md conventions.
+Threshold-calibration sub-harness from 2026-04-24 unchanged.
 
 ## Implementation Sequence
 
-One coherent architecture, delivered in ordered phases. Each phase leaves the system in a working state; none of them is a scope cut.
+The implementation plan companion (`2026-04-24-claims-implementation-plan.md`) carries the phase-by-phase task lists. Updated phasing summary:
 
-### Phase 1: Schema migration + source-ref plumbing
-
-- Edges table renamed and extended to claims.
-- Embeddings table renamed.
-- TypeID prefix rewrite.
-- Aliases table gets the unique constraint and normalization backfill.
-- `formatConversationAsXml` preserves external message IDs.
-- `insertNewSources` returns internal-id map.
-- `extractGraph` accepts source-ref map.
-- Existing edge-shaped extraction output is adapted into relationship claims with source provenance until the LLM schema changes.
-- All current edge consumers are updated to query claims.
-- Manual editing APIs updated: `/edge/*` removed, `/claim/*` and `/alias/*` added, `/node/*` response shape updated.
-
-State at end of phase: the system still behaves like it did before, but all factual memory is stored as claims with provenance and status. Lifecycle engine is present, but attribute lifecycle behaviour becomes meaningful once Phase 2 emits attribute claims.
-
-### Phase 2: Claims extraction + lifecycle + alias authoring
-
-- Extraction LLM schema updated: emits `nodes`, `relationshipClaims`, `attributeClaims`, `aliases`.
-- Extraction prompt rewritten with claim rules and alias rules.
-- Insertion pipeline wires in lifecycle engine, alias upsert, and source-scoped replacement on reprocessing.
-
-State at end of phase: new ingestions produce claim-native data with alias hints. Time dimension works end to end.
-
-### Phase 3: Synthesis + identity upgrade
-
-- Profile synthesis job for node descriptions.
-- Atlas derivation job; `userProfiles.content` becomes pinned-context override.
-- Identity resolution upgraded with all four signals, including alias match.
-- Background re-evaluation pass for identity.
-
-State at end of phase: the compression loop works. Node descriptions stay generic and claim-grounded; Atlas becomes useful persistent context; duplicates shrink.
-
-### Phase 4: Cleanup + eval
-
-- Dedup sweep rewires claims and aliases.
-- LLM cleanup job operates over claims with the new operation vocabulary (including alias ops and contradiction detection).
-- Eval harness with all six regression stories.
-
-State at end of phase: architecture fully landed, quality measurable, feedback loops closed.
+- **Phase 1** — schema + provenance backbone. **Landed.**
+- **Phase 2a** — claims-native extraction + lifecycle v1 + alias authoring. **Landed.**
+- **Phase 2b** — registry + scope + provenance columns + extraction wiring + lifecycle generalization + open-commitments minimum. (New, this revision.)
+- **Phase 3** — profile synthesis + identity upgrade + Atlas derivation + read-model assemblers + MCP tools. (Existing Phase 3, expanded.)
+- **Phase 4** — transcript ingestion path + cleanup rewrite + full eval harness + threshold calibration. (Existing Phase 4 extended; transcripts move here because they lean on the upgraded identity resolution from Phase 3.)
 
 ## Acceptance Checks
 
-- A claim cannot be stored without `sourceId`, `subjectNodeId`, `predicate`, `statement`, `statedAt`, and `status`.
-- A claim has exactly one object shape (`objectNodeId` XOR `objectValue`).
-- Reprocessing the same source replaces that source's claims instead of duplicating them.
-- Assistant-only content does not become a user claim unless the user confirmed it.
+From 2026-04-24 (still required):
+
+- A claim cannot be stored without `sourceId`, `subjectNodeId`, `predicate`, `statement`, `statedAt`, `status`.
+- A claim has exactly one object shape.
+- Reprocessing the same source replaces that source's claims.
 - Active search excludes claims whose `validTo` is before query `asOf`.
-- Dedup merge rewires claims and aliases where the removed node is subject or object, and promotes the removed label to an alias on the kept node.
-- Claim search returns source IDs for evidence lookup.
-- Backfilled claims are marked `metadata.backfilled = true` and retrieval de-prioritizes them on score ties.
-- Aliases normalize to `trim().toLowerCase()` on insert and resolve to canonical nodes in identity resolution.
-- Node descriptions after ingestion are either seed descriptions from extraction or synthesized profiles grounded in active claims and the prior description.
-- Atlas content reflects long-lived high-signal claims plus user-pinned context.
-- All six regression-story tests pass.
+- Dedup merge rewires claims and aliases; promotes removed label.
+- Aliases normalize on insert; resolve in identity resolution.
+- All six original regression stories pass.
+
+Added 2026-04-26:
+
+- Every claim carries a non-null `scope` and `assertedByKind`.
+- `searchMemory` defaults exclude `scope = reference` and `assertedByKind = assistant_inferred`.
+- `getConversationBootstrapContext` returns a `ContextBundle` with `pinned`, `atlas`, `open_commitments`, `recent_supersessions`, `preferences` sections and never lists `done` tasks as open.
+- `getOpenCommitments` returns only `pending` and `in_progress` tasks; supersession on `HAS_TASK_STATUS` invalidates the cache before the next bootstrap.
+- `searchReference` is a distinct MCP tool with its own description; default `searchMemory` does not return reference results.
+- Cross-scope merges return 4xx and change no rows.
+- Identity resolution (when Phase 3 lands) does not propose merges across scopes.
+- Transcript ingestion (when Phase 4 lands) attributes claims to the correct speaker; user-self utterances become `assertedByKind = "user"`, not `participant`.
+- Raw graph endpoints (`/node/get`, `/node/neighborhood`, `/query/graph`, `/query/timeline`, `/query/day`) continue to return claim and node data with the new fields included.
+- All five 2026-04-26 regression stories pass.
 
 ## Open Questions
 
-These are real unknowns calling for calibration or future extension — not scope cuts.
+From 2026-04-24 (still open):
 
-1. **Document source granularity.** Conversations have per-message sources; documents currently have only per-document sources. When an extracted claim comes from a specific paragraph, we have nothing finer to cite. Acceptable for now; revisit once retrieval quality shows the need.
-2. **Contradiction-detection tuning.** The cleanup LLM is the detector. Iterate on the cleanup prompt as the eval harness surfaces cases it misses.
-3. **Profile-synthesis cadence and thresholds.** "≥ 1 new attribute claim or any supersession" is a starting trigger; actual cadence needs calibration against LLM cost and description quality on real graphs.
-4. **Identity-resolution thresholds.** The 0.7 / 0.85 embedding thresholds and the "compatible profile" definition need eval-driven tuning. Not a scope question; a calibration loop.
+1. Document source granularity (per-paragraph citation).
+2. Contradiction-detection prompt tuning.
+3. Profile synthesis cadence.
+4. Identity resolution thresholds.
+
+Added 2026-04-26:
+
+5. **`recent_supersessions` decay window.** 24h is a starting guess. Real cadence depends on how long users go between conversations.
+6. **`assertionKind` in extraction prompts.** The model may struggle to set `kind` reliably for multi-party transcripts. Likely needs few-shot examples; eval harness drives calibration.
+7. **`reference_lens` content.** Currently empty. If/when a real workflow demands always-present reference distillation, this slot is reserved.
+8. **Speaker placeholder churn.** Unresolved transcript speakers create placeholder nodes; if cleanup doesn't keep up, the graph fills with `Speaker 3` placeholders. May need a TTL or a low-confidence flag that retrieval suppresses.
 
 ## References
 
