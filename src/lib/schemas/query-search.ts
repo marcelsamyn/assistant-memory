@@ -1,7 +1,9 @@
 import {
   ClaimStatusEnum,
+  AssertedByKindEnum,
   NodeTypeEnum,
   PredicateEnum,
+  ScopeEnum,
 } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
 import { rerankResultItemSchema } from "../schemas/rerank.js";
@@ -40,6 +42,9 @@ export const claimSearchResultSchema = z.object({
   statement: z.string(),
   description: z.string().nullable(),
   sourceId: typeIdSchema("source"),
+  scope: ScopeEnum,
+  assertedByKind: AssertedByKindEnum,
+  assertedByNodeId: typeIdSchema("node").nullable(),
   status: ClaimStatusEnum,
   statedAt: z.coerce.date(),
   similarity: z.number(),

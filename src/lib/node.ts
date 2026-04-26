@@ -61,6 +61,9 @@ export async function getNodeById(
       subjectLabel: srcMeta.label,
       objectLabel: tgtMeta.label,
       sourceId: claims.sourceId,
+      scope: claims.scope,
+      assertedByKind: claims.assertedByKind,
+      assertedByNodeId: claims.assertedByNodeId,
       status: claims.status,
       statedAt: claims.statedAt,
     })

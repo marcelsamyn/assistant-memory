@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ScopeEnum } from "~/types/graph";
 
 export const ingestDocumentRequestSchema = z.object({
   userId: z.string(),
@@ -6,6 +7,7 @@ export const ingestDocumentRequestSchema = z.object({
   document: z.object({
     id: z.string(),
     content: z.string(),
+    scope: ScopeEnum.optional().default("personal"),
     timestamp: z.string().datetime().pipe(z.coerce.date()).optional(), // Timestamp is optional
   }),
 });

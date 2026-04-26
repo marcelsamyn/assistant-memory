@@ -4,7 +4,7 @@ import { Readable } from "stream";
 import { z } from "zod";
 import db, { type DrizzleDB } from "~/db";
 import { sources, SourcesInsert } from "~/db/schema";
-import { SourceType } from "~/types/graph";
+import { Scope, SourceType } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
 import { env } from "~/utils/env";
 
@@ -34,6 +34,7 @@ export interface SourceCreateInput {
   sourceType: SourceType;
   externalId: string;
   parentId?: TypeId<"source">;
+  scope?: Scope;
   timestamp: Date;
   metadata?: Metadata;
   /** for inline smaller content */
@@ -92,6 +93,7 @@ export class SourceService {
         type: input.sourceType,
         externalId: input.externalId,
         parentSource: input.parentId,
+        scope: input.scope ?? "personal",
         metadata: metadataSchema.parse(input.metadata ?? {}),
         lastIngestedAt: input.timestamp,
         status: "pending" as const,
@@ -300,6 +302,7 @@ export async function ensureSystemSource(
       type,
       externalId,
       status: "completed",
+      scope: "personal",
       lastIngestedAt: new Date(),
     })
     .onConflictDoNothing({

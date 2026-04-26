@@ -1,3 +1,5 @@
+import { createAlias, normalizeAliasText } from "./alias";
+import { applyClaimLifecycle, fetchClaimsByIds } from "./claims/lifecycle";
 import { debugGraph } from "./debug-utils";
 import {
   generateAndInsertNodeEmbeddings,
@@ -12,14 +14,18 @@ import { and, eq, inArray } from "drizzle-orm";
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
 import { z } from "zod";
 import { type DrizzleDB } from "~/db";
-import { claims, nodeMetadata, nodes, sourceLinks } from "~/db/schema";
+import { claims, nodeMetadata, nodes, sourceLinks, sources } from "~/db/schema";
 import {
+  AssertedByKind,
+  AttributePredicateEnum,
   NodeTypeEnum,
   RelationshipPredicateEnum,
+  Scope,
   SourceType,
 } from "~/types/graph";
 import { type TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
+import { env } from "~/utils/env";
 
 const llmNodeSchema = z.object({
   id: z.string().describe("id to reference in claims"),
@@ -36,8 +42,52 @@ const llmRelationshipClaimSchema = z.object({
     "one of the allowed predicates",
   ),
   statement: z.string().describe("short sentence stating the sourced claim"),
+  sourceRef: z
+    .string()
+    .min(1)
+    .describe("source reference that supports the claim"),
+  statedAt: z.string().datetime().optional(),
+  validFrom: z.string().datetime().optional(),
+  validTo: z.string().datetime().optional(),
 });
 type LlmOutputRelationshipClaim = z.infer<typeof llmRelationshipClaimSchema>;
+
+const llmAttributeClaimSchema = z.object({
+  subjectId: z.string().describe("id of the subject node"),
+  predicate: AttributePredicateEnum.describe("one of the allowed predicates"),
+  objectValue: z.string().describe("scalar value for the attribute claim"),
+  statement: z.string().describe("short sentence stating the sourced claim"),
+  sourceRef: z
+    .string()
+    .min(1)
+    .describe("source reference that supports the claim"),
+  statedAt: z.string().datetime().optional(),
+  validFrom: z.string().datetime().optional(),
+  validTo: z.string().datetime().optional(),
+});
+type LlmOutputAttributeClaim = z.infer<typeof llmAttributeClaimSchema>;
+
+const llmAliasSchema = z.object({
+  subjectId: z.string().describe("id of the node being aliased"),
+  aliasText: z
+    .string()
+    .min(1)
+    .describe("alternate name or spelling for the node"),
+});
+type LlmOutputAlias = z.infer<typeof llmAliasSchema>;
+
+const llmExtractionSchema = z.object({
+  nodes: z.array(llmNodeSchema),
+  relationshipClaims: z.array(llmRelationshipClaimSchema),
+  attributeClaims: z.array(llmAttributeClaimSchema),
+  aliases: z.array(llmAliasSchema),
+});
+
+type SourceRef = {
+  externalId: string;
+  sourceId: TypeId<"source">;
+  statedAt?: Date | undefined;
+};
 
 interface NodeForLLMPrompt {
   id: string;
@@ -69,7 +119,7 @@ interface ExtractGraphParams {
   sourceId: TypeId<"source">;
   statedAt: Date;
   linkedNodeId: TypeId<"node">;
-  sourceRefs?: Array<{ externalId: string; sourceId: TypeId<"source"> }>;
+  sourceRefs?: SourceRef[];
   content: string;
 }
 
@@ -80,9 +130,23 @@ export async function extractGraph({
   sourceId,
   statedAt,
   linkedNodeId,
+  sourceRefs = [],
   content,
 }: ExtractGraphParams) {
   const db = await useDatabase();
+  const resolvedSourceRefs =
+    sourceRefs.length > 0
+      ? sourceRefs
+      : [{ externalId: sourceId, sourceId, statedAt }];
+  const sourceRefMap = new Map(
+    resolvedSourceRefs.map((sourceRef) => [sourceRef.externalId, sourceRef]),
+  );
+  const sourceRefsForPrompt = resolvedSourceRefs
+    .map(
+      (sourceRef) =>
+        `- sourceRef: ${sourceRef.externalId}${sourceRef.statedAt ? `; statedAt: ${safeToISOString(sourceRef.statedAt)}` : ""}`,
+    )
+    .join("\n");
 
   const [embeddingSimilar, oneHopNeighbors, allPersonNodes] = await Promise.all(
     [
@@ -146,6 +210,9 @@ ${formatNodesForPrompt(nodesForPromptFormatting)}
 
 Extract the graph from the following ${sourceType}:
 
+Allowed source refs:
+${sourceRefsForPrompt}
+
 <${sourceType}>
 ${content}
 </${sourceType}>
@@ -179,11 +246,15 @@ For each element, create a node with:
 - A concise label (name/title)
 - A brief description providing context (optional)
 
-	Then, link these nodes with relationship claims.
+	Then, link these nodes with relationship claims and scalar attribute claims.
 	- Claims represent sourced facts about nodes. For example, if you have a Person node and an Event node, create a claim from the Person node to the Event node with predicate PARTICIPATED_IN.
+	- Relationship claims use objectId and a relationship predicate.
+	- Attribute claims use objectValue and an attribute predicate, such as HAS_STATUS, HAS_PREFERENCE, HAS_GOAL, or MADE_DECISION.
 	- ONLY create claims for facts explicitly stated by the user, not assistant assumptions.
 	- In the claim statement, write one concise sentence that can stand alone as the sourced assertion.
-	- Ideally, edges link to already-existing nodes. If the node isn't existing, create it.
+		- Every claim must include a sourceRef copied exactly from the token after "sourceRef:" in the allowed source refs above. Do not include statedAt text.
+	- Emit aliases when the source uses a nickname, abbreviation, alternate spelling, or shorter name for a node.
+	- Ideally, relationship claims link to already-existing nodes. If the node isn't existing, create it.
 
 Rules of the graph:
 - Nodes are unique by type and label
@@ -194,20 +265,14 @@ Rules of the graph:
 - Don't create nodes for things that should be represented by edges.
 - Avoid redundant or duplicate information - if a fact is already represented, don't create another node or edge for it
 
-	Then create relationshipClaims between these nodes to represent their relationships using the appropriate predicates.
+	Then create relationshipClaims and attributeClaims to represent the facts using the appropriate predicates.
 
 Focus on extracting the most significant and meaningful information that the USER provided. Quality and accuracy are more important than quantity.`;
 
   const completion = await client.beta.chat.completions.parse({
     messages: [{ role: "user", content: prompt }],
     model: env.MODEL_ID_GRAPH_EXTRACTION,
-    response_format: zodResponseFormat(
-      z.object({
-        nodes: z.array(llmNodeSchema),
-        relationshipClaims: z.array(llmRelationshipClaimSchema),
-      }),
-      "subgraph",
-    ),
+    response_format: zodResponseFormat(llmExtractionSchema, "subgraph"),
   });
 
   const parsedLlmOutput = completion.choices[0]?.message.parsed;
@@ -218,6 +283,12 @@ Focus on extracting the most significant and meaningful information that the USE
   const uniqueParsedLlmNodes = _deduplicateLlmNodes(parsedLlmOutput.nodes);
   const uniqueParsedLlmClaims = _deduplicateLlmClaims(
     parsedLlmOutput.relationshipClaims,
+  );
+  const uniqueParsedLlmAttributeClaims = _deduplicateLlmAttributeClaims(
+    parsedLlmOutput.attributeClaims,
+  );
+  const uniqueParsedLlmAliases = _deduplicateLlmAliases(
+    parsedLlmOutput.aliases,
   );
 
   const detailsOfNewlyCreatedNodes = await _processAndInsertNewNodes(
@@ -240,16 +311,34 @@ Focus on extracting the most significant and meaningful information that the USE
       .onConflictDoNothing();
   }
 
+  const deletedClaimRecords = await _deleteExistingClaimsForSources(
+    db,
+    userId,
+    resolvedSourceRefs.map((sourceRef) => sourceRef.sourceId),
+  );
+
   const insertedClaimRecords = await _processAndInsertLlmClaims(
     db,
     userId,
-    sourceId,
     statedAt,
     uniqueParsedLlmClaims,
+    uniqueParsedLlmAttributeClaims,
     idMap,
+    sourceRefMap,
+    sourceType,
   );
 
-  const claimsToEmbed = insertedClaimRecords.map((claimRecord) => ({
+  await _processAndInsertLlmAliases(db, userId, uniqueParsedLlmAliases, idMap);
+  await applyClaimLifecycle(db, [
+    ...deletedClaimRecords,
+    ...insertedClaimRecords,
+  ]);
+  const finalizedClaimRecords = await fetchClaimsByIds(
+    db,
+    insertedClaimRecords.map((claim) => claim.id),
+  );
+
+  const claimsToEmbed = finalizedClaimRecords.map((claimRecord) => ({
     claimId: claimRecord.id,
     predicate: claimRecord.predicate,
     statement: claimRecord.statement,
@@ -262,12 +351,28 @@ Focus on extracting the most significant and meaningful information that the USE
     generateAndInsertNodeEmbeddings(db, detailsOfNewlyCreatedNodes),
   ]);
 
-  debugGraph(detailsOfNewlyCreatedNodes, insertedClaimRecords);
+  debugGraph(detailsOfNewlyCreatedNodes, finalizedClaimRecords);
 
   return {
     newNodesCreated: detailsOfNewlyCreatedNodes.length,
-    claimsCreated: insertedClaimRecords.length,
+    claimsCreated: finalizedClaimRecords.length,
   };
+}
+
+async function _deleteExistingClaimsForSources(
+  db: DrizzleDB,
+  userId: string,
+  sourceIds: TypeId<"source">[],
+): Promise<Array<typeof claims.$inferSelect>> {
+  const uniqueSourceIds = [...new Set(sourceIds)];
+  if (uniqueSourceIds.length === 0) return [];
+
+  return db
+    .delete(claims)
+    .where(
+      and(eq(claims.userId, userId), inArray(claims.sourceId, uniqueSourceIds)),
+    )
+    .returning();
 }
 
 function _deduplicateLlmNodes(llmNodes: LlmOutputNode[]): LlmOutputNode[] {
@@ -284,9 +389,33 @@ function _deduplicateLlmClaims(
 ): LlmOutputRelationshipClaim[] {
   const seenClaimKeys = new Set<string>();
   return llmClaims.filter((claim) => {
-    const key = `${claim.subjectId}|${claim.objectId}|${claim.predicate}|${claim.statement}`;
+    const key = `${claim.subjectId}|${claim.objectId}|${claim.predicate}|${claim.statement}|${claim.sourceRef}`;
     if (seenClaimKeys.has(key)) return false;
     seenClaimKeys.add(key);
+    return true;
+  });
+}
+
+function _deduplicateLlmAttributeClaims(
+  llmClaims: LlmOutputAttributeClaim[],
+): LlmOutputAttributeClaim[] {
+  const seenClaimKeys = new Set<string>();
+  return llmClaims.filter((claim) => {
+    const key = `${claim.subjectId}|${claim.predicate}|${claim.objectValue}|${claim.statement}|${claim.sourceRef}`;
+    if (seenClaimKeys.has(key)) return false;
+    seenClaimKeys.add(key);
+    return true;
+  });
+}
+
+function _deduplicateLlmAliases(
+  llmAliases: LlmOutputAlias[],
+): LlmOutputAlias[] {
+  const seenAliasKeys = new Set<string>();
+  return llmAliases.filter((alias) => {
+    const key = `${alias.subjectId}|${normalizeAliasText(alias.aliasText)}`;
+    if (seenAliasKeys.has(key)) return false;
+    seenAliasKeys.add(key);
     return true;
   });
 }
@@ -434,20 +563,49 @@ async function _processAndInsertNewNodes(
 async function _processAndInsertLlmClaims(
   db: DrizzleDB,
   userId: string,
-  sourceId: TypeId<"source">,
-  statedAt: Date,
+  defaultStatedAt: Date,
   uniqueParsedLlmClaims: LlmOutputRelationshipClaim[],
+  uniqueParsedLlmAttributeClaims: LlmOutputAttributeClaim[],
   idMap: Map<string, TypeId<"node">>,
+  sourceRefMap: Map<string, SourceRef>,
+  sourceType: SourceType,
 ): Promise<Array<typeof claims.$inferSelect>> {
   const claimInserts: Array<typeof claims.$inferInsert> = [];
+  const sourceScopeMap = await _fetchSourceScopeMap(
+    db,
+    userId,
+    [...sourceRefMap.values()].map((sourceRef) => sourceRef.sourceId),
+  );
+  const assertedByKind = _defaultAssertedByKind(sourceType);
 
   for (const llmClaim of uniqueParsedLlmClaims) {
     const subjectNodeId = idMap.get(llmClaim.subjectId);
     const objectNodeId = idMap.get(llmClaim.objectId);
+    const claimSource = _resolveClaimSource(
+      llmClaim.sourceRef,
+      llmClaim.statedAt,
+      defaultStatedAt,
+      sourceRefMap,
+    );
 
     if (!subjectNodeId || !objectNodeId) {
       console.warn(
         `Skipping claim with invalid node references: ${llmClaim.subjectId} -> ${llmClaim.objectId}`,
+      );
+      continue;
+    }
+
+    if (!claimSource) {
+      console.warn(
+        `Skipping claim with invalid sourceRef: ${llmClaim.sourceRef}`,
+      );
+      continue;
+    }
+
+    const scope = sourceScopeMap.get(claimSource.sourceId);
+    if (!scope) {
+      console.warn(
+        `Skipping claim with source outside user scope: ${llmClaim.sourceRef}`,
       );
       continue;
     }
@@ -459,8 +617,60 @@ async function _processAndInsertLlmClaims(
       predicate: llmClaim.predicate,
       statement: llmClaim.statement,
       description: llmClaim.statement,
-      sourceId,
-      statedAt,
+      sourceId: claimSource.sourceId,
+      scope,
+      assertedByKind,
+      statedAt: claimSource.statedAt,
+      validFrom: _parseOptionalDate(llmClaim.validFrom),
+      validTo: _parseOptionalDate(llmClaim.validTo),
+      status: "active",
+    });
+  }
+
+  for (const llmClaim of uniqueParsedLlmAttributeClaims) {
+    const subjectNodeId = idMap.get(llmClaim.subjectId);
+    const claimSource = _resolveClaimSource(
+      llmClaim.sourceRef,
+      llmClaim.statedAt,
+      defaultStatedAt,
+      sourceRefMap,
+    );
+
+    if (!subjectNodeId) {
+      console.warn(
+        `Skipping attribute claim with invalid node reference: ${llmClaim.subjectId}`,
+      );
+      continue;
+    }
+
+    if (!claimSource) {
+      console.warn(
+        `Skipping attribute claim with invalid sourceRef: ${llmClaim.sourceRef}`,
+      );
+      continue;
+    }
+
+    const scope = sourceScopeMap.get(claimSource.sourceId);
+    if (!scope) {
+      console.warn(
+        `Skipping attribute claim with source outside user scope: ${llmClaim.sourceRef}`,
+      );
+      continue;
+    }
+
+    claimInserts.push({
+      userId,
+      subjectNodeId,
+      objectValue: llmClaim.objectValue,
+      predicate: llmClaim.predicate,
+      statement: llmClaim.statement,
+      description: llmClaim.statement,
+      sourceId: claimSource.sourceId,
+      scope,
+      assertedByKind,
+      statedAt: claimSource.statedAt,
+      validFrom: _parseOptionalDate(llmClaim.validFrom),
+      validTo: _parseOptionalDate(llmClaim.validTo),
       status: "active",
     });
   }
@@ -475,4 +685,77 @@ async function _processAndInsertLlmClaims(
     .returning();
 
   return insertedClaimRecords;
+}
+
+async function _fetchSourceScopeMap(
+  db: DrizzleDB,
+  userId: string,
+  sourceIds: TypeId<"source">[],
+): Promise<Map<TypeId<"source">, Scope>> {
+  const uniqueSourceIds = [...new Set(sourceIds)];
+  if (uniqueSourceIds.length === 0) return new Map();
+
+  const sourceRows = await db
+    .select({ id: sources.id, scope: sources.scope })
+    .from(sources)
+    .where(
+      and(eq(sources.userId, userId), inArray(sources.id, uniqueSourceIds)),
+    );
+
+  return new Map(sourceRows.map((source) => [source.id, source.scope]));
+}
+
+function _defaultAssertedByKind(sourceType: SourceType): AssertedByKind {
+  if (sourceType === "document") return "document_author";
+  return "user";
+}
+
+async function _processAndInsertLlmAliases(
+  db: DrizzleDB,
+  userId: string,
+  uniqueParsedLlmAliases: LlmOutputAlias[],
+  idMap: Map<string, TypeId<"node">>,
+): Promise<void> {
+  for (const llmAlias of uniqueParsedLlmAliases) {
+    const canonicalNodeId = idMap.get(llmAlias.subjectId);
+    if (!canonicalNodeId) {
+      console.warn(
+        `Skipping alias with invalid node reference: ${llmAlias.subjectId}`,
+      );
+      continue;
+    }
+
+    if (normalizeAliasText(llmAlias.aliasText).length === 0) {
+      console.warn(
+        `Skipping empty alias for node reference: ${llmAlias.subjectId}`,
+      );
+      continue;
+    }
+
+    await createAlias(db, {
+      userId,
+      canonicalNodeId,
+      aliasText: llmAlias.aliasText,
+    });
+  }
+}
+
+function _resolveClaimSource(
+  sourceRef: string,
+  statedAt: string | undefined,
+  defaultStatedAt: Date,
+  sourceRefMap: Map<string, SourceRef>,
+): { sourceId: TypeId<"source">; statedAt: Date } | null {
+  const source = sourceRefMap.get(sourceRef);
+  if (!source) return null;
+
+  return {
+    sourceId: source.sourceId,
+    statedAt:
+      _parseOptionalDate(statedAt) ?? source.statedAt ?? defaultStatedAt,
+  };
+}
+
+function _parseOptionalDate(value: string | undefined): Date | undefined {
+  return value === undefined ? undefined : new Date(value);
 }

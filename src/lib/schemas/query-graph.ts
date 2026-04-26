@@ -1,7 +1,9 @@
 import {
   ClaimStatusEnum,
+  AssertedByKindEnum,
   NodeTypeEnum,
   PredicateEnum,
+  ScopeEnum,
 } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
 import { z } from "zod";
@@ -29,6 +31,9 @@ export const queryGraphClaimSchema = z.object({
   statement: z.string(),
   description: z.string().nullable().optional(),
   sourceId: typeIdSchema("source"),
+  scope: ScopeEnum,
+  assertedByKind: AssertedByKindEnum,
+  assertedByNodeId: typeIdSchema("node").nullable(),
   statedAt: z.coerce.date(),
   status: ClaimStatusEnum,
 });

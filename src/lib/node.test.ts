@@ -106,6 +106,7 @@ describeIfServer("node operations", () => {
           "user_id" text NOT NULL REFERENCES "users"("id"),
           "type" varchar(50) NOT NULL,
           "external_id" text NOT NULL,
+          "scope" varchar(16) DEFAULT 'personal' NOT NULL,
           "status" varchar(20) DEFAULT 'completed',
           "created_at" timestamp with time zone DEFAULT now() NOT NULL,
           CONSTRAINT "sources_user_type_external_unique"
@@ -130,6 +131,11 @@ describeIfServer("node operations", () => {
           "description" text,
           "metadata" jsonb,
           "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
+          "scope" varchar(16) DEFAULT 'personal' NOT NULL,
+          "asserted_by_kind" varchar(24) NOT NULL,
+          "asserted_by_node_id" text REFERENCES "nodes"("id") ON DELETE SET NULL,
+          "superseded_by_claim_id" text REFERENCES "claims"("id") ON DELETE SET NULL,
+          "contradicted_by_claim_id" text REFERENCES "claims"("id") ON DELETE SET NULL,
           "stated_at" timestamp with time zone NOT NULL,
           "valid_from" timestamp with time zone,
           "valid_to" timestamp with time zone,
@@ -202,11 +208,11 @@ describeIfServer("node operations", () => {
         `
           INSERT INTO "claims" (
             "id", "user_id", "subject_node_id", "object_node_id",
-            "predicate", "statement", "source_id", "stated_at", "status"
+            "predicate", "statement", "source_id", "asserted_by_kind", "stated_at", "status"
           )
           VALUES
-            ($1, $6, $3, $4, 'OWNED_BY', 'Alice owns a MacBook Pro.', $5, now(), 'active'),
-            ($2, $6, $3, $4, 'TAGGED_WITH', 'Alice was tagged with a MacBook Pro.', $5, now(), 'retracted')
+            ($1, $6, $3, $4, 'OWNED_BY', 'Alice owns a MacBook Pro.', $5, 'user', now(), 'active'),
+            ($2, $6, $3, $4, 'TAGGED_WITH', 'Alice was tagged with a MacBook Pro.', $5, 'user', now(), 'retracted')
         `,
         [
           activeClaimId,

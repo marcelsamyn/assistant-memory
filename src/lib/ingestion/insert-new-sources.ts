@@ -1,7 +1,7 @@
 import { DrizzleDB } from "~/db";
 import { sources } from "~/db/schema";
 import { sourceService, type SourceCreateInput } from "~/lib/sources";
-import { SourceType } from "~/types/graph";
+import { Scope, SourceType } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
 
 export interface SourceInput {
@@ -16,6 +16,7 @@ export interface SourceInput {
 export interface InsertedSourceRef {
   externalId: string;
   sourceId: TypeId<"source">;
+  statedAt?: Date | undefined;
 }
 
 export async function insertNewSources(params: {
@@ -24,6 +25,7 @@ export async function insertNewSources(params: {
   parentSourceType: SourceType;
   parentSourceId: string;
   childSourceType: SourceType;
+  scope?: Scope;
   childSources: SourceInput[];
 }): Promise<{
   sourceId: TypeId<"source">;
@@ -36,6 +38,7 @@ export async function insertNewSources(params: {
     parentSourceType,
     parentSourceId,
     childSourceType,
+    scope = "personal",
     childSources,
   } = params;
 
@@ -46,6 +49,7 @@ export async function insertNewSources(params: {
       userId,
       type: parentSourceType,
       externalId: parentSourceId,
+      scope,
       lastIngestedAt: new Date(),
     })
     .onConflictDoUpdate({
@@ -65,6 +69,7 @@ export async function insertNewSources(params: {
       sourceType: childSourceType,
       externalId: cs.externalId,
       parentId: parentSource.id,
+      scope,
       timestamp: cs.timestamp,
     };
     if (cs.metadata !== undefined) input.metadata = cs.metadata;
@@ -89,6 +94,7 @@ export async function insertNewSources(params: {
   const sourceRefs = insertedRows.map((row) => ({
     externalId: row.externalId,
     sourceId: row.id,
+    ...(row.lastIngestedAt !== null ? { statedAt: row.lastIngestedAt } : {}),
   }));
 
   return { sourceId: parentSource.id, newSourceSourceIds, sourceRefs };

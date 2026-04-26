@@ -1,6 +1,7 @@
 /** Claim operations: create, retract, delete. */
 import { and, eq, inArray } from "drizzle-orm";
 import { claims, claimEmbeddings, nodes } from "~/db/schema";
+import { applyClaimLifecycle, fetchClaimsByIds } from "~/lib/claims/lifecycle";
 import { generateEmbeddings } from "~/lib/embeddings";
 import { ensureSystemSource } from "~/lib/sources";
 import type { ClaimStatus, Predicate } from "~/types/graph";
@@ -106,6 +107,8 @@ export async function createClaim(
       statement: input.statement,
       description: input.description,
       sourceId,
+      scope: "personal",
+      assertedByKind: "user",
       statedAt: input.statedAt ?? new Date(),
       validFrom: input.validFrom,
       validTo: input.validTo,
@@ -115,8 +118,12 @@ export async function createClaim(
 
   if (!inserted) throw new Error("Failed to create claim");
 
-  await insertClaimEmbedding(db, inserted);
-  return inserted;
+  await applyClaimLifecycle(db, [inserted]);
+  const [finalized] = await fetchClaimsByIds(db, [inserted.id]);
+  if (!finalized) throw new Error("Failed to fetch created claim");
+
+  await insertClaimEmbedding(db, finalized);
+  return finalized;
 }
 
 /** Hard-delete a claim by ID. */
@@ -125,11 +132,15 @@ export async function deleteClaim(
   claimId: TypeId<"claim">,
 ): Promise<boolean> {
   const db = await useDatabase();
-  const result = await db
+  const [deletedClaim] = await db
     .delete(claims)
     .where(and(eq(claims.id, claimId), eq(claims.userId, userId)))
-    .returning({ id: claims.id });
-  return result.length > 0;
+    .returning();
+
+  if (!deletedClaim) return false;
+
+  await applyClaimLifecycle(db, [deletedClaim]);
+  return true;
 }
 
 /** Retract an active claim. User-facing updates only move claims out of active use. */

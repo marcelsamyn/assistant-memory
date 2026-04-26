@@ -158,8 +158,14 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
           `Completed deep research for conversation ${conversationId} for user ${userId}.`,
         );
       } else if (job.name === "ingest-document") {
-        const { userId, documentId, content, timestamp, updateExisting } =
-          IngestDocumentJobInputSchema.parse(job.data);
+        const {
+          userId,
+          documentId,
+          content,
+          scope,
+          timestamp,
+          updateExisting,
+        } = IngestDocumentJobInputSchema.parse(job.data);
         console.log(
           `Starting ingest-document job for user ${userId}, document ${documentId}`,
         );
@@ -170,6 +176,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
           userId,
           documentId,
           content,
+          scope,
           timestamp,
           updateExisting,
         });

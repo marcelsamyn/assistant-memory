@@ -170,6 +170,8 @@ export async function ensureAssistantAtlasNode(
     predicate: "OWNED_BY",
     statement: `Atlas ${assistantId} is owned by assistant ${assistantId}.`,
     sourceId,
+    scope: "personal",
+    assertedByKind: "system",
     statedAt: new Date(),
     status: "active",
   });

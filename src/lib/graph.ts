@@ -24,10 +24,12 @@ import {
 } from "~/db/schema";
 import { generateEmbeddings } from "~/lib/embeddings";
 import {
+  type AssertedByKind,
   type ClaimStatus,
   type NodeType,
   type Predicate,
   NodeTypeEnum,
+  type Scope,
 } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
@@ -110,6 +112,9 @@ export interface ClaimSearchResult {
   statement: string;
   description: string | null;
   sourceId: TypeId<"source">;
+  scope: Scope;
+  assertedByKind: AssertedByKind;
+  assertedByNodeId: TypeId<"node"> | null;
   status: ClaimStatus;
   statedAt: Date;
   similarity: number;
@@ -230,6 +235,9 @@ export async function findSimilarClaims(
       statement: claims.statement,
       description: claims.description,
       sourceId: claims.sourceId,
+      scope: claims.scope,
+      assertedByKind: claims.assertedByKind,
+      assertedByNodeId: claims.assertedByNodeId,
       status: claims.status,
       statedAt: claims.statedAt,
       similarity,
@@ -413,6 +421,9 @@ export async function fetchClaimsBetweenNodeIds(
       statement: claims.statement,
       description: claims.description,
       sourceId: claims.sourceId,
+      scope: claims.scope,
+      assertedByKind: claims.assertedByKind,
+      assertedByNodeId: claims.assertedByNodeId,
       statedAt: claims.statedAt,
       status: claims.status,
     })

@@ -2,7 +2,10 @@ import { extractGraph } from "../extract-graph";
 import { formatConversationAsXml } from "../formatting";
 import { ensureSourceNode } from "../ingestion/ensure-source-node";
 import { ensureUser } from "../ingestion/ensure-user";
-import { insertNewSources } from "../ingestion/insert-new-sources";
+import {
+  insertNewSources,
+  type InsertedSourceRef,
+} from "../ingestion/insert-new-sources";
 import { safeToISOString } from "../safe-date";
 import { z } from "zod";
 import { DrizzleDB } from "~/db";
@@ -94,7 +97,7 @@ async function initializeConversation(
 ): Promise<{
   sourceId: TypeId<"source">;
   insertedTurns: ConversationTurn[];
-  sourceRefs: Array<{ externalId: string; sourceId: TypeId<"source"> }>;
+  sourceRefs: InsertedSourceRef[];
 }> {
   await ensureUser(db, userId);
   const { sourceId, newSourceSourceIds, sourceRefs } = await insertNewSources({

@@ -88,6 +88,8 @@ export async function ensureSourceNode({
       objectNodeId: dayNodeId,
       statement: `${nodeType} source occurred on ${timestamp.toISOString().slice(0, 10)}`,
       sourceId,
+      scope: "personal",
+      assertedByKind: "system",
       statedAt: timestamp,
       status: "active",
     });

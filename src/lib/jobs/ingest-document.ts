@@ -6,13 +6,14 @@ import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { DrizzleDB } from "~/db";
 import { nodes, sourceLinks, sources } from "~/db/schema";
-import { NodeTypeEnum } from "~/types/graph";
+import { NodeTypeEnum, ScopeEnum } from "~/types/graph";
 
 export const IngestDocumentJobInputSchema = z.object({
   userId: z.string(),
   documentId: z.string(),
   content: z.string(),
   timestamp: z.string().datetime().pipe(z.coerce.date()), // Handled by route, always a Date here
+  scope: ScopeEnum.optional().default("personal"),
   updateExisting: z.boolean().optional().default(false),
 });
 
@@ -30,6 +31,7 @@ export async function ingestDocument({
   documentId,
   content,
   timestamp,
+  scope,
   updateExisting,
 }: IngestDocumentParams): Promise<void> {
   await ensureUser(db, userId);
@@ -82,6 +84,7 @@ export async function ingestDocument({
         userId,
         sourceType: "document",
         externalId: documentId,
+        scope,
         timestamp,
         content, // Store content directly for documents
         metadata: {
@@ -127,7 +130,7 @@ export async function ingestDocument({
     sourceId,
     statedAt: timestamp,
     linkedNodeId: documentNodeId,
-    sourceRefs: [{ externalId: documentId, sourceId }],
+    sourceRefs: [{ externalId: documentId, sourceId, statedAt: timestamp }],
     content, // Pass the raw document content for graph extraction
   });
 

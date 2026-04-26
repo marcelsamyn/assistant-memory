@@ -565,6 +565,8 @@ async function applyCleanupProposal(
         statement: claim.statement,
         description: claim.statement,
         sourceId: cleanupSourceId,
+        scope: "personal",
+        assertedByKind: "system",
         statedAt: new Date(),
         status: "active",
         metadata: {},
