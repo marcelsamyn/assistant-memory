@@ -201,9 +201,10 @@ describeIfServer("applyClaimLifecycle", () => {
         status: string;
         valid_from: Date | null;
         valid_to: Date | null;
+        superseded_by_claim_id: string | null;
       }>(
         `
-          SELECT "id", "status", "valid_from", "valid_to"
+          SELECT "id", "status", "valid_from", "valid_to", "superseded_by_claim_id"
           FROM "claims"
           WHERE "user_id" = $1
           ORDER BY "id"
@@ -216,10 +217,14 @@ describeIfServer("applyClaimLifecycle", () => {
       expect(byId.get(priorStatus!.id)?.valid_to?.toISOString()).toBe(
         "2026-04-02T00:00:00.000Z",
       );
+      expect(byId.get(priorStatus!.id)?.superseded_by_claim_id).toBe(
+        newStatus!.id,
+      );
       expect(byId.get(newStatus!.id)?.status).toBe("active");
       expect(byId.get(newStatus!.id)?.valid_from?.toISOString()).toBe(
         "2026-04-02T00:00:00.000Z",
       );
+      expect(byId.get(newStatus!.id)?.superseded_by_claim_id).toBeNull();
       expect(byId.get(preference!.id)?.status).toBe("active");
       expect(byId.get(relationship!.id)?.status).toBe("active");
     } finally {
@@ -295,9 +300,10 @@ describeIfServer("applyClaimLifecycle", () => {
         id: string;
         status: string;
         valid_to: Date | null;
+        superseded_by_claim_id: string | null;
       }>(
         `
-          SELECT "id", "status", "valid_to"
+          SELECT "id", "status", "valid_to", "superseded_by_claim_id"
           FROM "claims"
           WHERE "user_id" = $1
           ORDER BY "created_at"
@@ -310,11 +316,13 @@ describeIfServer("applyClaimLifecycle", () => {
           id: firstStatusId,
           status: "superseded",
           valid_to: statedAt,
+          superseded_by_claim_id: secondStatusId,
         },
         {
           id: secondStatusId,
           status: "active",
           valid_to: null,
+          superseded_by_claim_id: null,
         },
       ]);
     } finally {
@@ -395,9 +403,10 @@ describeIfServer("applyClaimLifecycle", () => {
         id: string;
         status: string;
         valid_to: Date | null;
+        superseded_by_claim_id: string | null;
       }>(
         `
-          SELECT "id", "status", "valid_to"
+          SELECT "id", "status", "valid_to", "superseded_by_claim_id"
           FROM "claims"
           WHERE "user_id" = $1
         `,
@@ -409,8 +418,328 @@ describeIfServer("applyClaimLifecycle", () => {
           id: priorStatusId,
           status: "active",
           valid_to: null,
+          superseded_by_claim_id: null,
         },
       ]);
+    } finally {
+      await client.end();
+    }
+  });
+
+  it("supersedes prior active HAS_TASK_STATUS claims on a Task node", async () => {
+    const userId = "user_E";
+    const taskNodeId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const pendingClaimId = newTypeId("claim");
+    const doneClaimId = newTypeId("claim");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    try {
+      await createLifecycleTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `
+          INSERT INTO "nodes" ("id", "user_id", "node_type")
+            VALUES ($1, $2, 'Task')
+        `,
+        [taskNodeId, userId],
+      );
+      await client.query(
+        `
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+            VALUES ($1, $2, 'manual', 'manual:user_E', 'completed')
+        `,
+        [sourceId, userId],
+      );
+
+      const [pendingClaim, doneClaim] = await database
+        .insert(schema.claims)
+        .values([
+          {
+            id: pendingClaimId,
+            userId,
+            subjectNodeId: taskNodeId,
+            objectValue: "pending",
+            predicate: "HAS_TASK_STATUS",
+            statement: "Task is pending.",
+            sourceId,
+            assertedByKind: "user",
+            statedAt: new Date("2026-04-10T00:00:00.000Z"),
+            status: "active",
+          },
+          {
+            id: doneClaimId,
+            userId,
+            subjectNodeId: taskNodeId,
+            objectValue: "done",
+            predicate: "HAS_TASK_STATUS",
+            statement: "Task is done.",
+            sourceId,
+            assertedByKind: "user",
+            statedAt: new Date("2026-04-12T00:00:00.000Z"),
+            status: "active",
+          },
+        ])
+        .returning();
+
+      await applyClaimLifecycle(database, [pendingClaim!, doneClaim!]);
+
+      const rows = await client.query<{
+        id: string;
+        status: string;
+        valid_to: Date | null;
+        superseded_by_claim_id: string | null;
+      }>(
+        `
+          SELECT "id", "status", "valid_to", "superseded_by_claim_id"
+          FROM "claims"
+          WHERE "user_id" = $1
+          ORDER BY "stated_at"
+        `,
+        [userId],
+      );
+
+      expect(rows.rows).toEqual([
+        {
+          id: pendingClaimId,
+          status: "superseded",
+          valid_to: new Date("2026-04-12T00:00:00.000Z"),
+          superseded_by_claim_id: doneClaimId,
+        },
+        {
+          id: doneClaimId,
+          status: "active",
+          valid_to: null,
+          superseded_by_claim_id: null,
+        },
+      ]);
+    } finally {
+      await client.end();
+    }
+  });
+
+  it("trust rule: assistant_inferred cannot supersede a prior user claim", async () => {
+    const userId = "user_F";
+    const subjectNodeId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const userClaimId = newTypeId("claim");
+    const inferredClaimId = newTypeId("claim");
+    const userConfirmedClaimId = newTypeId("claim");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    try {
+      await createLifecycleTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `
+          INSERT INTO "nodes" ("id", "user_id", "node_type")
+            VALUES ($1, $2, 'Object')
+        `,
+        [subjectNodeId, userId],
+      );
+      await client.query(
+        `
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+            VALUES ($1, $2, 'manual', 'manual:user_F', 'completed')
+        `,
+        [sourceId, userId],
+      );
+
+      // Step 1 — user claim, then later assistant_inferred claim. Trust rule
+      // demotes the assistant_inferred claim immediately.
+      const [userClaim, inferredClaim] = await database
+        .insert(schema.claims)
+        .values([
+          {
+            id: userClaimId,
+            userId,
+            subjectNodeId,
+            objectValue: "started",
+            predicate: "HAS_STATUS",
+            statement: "User said started.",
+            sourceId,
+            assertedByKind: "user",
+            statedAt: new Date("2026-04-01T00:00:00.000Z"),
+            status: "active",
+          },
+          {
+            id: inferredClaimId,
+            userId,
+            subjectNodeId,
+            objectValue: "completed",
+            predicate: "HAS_STATUS",
+            statement: "Assistant guessed completed.",
+            sourceId,
+            assertedByKind: "assistant_inferred",
+            statedAt: new Date("2026-04-02T00:00:00.000Z"),
+            status: "active",
+          },
+        ])
+        .returning();
+
+      await applyClaimLifecycle(database, [userClaim!, inferredClaim!]);
+
+      let rows = await client.query<{
+        id: string;
+        status: string;
+        superseded_by_claim_id: string | null;
+      }>(
+        `
+          SELECT "id", "status", "superseded_by_claim_id"
+          FROM "claims"
+          WHERE "user_id" = $1
+          ORDER BY "stated_at"
+        `,
+        [userId],
+      );
+
+      expect(rows.rows).toEqual([
+        {
+          id: userClaimId,
+          status: "active",
+          superseded_by_claim_id: null,
+        },
+        {
+          id: inferredClaimId,
+          status: "superseded",
+          superseded_by_claim_id: userClaimId,
+        },
+      ]);
+
+      // Step 2 — add a user_confirmed claim later; it becomes active and the
+      // prior user claim becomes superseded. The assistant_inferred remains
+      // demoted (still pointing at whichever active wins via the chain).
+      const [userConfirmedClaim] = await database
+        .insert(schema.claims)
+        .values([
+          {
+            id: userConfirmedClaimId,
+            userId,
+            subjectNodeId,
+            objectValue: "completed",
+            predicate: "HAS_STATUS",
+            statement: "User confirmed completed.",
+            sourceId,
+            assertedByKind: "user_confirmed",
+            statedAt: new Date("2026-04-03T00:00:00.000Z"),
+            status: "active",
+          },
+        ])
+        .returning();
+
+      await applyClaimLifecycle(database, [userConfirmedClaim!]);
+
+      rows = await client.query(
+        `
+          SELECT "id", "status", "superseded_by_claim_id"
+          FROM "claims"
+          WHERE "user_id" = $1
+          ORDER BY "stated_at"
+        `,
+        [userId],
+      );
+
+      const byId = new Map(rows.rows.map((row) => [row.id, row]));
+      expect(byId.get(userClaimId)?.status).toBe("superseded");
+      expect(byId.get(userConfirmedClaimId)?.status).toBe("active");
+      expect(byId.get(userConfirmedClaimId)?.superseded_by_claim_id).toBeNull();
+      expect(byId.get(inferredClaimId)?.status).toBe("superseded");
+    } finally {
+      await client.end();
+    }
+  });
+
+  it("sort tiebreaker: higher-trust kind wins among same-timestamp claims", async () => {
+    const userId = "user_G";
+    const subjectNodeId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const userClaimId = newTypeId("claim");
+    const inferredClaimId = newTypeId("claim");
+    const statedAt = new Date("2026-04-05T00:00:00.000Z");
+    const createdAt = new Date("2026-04-05T00:00:00.500Z");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    try {
+      await createLifecycleTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `
+          INSERT INTO "nodes" ("id", "user_id", "node_type")
+            VALUES ($1, $2, 'Object')
+        `,
+        [subjectNodeId, userId],
+      );
+      await client.query(
+        `
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+            VALUES ($1, $2, 'manual', 'manual:user_G', 'completed')
+        `,
+        [sourceId, userId],
+      );
+
+      const [inferredClaim, userClaim] = await database
+        .insert(schema.claims)
+        .values([
+          {
+            id: inferredClaimId,
+            userId,
+            subjectNodeId,
+            objectValue: "guessed",
+            predicate: "HAS_STATUS",
+            statement: "Assistant guessed.",
+            sourceId,
+            assertedByKind: "assistant_inferred",
+            statedAt,
+            createdAt,
+            status: "active",
+          },
+          {
+            id: userClaimId,
+            userId,
+            subjectNodeId,
+            objectValue: "stated",
+            predicate: "HAS_STATUS",
+            statement: "User stated.",
+            sourceId,
+            assertedByKind: "user",
+            statedAt,
+            createdAt,
+            status: "active",
+          },
+        ])
+        .returning();
+
+      await applyClaimLifecycle(database, [inferredClaim!, userClaim!]);
+
+      const rows = await client.query<{
+        id: string;
+        status: string;
+        superseded_by_claim_id: string | null;
+      }>(
+        `
+          SELECT "id", "status", "superseded_by_claim_id"
+          FROM "claims"
+          WHERE "user_id" = $1
+        `,
+        [userId],
+      );
+
+      const byId = new Map(rows.rows.map((row) => [row.id, row]));
+      expect(byId.get(userClaimId)?.status).toBe("active");
+      expect(byId.get(userClaimId)?.superseded_by_claim_id).toBeNull();
+      expect(byId.get(inferredClaimId)?.status).toBe("superseded");
+      expect(byId.get(inferredClaimId)?.superseded_by_claim_id).toBe(
+        userClaimId,
+      );
     } finally {
       await client.end();
     }
