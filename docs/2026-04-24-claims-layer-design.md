@@ -40,6 +40,7 @@ What changed in spirit:
 - Lifecycle behavior is no longer per-predicate hardcoded in the engine — it is registry-driven. The engine looks up `cardinality` and `lifecycle` per predicate and acts accordingly.
 - Identity resolution is scope-bounded; cross-scope merges are forbidden.
 - The user note (2026-04-26) that **the raw graph stays queryable for visualization tooling** is load-bearing: read models are additive, not a replacement for direct claim/node queries.
+- Consumer-contract reflection is now an explicit design practice. The 2026-04-26 pass caught a real hole: filtering only claims by `scope` is insufficient because node similarity can still surface reference-derived nodes unless the node/card read path is scope-aware. Repeat this reflection pass whenever a new assistant-facing surface lands.
 
 ### Implementation status (2026-04-26)
 
@@ -704,6 +705,23 @@ A small clarification: profile synthesis sees only `personal`-scope claims for `
 
 The product surface for assistants is a sectioned `ContextBundle`. The graph is internal machinery.
 
+Consumer contract:
+
+1. The **chat host** ingests sources after turns via the ingestion APIs. It owns stable `userId`, `conversation.id`, message IDs, document IDs, and timestamps.
+2. The **chat host** calls `getConversationBootstrapContext(userId, { asOf? })` once before the first LLM call of a session and renders the returned sections into a developer/system memory block.
+3. The **assistant model or host** calls `searchMemory(userId, query, { asOf? })` only when the current turn needs specific personal memory.
+4. The **assistant model or host** calls `searchReference(userId, query, { asOf? })` only when the user wants ideas, frameworks, books, articles, or document content from the reference corpus.
+5. The **host** renders an `open_commitments` section before the model call, or the **assistant model** calls `getOpenCommitments(userId, filters?)` / `list_open_commitments` inside the normal tool loop, before answering about outstanding, next, pending, follow-up, completed, or abandoned work.
+6. The **assistant model or host** calls `getEntityContext(userId, nodeId)` only after it already has a specific entity ID from search, bootstrap, or a user-selected UI item.
+7. The **memory UI/debugger** uses raw graph endpoints (`/node/get`, `/node/neighborhood`, `/query/graph`, `/query/timeline`, claim/alias edit APIs). The normal chat loop does not consume unbounded raw graph output.
+
+The LLM should see rendered sections with usage hints and evidence refs, not unbounded claim dumps. The current user message wins over stale memory on conflict. Reference material never becomes a user fact without a personal-scope user assertion. Open commitments come only from the latest lifecycle-aware commitment view, never from old search hits.
+
+Commitments are communicated to a chat assistant in one of two precise ways:
+
+- **Host prefetch**: always include open commitments in the session bootstrap. Refresh them before a model call when the UI surface is task/planning/reminders/project-status/daily-brief, when the user selected a Task/Project/Person node, or when ingestion inserted/superseded a `HAS_TASK_STATUS` claim. Pass `ownedBy` only from a selected/known Person node. Pass `dueBefore` only from an explicit UI/date cutoff.
+- **Tool rule**: if no `open_commitments` section was rendered in the current model input, the model instruction says to call `list_open_commitments` before answering requests like "what should I do next?", "what is still open?", "continue with the next part", "remind me what I owe", "summarize pending work", "is X done?", or "plan my day/project/week."
+
 ```ts
 interface ContextSection {
   kind:
@@ -776,10 +794,12 @@ The MCP/SDK keeps the existing endpoints for visualization and exploration:
 
 `searchMemory` (`src/lib/query/search.ts`) is updated:
 
-- Default `WHERE` adds `scope = $scope` (default `personal`) and `assertedByKind <> 'assistant_inferred'`.
+- Query input is natural language, not keyword DSL. For host-side prefetch, the default query is the latest user message verbatim, optionally followed by host-known labels in a fixed template (`Active task`, `Selected entity`, `Conversation title`). A separate LLM query-rewrite call is not part of the default path.
+- Default claim `WHERE` adds `scope = $scope` (default `personal`) and `assertedByKind <> 'assistant_inferred'`.
+- Default node search must also be scope-aware. Since nodes do not directly carry `scope`, the read path must derive node eligibility from linked sources and/or touching claims. A personal memory search cannot return a node that is only supported by reference-scope sources or reference-scope claims.
 - `findSimilarClaims` honors the new defaults; an `includeReference` and `includeAssistantInferred` opt-in keeps deep-debug paths possible.
 - Rerank pipeline unchanged in shape; inputs include claim results with `sourceId` and `assertedByKind` so the reranker can downweight participant-asserted claims about third parties when configured.
-- `findOneHopNodes` adds the same scope filter.
+- `findOneHopNodes` adds the same claim-level scope/provenance filter.
 
 `searchReference` is a separate function (and a separate MCP tool) that filters to `scope = reference` and returns reference node cards with `author`/`title` populated.
 
@@ -897,9 +917,9 @@ The text the assistant sees is part of the design (it's the only signal it has a
 - `search_memory`: "Searches the user's personal memory for facts about themselves, their work, their relationships, and their commitments. Use when you need specific information about the user."
 - `search_reference`: "Searches the user's reference corpus — books, articles, and documents they've ingested for ideas and frameworks. Use when reasoning about ideas, frameworks, or content the user wants you to draw on. Does not contain personal facts about the user."
 - `get_entity`: "Returns a compact card for a known entity (person, project, task, etc.) including its summary, current facts, and recent supporting evidence."
-- `list_open_commitments`: "Returns the user's currently open tasks and commitments. Always uses the latest status; never returns completed work."
+- `list_open_commitments`: "Returns the user's currently open tasks and commitments. Call before answering about outstanding, next, pending, follow-up, completed, or abandoned work unless this model input already includes an open_commitments section. Always uses the latest status; never returns completed work."
 
-These strings live in code (`src/lib/mcp/mcp-server.ts`), under code review, with eval coverage that verifies they're present and unchanged in tool registration.
+These strings must live in code (`src/lib/mcp/mcp-server.ts`) as each tool lands, under code review, with eval coverage that verifies they're present and unchanged in tool registration. `list_open_commitments` is already implemented; the other snake_case tools are still target surface.
 
 ## Eval Harness
 

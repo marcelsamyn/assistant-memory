@@ -26,19 +26,19 @@ Existing Phase 3 (synthesis + identity + atlas) keeps its shape but gains the re
 
 - **Phase 1 — schema + provenance backbone — LANDED.** Commits `0f0e04d`, `b598d59`, `a4d23fd`. Claims table, migration, typeid rewrite, alias normalization, `/claim/*` and `/alias/*` routes, system-authored claims for Atlas/Dream/day linkage. All consumers cut over.
 - **Phase 2a — claims-native extraction + lifecycle v1 + alias authoring — LANDED.** Commit `f5d7181`. LLM extracts `nodes` + `relationshipClaims` + `attributeClaims` + `aliases`; source-ref threading via `formatConversationAsXml` + `insertNewSources`; source-scoped replacement; `applyClaimLifecycle` for `HAS_STATUS` supersession; alias upsert.
-- **Phase 2b — registry + scope + provenance + tasks foundation — NEW, NOT STARTED.**
+- **Phase 2b — registry + scope + provenance + tasks foundation — IN PROGRESS.** Registry, additive schema fields, registry-driven lifecycle, default scope/provenance retrieval filters, `getOpenCommitments`, `POST /commitments/open`, and MCP `list_open_commitments` are implemented in the working tree. Extraction `assertionKind`, `currentlyOpenTasks` prompt injection, invalidation hook, and tool-description snapshots remain.
 - **Phase 3 — profile synthesis + identity upgrade + atlas derivation + read-model assemblers + MCP tools — NOT STARTED.** Existing Phase 3, expanded.
 - **Phase 4 — transcript ingestion + cleanup rewrite + full eval harness — NOT STARTED.** Existing Phase 4, expanded.
 
-## Inventory Snapshot (current state, post-2a)
+## Inventory Snapshot (current state, partial 2b)
 
-- `claims`, `claim_embeddings` schemas live; `aliases.normalized_alias_text` + unique constraint live.
+- `claims`, `claim_embeddings`, `scope`, `assertedByKind`, `assertedByNodeId`, `supersededByClaimId`, and `contradictedByClaimId` schemas live; `aliases.normalized_alias_text` + unique constraint live.
 - Extraction emits `relationshipClaims`, `attributeClaims`, `aliases` (`src/lib/extract-graph.ts`). `assertionKind` is **not** yet emitted; speaker map is **not** yet plumbed; `currentlyOpenTasks` injection is **not** yet plumbed.
-- Lifecycle engine handles `HAS_STATUS` only; predicate-policy registry does not yet exist.
-- No `scope` columns; no `assertedByKind` columns; no `supersededByClaimId`.
-- Read models / context bundles do not exist — the SDK still returns nodes + claims directly. Atlas is a single artifact (`src/lib/atlas.ts`, `src/lib/jobs/atlas-user.ts`).
+- Predicate-policy registry exists; lifecycle handles registry-driven `single_current_value` predicates including `HAS_STATUS` and `HAS_TASK_STATUS`.
+- Default semantic claim, one-hop, and node search paths exclude reference-scope and assistant-inferred personal claims unless explicitly opted in.
+- Full context bundles do not exist yet. The first read model exists: `getOpenCommitments` with `POST /commitments/open` and MCP `list_open_commitments`. Atlas is still a single artifact (`src/lib/atlas.ts`, `src/lib/jobs/atlas-user.ts`).
 - Manual API `/claim/*`, `/alias/*` live; `/transcript/ingest` does not exist.
-- MCP server (`src/lib/mcp/mcp-server.ts`) exposes existing query tools; no `bootstrap_memory`, `search_reference`, `list_open_commitments` tools yet.
+- MCP server (`src/lib/mcp/mcp-server.ts`) exposes existing query tools plus `list_open_commitments`; no `bootstrap_memory` or `search_reference` tools yet.
 
 ---
 
@@ -194,10 +194,11 @@ Tests:
 
 #### 2b.8 — Read paths: scope + assertedBy in default filters
 
-In `src/lib/query/search.ts:findSimilarClaims` and `findOneHopNodes`:
+In `src/lib/graph.ts` and `src/lib/query/search.ts`:
 
 - Add default `WHERE` clauses: `claims.scope = 'personal'` and `claims.asserted_by_kind <> 'assistant_inferred'`.
 - Add opt-in options `includeReference` and `includeAssistantInferred` to `FindSimilarClaimsOptions` for explicit deep paths.
+- Add default scope filtering to `findSimilarNodes` as well. Node results must be eligible only when the node has personal-scope support through `sourceLinks -> sources` or through an active personal-scope claim touching the node. A node supported only by reference sources/claims must not appear in default `searchMemory`.
 - Update existing callers: pass-through behavior preserved (defaults match prior hidden defaults plus the new filters).
 
 In `src/routes/query/search.ts` and friends: nothing changes externally; the route's response now omits `assistant_inferred` claims in the default mode.
@@ -208,7 +209,7 @@ In `src/routes/node/get.post.ts` and `src/routes/node/neighborhood.post.ts`: con
 
 New file `src/lib/query/open-commitments.ts`:
 
-- `getOpenCommitments(userId, { ownedBy?, dueBefore? })`: joins Task nodes to their latest `HAS_TASK_STATUS` claim, filters to `pending`/`in_progress`, returns `{ taskId, label, owner, dueOn, statedAt, sourceId }[]`.
+- `getOpenCommitments(userId, { ownedBy?, dueBefore? })`: reads each Task node's newest active personal non-inferred `HAS_TASK_STATUS` claim, filters that latest status to `pending`/`in_progress`, and returns `{ taskId, label, owner, dueOn, statedAt, sourceId }[]`.
 - New route `POST /commitments/open` that calls it; new MCP tool `list_open_commitments` registered in `src/lib/mcp/mcp-server.ts` with the description from the design doc.
 
 Insertion-flow invalidation hook:
@@ -218,7 +219,7 @@ Insertion-flow invalidation hook:
 Tests:
 
 - Insert pending Task; bootstrap-equivalent query returns it.
-- Insert done supersession; same query no longer returns it; `recent_supersessions` (Phase 3) will pick it up.
+- Insert done supersession; same query no longer returns it; `recent_supersessions` (Phase 3) will pick it up. Include the defensive case where an older active `pending` row still exists, so the read model proves it keys off the newest status rather than any open-looking status.
 - `assistant_inferred` `HAS_TASK_STATUS` cannot supersede a `user` one (covered by 2b.6 tests; reassert at API level).
 
 #### 2b.10 — MCP tool descriptions for the new APIs
@@ -236,6 +237,7 @@ Update `src/lib/mcp/mcp-server.ts`:
 - Extraction emits `assertionKind` per claim; default search excludes `assistant_inferred`.
 - Tasks created from a fixture conversation have `HAS_TASK_STATUS=pending`; a follow-up conversation that says "I sent the spec" produces a `done` claim that supersedes the prior; `getOpenCommitments` no longer returns the task; `supersededByClaimId` is set.
 - A reference-scope document ingestion test produces claims with `scope=reference`; default `searchMemory` does not return them; `searchMemory({ includeReference: true })` does.
+- Default `searchMemory` does not return reference-only node hits from `similarNodes`, not just reference claims. This is the regression that the 2026-04-26 consumer-contract reflection caught.
 - Trust rule test: an `assistant_inferred` claim cannot supersede a `user` one.
 - Visualization endpoints (`/node/get`, `/node/neighborhood`, `/query/graph`, `/query/timeline`) return claim data including `scope` and `assertedByKind`.
 
@@ -470,6 +472,49 @@ A Phase-4 maintenance job that surfaces placeholder `Person` nodes (`metadata.un
 ---
 
 ## Cross-Phase Concerns
+
+### Consumer integration contract
+
+The README's chat-assistant usage model is part of the product contract. New MCP/SDK work must preserve these actor boundaries and timings:
+
+- **After source persistence, the chat host ingests.** Current REST: `POST /ingest/conversation` with `{ userId, conversation: { id, messages: [{ id, role, content, name?, timestamp }] } }`; `POST /ingest/document` with `{ userId, updateExisting?, document: { id, content, scope, timestamp? } }`. Target SDK/MCP wrappers may rename these, but they must still require stable external IDs and explicit document scope.
+- **Before the first LLM call, the chat host bootstraps.** Current REST approximation: `POST /query/atlas` plus optional `POST /query/day`. Target: `bootstrap_memory` / `getConversationBootstrapContext`, returning a `ContextBundle` with section usage hints and evidence refs.
+- **Before later LLM calls, the host or assistant searches just in time.** Current REST: `POST /query/search`. Target: `search_memory`, returning card-shaped personal results and evidence. This must not return reference-scope results by default.
+- **Host-side search query construction is deterministic.** Current default: use the latest user message verbatim as the query. Optionally append host-known labels such as active task title, selected entity/project, conversation title, or route context in a fixed template. Do not add an LLM query-rewrite call to the default prefetch path.
+- **For reference material, the host or assistant uses a separate path.** Target: `search_reference`, hard-filtered to `scope = reference`. Reference results are never rendered as personal facts.
+- **For tasks, the host or assistant uses lifecycle-aware commitment APIs.** Current: `POST /commitments/open` and MCP `list_open_commitments`; target SDK wrapper: `getOpenCommitments`. The host either renders an `open_commitments` section before the model call, or the model is instructed to call `list_open_commitments` before answering about outstanding, next, pending, follow-up, completed, or abandoned work. Never infer pending work from arbitrary search hits.
+- **For known entities, the host or assistant fetches a card.** Target: `get_entity` / `getEntityContext`, after search/bootstrap/UI gives a node id.
+- **For repair and visualization, tools use raw graph endpoints.** Raw node/claim/neighborhood/timeline endpoints stay supported but are not the normal prompt surface. Destructive or corrective tools require a user-confirmed UI flow.
+
+Host prefetch rules for commitments are deterministic:
+
+- Always call `POST /commitments/open` during session bootstrap and render an `open_commitments` section if any rows exist.
+- Call it again before a model call when the current product surface is task/planning/reminders/project-status/daily-brief, when the user selected a Task/Project/Person node, or after ingestion inserts/supersedes a `HAS_TASK_STATUS` claim.
+- If the host has a selected Person node, pass `ownedBy`. If the UI supplies a date cutoff, pass `dueBefore` as `YYYY-MM-DD`.
+- Do not run a pre-call LLM classifier to decide this.
+
+Model tool-use instruction for commitments:
+
+```text
+Use `list_open_commitments` before you answer with any statement about the user's open, pending, in-progress, completed, abandoned, outstanding, next, or follow-up work, unless the current model input already contains a `<section kind="open_commitments">` rendered for this same model call.
+
+Call it for user requests such as: "what should I do next?", "what is still open?", "continue with the next part", "remind me what I owe", "summarize pending work", "is X done?", or "plan my day/project/week".
+
+If the user names a known assignee/person and you have their node id, pass `ownedBy`.
+If the user gives a date cutoff, pass `dueBefore` as YYYY-MM-DD.
+Do not infer pending work from semantic search results.
+```
+
+Reflection checks that must become tests before the target contract is considered real:
+
+- Repeat this consumer-contract reflection before each assistant-facing PR is considered complete. The first pass paid for itself by catching the node-similarity scope leak after claim filters had already landed.
+- Query construction: host-side prefetch requires no extra LLM hop; tests/docs show latest-user-message plus host-known labels. Any LLM-based query expansion must be an explicit optional feature with latency and eval coverage.
+- Stable source IDs: re-sending the same conversation with the same message IDs is idempotent; changing content for an existing ID is either rejected or explicitly reprocessed.
+- Async freshness: docs state that accepted ingestion jobs are not immediately searchable unless the caller waits for the worker pipeline.
+- Reference isolation: default `search_memory` excludes both reference claims and reference-derived node cards. The current graph search path now scope-bounds claims, one-hop traversal, and node similarity; Phase 3 card assembly must preserve this.
+- Commitment freshness: `list_open_commitments` returns only latest `HAS_TASK_STATUS in ('pending','in_progress')`; a `done` supersession removes the task before the next bootstrap. Tool-use eval must include turns like "continue with the next part" and "is X done?" and assert that the model calls `list_open_commitments` before answering when no `open_commitments` section was rendered for that model call.
+- MCP descriptions: `bootstrap_memory`, `search_memory`, `search_reference`, `get_entity`, and `list_open_commitments` descriptions are snapshotted because they are model-facing behavior.
+- Prompt rendering: every `ContextSection` includes `kind`, `content`, `usage`, and evidence refs where available; the renderer preserves usage hints in the model context.
 
 ### Wiring discipline
 
