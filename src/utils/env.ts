@@ -33,6 +33,13 @@ const envSchema = z.object({
   DREAM_PROBABILITY: z.coerce.number().default(0.1),
   DREAM_SELECTION_PROBABILITY: z.coerce.number().default(0.4),
   DEEP_RESEARCH_PROBABILITY: z.coerce.number().default(0.5),
+
+  // Identity resolution (signal 3 + 4) thresholds. Defaults are intentionally
+  // conservative — false-positive merges are far worse than missed merges
+  // because the cleanup pipeline can still propose a merge later, but a wrong
+  // auto-merge silently corrupts the graph.
+  IDENTITY_EMBEDDING_THRESHOLD: z.coerce.number().default(0.78),
+  IDENTITY_PROFILE_COMPAT_THRESHOLD: z.coerce.number().default(0.6),
 });
 
 export const env = envSchema.parse(process.env);

@@ -7,6 +7,7 @@ import {
 } from "./embeddings-util";
 import { formatNodesForPrompt } from "./formatting";
 import { findSimilarNodes, findOneHopNodes, findNodesByType } from "./graph";
+import { resolveIdentity } from "./identity-resolution";
 import { normalizeLabel } from "./label";
 import { getOpenCommitments } from "./query/open-commitments";
 import { type OpenCommitment } from "./schemas/open-commitments";
@@ -347,9 +348,12 @@ Focus on extracting the most significant and meaningful information that the USE
     parsedLlmOutput.aliases,
   );
 
+  const parentSourceScope = await _fetchSourceScope(db, userId, sourceId);
+
   const detailsOfNewlyCreatedNodes = await _processAndInsertNewNodes(
     db,
     userId,
+    parentSourceScope,
     uniqueParsedLlmNodes,
     idMap,
     nodeLabels,
@@ -579,68 +583,78 @@ function _prepareInitialNodeMappings(similarNodes: SimilarNodeForPrompt[]) {
   return { nodesForPromptFormatting, idMap, nodeLabels };
 }
 
+async function _fetchSourceScope(
+  db: DrizzleDB,
+  userId: string,
+  sourceId: TypeId<"source">,
+): Promise<Scope> {
+  const [row] = await db
+    .select({ scope: sources.scope })
+    .from(sources)
+    .where(and(eq(sources.userId, userId), eq(sources.id, sourceId)))
+    .limit(1);
+  // Source must exist by the time extraction runs; default defensively to
+  // personal so we never silently widen scope on a misconfigured source.
+  return row?.scope ?? "personal";
+}
+
 async function _processAndInsertNewNodes(
   db: DrizzleDB,
   userId: string,
+  scope: Scope,
   uniqueParsedLlmNodes: LlmOutputNode[],
   idMap: Map<string, TypeId<"node">>,
   nodeLabels: Map<TypeId<"node">, string>,
 ): Promise<ProcessedNode[]> {
   const detailsOfNewlyCreatedNodes: ProcessedNode[] = [];
 
-  // Batch dedup: collect all canonical labels for nodes not already in idMap,
-  // then look them all up in one query instead of N queries in the loop.
-  const newLlmNodes = uniqueParsedLlmNodes.filter((n) => !idMap.has(n.id));
-  const canonicalLabels = newLlmNodes.map((n) => normalizeLabel(n.label));
-  const uniqueCanonicals = [...new Set(canonicalLabels)].filter(
-    (c) => c !== "",
-  );
-
-  // Single batch query for all potential matches
-  const existingMatches =
-    uniqueCanonicals.length > 0
-      ? await db
-          .select({
-            id: nodes.id,
-            nodeType: nodes.nodeType,
-            label: nodeMetadata.label,
-            canonicalLabel: nodeMetadata.canonicalLabel,
-          })
-          .from(nodes)
-          .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-          .where(
-            and(
-              eq(nodes.userId, userId),
-              inArray(nodeMetadata.canonicalLabel, uniqueCanonicals),
-            ),
-          )
-      : [];
-
-  // Index by (nodeType, canonicalLabel) for O(1) lookup
-  const existingByKey = new Map<
-    string,
-    { id: TypeId<"node">; label: string | null }
-  >();
-  for (const match of existingMatches) {
-    const key = `${match.nodeType}|${match.canonicalLabel}`;
-    if (!existingByKey.has(key)) {
-      existingByKey.set(key, { id: match.id, label: match.label });
-    }
-  }
+  // Local cache so two LLM nodes with the same (type, canonical) within one
+  // extraction collapse to the same id without re-running identity
+  // resolution. The previous batched query did the same; we preserve that.
+  const localByKey = new Map<string, TypeId<"node">>();
 
   for (const llmNode of uniqueParsedLlmNodes) {
     if (idMap.has(llmNode.id)) {
       continue;
     }
 
-    // Exact-match dedup: check batch results for existing node
     const canonical = normalizeLabel(llmNode.label);
-    const existing = existingByKey.get(`${llmNode.type}|${canonical}`);
+    const localKey = `${llmNode.type}|${canonical}`;
+    const localHit = localByKey.get(localKey);
+    if (localHit) {
+      idMap.set(llmNode.id, localHit);
+      const cachedLabel = nodeLabels.get(localHit);
+      if (cachedLabel) {
+        nodeLabels.set(localHit, cachedLabel);
+      }
+      continue;
+    }
 
-    if (existing) {
-      idMap.set(llmNode.id, existing.id);
-      if (existing.label) {
-        nodeLabels.set(existing.id, existing.label);
+    // Identity resolution: signals 1 (canonical label) and 2 (alias) are the
+    // ones we can run pre-embedding. Signals 3 (embedding similarity) and 4
+    // (claim profile compat) require artifacts that don't exist yet for a
+    // not-yet-inserted node, so they're left to the background re-evaluation
+    // pass (Phase 3.3).
+    const resolution = await resolveIdentity({
+      userId,
+      candidate: {
+        proposedLabel: llmNode.label,
+        normalizedLabel: canonical,
+        nodeType: llmNode.type,
+        scope,
+      },
+    });
+
+    if (resolution.resolvedNodeId) {
+      idMap.set(llmNode.id, resolution.resolvedNodeId);
+      localByKey.set(localKey, resolution.resolvedNodeId);
+      const [existingMetadata] = await db
+        .select({ label: nodeMetadata.label })
+        .from(nodeMetadata)
+        .where(eq(nodeMetadata.nodeId, resolution.resolvedNodeId))
+        .limit(1);
+      if (existingMetadata?.label) {
+        nodeLabels.set(resolution.resolvedNodeId, existingMetadata.label);
       }
       continue;
     }
@@ -668,13 +682,7 @@ async function _processAndInsertNewNodes(
 
     idMap.set(llmNode.id, insertedNodeRecord.id);
     nodeLabels.set(insertedNodeRecord.id, llmNode.label);
-
-    // Also add to batch lookup so subsequent LLM nodes with the same label
-    // won't try to insert again
-    existingByKey.set(`${llmNode.type}|${canonical}`, {
-      id: insertedNodeRecord.id,
-      label: llmNode.label,
-    });
+    localByKey.set(localKey, insertedNodeRecord.id);
 
     detailsOfNewlyCreatedNodes.push({
       id: insertedNodeRecord.id,
