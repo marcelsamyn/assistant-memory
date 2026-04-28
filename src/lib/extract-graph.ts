@@ -407,12 +407,53 @@ Focus on extracting the most significant and meaningful information that the USE
     generateAndInsertNodeEmbeddings(db, detailsOfNewlyCreatedNodes),
   ]);
 
+  // Enqueue profile synthesis for each subject whose active claim set may have
+  // changed: any subject of an inserted claim, or of a claim removed by the
+  // source-scoped replacement. The job itself is idempotent via a content hash.
+  const affectedSubjectNodeIds = _collectAffectedSubjectNodeIds(
+    insertedClaimRecords,
+    deletedClaimRecords,
+  );
+  if (affectedSubjectNodeIds.length > 0) {
+    await enqueueProfileSynthesisJobs(userId, affectedSubjectNodeIds);
+  }
+
   debugGraph(detailsOfNewlyCreatedNodes, finalizedClaimRecords);
 
   return {
     newNodesCreated: detailsOfNewlyCreatedNodes.length,
     claimsCreated: finalizedClaimRecords.length,
   };
+}
+
+function _collectAffectedSubjectNodeIds(
+  insertedClaimRecords: Array<typeof claims.$inferSelect>,
+  deletedClaimRecords: Array<typeof claims.$inferSelect>,
+): TypeId<"node">[] {
+  const seen = new Set<TypeId<"node">>();
+  for (const record of insertedClaimRecords) seen.add(record.subjectNodeId);
+  for (const record of deletedClaimRecords) seen.add(record.subjectNodeId);
+  return [...seen];
+}
+
+async function enqueueProfileSynthesisJobs(
+  userId: string,
+  nodeIds: TypeId<"node">[],
+): Promise<void> {
+  const { batchQueue } = await import("./queues");
+  await Promise.all(
+    nodeIds.map((nodeId) =>
+      batchQueue.add(
+        "profile-synthesis",
+        { userId, nodeId },
+        {
+          jobId: `profile-synthesis:${userId}:${nodeId}`,
+          removeOnComplete: true,
+          removeOnFail: 50,
+        },
+      ),
+    ),
+  );
 }
 
 async function _deleteExistingClaimsForSources(

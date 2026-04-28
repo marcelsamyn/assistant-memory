@@ -4,10 +4,12 @@ import { CleanupGraphJobInputSchema } from "./jobs/cleanup-graph";
 import { dream } from "./jobs/dream";
 import { IngestConversationJobInputSchema } from "./jobs/ingest-conversation";
 import { IngestDocumentJobInputSchema } from "./jobs/ingest-document";
+import { ProfileSynthesisJobInputSchema } from "./jobs/profile-synthesis";
 import { summarizeUserConversations } from "./jobs/summarize-conversation";
 import { DeepResearchJobInputSchema } from "./schemas/deep-research";
 import { FlowProducer, Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
+import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 import { env } from "~/utils/env";
 
@@ -187,6 +189,20 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
           "./jobs/dedup-sweep"
         );
         await runDocDedupSweep(userId);
+      } else if (job.name === "profile-synthesis") {
+        const { userId, nodeId } = ProfileSynthesisJobInputSchema.parse(
+          job.data,
+        );
+        const { runProfileSynthesis } = await import(
+          "./jobs/profile-synthesis"
+        );
+        const result = await runProfileSynthesis({
+          userId,
+          nodeId: nodeId as TypeId<"node">,
+        });
+        console.log(
+          `Profile synthesis for user ${userId} node ${nodeId}: ${result.status}`,
+        );
       } else if (job.name === "cleanup-graph") {
         const data = CleanupGraphJobInputSchema.parse({
           ...job.data,
