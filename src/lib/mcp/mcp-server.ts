@@ -13,6 +13,7 @@ import {
   deleteNode,
 } from "~/lib/node";
 import { queryDayMemories } from "~/lib/query/day";
+import { getOpenCommitments } from "~/lib/query/open-commitments";
 import { searchMemory } from "~/lib/query/search";
 import { ingestDocumentRequestSchema } from "~/lib/schemas/ingest-document-request";
 import {
@@ -21,6 +22,10 @@ import {
   updateNodeRequestSchema,
   deleteNodeRequestSchema,
 } from "~/lib/schemas/node";
+import {
+  openCommitmentsRequestSchema,
+  openCommitmentsResponseSchema,
+} from "~/lib/schemas/open-commitments";
 import { queryDayRequestSchema } from "~/lib/schemas/query-day";
 import { querySearchRequestSchema } from "~/lib/schemas/query-search";
 import {
@@ -105,6 +110,32 @@ server.tool(
     });
     return {
       content: [{ type: "text", text: formattedResult ?? "" }],
+    };
+  },
+);
+
+server.tool(
+  "list_open_commitments",
+  "Returns the user's currently open tasks and commitments. Call before answering about outstanding, next, pending, follow-up, completed, or abandoned work unless this model input already includes an open_commitments section. Always uses the latest status; never returns completed work.",
+  openCommitmentsRequestSchema.shape,
+  async (params) => {
+    const commitments = await getOpenCommitments(params);
+    if (commitments.length === 0) {
+      return {
+        content: [{ type: "text", text: "No open commitments." }],
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            openCommitmentsResponseSchema.parse({ commitments }),
+            null,
+            2,
+          ),
+        },
+      ],
     };
   },
 );
