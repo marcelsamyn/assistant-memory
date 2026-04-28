@@ -12,6 +12,8 @@ import {
   not,
   notInArray,
   aliasedTable,
+  ne,
+  type SQL,
 } from "drizzle-orm";
 import { DrizzleDB } from "~/db";
 import {
@@ -21,6 +23,7 @@ import {
   claims,
   claimEmbeddings,
   sourceLinks,
+  sources,
 } from "~/db/schema";
 import { generateEmbeddings } from "~/lib/embeddings";
 import {
@@ -92,12 +95,15 @@ export type SimilaritySearchBase = (
 export type FindSimilarNodesOptions = SimilaritySearchBase & {
   /** Optional list of node types to exclude from the search results */
   excludeNodeTypes?: NodeType[];
+  includeReference?: boolean;
 };
 
 /** Options for semantic search on claims */
 export type FindSimilarClaimsOptions = SimilaritySearchBase & {
   statuses?: ClaimStatus[];
   asOf?: Date;
+  includeReference?: boolean;
+  includeAssistantInferred?: boolean;
 };
 
 /** Claim metadata with similarity */
@@ -133,11 +139,41 @@ async function generateTextEmbedding(text: string): Promise<number[]> {
   return embedding;
 }
 
+function nodeHasScopeSupport(userId: string, scope: Scope): SQL<boolean> {
+  return sql<boolean>`(
+    EXISTS (
+      SELECT 1
+      FROM ${sourceLinks}
+      INNER JOIN ${sources} ON ${sources.id} = ${sourceLinks.sourceId}
+      WHERE ${sourceLinks.nodeId} = ${nodes.id}
+        AND ${sources.userId} = ${userId}
+        AND ${sources.scope} = ${scope}
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM ${claims}
+      WHERE ${claims.userId} = ${userId}
+        AND ${claims.scope} = ${scope}
+        AND ${claims.status} = 'active'
+        AND (
+          ${claims.subjectNodeId} = ${nodes.id}
+          OR ${claims.objectNodeId} = ${nodes.id}
+        )
+    )
+  )`;
+}
+
 /** Semantic search via embeddings */
 export async function findSimilarNodes(
   opts: FindSimilarNodesOptions,
 ): Promise<NodeSearchResult[]> {
-  const { userId, limit = 10, minimumSimilarity, excludeNodeTypes } = opts;
+  const {
+    userId,
+    limit = 10,
+    minimumSimilarity,
+    excludeNodeTypes,
+    includeReference = false,
+  } = opts;
 
   const emb =
     "embedding" in opts
@@ -149,6 +185,7 @@ export async function findSimilarNodes(
   // Base conditions
   let whereCondition = and(
     eq(nodes.userId, userId),
+    includeReference ? undefined : nodeHasScopeSupport(userId, "personal"),
     sql`${similarity} IS NOT NULL`,
   );
 
@@ -195,6 +232,8 @@ export async function findSimilarClaims(
     minimumSimilarity,
     statuses = ["active"],
     asOf = new Date(),
+    includeReference = false,
+    includeAssistantInferred = false,
   } = opts;
 
   const emb =
@@ -207,6 +246,10 @@ export async function findSimilarClaims(
   // Base conditions
   let whereCondition = and(
     eq(claims.userId, userId),
+    includeReference ? undefined : eq(claims.scope, "personal"),
+    includeAssistantInferred
+      ? undefined
+      : ne(claims.assertedByKind, "assistant_inferred"),
     inArray(claims.status, statuses),
     or(isNull(claims.validTo), gt(claims.validTo, asOf)),
     sql`${similarity} IS NOT NULL`,
@@ -263,8 +306,14 @@ export async function findOneHopNodes(
   db: DrizzleDB,
   userId: string,
   nodeIds: TypeId<"node">[],
+  options: {
+    includeReference?: boolean;
+    includeAssistantInferred?: boolean;
+  } = {},
 ): Promise<OneHopNode[]> {
   if (nodeIds.length === 0) return [];
+  const { includeReference = false, includeAssistantInferred = false } =
+    options;
   const sub = db
     .select({
       subjectId: claims.subjectNodeId,
@@ -281,6 +330,10 @@ export async function findOneHopNodes(
     .where(
       and(
         eq(claims.userId, userId),
+        includeReference ? undefined : eq(claims.scope, "personal"),
+        includeAssistantInferred
+          ? undefined
+          : ne(claims.assertedByKind, "assistant_inferred"),
         eq(claims.status, "active"),
         isNotNull(claims.objectNodeId),
         or(
