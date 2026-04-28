@@ -1,4 +1,5 @@
 import { SSEServerTransport } from "./sse";
+import { LIST_OPEN_COMMITMENTS_DESCRIPTION } from "./tool-descriptions";
 import {
   McpServer,
   ResourceTemplate,
@@ -116,7 +117,7 @@ server.tool(
 
 server.tool(
   "list_open_commitments",
-  "Returns the user's currently open tasks and commitments. Call before answering about outstanding, next, pending, follow-up, completed, or abandoned work unless this model input already includes an open_commitments section. Always uses the latest status; never returns completed work.",
+  LIST_OPEN_COMMITMENTS_DESCRIPTION,
   openCommitmentsRequestSchema.shape,
   async (params) => {
     const commitments = await getOpenCommitments(params);
