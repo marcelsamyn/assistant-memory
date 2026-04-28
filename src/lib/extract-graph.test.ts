@@ -428,6 +428,310 @@ describeIfServer("extractGraph claim-native insertion", () => {
     }
   });
 
+  it("injects open tasks into the prompt and supersedes them via HAS_TASK_STATUS", async () => {
+    const userId = "user_tasks";
+    const taskNodeId = newTypeId("node");
+    const conversationNodeId = newTypeId("node");
+    const parentSourceId = newTypeId("source");
+    const messageSourceId = newTypeId("source");
+    const taskSourceId = newTypeId("source");
+    const priorTaskStatusId = newTypeId("claim");
+    const initialStatusAt = new Date("2026-04-20T10:00:00.000Z");
+    const replacementStatusAt = new Date("2026-04-26T10:00:00.000Z");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+    let prompt = "";
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+    vi.doMock("./graph", () => ({
+      findSimilarNodes: async () => [],
+      findOneHopNodes: async () => [],
+      findNodesByType: async () => [],
+    }));
+    vi.doMock("./embeddings-util", () => ({
+      generateAndInsertClaimEmbeddings: async () => undefined,
+      generateAndInsertNodeEmbeddings: async () => undefined,
+    }));
+    vi.doMock("./debug-utils", () => ({
+      debugGraph: () => undefined,
+    }));
+    vi.doMock("./ai", () => ({
+      createCompletionClient: async () => ({
+        beta: {
+          chat: {
+            completions: {
+              parse: async (input: {
+                messages: Array<{ content: string }>;
+              }) => {
+                prompt = input.messages[0]?.content ?? "";
+                return {
+                  choices: [
+                    {
+                      message: {
+                        parsed: {
+                          nodes: [],
+                          relationshipClaims: [],
+                          attributeClaims: [
+                            {
+                              subjectId: taskNodeId,
+                              predicate: "HAS_TASK_STATUS",
+                              objectValue: "done",
+                              statement: "User completed the spec write-up.",
+                              sourceRef: "msg_task_done",
+                              statedAt: replacementStatusAt.toISOString(),
+                              assertionKind: "user",
+                            },
+                          ],
+                          aliases: [],
+                        },
+                      },
+                    },
+                  ],
+                };
+              },
+            },
+          },
+        },
+      }),
+    }));
+
+    try {
+      await createExtractionTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `
+          INSERT INTO "nodes" ("id", "user_id", "node_type")
+            VALUES
+              ($1, $3, 'Task'),
+              ($2, $3, 'Conversation')
+        `,
+        [taskNodeId, conversationNodeId, userId],
+      );
+      await client.query(
+        `
+          INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label", "description")
+            VALUES
+              ($1, $3, 'Write spec doc', 'write spec doc', null),
+              ($2, $4, 'Conversation', 'conversation', 'Conversation source node')
+        `,
+        [
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          taskNodeId,
+          conversationNodeId,
+        ],
+      );
+      await client.query(
+        `
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+            VALUES
+              ($1, $4, 'conversation', 'conv_tasks', 'completed'),
+              ($2, $4, 'conversation_message', 'msg_task_done', 'completed'),
+              ($3, $4, 'conversation_message', 'msg_task_seed', 'completed')
+        `,
+        [parentSourceId, messageSourceId, taskSourceId, userId],
+      );
+      await database.insert(schema.claims).values([
+        {
+          id: priorTaskStatusId,
+          userId,
+          subjectNodeId: taskNodeId,
+          objectValue: "pending",
+          predicate: "HAS_TASK_STATUS",
+          statement: "User committed to writing the spec doc.",
+          sourceId: taskSourceId,
+          assertedByKind: "user",
+          statedAt: initialStatusAt,
+          validFrom: initialStatusAt,
+          status: "active",
+        },
+      ]);
+
+      const { extractGraph } = await import("./extract-graph");
+      const result = await extractGraph({
+        userId,
+        sourceType: "conversation",
+        sourceId: parentSourceId,
+        statedAt: replacementStatusAt,
+        linkedNodeId: conversationNodeId,
+        sourceRefs: [
+          {
+            externalId: "msg_task_done",
+            sourceId: messageSourceId,
+            statedAt: replacementStatusAt,
+          },
+        ],
+        content:
+          '<message id="msg_task_done" role="user">I finished the spec doc.</message>',
+      });
+
+      expect(result).toEqual({ newNodesCreated: 0, claimsCreated: 1 });
+
+      // Prompt should contain the open-tasks section listing the existing
+      // task by its node id, label, and current status.
+      expect(prompt).toContain("CURRENT OPEN TASKS:");
+      expect(prompt).toContain(`existingNodeId: ${taskNodeId}`);
+      expect(prompt).toContain("label: Write spec doc");
+      expect(prompt).toContain("status: pending");
+
+      const claimRows = await client.query<{
+        id: string;
+        predicate: string;
+        object_value: string | null;
+        status: string;
+        superseded_by_claim_id: string | null;
+      }>(
+        `
+          SELECT "id", "predicate", "object_value", "status", "superseded_by_claim_id"
+          FROM "claims"
+          WHERE "user_id" = $1 AND "predicate" = 'HAS_TASK_STATUS'
+          ORDER BY "stated_at" ASC
+        `,
+        [userId],
+      );
+
+      expect(claimRows.rows).toHaveLength(2);
+      const [prior, latest] = claimRows.rows;
+      expect(prior).toMatchObject({
+        id: priorTaskStatusId,
+        object_value: "pending",
+        status: "superseded",
+      });
+      expect(prior?.superseded_by_claim_id).toBe(latest?.id);
+      expect(latest).toMatchObject({
+        object_value: "done",
+        status: "active",
+        superseded_by_claim_id: null,
+      });
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.doUnmock("./graph");
+      vi.doUnmock("./embeddings-util");
+      vi.doUnmock("./debug-utils");
+      vi.doUnmock("./ai");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("renders a 'no open tasks' line when the user has none", async () => {
+    const userId = "user_no_tasks";
+    const conversationNodeId = newTypeId("node");
+    const parentSourceId = newTypeId("source");
+    const messageSourceId = newTypeId("source");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+    let prompt = "";
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+    vi.doMock("./graph", () => ({
+      findSimilarNodes: async () => [],
+      findOneHopNodes: async () => [],
+      findNodesByType: async () => [],
+    }));
+    vi.doMock("./embeddings-util", () => ({
+      generateAndInsertClaimEmbeddings: async () => undefined,
+      generateAndInsertNodeEmbeddings: async () => undefined,
+    }));
+    vi.doMock("./debug-utils", () => ({
+      debugGraph: () => undefined,
+    }));
+    vi.doMock("./ai", () => ({
+      createCompletionClient: async () => ({
+        beta: {
+          chat: {
+            completions: {
+              parse: async (input: {
+                messages: Array<{ content: string }>;
+              }) => {
+                prompt = input.messages[0]?.content ?? "";
+                return {
+                  choices: [
+                    {
+                      message: {
+                        parsed: {
+                          nodes: [],
+                          relationshipClaims: [],
+                          attributeClaims: [],
+                          aliases: [],
+                        },
+                      },
+                    },
+                  ],
+                };
+              },
+            },
+          },
+        },
+      }),
+    }));
+
+    try {
+      await createExtractionTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `
+          INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Conversation')
+        `,
+        [conversationNodeId, userId],
+      );
+      await client.query(
+        `
+          INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label", "description")
+            VALUES ($1, $2, 'Conversation', 'conversation', null)
+        `,
+        [newTypeId("node_metadata"), conversationNodeId],
+      );
+      await client.query(
+        `
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+            VALUES
+              ($1, $3, 'conversation', 'conv_no_tasks', 'completed'),
+              ($2, $3, 'conversation_message', 'msg_empty', 'completed')
+        `,
+        [parentSourceId, messageSourceId, userId],
+      );
+
+      const { extractGraph } = await import("./extract-graph");
+      await extractGraph({
+        userId,
+        sourceType: "conversation",
+        sourceId: parentSourceId,
+        statedAt: new Date("2026-04-26T10:00:00.000Z"),
+        linkedNodeId: conversationNodeId,
+        sourceRefs: [
+          {
+            externalId: "msg_empty",
+            sourceId: messageSourceId,
+            statedAt: new Date("2026-04-26T10:00:00.000Z"),
+          },
+        ],
+        content: '<message id="msg_empty" role="user">Hello.</message>',
+      });
+
+      expect(prompt).toContain("CURRENT OPEN TASKS:");
+      expect(prompt).toContain("- (no open tasks)");
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.doUnmock("./graph");
+      vi.doUnmock("./embeddings-util");
+      vi.doUnmock("./debug-utils");
+      vi.doUnmock("./ai");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
   it("reactivates the previous status when reprocessing removes the active source claim", async () => {
     const userId = "user_B";
     const aliceNodeId = newTypeId("node");

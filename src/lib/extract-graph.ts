@@ -8,6 +8,8 @@ import {
 import { formatNodesForPrompt } from "./formatting";
 import { findSimilarNodes, findOneHopNodes, findNodesByType } from "./graph";
 import { normalizeLabel } from "./label";
+import { getOpenCommitments } from "./query/open-commitments";
+import { type OpenCommitment } from "./schemas/open-commitments";
 import { safeToISOString } from "./safe-date";
 import { TemporaryIdMapper } from "./temporary-id-mapper";
 import { and, eq, inArray } from "drizzle-orm";
@@ -161,8 +163,8 @@ export async function extractGraph({
     )
     .join("\n");
 
-  const [embeddingSimilar, oneHopNeighbors, allPersonNodes] = await Promise.all(
-    [
+  const [embeddingSimilar, oneHopNeighbors, allPersonNodes, openCommitments] =
+    await Promise.all([
       findSimilarNodes({
         userId,
         text: content,
@@ -171,13 +173,28 @@ export async function extractGraph({
       }),
       findOneHopNodes(db, userId, [linkedNodeId]),
       findNodesByType(userId, "Person"),
-    ],
-  );
+      getOpenCommitments({ userId }),
+    ]);
 
-  // Deduplicate by node ID: person nodes first (most duplicated type),
-  // then embedding results, then one-hop neighbors
+  const cappedOpenCommitments = openCommitments.slice(0, 20);
+
+  // Deduplicate by node ID: open commitments first (so the LLM sees them),
+  // then person nodes (most duplicated type), then embedding results, then
+  // one-hop neighbors.
   const seenIds = new Set<TypeId<"node">>();
   const similarNodesForProcessing: SimilarNodeForPrompt[] = [];
+
+  for (const commitment of cappedOpenCommitments) {
+    if (seenIds.has(commitment.taskId)) continue;
+    seenIds.add(commitment.taskId);
+    similarNodesForProcessing.push({
+      id: commitment.taskId,
+      type: "Task",
+      label: commitment.label,
+      description: null,
+      timestamp: safeToISOString(commitment.statedAt),
+    });
+  }
 
   for (const node of [
     ...allPersonNodes,
@@ -201,6 +218,10 @@ export async function extractGraph({
   const { nodesForPromptFormatting, idMap, nodeLabels } =
     _prepareInitialNodeMappings(cappedNodes);
 
+  const openCommitmentsPromptSection = _formatOpenCommitmentsSection(
+    cappedOpenCommitments,
+  );
+
   const { createCompletionClient } = await import("./ai");
   const client = await createCompletionClient(userId);
 
@@ -220,6 +241,8 @@ ${formatNodesForPrompt(nodesForPromptFormatting)}
 `
     : ""
 }
+
+${openCommitmentsPromptSection}
 
 Extract the graph from the following ${sourceType}:
 
@@ -451,6 +474,35 @@ function _deduplicateLlmAliases(
     seenAliasKeys.add(key);
     return true;
   });
+}
+
+function _formatOpenCommitmentsSection(
+  openCommitments: OpenCommitment[],
+): string {
+  const header = `CURRENT OPEN TASKS:
+These are the user's currently open Task nodes. Each line lists the task's existing nodeId, label, current status, owner, and due date. RULES:
+- If the source mentions completing, abandoning, or progressing one of these tasks, emit an attribute claim with predicate \`HAS_TASK_STATUS\` (objectValue one of "pending", "in_progress", "done", "abandoned") whose subjectId is the task's existingNodeId shown below. DO NOT create a new Task node for it.
+- Only emit \`HAS_TASK_STATUS\`, \`OWNED_BY\`, or \`DUE_ON\` claims for these existing tasks if their status, owner, or due date has actually changed in the source. Tasks whose state is unchanged should NOT be re-emitted.
+- For brand-new tasks not in this list, create a new Task node with a temporary id (e.g. "temp_task_1") and emit \`HAS_TASK_STATUS=pending\` (and \`OWNED_BY\` / \`DUE_ON\` as applicable).`;
+
+  if (openCommitments.length === 0) {
+    return `${header}
+- (no open tasks)`;
+  }
+
+  const lines = openCommitments.map((commitment) => {
+    const label = commitment.label ?? "(unlabeled task)";
+    const ownerPart = commitment.owner?.label
+      ? `; owner: ${commitment.owner.label}`
+      : commitment.owner
+        ? `; ownerNodeId: ${commitment.owner.nodeId}`
+        : "";
+    const duePart = commitment.dueOn ? `; dueOn: ${commitment.dueOn}` : "";
+    return `- existingNodeId: ${commitment.taskId}; label: ${label}; status: ${commitment.status}${ownerPart}${duePart}`;
+  });
+
+  return `${header}
+${lines.join("\n")}`;
 }
 
 function _prepareInitialNodeMappings(similarNodes: SimilarNodeForPrompt[]) {
