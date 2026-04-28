@@ -516,6 +516,10 @@ If the model still fails to link, the dedup/cleanup pass remains the safety net 
 - `getConversationBootstrapContext` includes `open_commitments` as a section. Its rendering rule: never list `done` or `abandoned` tasks as pending. Done tasks may appear in a sibling `recent_supersessions` section ("you completed X yesterday") for one bootstrap cycle, so the assistant has acknowledgment material without re-asking.
 - Atlas refresh: any supersession on `HAS_TASK_STATUS` triggers immediate invalidation of the user's `open_commitments` cache (registry's `forceRefreshOnSupersede = true`).
 
+### Cardinality gap: OWNED_BY / DUE_ON on Tasks
+
+`OWNED_BY` and `DUE_ON` on Task subjects need single-current-value lifecycle (a task has one current owner and one current due date; reassignment or rescheduling supersedes the prior claim). The current predicate policy registry has only a per-`Predicate` cardinality axis, with no `(predicate, subjectType)` discriminator. Flipping these predicates to `single_current_value` globally would break legitimate co-ownership on non-Task subjects (atlas, shared artifacts, etc.), so the global policy stays `multi_value`. As an interim guard, `getOpenCommitments` runtime-dedupes by newest `statedAt` so stale OWNED_BY/DUE_ON rows don't surface as concurrent values. Phase 3 read-model work must add the subject-type axis to the registry (or carve task-specific predicates) before evidence/atlas read paths can trust active-only filters end-to-end.
+
 ## Multi-Party Sources & Speaker Mapping
 
 The memory layer is responsible for handling messy transcript data; callers may not be able to provide clean structure.

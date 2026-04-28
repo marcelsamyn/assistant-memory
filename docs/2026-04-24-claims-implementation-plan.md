@@ -26,7 +26,7 @@ Existing Phase 3 (synthesis + identity + atlas) keeps its shape but gains the re
 
 - **Phase 1 — schema + provenance backbone — LANDED.** Commits `0f0e04d`, `b598d59`, `a4d23fd`. Claims table, migration, typeid rewrite, alias normalization, `/claim/*` and `/alias/*` routes, system-authored claims for Atlas/Dream/day linkage. All consumers cut over.
 - **Phase 2a — claims-native extraction + lifecycle v1 + alias authoring — LANDED.** Commit `f5d7181`. LLM extracts `nodes` + `relationshipClaims` + `attributeClaims` + `aliases`; source-ref threading via `formatConversationAsXml` + `insertNewSources`; source-scoped replacement; `applyClaimLifecycle` for `HAS_STATUS` supersession; alias upsert.
-- **Phase 2b — registry + scope + provenance + tasks foundation — IN PROGRESS.** Registry, additive schema fields, registry-driven lifecycle, default scope/provenance retrieval filters, `getOpenCommitments`, `POST /commitments/open`, and MCP `list_open_commitments` are implemented in the working tree. Extraction `assertionKind`, `currentlyOpenTasks` prompt injection, invalidation hook, and tool-description snapshots remain.
+- **Phase 2b — registry + scope + provenance + tasks foundation — IN PROGRESS.** Registry, additive schema fields, registry-driven lifecycle, default scope/provenance retrieval filters, `getOpenCommitments`, `POST /commitments/open`, and MCP `list_open_commitments` are implemented in the working tree. Extraction `assertionKind`, `currentlyOpenTasks` prompt injection, and tool-description snapshots remain. The 2b.9 invalidation hook is deferred to Phase 3 (no cache to invalidate yet).
 - **Phase 3 — profile synthesis + identity upgrade + atlas derivation + read-model assemblers + MCP tools — NOT STARTED.** Existing Phase 3, expanded.
 - **Phase 4 — transcript ingestion + cleanup rewrite + full eval harness — NOT STARTED.** Existing Phase 4, expanded.
 
@@ -69,7 +69,7 @@ Acceptance gates met:
 
 ## Phase 2b — Registry + Scope + Provenance + Tasks Foundation (NEW)
 
-**Goal.** Land the three claim-level fields (`scope`, `assertedByKind` + `assertedByNodeId`, `supersededByClaimId` + `contradictedByClaimId`), the predicate policy registry, and the Task/HAS_TASK_STATUS shape. Wire each through extraction, lifecycle, and the existing read paths so nothing is "stored but ignored." Read-model assemblers are deferred to Phase 3, but the **insertion-flow invalidation hooks** that those assemblers will consume are wired now (firing into a no-op handler).
+**Goal.** Land the three claim-level fields (`scope`, `assertedByKind` + `assertedByNodeId`, `supersededByClaimId` + `contradictedByClaimId`), the predicate policy registry, and the Task/HAS_TASK_STATUS shape. Wire each through extraction, lifecycle, and the existing read paths so nothing is "stored but ignored." Read-model assemblers and their insertion-flow invalidation hooks are both deferred to Phase 3 — there is no consumer cache to invalidate yet, so a stub hook would be speculative.
 
 **Out of scope this phase.** Profile synthesis, identity-resolution upgrade, Atlas derivation rewrite, transcript ingestion, cleanup rewrite, full eval harness. Those are Phases 3–4.
 
@@ -212,9 +212,9 @@ New file `src/lib/query/open-commitments.ts`:
 - `getOpenCommitments(userId, { ownedBy?, dueBefore? })`: reads each Task node's newest active personal non-inferred `HAS_TASK_STATUS` claim, filters that latest status to `pending`/`in_progress`, and returns `{ taskId, label, owner, dueOn, statedAt, sourceId }[]`.
 - New route `POST /commitments/open` that calls it; new MCP tool `list_open_commitments` registered in `src/lib/mcp/mcp-server.ts` with the description from the design doc.
 
-Insertion-flow invalidation hook:
+Insertion-flow invalidation hook — **deferred (Phase 3)**:
 
-- After `applyClaimLifecycle`, if any claim with `forceRefreshOnSupersede = true` (from registry) was inserted/superseded, enqueue a `read_model_invalidate(userId)` event. For Phase 2b the handler is a stub that logs; Phase 3's read-model assemblers will subscribe.
+- Originally specified to fire a `read_model_invalidate(userId)` event after `applyClaimLifecycle` for any claim with `forceRefreshOnSupersede = true`. Deferred to Phase 3 alongside bootstrap cache introduction; no cache layer exists yet (only `src/lib/cache/deep-research-cache.ts`, unrelated), so a stub adds noise without value. Phase 3 will wire the hook and the consuming read-model assemblers together.
 
 Tests:
 
@@ -247,7 +247,7 @@ Recommended split:
 
 - **PR 2b-i**: registry + schema migration + scope/provenance columns + claim-insert wiring + system-claim updates. Tree compiles and behaves identically because no read path filters yet.
 - **PR 2b-ii**: extraction `assertionKind` + lifecycle generalization + trust rule. The `HAS_STATUS` supersession test still passes; new tests added.
-- **PR 2b-iii**: Tasks (node type, predicate, prompt updates, currentlyOpenTasks injection) + `getOpenCommitments` + MCP tool + invalidation hook stub + default search filters.
+- **PR 2b-iii**: Tasks (node type, predicate, prompt updates, currentlyOpenTasks injection) + `getOpenCommitments` + MCP tool + default search filters. (Invalidation hook deferred to Phase 3 — see 2b.9.)
 
 Three reviewable PRs is the right granularity; one giant PR risks losing the wiring story in review.
 
@@ -256,6 +256,10 @@ Three reviewable PRs is the right granularity; one giant PR risks losing the wir
 ## Phase 3 — Profile Synthesis + Identity Upgrade + Atlas Derivation + Read-Model Assemblers
 
 **Goal.** The compression loop runs (descriptions get rewritten from claims; duplicates shrink). Atlas and the read-model context bundles are assembled and shipped via MCP/SDK.
+
+### Phase 3 prerequisites
+
+- Predicate policy must support `(predicate, subjectType)` cardinality before read-model assemblers (evidence, atlas) can rely on active-only filters; OWNED_BY/DUE_ON on Tasks specifically need single-current-value semantics. Tracked at design doc §Tasks & Commitments.
 
 ### Task breakdown
 

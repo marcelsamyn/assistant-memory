@@ -105,6 +105,10 @@ export async function getOpenCommitments(
           : eq(ownerClaim.objectNodeId, ownedBy),
       ),
     )
+    // Newest-wins dedupe across (taskId) is a runtime guard: OWNED_BY/DUE_ON
+    // are policy-typed `multi_value` globally (legitimate co-ownership on
+    // atlas etc.), but Tasks need single-current-value semantics. The policy
+    // registry has no `(predicate, subjectType)` axis yet — tracked for Phase 3.
     .orderBy(
       desc(claims.statedAt),
       desc(claims.createdAt),
