@@ -62,6 +62,13 @@ export interface IdentityCandidate {
   embedding?: number[];
   /** Trustworthy supporting claims for signal 4. Untrusted kinds are filtered internally. */
   supportingClaimsForCompat?: IdentityCandidateClaim[];
+  /**
+   * Node ids that must never be returned as a match. Used by the background
+   * re-evaluation pass (Phase 3.3) to exclude the candidate's own node id —
+   * otherwise every signal would self-match because the candidate already
+   * lives in the graph.
+   */
+  excludeNodeIds?: ReadonlySet<TypeId<"node">>;
 }
 
 export type IdentitySignal =
@@ -145,9 +152,13 @@ export async function resolveIdentity({
   candidate,
 }: ResolveIdentityInput): Promise<IdentityResolution> {
   const trace: SignalTrace[] = [];
+  const excluded = candidate.excludeNodeIds;
 
   // --- Signal 1: canonical label match ---------------------------------
-  const canonicalTrace = await _signalCanonicalLabel(userId, candidate);
+  const canonicalTrace = _filterTraceCandidates(
+    await _signalCanonicalLabel(userId, candidate),
+    excluded,
+  );
   trace.push(canonicalTrace);
   if (canonicalTrace.signal === "canonical_label" && canonicalTrace.fired) {
     const winner = canonicalTrace.candidates[0];
@@ -157,7 +168,10 @@ export async function resolveIdentity({
   }
 
   // --- Signal 2: alias match -------------------------------------------
-  const aliasTrace = await _signalAlias(userId, candidate);
+  const aliasTrace = _filterTraceCandidates(
+    await _signalAlias(userId, candidate),
+    excluded,
+  );
   trace.push(aliasTrace);
   if (aliasTrace.signal === "alias" && aliasTrace.fired) {
     const winner = aliasTrace.candidates[0];
@@ -167,14 +181,20 @@ export async function resolveIdentity({
   }
 
   // --- Signal 3: embedding similarity ----------------------------------
-  const embeddingTrace = await _signalEmbeddingSim(userId, candidate);
+  const embeddingTrace = _filterTraceCandidates(
+    await _signalEmbeddingSim(userId, candidate),
+    excluded,
+  );
   trace.push(embeddingTrace);
 
   // --- Signal 4: claim profile compatibility ---------------------------
-  const profileTrace = await _signalProfileCompat(
-    userId,
-    candidate,
-    embeddingTrace.signal === "embedding_sim" ? embeddingTrace.candidates : [],
+  const profileTrace = _filterTraceCandidates(
+    await _signalProfileCompat(
+      userId,
+      candidate,
+      embeddingTrace.signal === "embedding_sim" ? embeddingTrace.candidates : [],
+    ),
+    excluded,
   );
   trace.push(profileTrace);
 
@@ -582,6 +602,21 @@ async function _annotateScope(
  * non-firing trace so resolution falls through to later signals (which will
  * also reject the cross-scope match) and ultimately returns null.
  */
+/**
+ * Drop excluded node ids from a signal trace's candidate list. If excluding
+ * leaves the list empty, the trace's `fired` flag is also reset so downstream
+ * short-circuit checks treat it as "did not fire."
+ */
+function _filterTraceCandidates(
+  trace: SignalTrace,
+  excluded: ReadonlySet<TypeId<"node">> | undefined,
+): SignalTrace {
+  if (!excluded || excluded.size === 0) return trace;
+  const filtered = trace.candidates.filter((c) => !excluded.has(c.nodeId));
+  if (filtered.length === trace.candidates.length) return trace;
+  return { ...trace, candidates: filtered, fired: filtered.length > 0 };
+}
+
 function _classifyScopeMatches(
   signal: "canonical_label" | "alias",
   candidateScope: Scope,

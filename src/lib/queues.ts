@@ -2,6 +2,7 @@ import { assistantDreamJob } from "./jobs/atlas-assistant";
 import { processAtlasJob } from "./jobs/atlas-user";
 import { CleanupGraphJobInputSchema } from "./jobs/cleanup-graph";
 import { dream } from "./jobs/dream";
+import { IdentityReevalJobInputSchema } from "./jobs/identity-reeval";
 import { IngestConversationJobInputSchema } from "./jobs/ingest-conversation";
 import { IngestDocumentJobInputSchema } from "./jobs/ingest-document";
 import { ProfileSynthesisJobInputSchema } from "./jobs/profile-synthesis";
@@ -202,6 +203,16 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         });
         console.log(
           `Profile synthesis for user ${userId} node ${nodeId}: ${result.status}`,
+        );
+      } else if (job.name === "identity-reeval") {
+        const { userId, nodeId } = IdentityReevalJobInputSchema.parse(job.data);
+        const { runIdentityReeval } = await import("./jobs/identity-reeval");
+        const result = await runIdentityReeval({
+          userId,
+          nodeId: nodeId as TypeId<"node">,
+        });
+        console.log(
+          `Identity reeval for user ${userId} node ${nodeId}: ${result.status}`,
         );
       } else if (job.name === "cleanup-graph") {
         const data = CleanupGraphJobInputSchema.parse({

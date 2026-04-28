@@ -414,12 +414,22 @@ Focus on extracting the most significant and meaningful information that the USE
   // Enqueue profile synthesis for each subject whose active claim set may have
   // changed: any subject of an inserted claim, or of a claim removed by the
   // source-scoped replacement. The job itself is idempotent via a content hash.
+  //
+  // Identity re-evaluation runs from the same enqueue point (Phase 3.3): for
+  // every affected node, run signals 3+4 against existing nodes and surface a
+  // structured `identity.merge_proposal` log line on positive hits. Embedding
+  // generation above is inline (Promise.all is awaited before this point), so
+  // the reeval worker is guaranteed to see the new embedding for nodes that
+  // were just created here.
   const affectedSubjectNodeIds = _collectAffectedSubjectNodeIds(
     insertedClaimRecords,
     deletedClaimRecords,
   );
   if (affectedSubjectNodeIds.length > 0) {
-    await enqueueProfileSynthesisJobs(userId, affectedSubjectNodeIds);
+    await Promise.all([
+      enqueueProfileSynthesisJobs(userId, affectedSubjectNodeIds),
+      enqueueIdentityReevalJobs(userId, affectedSubjectNodeIds),
+    ]);
   }
 
   debugGraph(detailsOfNewlyCreatedNodes, finalizedClaimRecords);
@@ -452,6 +462,26 @@ async function enqueueProfileSynthesisJobs(
         { userId, nodeId },
         {
           jobId: `profile-synthesis:${userId}:${nodeId}`,
+          removeOnComplete: true,
+          removeOnFail: 50,
+        },
+      ),
+    ),
+  );
+}
+
+async function enqueueIdentityReevalJobs(
+  userId: string,
+  nodeIds: TypeId<"node">[],
+): Promise<void> {
+  const { batchQueue } = await import("./queues");
+  await Promise.all(
+    nodeIds.map((nodeId) =>
+      batchQueue.add(
+        "identity-reeval",
+        { userId, nodeId },
+        {
+          jobId: `identity-reeval:${userId}:${nodeId}`,
           removeOnComplete: true,
           removeOnFail: 50,
         },
