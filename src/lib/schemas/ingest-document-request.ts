@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ScopeEnum } from "~/types/graph";
+import { ScopeEnum } from "~/types/graph.js";
 
 export const ingestDocumentRequestSchema = z.object({
   userId: z.string(),

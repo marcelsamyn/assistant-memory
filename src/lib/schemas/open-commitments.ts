@@ -1,5 +1,5 @@
-import { TaskStatusEnum } from "~/types/graph";
-import { typeIdSchema } from "~/types/typeid";
+import { TaskStatusEnum } from "~/types/graph.js";
+import { typeIdSchema } from "~/types/typeid.js";
 import { z } from "zod";
 
 export const openCommitmentsRequestSchema = z.object({
