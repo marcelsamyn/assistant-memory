@@ -593,6 +593,13 @@ describeIfServer("processAtlasJob", () => {
           return undefined;
         },
       },
+      // Bundle-cache invalidation runs alongside atlas-user enqueue and
+      // calls `redisConnection.del` — provide a minimal stub.
+      redisConnection: {
+        get: async () => null,
+        set: async () => "OK" as const,
+        del: async () => 0,
+      },
     }));
 
     try {

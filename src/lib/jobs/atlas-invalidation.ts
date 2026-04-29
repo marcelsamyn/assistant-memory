@@ -15,7 +15,13 @@ import type { DrizzleDB } from "~/db";
 import { claims } from "~/db/schema";
 import type { Predicate } from "~/types/graph";
 
-const FORCE_REFRESH_PREDICATES: readonly Predicate[] = Object.values(
+/**
+ * Predicates whose supersession invalidates derived read-model artifacts
+ * (the user atlas and the bootstrap context bundle). Exported so other
+ * read-model assemblers (e.g. `recent_supersessions`) can stay consistent
+ * with the registry without re-deriving the filter list.
+ */
+export const FORCE_REFRESH_PREDICATES: readonly Predicate[] = Object.values(
   PREDICATE_POLICIES,
 )
   .filter((policy) => policy.forceRefreshOnSupersede)
@@ -82,6 +88,13 @@ export async function enqueueAtlasUserRefreshOnSupersede(
  * Combined helper: detect-and-enqueue. Call after `applyClaimLifecycle` from
  * insertion-flow sites. The `since` capture must happen on the caller side
  * before lifecycle runs.
+ *
+ * Fan-out on a positive detection:
+ *   1. Schedule the user-atlas refresh job (debounced).
+ *   2. Drop the cached bootstrap `ContextBundle` so the next bootstrap
+ *      rebuilds from fresh claims (atlas, open_commitments, and
+ *      recent_supersessions sections all depend on the just-superseded
+ *      predicate set).
  */
 export async function maybeEnqueueAtlasInvalidation(
   db: DrizzleDB,
@@ -91,5 +104,7 @@ export async function maybeEnqueueAtlasInvalidation(
   const triggered = await hasAtlasInvalidatingSupersession(db, userId, since);
   if (!triggered) return false;
   await enqueueAtlasUserRefreshOnSupersede(userId);
+  const { invalidateCachedBundle } = await import("../context/cache");
+  await invalidateCachedBundle(userId);
   return true;
 }
