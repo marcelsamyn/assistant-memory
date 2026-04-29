@@ -1,5 +1,6 @@
 import { assistantDreamJob } from "./jobs/atlas-assistant";
 import { processAtlasJob } from "./jobs/atlas-user";
+import { z } from "zod";
 import { CleanupGraphJobInputSchema } from "./jobs/cleanup-graph";
 import { dream } from "./jobs/dream";
 import { IdentityReevalJobInputSchema } from "./jobs/identity-reeval";
@@ -34,6 +35,12 @@ export const flowProducer = new FlowProducer({ connection: redisConnection });
 interface SummarizeJobData {
   userId: string;
 }
+
+export const AtlasUserJobInputSchema = z.object({
+  userId: z.string().min(1),
+  // Trigger tag is informational only — used for log/metrics correlation.
+  trigger: z.enum(["scheduled", "supersede"]).default("scheduled"),
+});
 
 export interface DreamJobData {
   userId: string;
@@ -83,6 +90,16 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
 
         console.log(
           `\n\nAssistant dream completed for user ${userId}, assistant ${assistantId}.`,
+        );
+      } else if (job.name === "atlas-user") {
+        // Standalone atlas refresh — used by the supersession invalidation
+        // hook (Phase 3.4) and any caller that wants to schedule a refresh
+        // outside the dream cadence. The full dream job runs the atlas
+        // synchronously already.
+        const { userId } = AtlasUserJobInputSchema.parse(job.data);
+        const result = await processAtlasJob(db, userId);
+        console.log(
+          `Atlas user job for ${userId}: ${result.status}`,
         );
       } else if (job.name === "ingest-conversation") {
         const { userId, conversationId, messages } =

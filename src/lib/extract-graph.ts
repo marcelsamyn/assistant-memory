@@ -389,10 +389,18 @@ Focus on extracting the most significant and meaningful information that the USE
   );
 
   await _processAndInsertLlmAliases(db, userId, uniqueParsedLlmAliases, idMap);
+
+  // Capture timestamp BEFORE lifecycle so the invalidation hook can detect
+  // any claim that transitioned out of `active` during this run.
+  const lifecycleStartedAt = new Date();
   await applyClaimLifecycle(db, [
     ...deletedClaimRecords,
     ...insertedClaimRecords,
   ]);
+  const { maybeEnqueueAtlasInvalidation } = await import(
+    "./jobs/atlas-invalidation"
+  );
+  await maybeEnqueueAtlasInvalidation(db, userId, lifecycleStartedAt);
   const finalizedClaimRecords = await fetchClaimsByIds(
     db,
     insertedClaimRecords.map((claim) => claim.id),

@@ -118,7 +118,12 @@ export async function createClaim(
 
   if (!inserted) throw new Error("Failed to create claim");
 
+  const lifecycleStartedAt = new Date();
   await applyClaimLifecycle(db, [inserted]);
+  const { maybeEnqueueAtlasInvalidation } = await import(
+    "./jobs/atlas-invalidation"
+  );
+  await maybeEnqueueAtlasInvalidation(db, input.userId, lifecycleStartedAt);
   const [finalized] = await fetchClaimsByIds(db, [inserted.id]);
   if (!finalized) throw new Error("Failed to fetch created claim");
 
@@ -139,7 +144,12 @@ export async function deleteClaim(
 
   if (!deletedClaim) return false;
 
+  const lifecycleStartedAt = new Date();
   await applyClaimLifecycle(db, [deletedClaim]);
+  const { maybeEnqueueAtlasInvalidation } = await import(
+    "./jobs/atlas-invalidation"
+  );
+  await maybeEnqueueAtlasInvalidation(db, userId, lifecycleStartedAt);
   return true;
 }
 
