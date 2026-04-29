@@ -1,9 +1,12 @@
 /** Claim lifecycle transitions for sourced claims. Common aliases: supersession, claim lifecycle, single-valued claim policy. */
-import { PREDICATE_POLICIES } from "./predicate-policies";
+import {
+  PREDICATE_POLICIES,
+  resolvePredicatePolicy,
+} from "./predicate-policies";
 import { and, eq, inArray } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
-import { claims } from "~/db/schema";
-import type { AssertedByKind, Predicate } from "~/types/graph";
+import { claims, nodes } from "~/db/schema";
+import type { AssertedByKind, NodeType, Predicate } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 
 type ClaimRow = typeof claims.$inferSelect;
@@ -11,6 +14,7 @@ type ClaimRow = typeof claims.$inferSelect;
 interface SingleValuedSubject {
   userId: string;
   subjectNodeId: TypeId<"node">;
+  subjectType: NodeType;
   predicate: Predicate;
 }
 
@@ -29,26 +33,76 @@ const ASSERTED_BY_KIND_TRUST_RANK: Record<AssertedByKind, number> = {
   system: 1,
 };
 
-const SINGLE_VALUED_SUPERSEDING_PREDICATES: ReadonlySet<Predicate> = new Set(
+// Predicates that are single-current-value for at least one subject context
+// (base or any override). Any (predicate, subjectType) pair outside this set
+// can never trigger supersession — used as a cheap pre-filter before we pay
+// for a `nodes` lookup.
+const POTENTIALLY_SUPERSEDING_PREDICATES: ReadonlySet<Predicate> = new Set(
   Object.values(PREDICATE_POLICIES)
-    .filter(
-      (policy) =>
-        policy.cardinality === "single_current_value" &&
-        policy.lifecycle === "supersede_previous",
-    )
-    .map((policy) => policy.predicate),
+    .filter((entry) => {
+      if (
+        entry.cardinality === "single_current_value" &&
+        entry.lifecycle === "supersede_previous"
+      ) {
+        return true;
+      }
+      const overrides = entry.subjectTypeOverrides;
+      if (overrides === undefined) return false;
+      return Object.values(overrides).some(
+        (override) =>
+          override !== undefined &&
+          override.cardinality === "single_current_value" &&
+          override.lifecycle === "supersede_previous",
+      );
+    })
+    .map((entry) => entry.predicate),
 );
 
-function singleCurrentValueSubjects(
+async function fetchSubjectTypes(
+  database: DrizzleDB,
+  subjectNodeIds: ReadonlySet<TypeId<"node">>,
+): Promise<Map<TypeId<"node">, NodeType>> {
+  if (subjectNodeIds.size === 0) return new Map();
+  const rows = await database
+    .select({ id: nodes.id, nodeType: nodes.nodeType })
+    .from(nodes)
+    .where(inArray(nodes.id, [...subjectNodeIds]));
+  return new Map(rows.map((row) => [row.id, row.nodeType]));
+}
+
+async function singleCurrentValueSubjects(
+  database: DrizzleDB,
   changedClaims: ClaimRow[],
-): SingleValuedSubject[] {
+): Promise<SingleValuedSubject[]> {
+  const candidates = changedClaims.filter((claim) =>
+    POTENTIALLY_SUPERSEDING_PREDICATES.has(claim.predicate),
+  );
+  if (candidates.length === 0) return [];
+
+  const subjectTypes = await fetchSubjectTypes(
+    database,
+    new Set(candidates.map((claim) => claim.subjectNodeId)),
+  );
+
   const subjects = new Map<string, SingleValuedSubject>();
-  for (const claim of changedClaims) {
-    if (!SINGLE_VALUED_SUPERSEDING_PREDICATES.has(claim.predicate)) continue;
+  for (const claim of candidates) {
+    const subjectType = subjectTypes.get(claim.subjectNodeId);
+    if (subjectType === undefined) continue;
+    const policy = resolvePredicatePolicy(claim.predicate, subjectType);
+    if (
+      policy.cardinality !== "single_current_value" ||
+      policy.lifecycle !== "supersede_previous"
+    ) {
+      continue;
+    }
+    // (userId, subjectNodeId, predicate) is unique per claim in the DB
+    // because subjectNodeId already pins a single subjectType row. We pass
+    // subjectType through so the recompute step doesn't re-lookup.
     const key = `${claim.userId}|${claim.subjectNodeId}|${claim.predicate}`;
     subjects.set(key, {
       userId: claim.userId,
       subjectNodeId: claim.subjectNodeId,
+      subjectType,
       predicate: claim.predicate,
     });
   }
@@ -96,6 +150,16 @@ async function recomputeSingleValuedLifecycleForSubject(
   database: DrizzleDB,
   subject: SingleValuedSubject,
 ): Promise<void> {
+  // Defensive: caller already filtered, but resolving here keeps this fn
+  // safe to call directly (e.g. from backfill scripts).
+  const policy = resolvePredicatePolicy(subject.predicate, subject.subjectType);
+  if (
+    policy.cardinality !== "single_current_value" ||
+    policy.lifecycle !== "supersede_previous"
+  ) {
+    return;
+  }
+
   const subjectClaims = (
     await database
       .select()
@@ -180,8 +244,9 @@ export async function applyClaimLifecycle(
   database: DrizzleDB,
   changedClaims: ClaimRow[],
 ): Promise<void> {
+  const subjects = await singleCurrentValueSubjects(database, changedClaims);
   await Promise.all(
-    singleCurrentValueSubjects(changedClaims).map((subject) =>
+    subjects.map((subject) =>
       recomputeSingleValuedLifecycleForSubject(database, subject),
     ),
   );
@@ -194,4 +259,17 @@ export async function fetchClaimsByIds(
   if (claimIds.length === 0) return [];
 
   return database.select().from(claims).where(inArray(claims.id, claimIds));
+}
+
+/** Recompute lifecycle for an explicit (user, subject, predicate) — exposed for backfill scripts. */
+export async function recomputeSingleValuedLifecycle(
+  database: DrizzleDB,
+  subject: {
+    userId: string;
+    subjectNodeId: TypeId<"node">;
+    subjectType: NodeType;
+    predicate: Predicate;
+  },
+): Promise<void> {
+  await recomputeSingleValuedLifecycleForSubject(database, subject);
 }

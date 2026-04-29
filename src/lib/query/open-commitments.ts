@@ -105,10 +105,12 @@ export async function getOpenCommitments(
           : eq(ownerClaim.objectNodeId, ownedBy),
       ),
     )
-    // Newest-wins dedupe across (taskId) is a runtime guard: OWNED_BY/DUE_ON
-    // are policy-typed `multi_value` globally (legitimate co-ownership on
-    // atlas etc.), but Tasks need single-current-value semantics. The policy
-    // registry has no `(predicate, subjectType)` axis yet — tracked for Phase 3.
+    // Belt-and-suspenders newest-wins dedupe across (taskId): supersession
+    // for OWNED_BY/DUE_ON on Tasks is now enforced at the lifecycle engine
+    // via `subjectTypeOverrides` in the predicate registry, so production
+    // claims should already be single-active. We keep this dedupe so claims
+    // written before the override landed (or any backfill gap) don't leak
+    // duplicate rows into the read model.
     .orderBy(
       desc(claims.statedAt),
       desc(claims.createdAt),

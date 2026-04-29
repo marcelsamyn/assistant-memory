@@ -259,7 +259,7 @@ Three reviewable PRs is the right granularity; one giant PR risks losing the wir
 
 ### Phase 3 prerequisites
 
-- Predicate policy must support `(predicate, subjectType)` cardinality before read-model assemblers (evidence, atlas) can rely on active-only filters; OWNED_BY/DUE_ON on Tasks specifically need single-current-value semantics. Tracked at design doc §Tasks & Commitments.
+- Predicate policy must support `(predicate, subjectType)` cardinality before read-model assemblers (evidence, atlas) can rely on active-only filters; OWNED_BY/DUE_ON on Tasks specifically need single-current-value semantics. **Done.** Registry now carries `subjectTypeOverrides`; resolver `resolvePredicatePolicy(predicate, subjectType)` is the single entry point; lifecycle engine resolves `subjectType` from `nodes` and supersedes accordingly. Backfill: `drizzle/0012_claims_task_owned_by_due_on_backfill.sql` (idempotent SQL).
 
 ### Task breakdown
 

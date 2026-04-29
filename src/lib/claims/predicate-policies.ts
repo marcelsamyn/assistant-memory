@@ -1,5 +1,5 @@
 /** Predicate behavior registry. Common aliases: claim policy, lifecycle policy, retrieval section. */
-import type { Predicate } from "~/types/graph";
+import type { NodeType, Predicate } from "~/types/graph";
 
 export type Cardinality =
   | "single_current_value"
@@ -22,11 +22,28 @@ export interface PredicatePolicy {
   forceRefreshOnSupersede: boolean;
 }
 
+/**
+ * Per-subject-type override: only the lifecycle-shaping fields may diverge
+ * from the base policy. Retrieval routing / feedsAtlas / refresh signaling
+ * stay uniform per predicate so downstream consumers don't need a subject
+ * axis.
+ */
+export type PredicatePolicyOverride = Pick<
+  PredicatePolicy,
+  "cardinality" | "lifecycle"
+>;
+
+export interface PredicatePolicyEntry<P extends Predicate = Predicate>
+  extends PredicatePolicy {
+  predicate: P;
+  subjectTypeOverrides?: Partial<Record<NodeType, PredicatePolicyOverride>>;
+}
+
 type PredicatePolicyMap = {
-  [P in Predicate]: PredicatePolicy & { predicate: P };
+  [P in Predicate]: PredicatePolicyEntry<P>;
 };
 
-export const PREDICATE_POLICIES = {
+export const PREDICATE_POLICIES: PredicatePolicyMap = {
   HAS_STATUS: {
     predicate: "HAS_STATUS",
     cardinality: "single_current_value",
@@ -122,6 +139,15 @@ export const PREDICATE_POLICIES = {
     feedsAtlas: false,
     retrievalSection: "evidence",
     forceRefreshOnSupersede: false,
+    // A Task has exactly one current owner — reassignment supersedes the
+    // prior claim. Non-Task subjects (atlas co-owners, shared artifacts)
+    // keep multi_value semantics.
+    subjectTypeOverrides: {
+      Task: {
+        cardinality: "single_current_value",
+        lifecycle: "supersede_previous",
+      },
+    },
   },
   DUE_ON: {
     predicate: "DUE_ON",
@@ -130,6 +156,13 @@ export const PREDICATE_POLICIES = {
     feedsAtlas: false,
     retrievalSection: "open_commitments",
     forceRefreshOnSupersede: false,
+    // A Task has exactly one current due date — rescheduling supersedes.
+    subjectTypeOverrides: {
+      Task: {
+        cardinality: "single_current_value",
+        lifecycle: "supersede_previous",
+      },
+    },
   },
   PRECEDES: {
     predicate: "PRECEDES",
@@ -155,4 +188,38 @@ export const PREDICATE_POLICIES = {
     retrievalSection: "evidence",
     forceRefreshOnSupersede: false,
   },
-} satisfies PredicatePolicyMap;
+};
+
+/**
+ * Resolve the effective policy for a (predicate, subjectType) pair.
+ * `subjectType: null` means "unknown / wildcard" — returns the base policy.
+ *
+ * All consumers go through this function; never index `PREDICATE_POLICIES`
+ * directly when behavior may vary by subject type.
+ */
+export function resolvePredicatePolicy(
+  predicate: Predicate,
+  subjectType: NodeType | null,
+): PredicatePolicy {
+  const entry = PREDICATE_POLICIES[predicate];
+  const override =
+    subjectType === null ? undefined : entry.subjectTypeOverrides?.[subjectType];
+  if (override === undefined) {
+    return {
+      predicate: entry.predicate,
+      cardinality: entry.cardinality,
+      lifecycle: entry.lifecycle,
+      feedsAtlas: entry.feedsAtlas,
+      retrievalSection: entry.retrievalSection,
+      forceRefreshOnSupersede: entry.forceRefreshOnSupersede,
+    };
+  }
+  return {
+    predicate: entry.predicate,
+    cardinality: override.cardinality,
+    lifecycle: override.lifecycle,
+    feedsAtlas: entry.feedsAtlas,
+    retrievalSection: entry.retrievalSection,
+    forceRefreshOnSupersede: entry.forceRefreshOnSupersede,
+  };
+}

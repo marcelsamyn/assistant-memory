@@ -744,4 +744,380 @@ describeIfServer("applyClaimLifecycle", () => {
       await client.end();
     }
   });
+
+  it("supersedes prior OWNED_BY claims on Task subjects", async () => {
+    const userId = "user_H";
+    const taskNodeId = newTypeId("node");
+    const ownerANodeId = newTypeId("node");
+    const ownerBNodeId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const firstOwnerClaimId = newTypeId("claim");
+    const secondOwnerClaimId = newTypeId("claim");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    try {
+      await createLifecycleTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `
+          INSERT INTO "nodes" ("id", "user_id", "node_type")
+            VALUES ($1, $4, 'Task'), ($2, $4, 'Person'), ($3, $4, 'Person')
+        `,
+        [taskNodeId, ownerANodeId, ownerBNodeId, userId],
+      );
+      await client.query(
+        `
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+            VALUES ($1, $2, 'manual', 'manual:user_H', 'completed')
+        `,
+        [sourceId, userId],
+      );
+
+      const [firstOwner, secondOwner] = await database
+        .insert(schema.claims)
+        .values([
+          {
+            id: firstOwnerClaimId,
+            userId,
+            subjectNodeId: taskNodeId,
+            objectNodeId: ownerANodeId,
+            predicate: "OWNED_BY",
+            statement: "Task owned by A.",
+            sourceId,
+            assertedByKind: "user",
+            statedAt: new Date("2026-04-10T00:00:00.000Z"),
+            status: "active",
+          },
+          {
+            id: secondOwnerClaimId,
+            userId,
+            subjectNodeId: taskNodeId,
+            objectNodeId: ownerBNodeId,
+            predicate: "OWNED_BY",
+            statement: "Task reassigned to B.",
+            sourceId,
+            assertedByKind: "user",
+            statedAt: new Date("2026-04-12T00:00:00.000Z"),
+            status: "active",
+          },
+        ])
+        .returning();
+
+      await applyClaimLifecycle(database, [firstOwner!, secondOwner!]);
+
+      const rows = await client.query<{
+        id: string;
+        status: string;
+        superseded_by_claim_id: string | null;
+      }>(
+        `
+          SELECT "id", "status", "superseded_by_claim_id"
+          FROM "claims"
+          WHERE "user_id" = $1
+          ORDER BY "stated_at"
+        `,
+        [userId],
+      );
+
+      expect(rows.rows).toEqual([
+        {
+          id: firstOwnerClaimId,
+          status: "superseded",
+          superseded_by_claim_id: secondOwnerClaimId,
+        },
+        {
+          id: secondOwnerClaimId,
+          status: "active",
+          superseded_by_claim_id: null,
+        },
+      ]);
+    } finally {
+      await client.end();
+    }
+  });
+
+  it("supersedes prior DUE_ON claims on Task subjects", async () => {
+    const userId = "user_I";
+    const taskNodeId = newTypeId("node");
+    const dueANodeId = newTypeId("node");
+    const dueBNodeId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const firstDueClaimId = newTypeId("claim");
+    const secondDueClaimId = newTypeId("claim");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    try {
+      await createLifecycleTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `
+          INSERT INTO "nodes" ("id", "user_id", "node_type")
+            VALUES ($1, $4, 'Task'), ($2, $4, 'Temporal'), ($3, $4, 'Temporal')
+        `,
+        [taskNodeId, dueANodeId, dueBNodeId, userId],
+      );
+      await client.query(
+        `
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+            VALUES ($1, $2, 'manual', 'manual:user_I', 'completed')
+        `,
+        [sourceId, userId],
+      );
+
+      const [firstDue, secondDue] = await database
+        .insert(schema.claims)
+        .values([
+          {
+            id: firstDueClaimId,
+            userId,
+            subjectNodeId: taskNodeId,
+            objectNodeId: dueANodeId,
+            predicate: "DUE_ON",
+            statement: "Task due on date A.",
+            sourceId,
+            assertedByKind: "user",
+            statedAt: new Date("2026-04-10T00:00:00.000Z"),
+            status: "active",
+          },
+          {
+            id: secondDueClaimId,
+            userId,
+            subjectNodeId: taskNodeId,
+            objectNodeId: dueBNodeId,
+            predicate: "DUE_ON",
+            statement: "Task rescheduled to date B.",
+            sourceId,
+            assertedByKind: "user",
+            statedAt: new Date("2026-04-12T00:00:00.000Z"),
+            status: "active",
+          },
+        ])
+        .returning();
+
+      await applyClaimLifecycle(database, [firstDue!, secondDue!]);
+
+      const rows = await client.query<{
+        id: string;
+        status: string;
+        superseded_by_claim_id: string | null;
+      }>(
+        `
+          SELECT "id", "status", "superseded_by_claim_id"
+          FROM "claims"
+          WHERE "user_id" = $1
+          ORDER BY "stated_at"
+        `,
+        [userId],
+      );
+
+      expect(rows.rows).toEqual([
+        {
+          id: firstDueClaimId,
+          status: "superseded",
+          superseded_by_claim_id: secondDueClaimId,
+        },
+        {
+          id: secondDueClaimId,
+          status: "active",
+          superseded_by_claim_id: null,
+        },
+      ]);
+    } finally {
+      await client.end();
+    }
+  });
+
+  it("keeps multiple OWNED_BY claims active on non-Task subjects", async () => {
+    const userId = "user_J";
+    const conceptNodeId = newTypeId("node");
+    const ownerANodeId = newTypeId("node");
+    const ownerBNodeId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const firstOwnerClaimId = newTypeId("claim");
+    const secondOwnerClaimId = newTypeId("claim");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    try {
+      await createLifecycleTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `
+          INSERT INTO "nodes" ("id", "user_id", "node_type")
+            VALUES ($1, $4, 'Concept'), ($2, $4, 'Person'), ($3, $4, 'Person')
+        `,
+        [conceptNodeId, ownerANodeId, ownerBNodeId, userId],
+      );
+      await client.query(
+        `
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+            VALUES ($1, $2, 'manual', 'manual:user_J', 'completed')
+        `,
+        [sourceId, userId],
+      );
+
+      const [firstOwner, secondOwner] = await database
+        .insert(schema.claims)
+        .values([
+          {
+            id: firstOwnerClaimId,
+            userId,
+            subjectNodeId: conceptNodeId,
+            objectNodeId: ownerANodeId,
+            predicate: "OWNED_BY",
+            statement: "Concept co-owned by A.",
+            sourceId,
+            assertedByKind: "user",
+            statedAt: new Date("2026-04-10T00:00:00.000Z"),
+            status: "active",
+          },
+          {
+            id: secondOwnerClaimId,
+            userId,
+            subjectNodeId: conceptNodeId,
+            objectNodeId: ownerBNodeId,
+            predicate: "OWNED_BY",
+            statement: "Concept co-owned by B.",
+            sourceId,
+            assertedByKind: "user",
+            statedAt: new Date("2026-04-12T00:00:00.000Z"),
+            status: "active",
+          },
+        ])
+        .returning();
+
+      await applyClaimLifecycle(database, [firstOwner!, secondOwner!]);
+
+      const rows = await client.query<{
+        id: string;
+        status: string;
+        superseded_by_claim_id: string | null;
+      }>(
+        `
+          SELECT "id", "status", "superseded_by_claim_id"
+          FROM "claims"
+          WHERE "user_id" = $1
+          ORDER BY "stated_at"
+        `,
+        [userId],
+      );
+
+      expect(rows.rows).toEqual([
+        {
+          id: firstOwnerClaimId,
+          status: "active",
+          superseded_by_claim_id: null,
+        },
+        {
+          id: secondOwnerClaimId,
+          status: "active",
+          superseded_by_claim_id: null,
+        },
+      ]);
+    } finally {
+      await client.end();
+    }
+  });
+
+  it("trust rule still applies to OWNED_BY on Tasks", async () => {
+    const userId = "user_K";
+    const taskNodeId = newTypeId("node");
+    const ownerANodeId = newTypeId("node");
+    const ownerBNodeId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const userClaimId = newTypeId("claim");
+    const inferredClaimId = newTypeId("claim");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    try {
+      await createLifecycleTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `
+          INSERT INTO "nodes" ("id", "user_id", "node_type")
+            VALUES ($1, $4, 'Task'), ($2, $4, 'Person'), ($3, $4, 'Person')
+        `,
+        [taskNodeId, ownerANodeId, ownerBNodeId, userId],
+      );
+      await client.query(
+        `
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+            VALUES ($1, $2, 'manual', 'manual:user_K', 'completed')
+        `,
+        [sourceId, userId],
+      );
+
+      const [userClaim, inferredClaim] = await database
+        .insert(schema.claims)
+        .values([
+          {
+            id: userClaimId,
+            userId,
+            subjectNodeId: taskNodeId,
+            objectNodeId: ownerANodeId,
+            predicate: "OWNED_BY",
+            statement: "User asserted owner A.",
+            sourceId,
+            assertedByKind: "user",
+            statedAt: new Date("2026-04-10T00:00:00.000Z"),
+            status: "active",
+          },
+          {
+            id: inferredClaimId,
+            userId,
+            subjectNodeId: taskNodeId,
+            objectNodeId: ownerBNodeId,
+            predicate: "OWNED_BY",
+            statement: "Assistant inferred owner B.",
+            sourceId,
+            assertedByKind: "assistant_inferred",
+            statedAt: new Date("2026-04-12T00:00:00.000Z"),
+            status: "active",
+          },
+        ])
+        .returning();
+
+      await applyClaimLifecycle(database, [userClaim!, inferredClaim!]);
+
+      const rows = await client.query<{
+        id: string;
+        status: string;
+        superseded_by_claim_id: string | null;
+      }>(
+        `
+          SELECT "id", "status", "superseded_by_claim_id"
+          FROM "claims"
+          WHERE "user_id" = $1
+          ORDER BY "stated_at"
+        `,
+        [userId],
+      );
+
+      expect(rows.rows).toEqual([
+        {
+          id: userClaimId,
+          status: "active",
+          superseded_by_claim_id: null,
+        },
+        {
+          id: inferredClaimId,
+          status: "superseded",
+          superseded_by_claim_id: userClaimId,
+        },
+      ]);
+    } finally {
+      await client.end();
+    }
+  });
 });
