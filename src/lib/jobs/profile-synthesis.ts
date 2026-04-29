@@ -80,6 +80,7 @@ interface AttributeClaimRow {
   id: TypeId<"claim">;
   predicate: Predicate;
   objectValue: string | null;
+  objectNodeId: TypeId<"node"> | null;
   statement: string;
   status: string;
   statedAt: Date;
@@ -93,6 +94,7 @@ interface RelationshipClaimRow {
   status: string;
   statedAt: Date;
   assertedByKind: AssertedByKind;
+  objectNodeId: TypeId<"node"> | null;
   objectLabel: string | null;
 }
 
@@ -170,30 +172,49 @@ Return JSON matching the schema { description: string }.`;
  * previous synthesis run, so including it would prevent cache hits on
  * unchanged claim sets (every successful run would rewrite the description,
  * which would change the next hash, defeating idempotence).
+ *
+ * Claim ids and `statedAt` are also excluded: they change every time a source
+ * is re-ingested even when the durable claim content is identical, so
+ * including them would defeat the cache for the common case of a user
+ * re-stating the same fact in a new message. Instead we hash a semantic
+ * fingerprint of the trusted claim set — the tuples below — sorted
+ * deterministically so two re-orderings of the same set produce the same
+ * hash.
  */
 function computeProfileHash(inputs: NodeProfileInputs): string {
+  const attributeTuples = inputs.attributeClaims
+    .map((claim) => ({
+      predicate: claim.predicate,
+      objectValue: claim.objectValue,
+      objectNodeId: claim.objectNodeId,
+      assertedByKind: claim.assertedByKind,
+      status: claim.status,
+    }))
+    .sort((a, b) =>
+      `${a.predicate}|${a.objectValue ?? ""}|${a.objectNodeId ?? ""}|${a.assertedByKind}|${a.status}`.localeCompare(
+        `${b.predicate}|${b.objectValue ?? ""}|${b.objectNodeId ?? ""}|${b.assertedByKind}|${b.status}`,
+      ),
+    );
+
+  const relationshipTuples = inputs.relationshipClaims
+    .map((claim) => ({
+      predicate: claim.predicate,
+      objectNodeId: claim.objectNodeId,
+      assertedByKind: claim.assertedByKind,
+      status: claim.status,
+    }))
+    .sort((a, b) =>
+      `${a.predicate}|${a.objectNodeId ?? ""}|${a.assertedByKind}|${a.status}`.localeCompare(
+        `${b.predicate}|${b.objectNodeId ?? ""}|${b.assertedByKind}|${b.status}`,
+      ),
+    );
+
   const canonical = {
     label: inputs.label,
     nodeType: inputs.nodeType,
     aliases: inputs.aliases,
-    attributeClaims: inputs.attributeClaims.map((claim) => ({
-      id: claim.id,
-      status: claim.status,
-      predicate: claim.predicate,
-      objectValue: claim.objectValue,
-      statement: claim.statement,
-      statedAt: claim.statedAt.toISOString(),
-      assertedByKind: claim.assertedByKind,
-    })),
-    relationshipClaims: inputs.relationshipClaims.map((claim) => ({
-      id: claim.id,
-      status: claim.status,
-      predicate: claim.predicate,
-      statement: claim.statement,
-      objectLabel: claim.objectLabel,
-      statedAt: claim.statedAt.toISOString(),
-      assertedByKind: claim.assertedByKind,
-    })),
+    attributeClaims: attributeTuples,
+    relationshipClaims: relationshipTuples,
   };
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
@@ -297,6 +318,7 @@ async function fetchNodeProfileInputs(
       id: claims.id,
       predicate: claims.predicate,
       objectValue: claims.objectValue,
+      objectNodeId: claims.objectNodeId,
       statement: claims.statement,
       status: claims.status,
       statedAt: claims.statedAt,
@@ -323,6 +345,7 @@ async function fetchNodeProfileInputs(
       status: claims.status,
       statedAt: claims.statedAt,
       assertedByKind: claims.assertedByKind,
+      objectNodeId: claims.objectNodeId,
       objectLabel: nodeMetadata.label,
     })
     .from(claims)

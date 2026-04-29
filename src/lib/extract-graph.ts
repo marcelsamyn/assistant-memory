@@ -425,9 +425,21 @@ Focus on extracting the most significant and meaningful information that the USE
     insertedClaimRecords,
     deletedClaimRecords,
   );
-  if (affectedSubjectNodeIds.length > 0) {
+  // Profile synthesis is the expensive trigger (one LLM call per node), so we
+  // gate it on whether the durable profile could actually have moved: only
+  // attribute-predicate claim changes feed the synthesis prompt. Relationship
+  // changes still trigger identity-reeval (cheap, SQL/pgvector only).
+  const attributeAffectedSubjectNodeIds =
+    _collectAttributeAffectedSubjectNodeIds(
+      insertedClaimRecords,
+      deletedClaimRecords,
+    );
+  if (
+    affectedSubjectNodeIds.length > 0 ||
+    attributeAffectedSubjectNodeIds.length > 0
+  ) {
     await Promise.all([
-      enqueueProfileSynthesisJobs(userId, affectedSubjectNodeIds),
+      enqueueProfileSynthesisJobs(userId, attributeAffectedSubjectNodeIds),
       enqueueIdentityReevalJobs(userId, affectedSubjectNodeIds),
     ]);
   }
@@ -450,10 +462,38 @@ function _collectAffectedSubjectNodeIds(
   return [...seen];
 }
 
+const ATTRIBUTE_PREDICATE_SET: ReadonlySet<string> = new Set(
+  AttributePredicateEnum.options,
+);
+
+export function _collectAttributeAffectedSubjectNodeIds(
+  insertedClaimRecords: Array<typeof claims.$inferSelect>,
+  deletedClaimRecords: Array<typeof claims.$inferSelect>,
+): TypeId<"node">[] {
+  const seen = new Set<TypeId<"node">>();
+  for (const record of insertedClaimRecords) {
+    if (ATTRIBUTE_PREDICATE_SET.has(record.predicate)) {
+      seen.add(record.subjectNodeId);
+    }
+  }
+  for (const record of deletedClaimRecords) {
+    if (ATTRIBUTE_PREDICATE_SET.has(record.predicate)) {
+      seen.add(record.subjectNodeId);
+    }
+  }
+  return [...seen];
+}
+
+// Debounce window: a multi-message burst that touches the same node within
+// this window collapses to one synthesis. The job reads current state at run
+// time, so the run captures every change in the burst, not just the trigger.
+const PROFILE_SYNTHESIS_DEBOUNCE_MS = 5 * 60_000;
+
 async function enqueueProfileSynthesisJobs(
   userId: string,
   nodeIds: TypeId<"node">[],
 ): Promise<void> {
+  if (nodeIds.length === 0) return;
   const { batchQueue } = await import("./queues");
   await Promise.all(
     nodeIds.map((nodeId) =>
@@ -462,6 +502,7 @@ async function enqueueProfileSynthesisJobs(
         { userId, nodeId },
         {
           jobId: `profile-synthesis:${userId}:${nodeId}`,
+          delay: PROFILE_SYNTHESIS_DEBOUNCE_MS,
           removeOnComplete: true,
           removeOnFail: 50,
         },
@@ -474,6 +515,7 @@ async function enqueueIdentityReevalJobs(
   userId: string,
   nodeIds: TypeId<"node">[],
 ): Promise<void> {
+  if (nodeIds.length === 0) return;
   const { batchQueue } = await import("./queues");
   await Promise.all(
     nodeIds.map((nodeId) =>

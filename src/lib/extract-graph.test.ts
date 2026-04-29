@@ -914,4 +914,211 @@ describeIfServer("extractGraph claim-native insertion", () => {
       await client.end();
     }
   });
+
+  it("enqueues profile-synthesis only for attribute-changed subjects, with debounce delay; identity-reeval covers all", async () => {
+    const userId = "user_enqueue";
+    const aliceNodeId = newTypeId("node");
+    const projectNodeId = newTypeId("node");
+    const conversationNodeId = newTypeId("node");
+    const parentSourceId = newTypeId("source");
+    const messageSourceId = newTypeId("source");
+    const statedAt = new Date("2026-04-26T10:00:00.000Z");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    interface AddCall {
+      name: string;
+      data: { userId: string; nodeId: string };
+      opts: { jobId?: string; delay?: number };
+    }
+    const addCalls: AddCall[] = [];
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+    vi.doMock("./graph", () => ({
+      findSimilarNodes: async () => [],
+      findOneHopNodes: async () => [],
+      findNodesByType: async () => [
+        {
+          id: aliceNodeId,
+          type: "Person",
+          label: "Alice",
+          description: "Generated Alice profile",
+          timestamp: new Date("2026-04-01T00:00:00.000Z"),
+          similarity: 1,
+        },
+        {
+          id: projectNodeId,
+          type: "Object",
+          label: "Project Falcon",
+          description: null,
+          timestamp: new Date("2026-04-01T00:00:00.000Z"),
+          similarity: 1,
+        },
+      ],
+    }));
+    vi.doMock("./embeddings-util", () => ({
+      generateAndInsertClaimEmbeddings: async () => undefined,
+      generateAndInsertNodeEmbeddings: async () => undefined,
+    }));
+    vi.doMock("./debug-utils", () => ({
+      debugGraph: () => undefined,
+    }));
+    // Spy on the real batchQueue so we capture every add() call regardless of
+    // which import path resolves to which mock instance. Returning undefined
+    // from the spy avoids actually pushing to Redis.
+    const queuesModule = await import("./queues");
+    const addSpy = vi
+      .spyOn(queuesModule.batchQueue, "add")
+      .mockImplementation(async (name, data, opts) => {
+        addCalls.push({
+          name: name as string,
+          data: data as { userId: string; nodeId: string },
+          opts: (opts ?? {}) as { jobId?: string; delay?: number },
+        });
+        // BullMQ Job is a complex type; the production code doesn't use the
+        // return value of the enqueue functions, so an `as never` cast keeps
+        // the spy's signature without forging a fake Job.
+        return undefined as never;
+      });
+    vi.doMock("./ai", () => ({
+      createCompletionClient: async () => ({
+        beta: {
+          chat: {
+            completions: {
+              parse: async () => ({
+                choices: [
+                  {
+                    message: {
+                      parsed: {
+                        nodes: [],
+                        // Only a relationship claim for projectNodeId — must
+                        // NOT trigger profile-synthesis for the project.
+                        relationshipClaims: [
+                          {
+                            subjectId: "existing_object_2",
+                            objectId: "existing_person_1",
+                            predicate: "RELATED_TO",
+                            statement: "Project Falcon is related to Alice.",
+                            sourceRef: "msg_e",
+                            assertionKind: "user",
+                          },
+                        ],
+                        // An attribute claim for aliceNodeId — MUST trigger
+                        // profile-synthesis for Alice.
+                        attributeClaims: [
+                          {
+                            subjectId: "existing_person_1",
+                            predicate: "HAS_PREFERENCE",
+                            objectValue: "concise communication",
+                            statement: "Alice prefers concise communication.",
+                            sourceRef: "msg_e",
+                            assertionKind: "user",
+                          },
+                        ],
+                        aliases: [],
+                      },
+                    },
+                  },
+                ],
+              }),
+            },
+          },
+        },
+      }),
+    }));
+
+    try {
+      await createExtractionTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `
+          INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES
+            ($1, $4, 'Person'),
+            ($2, $4, 'Object'),
+            ($3, $4, 'Conversation')
+        `,
+        [aliceNodeId, projectNodeId, conversationNodeId, userId],
+      );
+      await client.query(
+        `
+          INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label", "description") VALUES
+            ($1, $4, 'Alice', 'alice', null),
+            ($2, $5, 'Project Falcon', 'project falcon', null),
+            ($3, $6, 'Conversation', 'conversation', null)
+        `,
+        [
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          aliceNodeId,
+          projectNodeId,
+          conversationNodeId,
+        ],
+      );
+      await client.query(
+        `
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status") VALUES
+            ($1, $3, 'conversation', 'conv_e', 'completed'),
+            ($2, $3, 'conversation_message', 'msg_e', 'completed')
+        `,
+        [parentSourceId, messageSourceId, userId],
+      );
+
+      const { extractGraph } = await import("./extract-graph");
+      await extractGraph({
+        userId,
+        sourceType: "conversation",
+        sourceId: parentSourceId,
+        statedAt,
+        linkedNodeId: conversationNodeId,
+        sourceRefs: [
+          {
+            externalId: "msg_e",
+            sourceId: messageSourceId,
+            statedAt,
+          },
+        ],
+        content:
+          '<message id="msg_e" role="user">Alice prefers concise communication; Project Falcon is hers.</message>',
+      });
+
+      const profileCalls = addCalls.filter(
+        (call) => call.name === "profile-synthesis",
+      );
+      const reevalCalls = addCalls.filter(
+        (call) => call.name === "identity-reeval",
+      );
+
+      // Profile-synthesis: only Alice (attribute change). NOT projectNode
+      // (relationship-only change).
+      expect(profileCalls.map((call) => call.data.nodeId)).toEqual([
+        aliceNodeId,
+      ]);
+      // Debounce delay applied so a burst dedups via jobId.
+      expect(profileCalls[0]?.opts.delay).toBe(5 * 60_000);
+      expect(profileCalls[0]?.opts.jobId).toBe(
+        `profile-synthesis:${userId}:${aliceNodeId}`,
+      );
+
+      // Identity-reeval: both subjects (relationship and attribute changes
+      // both warrant a re-eval; it's cheap).
+      expect(new Set(reevalCalls.map((call) => call.data.nodeId))).toEqual(
+        new Set([aliceNodeId, projectNodeId]),
+      );
+    } finally {
+      addSpy.mockRestore();
+      vi.doUnmock("~/utils/db");
+      vi.doUnmock("./graph");
+      vi.doUnmock("./embeddings-util");
+      vi.doUnmock("./debug-utils");
+      vi.doUnmock("./ai");
+      vi.resetModules();
+      await client.end();
+    }
+  });
 });

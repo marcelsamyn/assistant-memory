@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -342,6 +343,65 @@ describeIfServer("runProfileSynthesis", () => {
       expect(second.status).toBe("skipped_cache_hit");
       expect(llmCallCount).toBe(1);
       expect(second.hash).toBe(hash);
+
+      // Replace each trusted claim with a fresh row that has a NEW id and
+      // statedAt but identical (predicate, objectValue/objectNodeId,
+      // assertedByKind, status). The semantic fingerprint is unchanged, so
+      // the third run must also cache-hit. This is the optimization that
+      // matters: re-ingesting the same fact in a new message must not burn
+      // an LLM call.
+      await database
+        .delete(schema.claims)
+        .where(eq(schema.claims.userId, userId));
+      await database.insert(schema.claims).values([
+        {
+          id: newTypeId("claim"),
+          userId,
+          subjectNodeId: personNodeId,
+          objectValue: "prefers concise communication",
+          predicate: "HAS_PREFERENCE",
+          statement: "Marcel really prefers concise communication.",
+          sourceId,
+          scope: "personal",
+          assertedByKind: "user",
+          statedAt: new Date("2026-04-25T10:00:00.000Z"),
+          status: "active",
+        },
+        {
+          id: newTypeId("claim"),
+          userId,
+          subjectNodeId: personNodeId,
+          objectValue: "ship the claims layer in Q2",
+          predicate: "HAS_GOAL",
+          statement: "Marcel committed to shipping the claims layer in Q2.",
+          sourceId,
+          scope: "personal",
+          assertedByKind: "user_confirmed",
+          statedAt: new Date("2026-04-25T11:00:00.000Z"),
+          status: "active",
+        },
+        {
+          id: newTypeId("claim"),
+          userId,
+          subjectNodeId: personNodeId,
+          objectNodeId: projectNodeId,
+          predicate: "RELATED_TO",
+          statement: "Marcel keeps coming back to the Claims Layer.",
+          sourceId,
+          scope: "personal",
+          assertedByKind: "system",
+          statedAt: new Date("2026-04-25T12:00:00.000Z"),
+          status: "active",
+        },
+      ]);
+
+      const third = await runProfileSynthesis({
+        userId,
+        nodeId: personNodeId,
+      });
+      expect(third.status).toBe("skipped_cache_hit");
+      expect(llmCallCount).toBe(1);
+      expect(third.hash).toBe(hash);
     } finally {
       vi.doUnmock("~/utils/db");
       vi.doUnmock("../ai");
