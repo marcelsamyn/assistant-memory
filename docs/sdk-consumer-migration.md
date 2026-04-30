@@ -10,6 +10,25 @@ has the *what to change*.
 
 ---
 
+## PR 4-iii — Eval harness, observability, placeholder cleanup
+
+Sub-PRs land incrementally; entries below are appended as each ships.
+
+### 4iii-a — Placeholder Person cleanup job
+
+**Commit:** _pending_.
+
+#### REST
+
+- **NEW:** `POST /maintenance/cleanup-placeholders` — surfaces placeholder `Person` nodes (`nodeMetadata.additionalData.unresolvedSpeaker = true`) older than `olderThanDays` for cleanup-pipeline review. Request: `{ userId, olderThanDays?, limit?, triggerCleanup? }`. Response: `{ placeholderCount, candidatesFound, placeholders, seededCleanupJob, jobId? }`. Surfacing is read-only by default; pass `triggerCleanup: true` to also enqueue an iterative `cleanup-graph` job with the surfaced ids as `seedIds`.
+
+#### SDK (`@marcelsamyn/memory`)
+
+- **NEW method:** `MemoryClient.cleanupPlaceholders(payload)` → surfacing payload.
+- **NEW exports:** `CleanupPlaceholdersRequest`, `CleanupPlaceholdersResponse`, `cleanupPlaceholdersRequestSchema`, `cleanupPlaceholdersResponseSchema`.
+
+---
+
 ## PR 4-ii — Transcript ingestion + userSelfAliases
 
 **Commits:** `b4ac6e1`, `7a13dfe`.

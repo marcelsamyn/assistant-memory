@@ -18,6 +18,11 @@ import {
   updateClaimResponseSchema,
 } from "../lib/schemas/claim.js";
 import {
+  CleanupPlaceholdersRequest,
+  CleanupPlaceholdersResponse,
+  cleanupPlaceholdersResponseSchema,
+} from "../lib/schemas/cleanup-placeholders.js";
+import {
   CleanupRequest,
   CleanupResponse,
   cleanupResponseSchema,
@@ -305,6 +310,23 @@ export class MemoryClient {
 
   async cleanup(payload: CleanupRequest): Promise<CleanupResponse> {
     return this._fetch("POST", "/cleanup", cleanupResponseSchema, payload);
+  }
+
+  /**
+   * Surface aged placeholder `Person` nodes (created when a transcript
+   * speaker could not be resolved) for cleanup-pipeline review. Surfacing
+   * is read-only by default; pass `triggerCleanup: true` to also enqueue
+   * an iterative cleanup job seeded with the surfaced ids.
+   */
+  async cleanupPlaceholders(
+    payload: CleanupPlaceholdersRequest,
+  ): Promise<CleanupPlaceholdersResponse> {
+    return this._fetch(
+      "POST",
+      "/maintenance/cleanup-placeholders",
+      cleanupPlaceholdersResponseSchema,
+      payload,
+    );
   }
 
   async dream(payload: DreamRequest): Promise<DreamResponse> {
