@@ -36,7 +36,10 @@ import {
 } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
-import { shouldSkipSemanticSearch } from "~/utils/test-overrides";
+import {
+  getSemanticSearchSubstringQuery,
+  shouldSkipSemanticSearch,
+} from "~/utils/test-overrides";
 
 /** Node metadata with similarity */
 interface SearchResultBase {
@@ -171,6 +174,10 @@ function nodeHasScopeSupport(userId: string, scope: Scope): SQL<boolean> {
 export async function findSimilarNodes(
   opts: FindSimilarNodesOptions,
 ): Promise<NodeSearchResult[]> {
+  const substringQuery = getSemanticSearchSubstringQuery();
+  if (substringQuery !== null) {
+    return findSimilarNodesViaSubstring(opts, substringQuery);
+  }
   if (shouldSkipSemanticSearch()) return [];
   const {
     userId,
@@ -231,6 +238,10 @@ export async function findSimilarNodes(
 export async function findSimilarClaims(
   opts: FindSimilarClaimsOptions,
 ): Promise<ClaimSearchResult[]> {
+  const substringQuery = getSemanticSearchSubstringQuery();
+  if (substringQuery !== null) {
+    return findSimilarClaimsViaSubstring(opts, substringQuery);
+  }
   const {
     userId,
     limit = 10,
@@ -304,6 +315,114 @@ export async function findSimilarClaims(
     .where(whereCondition)
     .orderBy(desc(similarity))
     .limit(limit);
+}
+
+/**
+ * Substring fallback for `findSimilarNodes` used by the eval harness when the
+ * `semanticSearchSubstringQuery` test seam is set. Mirrors the production
+ * `includeReference` / `excludeNodeTypes` filters and orders by node id for
+ * deterministic harness output.
+ */
+async function findSimilarNodesViaSubstring(
+  opts: FindSimilarNodesOptions,
+  query: string,
+): Promise<NodeSearchResult[]> {
+  const { userId, limit = 10, excludeNodeTypes, includeReference = false } =
+    opts;
+  const db = await useDatabase();
+
+  let where = and(
+    eq(nodes.userId, userId),
+    includeReference ? undefined : nodeHasScopeSupport(userId, "personal"),
+    sql`lower(${nodeMetadata.label}) LIKE ${`%${query.toLowerCase()}%`}`,
+  );
+  if (excludeNodeTypes && excludeNodeTypes.length > 0) {
+    where = and(where, notInArray(nodes.nodeType, excludeNodeTypes));
+  }
+
+  const rows = await db
+    .select({
+      id: nodes.id,
+      type: nodes.nodeType,
+      label: nodeMetadata.label,
+      description: nodeMetadata.description,
+      timestamp: nodes.createdAt,
+    })
+    .from(nodes)
+    .innerJoin(nodeMetadata, eq(nodes.id, nodeMetadata.nodeId))
+    .where(where)
+    .orderBy(nodes.id)
+    .limit(limit);
+
+  return rows.map((row) => ({ ...row, similarity: 1 }));
+}
+
+/**
+ * Substring fallback for `findSimilarClaims`. Honors the production scope,
+ * `assertedByKind`, status, and `validTo` filters so harness assertions
+ * exercise the same SQL guards.
+ */
+async function findSimilarClaimsViaSubstring(
+  opts: FindSimilarClaimsOptions,
+  query: string,
+): Promise<ClaimSearchResult[]> {
+  const {
+    userId,
+    limit = 10,
+    statuses = ["active"],
+    asOf = new Date(),
+    includeReference = false,
+    includeAssistantInferred = false,
+  } = opts;
+  const db = await useDatabase();
+
+  const subjectNodeMetadata = aliasedTable(nodeMetadata, "subjectNodeMetadata");
+  const objectNodeMetadata = aliasedTable(nodeMetadata, "objectNodeMetadata");
+
+  const where = and(
+    eq(claims.userId, userId),
+    includeReference ? undefined : eq(claims.scope, "personal"),
+    includeAssistantInferred
+      ? undefined
+      : ne(claims.assertedByKind, "assistant_inferred"),
+    inArray(claims.status, statuses),
+    or(isNull(claims.validTo), gt(claims.validTo, asOf)),
+    sql`lower(${claims.statement}) LIKE ${`%${query.toLowerCase()}%`}`,
+  );
+
+  const rows = await db
+    .select({
+      id: claims.id,
+      subjectNodeId: claims.subjectNodeId,
+      objectNodeId: claims.objectNodeId,
+      objectValue: claims.objectValue,
+      subjectLabel: subjectNodeMetadata.label,
+      objectLabel: objectNodeMetadata.label,
+      predicate: claims.predicate,
+      statement: claims.statement,
+      description: claims.description,
+      sourceId: claims.sourceId,
+      scope: claims.scope,
+      assertedByKind: claims.assertedByKind,
+      assertedByNodeId: claims.assertedByNodeId,
+      status: claims.status,
+      statedAt: claims.statedAt,
+      timestamp: claims.createdAt,
+    })
+    .from(claims)
+    .leftJoin(
+      subjectNodeMetadata,
+      eq(subjectNodeMetadata.nodeId, claims.subjectNodeId),
+    )
+    .leftJoin(
+      objectNodeMetadata,
+      eq(objectNodeMetadata.nodeId, claims.objectNodeId),
+    )
+    .where(where)
+    .orderBy(claims.id)
+    .limit(limit);
+
+  return rows.map((row) => ({ ...row, similarity: 1 }));
 }
 
 /** One-hop neighbor lookup */

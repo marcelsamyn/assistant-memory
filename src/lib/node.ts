@@ -12,6 +12,7 @@ import {
 } from "~/db/schema";
 import { listAliasesForNodeIds } from "~/lib/alias";
 import { generateEmbeddings } from "~/lib/embeddings";
+import { generateAndInsertNodeEmbeddings } from "~/lib/embeddings-util";
 import {
   fetchSourceIdsForNodes,
   findOneHopNodes,
@@ -374,21 +375,12 @@ export async function createNode(
     description: description ?? null,
   });
 
-  const embText = `${label}: ${description ?? ""}`;
-  const embResponse = await generateEmbeddings({
-    model: "jina-embeddings-v3",
-    task: "retrieval.passage",
-    input: [embText],
-    truncate: true,
-  });
-  const embedding = embResponse.data[0]?.embedding;
-  if (embedding) {
-    await db.insert(nodeEmbeddings).values({
-      nodeId: inserted.id,
-      embedding,
-      modelName: "jina-embeddings-v3",
-    });
-  }
+  // Routes embedding through the shared helper so the harness's
+  // `setSkipEmbeddingPersistence` seam short-circuits the Jina call (mirrors
+  // every other ingestion path; previously this site bypassed it).
+  await generateAndInsertNodeEmbeddings(db, [
+    { id: inserted.id, label, description: description ?? null },
+  ]);
 
   // Link to today's day node via OCCURRED_ON, mirroring `ensureSourceNode`.
   // Skip for Temporal nodes themselves to avoid a self-link / cycle.

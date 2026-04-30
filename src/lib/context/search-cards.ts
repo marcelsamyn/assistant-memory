@@ -27,6 +27,7 @@ import type { ClaimEvidence } from "./types";
 import type { NodeCard } from "./node-card-types";
 import type { NodeType, Scope } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
+import { getSemanticSearchSubstringQuery } from "~/utils/test-overrides";
 
 export interface SearchCardsRequest {
   userId: string;
@@ -78,12 +79,19 @@ async function searchAsCards(
   filter: ScopeFilter,
 ): Promise<SearchCardsResponse> {
   const limit = req.limit ?? DEFAULT_LIMIT;
-  const embedding = await embedQuery(req.query);
+  // The eval harness sets a substring override so the helpers run without an
+  // embedding. Production always takes the embedding branch; harness skips it
+  // and the substring fallback in `findSimilar*` consumes the query text.
+  const useSubstringFallback = getSemanticSearchSubstringQuery() !== null;
+  const similaritySource: { embedding: number[] } | { text: string } =
+    useSubstringFallback
+      ? { text: req.query }
+      : { embedding: await embedQuery(req.query) };
 
   const [similarNodes, similarClaims] = await Promise.all([
     findSimilarNodes({
       userId: req.userId,
-      embedding,
+      ...similaritySource,
       limit,
       ...(req.excludeNodeTypes !== undefined && {
         excludeNodeTypes: req.excludeNodeTypes,
@@ -93,7 +101,7 @@ async function searchAsCards(
     }),
     findSimilarClaims({
       userId: req.userId,
-      embedding,
+      ...similaritySource,
       limit,
       minimumSimilarity: MIN_SIMILARITY,
       includeReference: filter.includeReference,
