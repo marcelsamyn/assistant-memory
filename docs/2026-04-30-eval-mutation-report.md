@@ -38,3 +38,18 @@ Score: **2 caught**, **1 partial**, **2 missed** out of 5.
 - M1's failure pattern was unexpected. The trust rule's mutation broke stories 01/06/07 (which look like vanilla supersession stories) but **not** the three "trust rule" stories (04/05/08). That suggests 04/05/08 are testing the trust rule via a path that doesn't depend on `trustRuleDemotedClaimId` firing — possibly because the assistant-inferred claim has an *earlier* `statedAt` rather than later.
 - M4's catch is incidental — it relied on a missing test-schema relation, not on the story's assertions. Brittle.
 
+## 2026-04-30 follow-up — gaps closed
+
+After tightening stories 04/05/08 (explicit `user`/`assistant_inferred` HAS_STATUS pairs with `superseded_by_claim_id` cross-checks), adding story 13 (cleanup-op subgraph bounding), and rewriting story 09 to drive `searchMemory`/`searchReference` via the new `semanticSearchSubstringQuery` seam, the three previously-leaky mutations were re-applied against `main`.
+
+| # | Mutation reapplied | Stories that now turn red | Status |
+|---|---|---|---|
+| M1 | Trust hierarchy inversion (`trustRuleDemotedClaimId` early-returns when latest is `assistant_inferred`) | **04, 05, 08, 17** + collateral 01, 06, 07, 15 | gap closed — the trust-rule stories are now load-bearing on the comparator |
+| M2 | Reference scope leak (commented out the `claims.scope = 'personal'` filter in `findSimilarClaims` *and* the substring fallback, plus the `card.scope !== filter.keepScope` post-filter in `searchAsCards`) | **09** (both assertions: `searchMemory.evidence` leaked reference claim ids; `searchReference.cards` leaked the personal-derived node) | gap closed — story 09 now drives the actual read surfaces, not raw row counts |
+| M3 | `allowedClaimIds` bypass (`checkAllowedClaimIds` short-circuits to `null` before the kind switch) | **13** (`retract_claim`, `contradict_claim`, and `promote_assertion` all rejected positive expectations; the targeted claim mutated when it shouldn't) | gap closed — the dispatcher's subgraph-bounding contract is now pinned |
+
+### Notes
+- M1's blast radius now includes story **17** (the trust-hierarchy matrix added by the orchestrator), which independently pins every adjacent kind-pair plus the non-adjacent skip. 04/05/08 catch the assistant-inferred-vs-user case directly via `superseded_by_claim_id` cross-checks; 17 catches the broader monotone tier ordering.
+- The harness flake observed earlier (BullMQ jobs from prior runs colliding with the per-fixture test schema, surfacing as a `claims_asserted_by_node_consistency_ck` violation on story 17) was process-level, not a story-level defect; it disappears once stale workers are reaped.
+- The `applyCleanupOperations` step kind in the harness still does not pass `allowedClaimIds`; story 13 deliberately calls the dispatcher directly from a `custom` assertion to keep the step-kind contract minimal.
+
