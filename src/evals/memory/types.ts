@@ -5,20 +5,25 @@
  * database. Each fixture describes a story (seed → operations → assertions);
  * the runner produces a structured `EvalResult` suitable for CI artifacts.
  *
- * Fixtures are intentionally direct: most stories seed nodes/sources/claims
- * via the helpers in `seed.ts` and then call lifecycle / cleanup / search
- * functions directly. A handful of stories that hinge on extraction LLM
- * behavior (multi-party transcripts) stub the OpenAI client via vitest's
- * module mocking — those are wired through `runIngestionEval`'s `runtime`
- * parameter so the harness stays the same shape across stories.
+ * Fixtures fall into two shapes:
+ * - Direct seed: most stories use `seed.ts` to insert nodes/sources/claims
+ *   and then drive lifecycle / cleanup / search helpers — extraction is not
+ *   in scope.
+ * - Pipeline-driven: stories 03 and 10 use `ingestConversation` /
+ *   `ingestTranscript` step kinds. The runtime threads canned LLM responses
+ *   (`ExtractionStubResponse[]`) through process-level seams in
+ *   `~/utils/test-overrides`, exercising the full `extractGraph` →
+ *   identity-resolution → claim-write path against the harness DB.
  */
 import type { DrizzleDB } from "~/db";
 import type { CleanupOperation } from "~/lib/jobs/cleanup-operations";
 import type {
   AssertedByKind,
+  AttributePredicate,
   ClaimStatus,
   NodeType,
   Predicate,
+  RelationshipPredicate,
   Scope,
 } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
@@ -41,6 +46,93 @@ export interface EvalContext {
 
 export type EvalSetupFn = (ctx: EvalContext) => Promise<void>;
 
+/**
+ * Canned LLM extraction response. Mirrors the structured-output shape that
+ * `extractGraph` parses from `client.beta.chat.completions.parse`. Stub
+ * fixtures can omit any unused arrays — they default to empty.
+ */
+export interface ExtractionStubResponse {
+  nodes?: Array<{
+    id: string;
+    type: NodeType;
+    label: string;
+    description?: string;
+  }>;
+  relationshipClaims?: Array<{
+    subjectId: string;
+    objectId: string;
+    predicate: RelationshipPredicate;
+    statement: string;
+    sourceRef: string;
+    assertionKind: AssertedByKind;
+    assertedBySpeakerLabel?: string;
+    statedAt?: string;
+    validFrom?: string;
+    validTo?: string;
+  }>;
+  attributeClaims?: Array<{
+    subjectId: string;
+    predicate: AttributePredicate;
+    objectValue: string;
+    statement: string;
+    sourceRef: string;
+    assertionKind: AssertedByKind;
+    assertedBySpeakerLabel?: string;
+    statedAt?: string;
+    validFrom?: string;
+    validTo?: string;
+  }>;
+  aliases?: Array<{ subjectId: string; aliasText: string }>;
+}
+
+/**
+ * Canned segmentation response — used by transcript ingestion when input is
+ * `{ kind: "raw" }`. Pre-segmented input bypasses the segmenter and so does
+ * not need a stub.
+ */
+export interface SegmentationStubResponse {
+  utterances: Array<{
+    speakerLabel: string;
+    content: string;
+    timestamp?: string;
+  }>;
+}
+
+export interface ConversationIngestStep {
+  kind: "ingestConversation";
+  conversationId: string;
+  /** Each message becomes one extraction call. */
+  messages: Array<{
+    id: string;
+    role: "user" | "assistant" | "system";
+    content: string;
+    timestamp: Date;
+    name?: string;
+  }>;
+  /**
+   * One canned extraction response per message, in order. The harness throws
+   * if the production code asks for more responses than are queued.
+   */
+  extractionStubs: ExtractionStubResponse[];
+}
+
+export interface TranscriptIngestStep {
+  kind: "ingestTranscript";
+  transcriptId: string;
+  occurredAt: Date;
+  scope?: Scope;
+  /** Pre-segmented avoids needing a segmentation stub. */
+  utterances: Array<{
+    speakerLabel: string;
+    content: string;
+    timestamp?: Date;
+  }>;
+  userSelfAliases?: string[];
+  knownParticipants?: Array<{ label: string; nodeName: string }>;
+  /** Single extraction response — transcript ingestion runs `extractGraph` once. */
+  extractionStub: ExtractionStubResponse;
+}
+
 export type EvalStep =
   | { kind: "setup"; run: EvalSetupFn }
   | {
@@ -49,7 +141,9 @@ export type EvalStep =
       /** Optional named seed-node ids passed to the cleanup mapper. */
       seedNodeIds?: (ctx: EvalContext) => TypeId<"node">[];
     }
-  | { kind: "wait"; ms: number };
+  | { kind: "wait"; ms: number }
+  | ConversationIngestStep
+  | TranscriptIngestStep;
 
 export interface ClaimCountExpectation {
   predicate?: Predicate;

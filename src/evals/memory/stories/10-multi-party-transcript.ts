@@ -1,20 +1,22 @@
 /**
  * Story 10 — Multi-party transcript (speaker attribution).
  *
- * A three-speaker meeting:
- *   - Marcel (user-self): "I shipped the spec." → user-stated.
- *   - Bob (resolved participant): "I'd prefer a tighter spec." → participant.
- *   - Stranger (placeholder): "Let's ship by Friday." → participant w/
- *     placeholder Person node.
+ * A three-speaker meeting driven through the real transcript ingestion
+ * pipeline (`ingestTranscript` → `resolveSpeakers` → `extractGraph` with a
+ * speakerMap):
+ *   - Marcel (user-self via `userSelfAliases`): "I shipped the spec." →
+ *     `assertedByKind = 'user'`, `assertedByNodeId = null`.
+ *   - Bob (resolved via `knownParticipants`): "I'd prefer a tighter spec." →
+ *     `assertedByKind = 'participant'`, `assertedByNodeId = bob`.
+ *   - Stranger (unknown — placeholder Person minted by resolveSpeakers):
+ *     "Let's ship by Friday." → participant claim attributed to the
+ *     placeholder.
  *
- * **Implementation note**: this story seeds the post-extraction state via the
- * same shapes that `ingest-transcript.test.ts` validates end-to-end. The
- * participant→nodeId mapping, `assertedByKind` collapse for user-self, and
- * placeholder Person creation are exercised in production tests; here we pin
- * the resulting graph contract that downstream consumers (open commitments,
- * search filters, atlas synthesis) depend on.
+ * Pins the contract that downstream consumers (open commitments, search
+ * filters, atlas synthesis) depend on: user-self collapses, participant
+ * provenance is preserved, placeholder Person nodes are flagged.
  */
-import { seedAlias, seedClaim, seedNode, seedSource } from "../seed";
+import { seedNode } from "../seed";
 import type { EvalFixture } from "../types";
 import { and, eq } from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
@@ -24,86 +26,64 @@ export const story10MultiPartyTranscript: EvalFixture = {
   description:
     "Multi-party transcript attributes claims to the right speakers; user-self collapses to assertedByKind=user.",
   setup: async (ctx) => {
-    // The user-self speaker is rendered as a plain Person; production marks it
-    // with `additionalData.isUserSelf = true` (see resolve-speakers.ts).
-    await seedNode(ctx, {
-      name: "marcel",
-      type: "Person",
-      label: "Marcel",
-      additionalData: { isUserSelf: true },
-    });
-    await seedNode(ctx, {
-      name: "bob",
-      type: "Person",
-      label: "Bob",
-    });
-    await seedNode(ctx, {
-      name: "strangerPlaceholder",
-      type: "Person",
-      label: "Stranger",
-      additionalData: { unresolvedSpeaker: true },
-    });
-    await seedAlias(ctx, {
-      canonicalNodeName: "strangerPlaceholder",
-      aliasText: "Stranger",
-    });
-    await seedNode(ctx, { name: "spec", type: "Object", label: "the spec" });
-
-    await seedSource(ctx, {
-      name: "transcript",
-      type: "meeting_transcript",
-    });
-    await seedSource(ctx, {
-      name: "msg0",
-      type: "conversation_message",
-      externalId: "msg0",
-      metadata: { speakerLabel: "Marcel" },
-    });
-    await seedSource(ctx, {
-      name: "msg1",
-      type: "conversation_message",
-      externalId: "msg1",
-      metadata: { speakerLabel: "Bob" },
-    });
-    await seedSource(ctx, {
-      name: "msg2",
-      type: "conversation_message",
-      externalId: "msg2",
-      metadata: { speakerLabel: "Stranger" },
-    });
-
-    // Marcel's claim: user-self collapses to `assertedByKind = 'user'`,
-    // `assertedByNodeId` MUST be null (production constraint).
-    await seedClaim(ctx, {
-      name: "marcelShipped",
-      subjectName: "spec",
-      predicate: "HAS_STATUS",
-      objectValue: "completed",
-      sourceName: "msg0",
-      assertedByKind: "user",
-    });
-    // Bob's claim: participant with assertedByNodeId set to Bob.
-    await seedClaim(ctx, {
-      name: "bobPref",
-      subjectName: "spec",
-      predicate: "HAS_PREFERENCE",
-      objectValue: "tighter spec",
-      sourceName: "msg1",
-      assertedByKind: "participant",
-      assertedByNodeName: "bob",
-    });
-    // Stranger: participant attributed to the placeholder Person.
-    await seedClaim(ctx, {
-      name: "strangerGoal",
-      subjectName: "spec",
-      predicate: "HAS_GOAL",
-      objectValue: "ship by friday",
-      sourceName: "msg2",
-      assertedByKind: "participant",
-      assertedByNodeName: "strangerPlaceholder",
-    });
+    // Pre-existing Bob Person — passed via `knownParticipants` so the
+    // speaker resolver doesn't mint a placeholder for him.
+    await seedNode(ctx, { name: "bob", type: "Person", label: "Bob" });
   },
-  steps: [],
+  steps: [
+    {
+      kind: "ingestTranscript",
+      transcriptId: "transcript-multi-1",
+      occurredAt: new Date("2026-04-30T10:00:00Z"),
+      utterances: [
+        { speakerLabel: "Marcel", content: "I shipped the spec." },
+        {
+          speakerLabel: "Bob",
+          content: "Cool — I'd prefer a tighter spec next round.",
+        },
+        {
+          speakerLabel: "Stranger",
+          content: "Either way, let's ship by Friday.",
+        },
+      ],
+      userSelfAliases: ["Marcel"],
+      knownParticipants: [{ label: "Bob", nodeName: "bob" }],
+      extractionStub: {
+        nodes: [
+          { id: "temp_object_spec", type: "Object", label: "the spec" },
+        ],
+        attributeClaims: [
+          {
+            subjectId: "temp_object_spec",
+            predicate: "HAS_STATUS",
+            objectValue: "completed",
+            statement: "Marcel completed the spec.",
+            sourceRef: "transcript-multi-1:0",
+            assertionKind: "user",
+            assertedBySpeakerLabel: "Marcel",
+          },
+          {
+            subjectId: "temp_object_spec",
+            predicate: "HAS_PREFERENCE",
+            objectValue: "tighter spec",
+            statement: "Bob prefers a tighter spec.",
+            sourceRef: "transcript-multi-1:1",
+            assertionKind: "participant",
+            assertedBySpeakerLabel: "Bob",
+          },
+          {
+            subjectId: "temp_object_spec",
+            predicate: "HAS_GOAL",
+            objectValue: "ship by friday",
+            statement: "Stranger wants to ship by Friday.",
+            sourceRef: "transcript-multi-1:2",
+            assertionKind: "participant",
+            assertedBySpeakerLabel: "Stranger",
+          },
+        ],
+      },
+    },
+  ],
   expectations: {
     claimCounts: [
       {
@@ -119,7 +99,8 @@ export const story10MultiPartyTranscript: EvalFixture = {
     ],
     nodeCounts: [
       {
-        description: "three Person nodes: user-self, Bob, placeholder",
+        description:
+          "three Person nodes: user-self (lazily created), Bob, Stranger placeholder",
         type: "Person",
         exactCount: 3,
       },
@@ -127,46 +108,88 @@ export const story10MultiPartyTranscript: EvalFixture = {
     custom: [
       {
         description:
-          "user-self claim has assertedByNodeId=null; participant claims have it set",
+          "user-self claim has assertedByNodeId=null; participant claims have it set; placeholder Person carries the unresolvedSpeaker flag",
         run: async (ctx) => {
-          const userClaim = await ctx.db
-            .select()
+          const userClaims = await ctx.db
+            .select({
+              id: claims.id,
+              predicate: claims.predicate,
+              assertedByKind: claims.assertedByKind,
+              assertedByNodeId: claims.assertedByNodeId,
+            })
             .from(claims)
             .where(
               and(
-                eq(claims.id, ctx.claims.get("marcelShipped")!),
                 eq(claims.userId, ctx.userId),
+                eq(claims.assertedByKind, "user"),
               ),
             );
-          if (userClaim[0]?.assertedByNodeId !== null) {
+          if (userClaims.length !== 1) {
             return {
               pass: false,
-              message: `user-self claim has assertedByNodeId=${userClaim[0]?.assertedByNodeId}, expected null`,
+              message: `expected 1 user claim, got ${userClaims.length}`,
             };
           }
-          const bobClaim = await ctx.db
-            .select()
+          if (userClaims[0]!.assertedByNodeId !== null) {
+            return {
+              pass: false,
+              message: `user claim has assertedByNodeId=${userClaims[0]!.assertedByNodeId}, expected null`,
+            };
+          }
+
+          const bobNodeId = ctx.nodes.get("bob");
+          const bobClaims = await ctx.db
+            .select({
+              assertedByNodeId: claims.assertedByNodeId,
+              predicate: claims.predicate,
+            })
             .from(claims)
-            .where(eq(claims.id, ctx.claims.get("bobPref")!));
-          if (bobClaim[0]?.assertedByNodeId !== ctx.nodes.get("bob")) {
+            .where(
+              and(
+                eq(claims.userId, ctx.userId),
+                eq(claims.predicate, "HAS_PREFERENCE"),
+              ),
+            );
+          if (bobClaims.length !== 1) {
             return {
               pass: false,
-              message: `Bob's claim has assertedByNodeId=${bobClaim[0]?.assertedByNodeId}, expected ${ctx.nodes.get("bob")}`,
+              message: `expected 1 HAS_PREFERENCE claim, got ${bobClaims.length}`,
             };
           }
-          // Verify the placeholder is reachable + flagged.
-          const meta = await ctx.db
-            .select({ additional: nodeMetadata.additionalData })
-            .from(nodeMetadata)
-            .innerJoin(nodes, eq(nodes.id, nodeMetadata.nodeId))
-            .where(eq(nodes.id, ctx.nodes.get("strangerPlaceholder")!));
-          const flag = meta[0]?.additional as
-            | Record<string, unknown>
-            | undefined;
-          if (flag?.["unresolvedSpeaker"] !== true) {
+          if (bobClaims[0]!.assertedByNodeId !== bobNodeId) {
             return {
               pass: false,
-              message: `placeholder missing unresolvedSpeaker flag (got ${JSON.stringify(flag)})`,
+              message: `Bob's claim has assertedByNodeId=${bobClaims[0]!.assertedByNodeId}, expected ${bobNodeId}`,
+            };
+          }
+
+          const placeholder = await ctx.db
+            .select({
+              nodeId: nodes.id,
+              additional: nodeMetadata.additionalData,
+            })
+            .from(nodes)
+            .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
+            .where(
+              and(
+                eq(nodes.userId, ctx.userId),
+                eq(nodes.nodeType, "Person"),
+                eq(nodeMetadata.label, "Stranger"),
+              ),
+            );
+          if (placeholder.length !== 1) {
+            return {
+              pass: false,
+              message: `expected 1 Stranger placeholder Person, got ${placeholder.length}`,
+            };
+          }
+          const additional = placeholder[0]!.additional as
+            | Record<string, unknown>
+            | null;
+          if (additional?.["unresolvedSpeaker"] !== true) {
+            return {
+              pass: false,
+              message: `placeholder missing unresolvedSpeaker flag (got ${JSON.stringify(additional)})`,
             };
           }
           return { pass: true };
