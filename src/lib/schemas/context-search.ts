@@ -40,3 +40,16 @@ export const contextSearchResponseSchema = z.object({
   evidence: z.array(claimEvidenceSchema),
 });
 export type ContextSearchResponse = z.infer<typeof contextSearchResponseSchema>;
+
+/**
+ * MCP-tool variant of the request shape: scope is fixed by the tool name
+ * (`search_memory` ↔ personal, `search_reference` ↔ reference) so the LLM
+ * doesn't need to choose. `.shape` is mounted directly on the MCP server.
+ */
+export const cardSearchToolInputSchema = z.object({
+  userId: z.string(),
+  query: z.string().min(1),
+  limit: z.number().int().min(1).max(50).optional(),
+  excludeNodeTypes: z.array(NodeTypeEnum).optional(),
+});
+export type CardSearchToolInput = z.infer<typeof cardSearchToolInputSchema>;

@@ -15,3 +15,15 @@
 
 export const LIST_OPEN_COMMITMENTS_DESCRIPTION =
   "Returns the user's currently open tasks and commitments. Call before answering about outstanding, next, pending, follow-up, completed, or abandoned work unless this model input already includes an open_commitments section. Always uses the latest status; never returns completed work.";
+
+export const BOOTSTRAP_MEMORY_DESCRIPTION =
+  "Returns the user's startup memory bundle: pinned facts, atlas summary, open commitments, recent task supersessions, and preferences. Call once at the start of a conversation before answering anything that depends on what the assistant already knows about the user. Sections are skipped when empty. Cached for 6 hours per user; pass forceRefresh to bypass.";
+
+export const SEARCH_MEMORY_DESCRIPTION =
+  "Searches the user's personal memory and returns entity cards (current facts, preferences and goals, recent evidence, aliases) plus claim evidence. Call when the bootstrap bundle doesn't already cover what you need. Never returns reference-document material; use search_reference for curated sources.";
+
+export const SEARCH_REFERENCE_DESCRIPTION =
+  "Searches the user's curated reference material (books, papers, ingested documents) and returns entity cards with author/title attribution. Reference results must never be cited as personal facts about the user; render them as material the user has saved, not as things the user said or did.";
+
+export const GET_ENTITY_DESCRIPTION =
+  "Returns a single entity card by node id: current facts, preferences and goals, open commitments (for people), recent evidence, and aliases. Use when the user names a specific person, place, or concept whose id you already have from bootstrap_memory or search_memory and you need the full picture before answering.";

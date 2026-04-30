@@ -1,11 +1,21 @@
 import { SSEServerTransport } from "./sse";
-import { LIST_OPEN_COMMITMENTS_DESCRIPTION } from "./tool-descriptions";
+import {
+  BOOTSTRAP_MEMORY_DESCRIPTION,
+  GET_ENTITY_DESCRIPTION,
+  LIST_OPEN_COMMITMENTS_DESCRIPTION,
+  SEARCH_MEMORY_DESCRIPTION,
+  SEARCH_REFERENCE_DESCRIPTION,
+} from "./tool-descriptions";
 import {
   McpServer,
   ResourceTemplate,
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { formatSearchResultsAsXml } from "~/lib/formatting";
+import { getConversationBootstrapContext } from "~/lib/context/assemble-bootstrap-context";
+import { getNodeCard } from "~/lib/context/node-card";
+import { searchMemory, searchReference } from "~/lib/context/search-cards";
+import { contextBundleSchema } from "~/lib/context/types";
+import { nodeCardSchema } from "~/lib/context/node-card-types";
 import { saveMemory } from "~/lib/ingestion/save-document";
 import {
   getNodeById,
@@ -15,7 +25,14 @@ import {
 } from "~/lib/node";
 import { queryDayMemories } from "~/lib/query/day";
 import { getOpenCommitments } from "~/lib/query/open-commitments";
-import { searchMemory } from "~/lib/query/search";
+import {
+  bootstrapMemoryRequestSchema,
+  getEntityRequestSchema,
+} from "~/lib/schemas/context";
+import {
+  cardSearchToolInputSchema,
+  contextSearchResponseSchema,
+} from "~/lib/schemas/context-search";
 import { ingestDocumentRequestSchema } from "~/lib/schemas/ingest-document-request";
 import {
   getNodeRequestSchema,
@@ -28,7 +45,6 @@ import {
   openCommitmentsResponseSchema,
 } from "~/lib/schemas/open-commitments";
 import { queryDayRequestSchema } from "~/lib/schemas/query-day";
-import { querySearchRequestSchema } from "~/lib/schemas/query-search";
 import {
   scratchpadReadRequestSchema,
   scratchpadWriteRequestSchema,
@@ -79,21 +95,90 @@ server.tool(
   },
 );
 
-// Expose search as "search memory"
+// Card-shaped startup bundle. Emits the design's `ContextBundle`.
 server.tool(
-  "search memory",
-  querySearchRequestSchema.shape,
-  async ({ userId, query, limit, excludeNodeTypes }) => {
-    const { searchResults } = await searchMemory({
+  "bootstrap_memory",
+  BOOTSTRAP_MEMORY_DESCRIPTION,
+  bootstrapMemoryRequestSchema.shape,
+  async ({ userId, forceRefresh }) => {
+    const bundle = await getConversationBootstrapContext({
       userId,
-      query,
-      limit,
-      excludeNodeTypes,
+      ...(forceRefresh !== undefined && { options: { forceRefresh } }),
     });
-
     return {
       content: [
-        { type: "text", text: formatSearchResultsAsXml(searchResults) },
+        {
+          type: "text",
+          text: JSON.stringify(contextBundleSchema.parse(bundle), null, 2),
+        },
+      ],
+    };
+  },
+);
+
+// Personal-scope card search. Replaces the legacy "search memory" tool.
+server.tool(
+  "search_memory",
+  SEARCH_MEMORY_DESCRIPTION,
+  cardSearchToolInputSchema.shape,
+  async (input) => {
+    const result = await searchMemory(input);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            contextSearchResponseSchema.parse(result),
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  },
+);
+
+// Reference-scope card search. Surfaces curated ingested documents only.
+server.tool(
+  "search_reference",
+  SEARCH_REFERENCE_DESCRIPTION,
+  cardSearchToolInputSchema.shape,
+  async (input) => {
+    const result = await searchReference(input);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            contextSearchResponseSchema.parse(result),
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  },
+);
+
+// Single-entity card lookup.
+server.tool(
+  "get_entity",
+  GET_ENTITY_DESCRIPTION,
+  getEntityRequestSchema.shape,
+  async ({ userId, nodeId }) => {
+    const card = await getNodeCard({ userId, nodeId });
+    if (!card) {
+      return {
+        content: [{ type: "text", text: "Entity not found" }],
+        isError: true,
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(nodeCardSchema.parse(card), null, 2),
+        },
       ],
     };
   },

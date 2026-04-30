@@ -23,6 +23,11 @@ import {
   cleanupResponseSchema,
 } from "../lib/schemas/cleanup.js";
 import {
+  ContextSearchRequest,
+  ContextSearchResponse,
+  contextSearchResponseSchema,
+} from "../lib/schemas/context-search.js";
+import {
   DreamRequest,
   DreamResponse,
   dreamResponseSchema,
@@ -203,6 +208,22 @@ export class MemoryClient {
       "POST",
       "/query/search",
       querySearchResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Card-shaped search. Set `scope: "reference"` to surface curated reference
+   * material (the default `personal` is the right choice for most callers).
+   * Reference results never blend with personal results in a single response.
+   */
+  async contextSearch(
+    payload: ContextSearchRequest,
+  ): Promise<ContextSearchResponse> {
+    return this._fetch(
+      "POST",
+      "/context/search",
+      contextSearchResponseSchema,
       payload,
     );
   }

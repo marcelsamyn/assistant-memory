@@ -31,13 +31,13 @@ import type { TypeId } from "~/types/typeid";
 export interface SearchCardsRequest {
   userId: string;
   query: string;
-  limit?: number;
+  limit?: number | undefined;
   /**
    * Excludes specific node types from the underlying node similarity scan.
    * Mirrors the existing `/query/search` default of dropping `AssistantDream`
    * and `Temporal` so the card response is dominated by entity matches.
    */
-  excludeNodeTypes?: NodeType[];
+  excludeNodeTypes?: NodeType[] | undefined;
 }
 
 export interface SearchCardsResponse {
