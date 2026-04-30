@@ -28,6 +28,11 @@ import {
   cleanupResponseSchema,
 } from "../lib/schemas/cleanup.js";
 import {
+  BootstrapMemoryRequest,
+  bootstrapMemoryRequestSchema,
+} from "../lib/schemas/context.js";
+import { ContextBundle, contextBundleSchema } from "../lib/context/types.js";
+import {
   ContextSearchRequest,
   ContextSearchResponse,
   contextSearchResponseSchema,
@@ -240,6 +245,26 @@ export class MemoryClient {
       "POST",
       "/query/search",
       querySearchResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Startup memory bundle: pinned facts, atlas summary, open commitments,
+   * recent supersessions, preferences. Mirrors the MCP `bootstrap_memory`
+   * tool. Cached 6h per user; pass `forceRefresh: true` to bypass. Empty
+   * sections are omitted from the response.
+   */
+  async bootstrapMemory(
+    payload: BootstrapMemoryRequest,
+  ): Promise<ContextBundle> {
+    // Validate request shape locally so SDK callers get a clear error before
+    // a network round-trip when forceRefresh is misshapen.
+    bootstrapMemoryRequestSchema.parse(payload);
+    return this._fetch(
+      "POST",
+      "/context/bootstrap",
+      contextBundleSchema,
       payload,
     );
   }

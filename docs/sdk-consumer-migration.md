@@ -10,6 +10,14 @@ has the *what to change*.
 
 ---
 
+## SDK addition — `bootstrapMemory`
+
+- **NEW REST:** `POST /context/bootstrap` — same `ContextBundle` shape as MCP `bootstrap_memory`. Request: `{ userId, forceRefresh? }`. Response: `{ sections, assembledAt }`. Cached 6h per user; pass `forceRefresh: true` to bypass.
+- **NEW SDK method:** `MemoryClient.bootstrapMemory(payload)` → `ContextBundle`. Bumps the SDK surface — pin to a version that includes it.
+- The MCP `bootstrap_memory` tool is unchanged; this just exposes the same data via REST/SDK for hosts that prefer to render the startup bundle server-side rather than letting the model call the MCP tool.
+
+---
+
 ## PR 4-iii — Eval harness, observability, placeholder cleanup
 
 **Commits:** `7f5055d`, `36008eb`, `b86ede0`.
