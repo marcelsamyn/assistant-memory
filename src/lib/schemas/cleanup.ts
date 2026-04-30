@@ -24,6 +24,7 @@ export const dedupSweepRequestSchema = z.object({
 export const dedupSweepResponseSchema = z.object({
   mergedGroups: z.number(),
   mergedNodes: z.number(),
+  crossScopeCollisionsSkipped: z.number(),
 });
 
 export type DedupSweepRequest = z.infer<typeof dedupSweepRequestSchema>;

@@ -690,6 +690,8 @@ export async function rewireNodeClaims(
       AND kept.source_id = c.source_id
       AND kept.object_node_id IS NOT DISTINCT FROM c.object_node_id
       AND kept.object_value IS NOT DISTINCT FROM c.object_value
+      AND kept.asserted_by_kind = c.asserted_by_kind
+      AND kept.asserted_by_node_id IS NOT DISTINCT FROM c.asserted_by_node_id
       AND (kept.created_at, kept.id) < (c.created_at, c.id)
   `);
 }
