@@ -6,6 +6,7 @@ import {
 import { and, eq, inArray } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { claims, nodes } from "~/db/schema";
+import { logEvent } from "~/lib/observability/log";
 import type { AssertedByKind, NodeType, Predicate } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 
@@ -190,6 +191,10 @@ async function recomputeSingleValuedLifecycleForSubject(
 
   const updatedAt = new Date();
   const updates: Array<Promise<unknown>> = [];
+  const newlySuperseded: Array<{
+    claimId: TypeId<"claim">;
+    supersededByClaimId: TypeId<"claim"> | null;
+  }> = [];
 
   // Latest active claim (top of orderedChain) — used as the supersedor for the
   // trust-demoted claim if any.
@@ -218,6 +223,12 @@ async function recomputeSingleValuedLifecycleForSubject(
         })
         .where(eq(claims.id, claim.id)),
     );
+    if (!isLatestActive && claim.status !== "superseded") {
+      newlySuperseded.push({
+        claimId: claim.id,
+        supersededByClaimId: nextClaim.id,
+      });
+    }
   }
 
   if (demotedClaim) {
@@ -234,9 +245,25 @@ async function recomputeSingleValuedLifecycleForSubject(
         })
         .where(eq(claims.id, demotedClaim.id)),
     );
+    if (demotedClaim.status !== "superseded") {
+      newlySuperseded.push({
+        claimId: demotedClaim.id,
+        supersededByClaimId: latestActive ? latestActive.id : null,
+      });
+    }
   }
 
   await Promise.all(updates);
+
+  for (const transition of newlySuperseded) {
+    logEvent("claim.superseded", {
+      claimId: transition.claimId,
+      userId: subject.userId,
+      predicate: subject.predicate,
+      supersededByClaimId: transition.supersededByClaimId,
+      subjectNodeId: subject.subjectNodeId,
+    });
+  }
 }
 
 /** Apply single-valued claim lifecycle rules. Common aliases: supersession, claim lifecycle. */

@@ -345,7 +345,31 @@ describeIfServer("getConversationBootstrapContext", () => {
         const { getConversationBootstrapContext } = await import(
           "./assemble-bootstrap-context"
         );
-        const bundle = await getConversationBootstrapContext({ userId });
+        const { setLogSink } = await import("~/lib/observability/log");
+        const captured: Array<Record<string, unknown>> = [];
+        setLogSink((event) => captured.push(event));
+        let bundle;
+        try {
+          bundle = await getConversationBootstrapContext({ userId });
+          const assembledEvents = captured.filter(
+            (e) => e["event"] === "bootstrap_context.assembled",
+          );
+          expect(assembledEvents).toHaveLength(1);
+          expect(assembledEvents[0]).toMatchObject({
+            event: "bootstrap_context.assembled",
+            userId,
+          });
+          expect(assembledEvents[0]?.["sectionKinds"]).toEqual([
+            "pinned",
+            "atlas",
+            "open_commitments",
+            "recent_supersessions",
+            "preferences",
+          ]);
+          expect(typeof assembledEvents[0]?.["totalChars"]).toBe("number");
+        } finally {
+          setLogSink();
+        }
 
         expect(bundle.sections.map((s) => s.kind)).toEqual([
           "pinned",

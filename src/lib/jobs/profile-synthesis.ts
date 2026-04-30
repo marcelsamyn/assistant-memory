@@ -30,6 +30,7 @@ import {
   sourceLinks,
   sources,
 } from "~/db/schema";
+import { logEvent } from "~/lib/observability/log";
 import {
   AttributePredicateEnum,
   type AssertedByKind,
@@ -439,6 +440,15 @@ export async function runProfileSynthesis(
       additionalData: mergeAdditionalData(fetched.priorAdditionalData, hash),
     })
     .where(eq(nodeMetadata.nodeId, nodeId));
+
+  logEvent("profile.synthesized", {
+    userId,
+    nodeId,
+    inputClaimCount:
+      fetched.inputs.attributeClaims.length +
+      fetched.inputs.relationshipClaims.length,
+    contentHash: hash,
+  });
 
   return { status: "synthesized", hash, description };
 }

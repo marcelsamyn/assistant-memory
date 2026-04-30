@@ -609,9 +609,9 @@ describeIfServer("resolveIdentity", () => {
         [newTypeId("alias"), userId, referenceNodeId],
       );
 
-      const logSpy = vi
-        .spyOn(console, "info")
-        .mockImplementation(() => undefined);
+      const { setLogSink } = await import("./observability/log");
+      const captured: Array<Record<string, unknown>> = [];
+      setLogSink((event) => captured.push(event));
       try {
         const { resolveIdentity } = await import("./identity-resolution");
         const result = await resolveIdentity({
@@ -626,12 +626,11 @@ describeIfServer("resolveIdentity", () => {
 
         expect(result.resolvedNodeId).toBeNull();
 
-        const refusalLogs = logSpy.mock.calls
-          .map((args) => String(args[0] ?? ""))
-          .filter((line) => line.includes("identity.cross_scope_merge_refused"));
+        const refusalLogs = captured.filter(
+          (event) => event["event"] === "identity.cross_scope_merge_refused",
+        );
         expect(refusalLogs.length).toBeGreaterThan(0);
-        const parsed = JSON.parse(refusalLogs[0] ?? "{}");
-        expect(parsed).toMatchObject({
+        expect(refusalLogs[0]).toMatchObject({
           event: "identity.cross_scope_merge_refused",
           userId,
           candidateScope: "personal",
@@ -639,7 +638,7 @@ describeIfServer("resolveIdentity", () => {
           rejectedScope: "reference",
         });
       } finally {
-        logSpy.mockRestore();
+        setLogSink();
       }
     });
   });

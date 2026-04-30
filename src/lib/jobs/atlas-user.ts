@@ -22,6 +22,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { DrizzleDB } from "~/db";
 import { claims, nodeMetadata, userProfiles } from "~/db/schema";
+import { logEvent } from "~/lib/observability/log";
 import type { AssertedByKind, Predicate } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 
@@ -403,6 +404,13 @@ export async function processAtlasJob(
       ),
     })
     .where(eq(nodeMetadata.nodeId, atlasNodeId));
+
+  logEvent("atlas.derived", {
+    userId,
+    inputClaimCount: rankedClaims.length,
+    outputTokenCount: content.length,
+    hash,
+  });
 
   return { status: "synthesised", hash, content };
 }

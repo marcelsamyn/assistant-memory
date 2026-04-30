@@ -22,6 +22,7 @@
  */
 import { findSimilarNodes } from "./graph";
 import { aliases, claims, nodeMetadata, nodes, sourceLinks, sources } from "~/db/schema";
+import { logEvent } from "~/lib/observability/log";
 import {
   type AssertedByKind,
   type NodeType,
@@ -649,6 +650,18 @@ function _classifyScopeMatches(
   };
 }
 
+/**
+ * Map internal signal names to the public observability vocabulary defined in
+ * `docs/2026-04-24-claims-implementation-plan.md` § 4.6.
+ */
+function _publicSignal(
+  signal: IdentitySignal,
+): "canonical_label" | "alias" | "embedding" | "claim_profile" | "none" {
+  if (signal === "embedding_sim") return "embedding";
+  if (signal === "profile_compat") return "claim_profile";
+  return signal;
+}
+
 function _resolved(
   nodeId: TypeId<"node">,
   signal: IdentitySignal,
@@ -657,20 +670,21 @@ function _resolved(
   candidate: IdentityCandidate,
   userId: string,
 ): IdentityResolution {
-  console.info(
-    JSON.stringify({
-      event: "identity.resolved",
-      userId,
-      candidateLabel: candidate.proposedLabel,
-      normalizedLabel: candidate.normalizedLabel,
-      nodeType: candidate.nodeType,
-      scope: candidate.scope,
-      signal,
-      confidence,
-      resolvedNodeId: nodeId,
-      trace,
-    }),
-  );
+  logEvent("identity.resolved", {
+    userId,
+    nodeType: candidate.nodeType,
+    candidateLabel: candidate.proposedLabel,
+    normalizedLabel: candidate.normalizedLabel,
+    scope: candidate.scope,
+    decision: "matched",
+    resolvedNodeId: nodeId,
+    signal: _publicSignal(signal),
+    confidence,
+    // The resolver only ever returns same-scope matches; cross-scope candidates
+    // are refused before they reach this branch.
+    scopeBounded: true,
+    trace,
+  });
 
   // Cross-scope refusals on earlier signals (recorded in the trace) get a
   // dedicated log line so the cleanup pipeline can pick them up. We only emit
@@ -698,17 +712,14 @@ function _logCrossScopeRefusal(
   signal: "canonical_label" | "alias",
   refusal: { nodeId: TypeId<"node">; otherScope: Scope },
 ): void {
-  console.info(
-    JSON.stringify({
-      event: "identity.cross_scope_merge_refused",
-      userId,
-      candidateLabel: candidate.proposedLabel,
-      normalizedLabel: candidate.normalizedLabel,
-      nodeType: candidate.nodeType,
-      candidateScope: candidate.scope,
-      signal,
-      rejectedNodeId: refusal.nodeId,
-      rejectedScope: refusal.otherScope,
-    }),
-  );
+  logEvent("identity.cross_scope_merge_refused", {
+    userId,
+    candidateLabel: candidate.proposedLabel,
+    normalizedLabel: candidate.normalizedLabel,
+    nodeType: candidate.nodeType,
+    candidateScope: candidate.scope,
+    signal,
+    rejectedNodeId: refusal.nodeId,
+    rejectedScope: refusal.otherScope,
+  });
 }

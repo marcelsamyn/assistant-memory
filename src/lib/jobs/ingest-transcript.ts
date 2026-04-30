@@ -22,6 +22,7 @@ import { extractGraph } from "~/lib/extract-graph";
 import { ensureSourceNode } from "~/lib/ingestion/ensure-source-node";
 import { ensureUser } from "~/lib/ingestion/ensure-user";
 import { insertNewSources } from "~/lib/ingestion/insert-new-sources";
+import { logEvent } from "~/lib/observability/log";
 import { safeToISOString } from "~/lib/safe-date";
 import {
   defaultSegmentTranscriptClient,
@@ -198,11 +199,22 @@ export async function ingestTranscript(
   for (const entry of speakerMap.values()) {
     if (entry.resolution === "placeholder") unresolvedCount += 1;
   }
+  const resolvedSpeakers = speakerMap.size - unresolvedCount;
+
+  logEvent("transcript.ingested", {
+    userId,
+    transcriptId,
+    transcriptSourceId,
+    utteranceCount: utterances.length,
+    resolvedSpeakers,
+    unresolvedSpeakers: unresolvedCount,
+    scope,
+  });
 
   return {
     transcriptSourceId,
     utteranceCount: utterances.length,
-    resolvedSpeakers: speakerMap.size - unresolvedCount,
+    resolvedSpeakers,
     unresolvedSpeakers: unresolvedCount,
   };
 }

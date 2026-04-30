@@ -3,6 +3,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { claims, claimEmbeddings, nodes } from "~/db/schema";
 import { applyClaimLifecycle, fetchClaimsByIds } from "~/lib/claims/lifecycle";
 import { generateEmbeddings } from "~/lib/embeddings";
+import { logEvent } from "~/lib/observability/log";
 import { ensureSystemSource } from "~/lib/sources";
 import type {
   AssertedByKind,
@@ -134,6 +135,15 @@ export async function createClaim(
 
   if (!inserted) throw new Error("Failed to create claim");
 
+  logEvent("claim.inserted", {
+    claimId: inserted.id,
+    userId: inserted.userId,
+    predicate: inserted.predicate,
+    kind: inserted.assertedByKind,
+    scope: inserted.scope,
+    subjectNodeId: inserted.subjectNodeId,
+  });
+
   const lifecycleStartedAt = new Date();
   await applyClaimLifecycle(db, [inserted]);
   const { maybeEnqueueAtlasInvalidation } = await import(
@@ -181,6 +191,14 @@ export async function updateClaim(
     .set({ status: updates.status, updatedAt: new Date() })
     .where(and(eq(claims.id, claimId), eq(claims.userId, userId)))
     .returning();
+
+  if (updated) {
+    logEvent("claim.retracted", {
+      claimId: updated.id,
+      userId: updated.userId,
+      reason: "user_update",
+    });
+  }
 
   return updated ?? null;
 }

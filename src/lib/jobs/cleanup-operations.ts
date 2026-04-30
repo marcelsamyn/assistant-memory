@@ -21,6 +21,7 @@ import { createClaim, type ClaimSelect } from "~/lib/claim";
 import { applyClaimLifecycle } from "~/lib/claims/lifecycle";
 import type { GraphNode } from "~/lib/jobs/cleanup-graph";
 import { normalizeLabel } from "~/lib/label";
+import { logEvent } from "~/lib/observability/log";
 import type { TemporaryIdMapper } from "~/lib/temporary-id-mapper";
 import {
   AttributePredicateEnum,
@@ -175,6 +176,12 @@ export async function retractClaim(
 
   if (!updated) return null;
 
+  logEvent("claim.retracted", {
+    claimId: updated.id,
+    userId: updated.userId,
+    reason: op.reason,
+  });
+
   await applyClaimLifecycle(database, [updated]);
   return updated;
 }
@@ -213,6 +220,14 @@ export async function contradictClaim(
     .returning();
 
   if (!updated) return null;
+
+  logEvent("claim.contradicted", {
+    claimId: updated.id,
+    userId: updated.userId,
+    contradictedByClaimId: op.contradictedByClaimId,
+    reason: op.reason,
+  });
+
   await applyClaimLifecycle(database, [updated]);
   return updated;
 }

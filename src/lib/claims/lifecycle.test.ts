@@ -190,43 +190,61 @@ describeIfServer("applyClaimLifecycle", () => {
         ])
         .returning();
 
-      await applyClaimLifecycle(database, [
-        newStatus!,
-        preference!,
-        relationship!,
-      ]);
+      const { setLogSink } = await import("~/lib/observability/log");
+      const captured: Array<Record<string, unknown>> = [];
+      setLogSink((event) => captured.push(event));
+      try {
+        await applyClaimLifecycle(database, [
+          newStatus!,
+          preference!,
+          relationship!,
+        ]);
 
-      const rows = await client.query<{
-        id: string;
-        status: string;
-        valid_from: Date | null;
-        valid_to: Date | null;
-        superseded_by_claim_id: string | null;
-      }>(
-        `
-          SELECT "id", "status", "valid_from", "valid_to", "superseded_by_claim_id"
-          FROM "claims"
-          WHERE "user_id" = $1
-          ORDER BY "id"
-        `,
-        [userId],
-      );
+        const rows = await client.query<{
+          id: string;
+          status: string;
+          valid_from: Date | null;
+          valid_to: Date | null;
+          superseded_by_claim_id: string | null;
+        }>(
+          `
+            SELECT "id", "status", "valid_from", "valid_to", "superseded_by_claim_id"
+            FROM "claims"
+            WHERE "user_id" = $1
+            ORDER BY "id"
+          `,
+          [userId],
+        );
 
-      const byId = new Map(rows.rows.map((row) => [row.id, row]));
-      expect(byId.get(priorStatus!.id)?.status).toBe("superseded");
-      expect(byId.get(priorStatus!.id)?.valid_to?.toISOString()).toBe(
-        "2026-04-02T00:00:00.000Z",
-      );
-      expect(byId.get(priorStatus!.id)?.superseded_by_claim_id).toBe(
-        newStatus!.id,
-      );
-      expect(byId.get(newStatus!.id)?.status).toBe("active");
-      expect(byId.get(newStatus!.id)?.valid_from?.toISOString()).toBe(
-        "2026-04-02T00:00:00.000Z",
-      );
-      expect(byId.get(newStatus!.id)?.superseded_by_claim_id).toBeNull();
-      expect(byId.get(preference!.id)?.status).toBe("active");
-      expect(byId.get(relationship!.id)?.status).toBe("active");
+        const byId = new Map(rows.rows.map((row) => [row.id, row]));
+        expect(byId.get(priorStatus!.id)?.status).toBe("superseded");
+        expect(byId.get(priorStatus!.id)?.valid_to?.toISOString()).toBe(
+          "2026-04-02T00:00:00.000Z",
+        );
+        expect(byId.get(priorStatus!.id)?.superseded_by_claim_id).toBe(
+          newStatus!.id,
+        );
+        expect(byId.get(newStatus!.id)?.status).toBe("active");
+        expect(byId.get(newStatus!.id)?.valid_from?.toISOString()).toBe(
+          "2026-04-02T00:00:00.000Z",
+        );
+        expect(byId.get(newStatus!.id)?.superseded_by_claim_id).toBeNull();
+        expect(byId.get(preference!.id)?.status).toBe("active");
+        expect(byId.get(relationship!.id)?.status).toBe("active");
+
+        const supersededEvents = captured.filter(
+          (e) => e["event"] === "claim.superseded",
+        );
+        expect(supersededEvents).toHaveLength(1);
+        expect(supersededEvents[0]).toMatchObject({
+          event: "claim.superseded",
+          claimId: priorStatus!.id,
+          predicate: "HAS_STATUS",
+          supersededByClaimId: newStatus!.id,
+        });
+      } finally {
+        setLogSink();
+      }
     } finally {
       await client.end();
     }

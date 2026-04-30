@@ -301,11 +301,29 @@ describeIfServer("runProfileSynthesis", () => {
       ]);
 
       const { runProfileSynthesis } = await import("./profile-synthesis");
-
-      const result = await runProfileSynthesis({
-        userId,
-        nodeId: personNodeId,
-      });
+      const { setLogSink } = await import("~/lib/observability/log");
+      const captured: Array<Record<string, unknown>> = [];
+      setLogSink((event) => captured.push(event));
+      let result;
+      try {
+        result = await runProfileSynthesis({
+          userId,
+          nodeId: personNodeId,
+        });
+        const synthesizedEvents = captured.filter(
+          (e) => e["event"] === "profile.synthesized",
+        );
+        expect(synthesizedEvents).toHaveLength(1);
+        expect(synthesizedEvents[0]).toMatchObject({
+          event: "profile.synthesized",
+          userId,
+          nodeId: personNodeId,
+        });
+        expect(typeof synthesizedEvents[0]?.["contentHash"]).toBe("string");
+        expect(typeof synthesizedEvents[0]?.["inputClaimCount"]).toBe("number");
+      } finally {
+        setLogSink();
+      }
 
       expect(result.status).toBe("synthesized");
       expect(llmCallCount).toBe(1);

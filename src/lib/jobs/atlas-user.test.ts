@@ -399,7 +399,25 @@ describeIfServer("processAtlasJob", () => {
       ]);
 
       const { processAtlasJob } = await import("./atlas-user");
-      const result = await processAtlasJob(database, userId);
+      const { setLogSink } = await import("~/lib/observability/log");
+      const captured: Array<Record<string, unknown>> = [];
+      setLogSink((event) => captured.push(event));
+      let result;
+      try {
+        result = await processAtlasJob(database, userId);
+        const derivedEvents = captured.filter(
+          (e) => e["event"] === "atlas.derived",
+        );
+        expect(derivedEvents).toHaveLength(1);
+        expect(derivedEvents[0]).toMatchObject({
+          event: "atlas.derived",
+          userId,
+        });
+        expect(typeof derivedEvents[0]?.["inputClaimCount"]).toBe("number");
+        expect(typeof derivedEvents[0]?.["outputTokenCount"]).toBe("number");
+      } finally {
+        setLogSink();
+      }
 
       expect(result.status).toBe("synthesised");
       expect(llmCallCount).toBe(1);

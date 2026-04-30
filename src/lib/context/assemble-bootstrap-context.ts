@@ -8,6 +8,7 @@
  * Common aliases: getConversationBootstrapContext, bootstrap_memory,
  * context bundle entry point.
  */
+import { logEvent } from "~/lib/observability/log";
 import { useDatabase } from "~/utils/db";
 import {
   getCachedBundle,
@@ -71,5 +72,15 @@ export async function getConversationBootstrapContext(
   };
 
   await setCachedBundle(userId, bundle);
+
+  logEvent("bootstrap_context.assembled", {
+    userId,
+    sectionKinds: sections.map((section) => section.kind),
+    totalChars: sections.reduce(
+      (sum, section) => sum + section.content.length,
+      0,
+    ),
+  });
+
   return bundle;
 }

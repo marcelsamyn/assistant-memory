@@ -311,21 +311,39 @@ describeIfServer("cleanup operation helpers", () => {
     });
 
     const { applyCleanupOperations } = await import("./cleanup-operations");
-    const mapper = buildMapper([]);
-    const result = await applyCleanupOperations(
-      database,
-      userId,
-      [{ kind: "retract_claim", claimId, reason: "dup" }],
-      mapper,
-    );
-    expect(result.applied).toBe(1);
-    expect(result.errors).toHaveLength(0);
+    const { setLogSink } = await import("~/lib/observability/log");
+    const captured: Array<Record<string, unknown>> = [];
+    setLogSink((event) => captured.push(event));
+    try {
+      const mapper = buildMapper([]);
+      const result = await applyCleanupOperations(
+        database,
+        userId,
+        [{ kind: "retract_claim", claimId, reason: "dup" }],
+        mapper,
+      );
+      expect(result.applied).toBe(1);
+      expect(result.errors).toHaveLength(0);
 
-    const after = await rootClient.query<{ status: string }>(
-      `SELECT "status" FROM "claims" WHERE "id" = $1`,
-      [claimId],
-    );
-    expect(after.rows[0]?.status).toBe("retracted");
+      const after = await rootClient.query<{ status: string }>(
+        `SELECT "status" FROM "claims" WHERE "id" = $1`,
+        [claimId],
+      );
+      expect(after.rows[0]?.status).toBe("retracted");
+
+      const retractedEvents = captured.filter(
+        (e) => e["event"] === "claim.retracted",
+      );
+      expect(retractedEvents.length).toBeGreaterThan(0);
+      expect(retractedEvents[0]).toMatchObject({
+        event: "claim.retracted",
+        claimId,
+        userId,
+        reason: "dup",
+      });
+    } finally {
+      setLogSink();
+    }
   });
 
   it("contradict_claim sets contradicted_by_claim_id and status", async () => {
@@ -365,30 +383,48 @@ describeIfServer("cleanup operation helpers", () => {
     });
 
     const { applyCleanupOperations } = await import("./cleanup-operations");
-    const result = await applyCleanupOperations(
-      database,
-      userId,
-      [
-        {
-          kind: "contradict_claim",
-          claimId,
-          contradictedByClaimId: citingId,
-          reason: "user said the opposite",
-        },
-      ],
-      buildMapper([]),
-    );
-    expect(result.applied).toBe(1);
+    const { setLogSink } = await import("~/lib/observability/log");
+    const captured: Array<Record<string, unknown>> = [];
+    setLogSink((event) => captured.push(event));
+    try {
+      const result = await applyCleanupOperations(
+        database,
+        userId,
+        [
+          {
+            kind: "contradict_claim",
+            claimId,
+            contradictedByClaimId: citingId,
+            reason: "user said the opposite",
+          },
+        ],
+        buildMapper([]),
+      );
+      expect(result.applied).toBe(1);
 
-    const after = await rootClient.query<{
-      status: string;
-      contradicted_by_claim_id: string | null;
-    }>(
-      `SELECT "status", "contradicted_by_claim_id" FROM "claims" WHERE "id" = $1`,
-      [claimId],
-    );
-    expect(after.rows[0]?.status).toBe("contradicted");
-    expect(after.rows[0]?.contradicted_by_claim_id).toBe(citingId);
+      const after = await rootClient.query<{
+        status: string;
+        contradicted_by_claim_id: string | null;
+      }>(
+        `SELECT "status", "contradicted_by_claim_id" FROM "claims" WHERE "id" = $1`,
+        [claimId],
+      );
+      expect(after.rows[0]?.status).toBe("contradicted");
+      expect(after.rows[0]?.contradicted_by_claim_id).toBe(citingId);
+
+      const contradictedEvents = captured.filter(
+        (e) => e["event"] === "claim.contradicted",
+      );
+      expect(contradictedEvents.length).toBeGreaterThan(0);
+      expect(contradictedEvents[0]).toMatchObject({
+        event: "claim.contradicted",
+        claimId,
+        contradictedByClaimId: citingId,
+        reason: "user said the opposite",
+      });
+    } finally {
+      setLogSink();
+    }
   });
 
   it("add_claim stamps system kind and inherits scope from source claim", async () => {
@@ -439,21 +475,41 @@ describeIfServer("cleanup operation helpers", () => {
     ]);
 
     const { applyCleanupOperations } = await import("./cleanup-operations");
-    const result = await applyCleanupOperations(
-      database,
-      userId,
-      [
-        {
-          kind: "add_claim",
-          subjectTempId: "temp_node_1",
-          objectTempId: "temp_node_2",
-          predicate: "RELATED_TO",
-          statement: "Carol relates to physics.",
-          sourceClaimId: refClaimId,
-        },
-      ],
-      mapper,
-    );
+    const { setLogSink } = await import("~/lib/observability/log");
+    const captured: Array<Record<string, unknown>> = [];
+    setLogSink((event) => captured.push(event));
+    let result;
+    try {
+      result = await applyCleanupOperations(
+        database,
+        userId,
+        [
+          {
+            kind: "add_claim",
+            subjectTempId: "temp_node_1",
+            objectTempId: "temp_node_2",
+            predicate: "RELATED_TO",
+            statement: "Carol relates to physics.",
+            sourceClaimId: refClaimId,
+          },
+        ],
+        mapper,
+      );
+      const insertedEvents = captured.filter(
+        (e) => e["event"] === "claim.inserted",
+      );
+      expect(insertedEvents).toHaveLength(1);
+      expect(insertedEvents[0]).toMatchObject({
+        event: "claim.inserted",
+        userId,
+        predicate: "RELATED_TO",
+        kind: "system",
+        scope: "reference",
+        subjectNodeId: subjectId,
+      });
+    } finally {
+      setLogSink();
+    }
     expect(result.errors).toHaveLength(0);
     expect(result.applied).toBe(1);
 

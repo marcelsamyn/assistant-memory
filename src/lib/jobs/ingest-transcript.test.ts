@@ -392,28 +392,50 @@ describeIfServer("ingestTranscript", () => {
       );
 
       const { ingestTranscript } = await import("./ingest-transcript");
-      const result = await ingestTranscript({
-        db: database,
-        userId,
-        transcriptId,
-        scope: "personal",
-        occurredAt,
-        content: {
-          kind: "segmented",
-          utterances: [
-            { speakerLabel: "Marcel", content: "I shipped the spec." },
-            {
-              speakerLabel: "Bob",
-              content: "Cool — I'd prefer a tighter spec next round.",
-            },
-            {
-              speakerLabel: "Stranger",
-              content: "Either way, let's ship by Friday.",
-            },
-          ],
-        },
-        knownParticipants: [{ label: "Bob", nodeId: bobNodeId }],
-      });
+      const { setLogSink } = await import("~/lib/observability/log");
+      const captured: Array<Record<string, unknown>> = [];
+      setLogSink((event) => captured.push(event));
+      let result: Awaited<ReturnType<typeof ingestTranscript>>;
+      try {
+        result = await ingestTranscript({
+          db: database,
+          userId,
+          transcriptId,
+          scope: "personal",
+          occurredAt,
+          content: {
+            kind: "segmented",
+            utterances: [
+              { speakerLabel: "Marcel", content: "I shipped the spec." },
+              {
+                speakerLabel: "Bob",
+                content: "Cool — I'd prefer a tighter spec next round.",
+              },
+              {
+                speakerLabel: "Stranger",
+                content: "Either way, let's ship by Friday.",
+              },
+            ],
+          },
+          knownParticipants: [{ label: "Bob", nodeId: bobNodeId }],
+        });
+
+        const ingestedEvents = captured.filter(
+          (e) => e["event"] === "transcript.ingested",
+        );
+        expect(ingestedEvents).toHaveLength(1);
+        expect(ingestedEvents[0]).toMatchObject({
+          event: "transcript.ingested",
+          userId,
+          transcriptId,
+          utteranceCount: 3,
+          resolvedSpeakers: 2,
+          unresolvedSpeakers: 1,
+          scope: "personal",
+        });
+      } finally {
+        setLogSink();
+      }
 
       expect(result.utteranceCount).toBe(3);
       expect(result.unresolvedSpeakers).toBe(1);
