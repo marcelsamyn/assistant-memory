@@ -1,6 +1,8 @@
 import { env } from "./env";
-import { Client } from "pg";
+import pg from "pg";
 import type { DrizzleDB } from "~/db";
+
+const { Client } = pg;
 
 let _db: DrizzleDB | null = null;
 let _dbInit: Promise<DrizzleDB> | null = null;
