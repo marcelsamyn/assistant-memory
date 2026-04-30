@@ -1,5 +1,5 @@
 import { defineEventHandler, createError } from "h3";
-import { mergeNodes } from "~/lib/node";
+import { CrossScopeMergeError, mergeNodes } from "~/lib/node";
 import {
   mergeNodesRequestSchema,
   mergeNodesResponseSchema,
@@ -8,10 +8,22 @@ import {
 export default defineEventHandler(async (event) => {
   const { userId, nodeIds, targetLabel, targetDescription } =
     mergeNodesRequestSchema.parse(await readBody(event));
-  const result = await mergeNodes(userId, nodeIds, {
-    ...(targetLabel !== undefined && { targetLabel }),
-    ...(targetDescription !== undefined && { targetDescription }),
-  });
+  let result;
+  try {
+    result = await mergeNodes(userId, nodeIds, {
+      ...(targetLabel !== undefined && { targetLabel }),
+      ...(targetDescription !== undefined && { targetDescription }),
+    });
+  } catch (err) {
+    if (err instanceof CrossScopeMergeError) {
+      throw createError({
+        statusCode: 409,
+        statusMessage: "Cross-scope merge refused",
+        data: { nodeIds: err.nodeIds, scopes: err.scopes },
+      });
+    }
+    throw err;
+  }
   if (!result) {
     throw createError({
       statusCode: 404,

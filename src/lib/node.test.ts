@@ -391,6 +391,88 @@ describeIfServer("node operations", () => {
     }
   });
 
+  it("throws CrossScopeMergeError when candidates span personal and reference scopes", async () => {
+    // Mirrors the dedup-sweep cross-scope guard: an explicit `mergeNodes` call
+    // over a personal + reference pair must refuse, so the route can translate
+    // it into a 409 Conflict instead of a 500.
+    const userId = "user_merge_cross_scope";
+    const personalId = newTypeId("node");
+    const referenceId = newTypeId("node");
+    const personalSourceId = newTypeId("source");
+    const referenceSourceId = newTypeId("source");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+    vi.doMock("~/lib/embeddings", () => ({
+      generateEmbeddings: async () => ({
+        data: [{ embedding: Array.from({ length: 1024 }, () => 0) }],
+        usage: { total_tokens: 0 },
+      }),
+    }));
+
+    try {
+      await ensureMergeTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES
+           ($1, $3, 'Person'),
+           ($2, $3, 'Person')`,
+        [personalId, referenceId, userId],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label") VALUES
+           ($1, $3, 'Marie Curie', 'marie curie'),
+           ($2, $4, 'Marie Curie', 'marie curie')`,
+        [
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          personalId,
+          referenceId,
+        ],
+      );
+      await client.query(
+        `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "scope", "status")
+         VALUES
+           ($1, $3, 'manual', 'manual:user_merge_cross_scope:personal', 'personal', 'completed'),
+           ($2, $3, 'document', 'doc:user_merge_cross_scope:reference', 'reference', 'completed')`,
+        [personalSourceId, referenceSourceId, userId],
+      );
+      await client.query(
+        `INSERT INTO "claims" (
+           "id", "user_id", "subject_node_id", "object_value", "predicate", "statement",
+           "source_id", "scope", "asserted_by_kind", "stated_at"
+         ) VALUES
+           ($1, $5, $2, 'admires', 'HAS_PREFERENCE', 'User admires Marie Curie.', $3, 'personal', 'user', now()),
+           ($4, $5, $6, 'physicist', 'HAS_GOAL', 'Marie Curie was a physicist.', $7, 'reference', 'document_author', now())`,
+        [
+          newTypeId("claim"),
+          personalId,
+          personalSourceId,
+          newTypeId("claim"),
+          userId,
+          referenceId,
+          referenceSourceId,
+        ],
+      );
+
+      const { mergeNodes, CrossScopeMergeError } = await import("./node");
+      await expect(
+        mergeNodes(userId, [personalId, referenceId]),
+      ).rejects.toBeInstanceOf(CrossScopeMergeError);
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.doUnmock("~/lib/embeddings");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
   it("clears unresolvedSpeaker on the survivor when a resolved Person is merged into a placeholder", async () => {
     // PR 4iii Issue 5: if the survivor is the placeholder (e.g., older
     // createdAt) and the consumed node is a resolved Person, the survivor's
