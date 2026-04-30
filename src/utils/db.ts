@@ -1,4 +1,5 @@
 import { env } from "./env";
+import { Client } from "pg";
 import type { DrizzleDB } from "~/db";
 
 let _db: DrizzleDB | null = null;
@@ -6,7 +7,6 @@ let _dbInit: Promise<DrizzleDB> | null = null;
 
 async function runMigrations(db: DrizzleDB): Promise<void> {
   const { migrate } = await import("drizzle-orm/node-postgres/migrator");
-  const { Client } = await import("pg");
   const lockClient = new Client({
     connectionString: env.DATABASE_URL,
     ssl: false,
