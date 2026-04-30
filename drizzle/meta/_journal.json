@@ -99,6 +99,13 @@
       "when": 1777539920831,
       "tag": "0013_user_profiles_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1777558586052,
+      "tag": "0014_repair_legacy_migration_typeids",
+      "breakpoints": true
     }
   ]
 }

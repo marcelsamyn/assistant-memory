@@ -1,4 +1,4 @@
-import { fromString, typeid } from "typeid-js";
+import { typeid } from "typeid-js";
 import { z } from "zod";
 
 const TYPE_ID_LENGTH = 26;
@@ -47,7 +47,7 @@ export const typeIdSchema = <T extends IdType>(type: T) =>
 export const typeIdFromString = <T extends IdType>(
   type: T,
   val: string,
-): TypeId<T> => fromString(val, ID_TYPE_PREFIXES[type]) as TypeId<T>;
+): TypeId<T> => typeIdSchema(type).parse(val);
 
 export const typeIdToString = <T extends IdType>(
   type: T,

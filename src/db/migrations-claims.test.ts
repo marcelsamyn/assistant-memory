@@ -388,6 +388,236 @@ describeIfServer("migration 0010 (claims layer, PR 1a)", () => {
   }, 30_000);
 });
 
+describeIfServer("migration 0014 (repair legacy migration TypeIDs)", () => {
+  const dbName = `memory_typeid_repair_mig_test_${Date.now()}_${Math.floor(
+    Math.random() * 1e6,
+  )}`;
+
+  beforeAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE "${dbName}"`);
+    await admin.end();
+  });
+
+  afterAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(
+      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+       WHERE datname = $1 AND pid <> pg_backend_pid()`,
+      [dbName],
+    );
+    await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+    await admin.end();
+  });
+
+  it("rewrites synthetic source and source_link IDs and updates references", async () => {
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+
+    try {
+      await client.query(`
+        CREATE TABLE "users" ("id" text PRIMARY KEY NOT NULL);
+        CREATE TABLE "nodes" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "node_type" varchar(50) NOT NULL,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL
+        );
+        CREATE TABLE "sources" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "type" varchar(50) NOT NULL,
+          "external_id" text NOT NULL,
+          "parent_source" text,
+          "status" varchar(20) DEFAULT 'pending',
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+          CONSTRAINT sources_user_type_external_unique
+            UNIQUE ("user_id", "type", "external_id")
+        );
+        CREATE TABLE "source_links" (
+          "id" text PRIMARY KEY NOT NULL,
+          "source_id" text NOT NULL,
+          "node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+          CONSTRAINT "source_links_source_id_sources_id_fk"
+            FOREIGN KEY ("source_id") REFERENCES "sources"("id") ON DELETE CASCADE,
+          CONSTRAINT source_links_source_node_unique UNIQUE ("source_id", "node_id")
+        );
+        CREATE TABLE "claims" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "subject_node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+          "object_node_id" text REFERENCES "nodes"("id") ON DELETE CASCADE,
+          "predicate" varchar(80) NOT NULL,
+          "statement" text NOT NULL,
+          "source_id" text NOT NULL,
+          "stated_at" timestamp with time zone NOT NULL,
+          "status" varchar(30) DEFAULT 'active' NOT NULL,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+          "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+          CONSTRAINT "claims_source_id_sources_id_fk"
+            FOREIGN KEY ("source_id") REFERENCES "sources"("id") ON DELETE CASCADE
+        );
+      `);
+
+      await client.query(`
+        INSERT INTO "users" ("id") VALUES ('user_repair');
+
+        INSERT INTO "nodes" ("id", "user_id", "node_type")
+        VALUES ('node_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'user_repair', 'Person');
+
+        WITH ids AS (
+          SELECT
+            'src_' || substring(md5('legacy_migration:user_repair') from 1 for 26) AS legacy_source_id,
+            'src_00000000000000000000000001'::text AS structural_source_id
+        )
+        INSERT INTO "sources" ("id", "user_id", "type", "external_id", "parent_source", "status")
+        SELECT legacy_source_id, 'user_repair', 'legacy_migration', 'legacy_migration:user_repair', NULL, 'completed'
+        FROM ids
+        UNION ALL
+        SELECT structural_source_id, 'user_repair', 'conversation', 'conv_repair', legacy_source_id, 'completed'
+        FROM ids;
+
+        WITH ids AS (
+          SELECT
+            'src_' || substring(md5('legacy_migration:user_repair') from 1 for 26) AS legacy_source_id,
+            'src_00000000000000000000000001'::text AS structural_source_id,
+            'node_aaaaaaaaaaaaaaaaaaaaaaaaaa'::text AS node_id
+        ),
+        link_ids AS (
+          SELECT
+            legacy_source_id,
+            structural_source_id,
+            node_id,
+            'sln_' || substring(md5('structural_source_link:' || structural_source_id || ':' || node_id) from 1 for 26) AS structural_link_id
+          FROM ids
+        )
+        INSERT INTO "source_links" ("id", "source_id", "node_id")
+        SELECT structural_link_id, structural_source_id, node_id
+        FROM link_ids
+        UNION ALL
+        SELECT 'sln_00000000000000000000000001', legacy_source_id, node_id
+        FROM link_ids;
+
+        WITH ids AS (
+          SELECT
+            'src_' || substring(md5('legacy_migration:user_repair') from 1 for 26) AS legacy_source_id,
+            'node_aaaaaaaaaaaaaaaaaaaaaaaaaa'::text AS node_id
+        )
+        INSERT INTO "claims" (
+          "id", "user_id", "subject_node_id", "object_node_id",
+          "predicate", "statement", "source_id", "stated_at"
+        )
+        SELECT
+          'claim_00000000000000000000000001',
+          'user_repair',
+          node_id,
+          node_id,
+          'RELATED_TO',
+          'legacy sourced claim',
+          legacy_source_id,
+          '2026-04-30T00:00:00Z'
+        FROM ids;
+      `);
+
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      const migrationSql = await fs.readFile(
+        path.join(
+          process.cwd(),
+          "drizzle",
+          "0014_repair_legacy_migration_typeids.sql",
+        ),
+        "utf8",
+      );
+      const applyMigration = async () => {
+        const statements = migrationSql
+          .split("--> statement-breakpoint")
+          .map((statement) => statement.trim())
+          .filter((statement) => statement.length > 0);
+        for (const statement of statements) {
+          await client.query(statement);
+        }
+      };
+
+      await client.query("BEGIN");
+      await applyMigration();
+      await client.query("COMMIT");
+
+      const ids = await client.query<{
+        legacy_source_id: string;
+        repaired_source_id: string;
+        structural_link_id: string;
+        repaired_structural_link_id: string;
+      }>(`
+        SELECT
+          'src_' || substring(md5('legacy_migration:user_repair') from 1 for 26) AS legacy_source_id,
+          'src_0' || substring(md5('legacy_migration:user_repair') from 1 for 25) AS repaired_source_id,
+          'sln_' || substring(md5('structural_source_link:src_00000000000000000000000001:node_aaaaaaaaaaaaaaaaaaaaaaaaaa') from 1 for 26) AS structural_link_id,
+          'sln_0' || substring(md5('structural_source_link:src_00000000000000000000000001:node_aaaaaaaaaaaaaaaaaaaaaaaaaa') from 1 for 25) AS repaired_structural_link_id
+      `);
+      const expected = ids.rows[0]!;
+
+      const oldSource = await client.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM sources WHERE id = $1`,
+        [expected.legacy_source_id],
+      );
+      expect(oldSource.rows[0]!.count).toBe("0");
+
+      const claim = await client.query<{ source_id: string }>(
+        `SELECT source_id FROM claims WHERE id = 'claim_00000000000000000000000001'`,
+      );
+      expect(claim.rows[0]!.source_id).toBe(expected.repaired_source_id);
+
+      const linkToLegacySource = await client.query<{ source_id: string }>(
+        `SELECT source_id FROM source_links WHERE id = 'sln_00000000000000000000000001'`,
+      );
+      expect(linkToLegacySource.rows[0]!.source_id).toBe(
+        expected.repaired_source_id,
+      );
+
+      const childSource = await client.query<{ parent_source: string }>(
+        `SELECT parent_source FROM sources WHERE id = 'src_00000000000000000000000001'`,
+      );
+      expect(childSource.rows[0]!.parent_source).toBe(
+        expected.repaired_source_id,
+      );
+
+      const structuralLinks = await client.query<{ id: string }>(
+        `SELECT id FROM source_links WHERE id IN ($1, $2) ORDER BY id`,
+        [expected.structural_link_id, expected.repaired_structural_link_id],
+      );
+      expect(structuralLinks.rows).toEqual([
+        { id: expected.repaired_structural_link_id },
+      ]);
+
+      await client.query("BEGIN");
+      await applyMigration();
+      await client.query("COMMIT");
+
+      const counts = await client.query<{
+        sources: string;
+        source_links: string;
+        claims: string;
+      }>(`
+        SELECT
+          (SELECT COUNT(*)::text FROM sources) AS sources,
+          (SELECT COUNT(*)::text FROM source_links) AS source_links,
+          (SELECT COUNT(*)::text FROM claims) AS claims
+      `);
+      expect(counts.rows[0]).toMatchObject({
+        sources: "2",
+        source_links: "2",
+        claims: "1",
+      });
+    } finally {
+      await client.end();
+    }
+  }, 30_000);
+});
+
 describeIfServer("migration 0011 (claims phase 2b foundation)", () => {
   const dbName = `memory_claims_2b_mig_test_${Date.now()}_${Math.floor(
     Math.random() * 1e6,

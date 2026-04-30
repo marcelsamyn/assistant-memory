@@ -143,7 +143,7 @@ END $$;
 --    a source_links row.
 INSERT INTO "source_links" ("id", "source_id", "node_id")
 SELECT
-  'sln_' || substring(md5('structural_source_link:' || sl."source_id" || ':' || c."subject_node_id") from 1 for 26),
+  'sln_0' || substring(md5('structural_source_link:' || sl."source_id" || ':' || c."subject_node_id") from 1 for 25),
   sl."source_id",
   c."subject_node_id"
 FROM "claims" c
@@ -185,7 +185,7 @@ WHERE "predicate" IN ('MENTIONED_IN', 'CAPTURED_IN', 'INVALIDATED_ON');
 --    `claims` only when factual rows still lack provenance.
 INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
 SELECT
-  'src_' || substring(md5('legacy_migration:' || c."user_id") from 1 for 26) AS id,
+  'src_0' || substring(md5('legacy_migration:' || c."user_id") from 1 for 25) AS id,
   c."user_id",
   'legacy_migration' AS type,
   'legacy_migration:' || c."user_id" AS external_id,
