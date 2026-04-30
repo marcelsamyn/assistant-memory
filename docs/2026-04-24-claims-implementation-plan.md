@@ -365,7 +365,7 @@ Update `searchMemory` and create `searchReference`:
 
 - **PR 3-i**: profile synthesis + identity upgrade + background re-eval. Self-contained; doesn't touch read APIs.
 - **PR 3-ii**: Atlas derivation rewrite + read-model assemblers + node card synthesis.
-- **PR 3-iii**: search API rewrite (cards) + MCP tools + tool-description snapshots.
+- **PR 3-iii**: search API rewrite (cards) + MCP tools + tool-description snapshots. **Done.** `searchMemory` / `searchReference` return `{ cards, evidence }` via `getNodeCards` batch loader; new `POST /context/search` route coexists with raw `/query/search`. Reference docs gain optional `author`/`title` at ingest, surfacing on `NodeCard.reference`. MCP server replaces legacy `"search memory"` with snake_case `bootstrap_memory`, `search_memory`, `search_reference`, `get_entity` — all four descriptions pinned via inline snapshots. SDK gains `contextSearch()` and re-exports the new schemas.
 
 ---
 
