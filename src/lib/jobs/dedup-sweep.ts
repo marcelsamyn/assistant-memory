@@ -55,6 +55,11 @@ async function findDuplicateGroupingsByScope(
   // Per-node effective scope. A node is 'reference' iff every claim and every
   // source it touches is 'reference'. Personal evidence wins; absence of any
   // signal also defaults to 'personal' (matches the column default).
+  //
+  // Unresolved-speaker placeholder Persons are excluded entirely: two
+  // placeholders with the same label "Alex" from different transcripts often
+  // refer to different real people, so collapsing them by label alone would
+  // destroy distinct identities ("speaker placeholder explosion" trap).
   const scopeRows = await db
     .select({
       nodeId: nodes.id,
@@ -89,6 +94,7 @@ async function findDuplicateGroupingsByScope(
         eq(nodes.userId, userId),
         isNotNull(nodeMetadata.canonicalLabel),
         sql`trim(${nodeMetadata.canonicalLabel}) != ''`,
+        sql`(${nodeMetadata.additionalData} ->> 'unresolvedSpeaker') IS DISTINCT FROM 'true'`,
       ),
     )
     .groupBy(nodes.id, nodes.nodeType, nodeMetadata.canonicalLabel);

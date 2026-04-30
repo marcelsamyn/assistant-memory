@@ -24,3 +24,4 @@ export * from "../lib/schemas/node-batch-delete.js";
 export * from "../lib/schemas/query-atlas-nodes.js";
 export * from "../lib/schemas/node-neighborhood.js";
 export * from "../lib/schemas/user-self-aliases.js";
+export * from "../lib/schemas/user-profile-metadata.js";

@@ -481,6 +481,16 @@ export async function rewireNodeClaims(
     .set({ objectNodeId: keepId, updatedAt: new Date() })
     .where(and(eq(claims.objectNodeId, removeId), eq(claims.userId, userId)));
 
+  // Rewire participant provenance BEFORE deletion. The FK uses ON DELETE SET
+  // NULL, so without this update historical participant claims would silently
+  // lose attribution when the consumed node is removed.
+  await tx
+    .update(claims)
+    .set({ assertedByNodeId: keepId, updatedAt: new Date() })
+    .where(
+      and(eq(claims.assertedByNodeId, removeId), eq(claims.userId, userId)),
+    );
+
   await tx.execute(sql`
     DELETE FROM claims
     WHERE user_id = ${userId}

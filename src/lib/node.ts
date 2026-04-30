@@ -46,6 +46,23 @@ export class CrossScopeMergeError extends Error {
   }
 }
 
+/**
+ * Read the `unresolvedSpeaker` boolean from a `node_metadata.additional_data`
+ * JSONB blob defensively. Anything other than a literal `true` returns false.
+ */
+function readUnresolvedSpeakerFlag(additionalData: unknown): boolean {
+  if (
+    additionalData &&
+    typeof additionalData === "object" &&
+    !Array.isArray(additionalData)
+  ) {
+    return (
+      (additionalData as Record<string, unknown>)["unresolvedSpeaker"] === true
+    );
+  }
+  return false;
+}
+
 /** Fetch a single node by ID with all active claims and source IDs. */
 export async function getNodeById(
   userId: string,
@@ -330,6 +347,7 @@ export async function mergeNodes(
       nodeType: nodes.nodeType,
       label: nodeMetadata.label,
       description: nodeMetadata.description,
+      additionalData: nodeMetadata.additionalData,
     })
     .from(nodes)
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
@@ -355,6 +373,19 @@ export async function mergeNodes(
       ? overrides.targetDescription
       : survivorRow.description;
 
+  // If the survivor carries `unresolvedSpeaker = true` but at least one of the
+  // consumed nodes did not, the merged identity is now resolved — strip the
+  // flag from the survivor's metadata after the merge.
+  const survivorIsPlaceholder = readUnresolvedSpeakerFlag(
+    survivorRow.additionalData,
+  );
+  const anyConsumedResolved = consumedIds.some((id) => {
+    const row = foundNodes.find((n) => n.id === id);
+    return row !== undefined && !readUnresolvedSpeakerFlag(row.additionalData);
+  });
+  const shouldClearUnresolvedSpeaker =
+    survivorIsPlaceholder && anyConsumedResolved;
+
   await db.transaction(async (tx) => {
     for (const consumedId of consumedIds) {
       await tx
@@ -369,6 +400,19 @@ export async function mergeNodes(
         .set({ objectNodeId: survivorId, updatedAt: new Date() })
         .where(
           and(eq(claims.userId, userId), eq(claims.objectNodeId, consumedId)),
+        );
+
+      // Rewire participant provenance pointers BEFORE the consumed node is
+      // deleted; otherwise the FK's ON DELETE SET NULL would silently drop
+      // attribution.
+      await tx
+        .update(claims)
+        .set({ assertedByNodeId: survivorId, updatedAt: new Date() })
+        .where(
+          and(
+            eq(claims.userId, userId),
+            eq(claims.assertedByNodeId, consumedId),
+          ),
         );
 
       await tx.execute(sql`
@@ -389,6 +433,8 @@ export async function mergeNodes(
           AND kept.source_id = c.source_id
           AND kept.object_node_id IS NOT DISTINCT FROM c.object_node_id
           AND kept.object_value IS NOT DISTINCT FROM c.object_value
+          AND kept.asserted_by_kind = c.asserted_by_kind
+          AND kept.asserted_by_node_id IS NOT DISTINCT FROM c.asserted_by_node_id
           AND (kept.created_at, kept.id) < (c.created_at, c.id)
       `);
 
@@ -421,6 +467,17 @@ export async function mergeNodes(
         description: finalDescription,
       })
       .where(eq(nodeMetadata.nodeId, survivorId));
+
+    // If the survivor was a placeholder but a resolved Person was merged into
+    // it, the placeholder marker is no longer accurate. Strip it via JSONB
+    // minus so the rest of `additionalData` is preserved.
+    if (shouldClearUnresolvedSpeaker) {
+      await tx.execute(sql`
+        UPDATE node_metadata
+        SET additional_data = additional_data - 'unresolvedSpeaker'
+        WHERE node_id = ${survivorId}
+      `);
+    }
 
     // Delete self-referencing relationship claims
     await tx.execute(sql`

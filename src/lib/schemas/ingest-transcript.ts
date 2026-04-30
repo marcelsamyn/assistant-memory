@@ -3,9 +3,9 @@
  *
  * The route accepts either raw transcript text (segmented server-side via the
  * LLM) or a pre-segmented array of utterances. `userSelfAliasesOverride`
- * substitutes for the stored `userProfiles.metadata.userSelfAliases` for this
- * one ingestion only — useful for ad-hoc transcripts where the user appears
- * under a different label than usual.
+ * replaces stored aliases for this ingestion only — useful for ad-hoc
+ * transcripts where the user appears under a different label than usual.
+ * Stored aliases are never mutated.
  */
 import { z } from "zod";
 import { ScopeEnum } from "~/types/graph";
@@ -20,7 +20,7 @@ export const transcriptUtteranceSchema = z.object({
 export const transcriptContentSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("raw"),
-    text: z.string().min(1),
+    text: z.string().min(1).max(500_000),
   }),
   z.object({
     kind: z.literal("segmented"),
@@ -40,7 +40,7 @@ export const ingestTranscriptRequestSchema = z.object({
   occurredAt: z.string().datetime(),
   content: transcriptContentSchema,
   knownParticipants: z.array(transcriptKnownParticipantSchema).optional(),
-  /** Override stored `userSelfAliases` for this ingestion only. */
+  /** Replaces stored `userSelfAliases` for this ingestion only; the stored list is not mutated. */
   userSelfAliasesOverride: z.array(z.string().min(1)).optional(),
 });
 

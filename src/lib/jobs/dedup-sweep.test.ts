@@ -351,6 +351,50 @@ describeIfServer("runDedupSweep", () => {
     }
   });
 
+  it("does not merge unresolved-speaker placeholder Persons even when labels collide", async () => {
+    // Two placeholder Persons sharing the label "Alex" come from different
+    // transcripts and almost certainly refer to different real people. Merging
+    // them by label alone would destroy distinct identities.
+    const userId = "user_dedup_placeholder";
+    const placeholderA = newTypeId("node");
+    const placeholderB = newTypeId("node");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    try {
+      await createDedupTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+
+      for (const id of [placeholderA, placeholderB]) {
+        await client.query(
+          `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Person')`,
+          [id, userId],
+        );
+        await client.query(
+          `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label", "additional_data")
+           VALUES ($1, $2, 'Alex', 'alex', '{"unresolvedSpeaker": true}'::jsonb)`,
+          [newTypeId("node_metadata"), id],
+        );
+      }
+
+      const result = await runDedupSweep(userId, database);
+      expect(result.mergedGroups).toBe(0);
+      expect(result.mergedNodes).toBe(0);
+
+      const remaining = await client.query<{ id: string }>(
+        `SELECT "id" FROM "nodes" WHERE "user_id" = $1 ORDER BY "id"`,
+        [userId],
+      );
+      expect(remaining.rows.map((r) => r.id).sort()).toEqual(
+        [placeholderA, placeholderB].sort(),
+      );
+    } finally {
+      await client.end();
+    }
+  });
+
   it("dedupes identical claims keeping earliest createdAt", async () => {
     const userId = "user_dedup_D";
     const keepId = newTypeId("node");

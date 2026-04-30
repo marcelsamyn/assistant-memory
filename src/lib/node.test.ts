@@ -266,4 +266,197 @@ describeIfServer("node operations", () => {
       await client.end();
     }
   });
+
+  async function ensureMergeTables(client: Client): Promise<void> {
+    // The first test in this file creates the core tables inline. Merge-path
+    // tests additionally need `node_embeddings`. Idempotent so subsequent
+    // tests can call this without conflicting with the inline creation above.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS "node_embeddings" (
+        "id" text PRIMARY KEY NOT NULL,
+        "node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+        "embedding" jsonb,
+        "model_name" varchar(100),
+        "created_at" timestamp with time zone DEFAULT now() NOT NULL
+      );
+    `);
+  }
+
+  it("rewires assertedByNodeId on merge so participant provenance survives", async () => {
+    // PR 4iii Issue 2: when a placeholder Person is merged into a real Person,
+    // the consumed node is deleted and the FK on `claims.asserted_by_node_id`
+    // is `ON DELETE SET NULL`. Without an explicit rewire participant claims
+    // would silently lose attribution. We assert the survivor inherits it.
+    const userId = "user_merge_provenance";
+    const placeholderId = newTypeId("node");
+    const realPersonId = newTypeId("node");
+    const subjectNodeId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const claimId = newTypeId("claim");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+    vi.doMock("~/lib/embeddings", () => ({
+      generateEmbeddings: async () => ({
+        data: [{ embedding: Array.from({ length: 1024 }, () => 0) }],
+        usage: { total_tokens: 0 },
+      }),
+    }));
+
+    try {
+      await ensureMergeTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES
+           ($1, $4, 'Person'),
+           ($2, $4, 'Person'),
+           ($3, $4, 'Concept')`,
+        [realPersonId, placeholderId, subjectNodeId, userId],
+      );
+      // Real Person row keeps a clean additionalData; the placeholder carries
+      // `unresolvedSpeaker: true` so we can also exercise Issue 5 (the flag is
+      // cleared when a resolved Person is folded into a placeholder survivor —
+      // but here the survivor is the real Person, so the flag should simply be
+      // gone after the merge regardless).
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label") VALUES
+           ($1, $4, 'Real Alex', 'real alex'),
+           ($2, $5, 'Alex', 'alex'),
+           ($3, $6, 'Project Atlas', 'project atlas')`,
+        [
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          realPersonId,
+          placeholderId,
+          subjectNodeId,
+        ],
+      );
+      // Tag the placeholder explicitly to validate Issue 5's clearing branch
+      // is not triggered here (survivor is the real Person, no flag to clear).
+      await client.query(
+        `UPDATE "node_metadata" SET "additional_data" = '{"unresolvedSpeaker": true}'::jsonb
+         WHERE "node_id" = $1`,
+        [placeholderId],
+      );
+      await client.query(
+        `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+         VALUES ($1, $2, 'meeting_transcript', 'meeting:user_merge_provenance', 'completed')`,
+        [sourceId, userId],
+      );
+      await client.query(
+        `INSERT INTO "claims" (
+           "id", "user_id", "subject_node_id", "object_value", "predicate", "statement",
+           "source_id", "scope", "asserted_by_kind", "asserted_by_node_id", "stated_at"
+         ) VALUES ($1, $2, $3, 'tighter spec', 'HAS_PREFERENCE',
+                   'Alex prefers a tighter spec.', $4, 'personal', 'participant', $5, now())`,
+        [claimId, userId, subjectNodeId, sourceId, placeholderId],
+      );
+
+      const { mergeNodes } = await import("./node");
+      const merged = await mergeNodes(userId, [realPersonId, placeholderId]);
+      expect(merged?.id).toBe(realPersonId);
+
+      // Placeholder is gone, claim survives, attribution rewired.
+      const remainingPersons = await client.query<{ id: string }>(
+        `SELECT "id" FROM "nodes" WHERE "user_id" = $1 AND "node_type" = 'Person'`,
+        [userId],
+      );
+      expect(remainingPersons.rows.map((r) => r.id)).toEqual([realPersonId]);
+
+      const claimRows = await client.query<{
+        id: string;
+        asserted_by_kind: string;
+        asserted_by_node_id: string | null;
+      }>(
+        `SELECT "id", "asserted_by_kind", "asserted_by_node_id" FROM "claims" WHERE "id" = $1`,
+        [claimId],
+      );
+      expect(claimRows.rows).toHaveLength(1);
+      expect(claimRows.rows[0]).toMatchObject({
+        asserted_by_kind: "participant",
+        asserted_by_node_id: realPersonId,
+      });
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.doUnmock("~/lib/embeddings");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("clears unresolvedSpeaker on the survivor when a resolved Person is merged into a placeholder", async () => {
+    // PR 4iii Issue 5: if the survivor is the placeholder (e.g., older
+    // createdAt) and the consumed node is a resolved Person, the survivor's
+    // `unresolvedSpeaker` flag must be stripped — otherwise the merged
+    // identity continues to look unresolved forever.
+    const userId = "user_merge_unresolved";
+    const placeholderId = newTypeId("node");
+    const resolvedId = newTypeId("node");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+    vi.doMock("~/lib/embeddings", () => ({
+      generateEmbeddings: async () => ({
+        data: [{ embedding: Array.from({ length: 1024 }, () => 0) }],
+        usage: { total_tokens: 0 },
+      }),
+    }));
+
+    try {
+      await ensureMergeTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES
+           ($1, $3, 'Person'),
+           ($2, $3, 'Person')`,
+        [placeholderId, resolvedId, userId],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label", "additional_data") VALUES
+           ($1, $3, 'Alex', 'alex', '{"unresolvedSpeaker": true, "preserveMe": "yes"}'::jsonb),
+           ($2, $4, 'Alex', 'alex', NULL)`,
+        [
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          placeholderId,
+          resolvedId,
+        ],
+      );
+
+      const { mergeNodes } = await import("./node");
+      // Survivor is placeholderId (first in the list) — older / placeholder.
+      const merged = await mergeNodes(userId, [placeholderId, resolvedId]);
+      expect(merged?.id).toBe(placeholderId);
+
+      const survivorRow = await client.query<{
+        additional_data: Record<string, unknown> | null;
+      }>(
+        `SELECT "additional_data" FROM "node_metadata" WHERE "node_id" = $1`,
+        [placeholderId],
+      );
+      const additional = survivorRow.rows[0]?.additional_data;
+      expect(additional).not.toBeNull();
+      // Flag is gone, but other keys are preserved.
+      expect(additional?.["unresolvedSpeaker"]).toBeUndefined();
+      expect(additional?.["preserveMe"]).toBe("yes");
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.doUnmock("~/lib/embeddings");
+      vi.resetModules();
+      await client.end();
+    }
+  });
 });

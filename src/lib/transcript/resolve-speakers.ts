@@ -11,7 +11,7 @@
  * Common aliases: speaker map, speaker resolution, transcript participant
  * mapping, user-self detection, placeholder Person.
  */
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import {
   aliases,
@@ -21,6 +21,7 @@ import {
 } from "~/db/schema";
 import { createAlias, normalizeAliasText } from "~/lib/alias";
 import { normalizeLabel } from "~/lib/label";
+import { getEffectiveNodeScopes } from "~/lib/node-scope";
 import type { TypeId } from "~/types/typeid";
 
 export type SpeakerResolution =
@@ -140,7 +141,9 @@ export async function resolveSpeakers({
       continue;
     }
 
-    // 3. alias system (Person-typed)
+    // 3. alias system (Person-typed). Restrict to personal-scope candidates so
+    // a reference-document mention of the same name cannot poison transcript
+    // speaker resolution.
     const aliasMatches = await db
       .select({ canonicalNodeId: aliases.canonicalNodeId })
       .from(aliases)
@@ -152,17 +155,24 @@ export async function resolveSpeakers({
           eq(nodes.nodeType, "Person"),
         ),
       );
-    const uniqueAliasNodeIds = [
+    const candidateNodeIds = [
       ...new Set(aliasMatches.map((row) => row.canonicalNodeId)),
     ];
-    if (uniqueAliasNodeIds.length === 1) {
-      const nodeId = uniqueAliasNodeIds[0]!;
+    let personalCandidateNodeIds: TypeId<"node">[] = [];
+    if (candidateNodeIds.length > 0) {
+      const scopes = await getEffectiveNodeScopes(db, userId, candidateNodeIds);
+      personalCandidateNodeIds = candidateNodeIds.filter(
+        (id) => (scopes.get(id) ?? "personal") === "personal",
+      );
+    }
+    if (personalCandidateNodeIds.length === 1) {
+      const nodeId = personalCandidateNodeIds[0]!;
       map.set(label, { nodeId, isUserSelf: false, resolution: "alias" });
       continue;
     }
-    if (uniqueAliasNodeIds.length > 1) {
+    if (personalCandidateNodeIds.length > 1) {
       console.warn(
-        `Speaker label '${label}' resolves to ${uniqueAliasNodeIds.length} Person nodes via alias; treating as unresolved.`,
+        `Speaker label '${label}' resolves to ${personalCandidateNodeIds.length} personal-scope Person nodes via alias; treating as unresolved.`,
       );
     }
 
@@ -191,47 +201,59 @@ export async function resolveSpeakers({
  * Ensure the user's own Person node exists. Looked up by
  * `nodeMetadata.additionalData.isUserSelf = true` for the user's Person nodes;
  * created lazily on first transcript ingestion if absent.
+ *
+ * Concurrency: serialized per-user via a transaction-scoped Postgres advisory
+ * lock keyed on `hashtext('user_self_person:' || userId)`. Two concurrent
+ * transcript jobs for the same user will queue at the lock and observe each
+ * other's INSERT, so only one user-self Person row is ever created. The lock
+ * is released automatically at transaction commit.
  */
 async function ensureUserSelfPersonNode(
   db: DrizzleDB,
   userId: string,
 ): Promise<TypeId<"node">> {
-  const personNodes = await db
-    .select({
-      id: nodes.id,
-      label: nodeMetadata.label,
-      additionalData: nodeMetadata.additionalData,
-    })
-    .from(nodes)
-    .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-    .where(and(eq(nodes.userId, userId), eq(nodes.nodeType, "Person")));
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${"user_self_person:" + userId}))`,
+    );
 
-  for (const row of personNodes) {
-    const additional = row.additionalData;
-    if (
-      additional &&
-      typeof additional === "object" &&
-      !Array.isArray(additional) &&
-      (additional as Record<string, unknown>)["isUserSelf"] === true
-    ) {
-      return row.id;
+    const personNodes = await tx
+      .select({
+        id: nodes.id,
+        label: nodeMetadata.label,
+        additionalData: nodeMetadata.additionalData,
+      })
+      .from(nodes)
+      .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
+      .where(and(eq(nodes.userId, userId), eq(nodes.nodeType, "Person")));
+
+    for (const row of personNodes) {
+      const additional = row.additionalData;
+      if (
+        additional &&
+        typeof additional === "object" &&
+        !Array.isArray(additional) &&
+        (additional as Record<string, unknown>)["isUserSelf"] === true
+      ) {
+        return row.id;
+      }
     }
-  }
 
-  const [newNode] = await db
-    .insert(nodes)
-    .values({ userId, nodeType: "Person" })
-    .returning();
-  if (!newNode) {
-    throw new Error(`Failed to create user-self Person node for ${userId}`);
-  }
-  await db.insert(nodeMetadata).values({
-    nodeId: newNode.id,
-    label: userId,
-    canonicalLabel: normalizeLabel(userId),
-    additionalData: { isUserSelf: true },
+    const [newNode] = await tx
+      .insert(nodes)
+      .values({ userId, nodeType: "Person" })
+      .returning();
+    if (!newNode) {
+      throw new Error(`Failed to create user-self Person node for ${userId}`);
+    }
+    await tx.insert(nodeMetadata).values({
+      nodeId: newNode.id,
+      label: userId,
+      canonicalLabel: normalizeLabel(userId),
+      additionalData: { isUserSelf: true },
+    });
+    return newNode.id;
   });
-  return newNode.id;
 }
 
 async function createPlaceholderPersonNode(
