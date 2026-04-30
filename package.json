@@ -37,7 +37,9 @@
     "drizzle:push": "drizzle-kit push",
     "drizzle:generate": "drizzle-kit generate",
     "drizzle:migrate": "drizzle-kit migrate",
-    "drizzle:studio": "drizzle-kit studio"
+    "drizzle:studio": "drizzle-kit studio",
+    "eval:memory": "tsx src/evals/memory/run-all.ts",
+    "eval:identity-thresholds": "tsx src/evals/memory/threshold-calibration.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.24.0",
