@@ -18,10 +18,33 @@ import {
 } from "~/lib/graph";
 import { ensureUser } from "~/lib/ingestion/ensure-user";
 import { normalizeLabel } from "~/lib/label";
+import { getEffectiveNodeScopes } from "~/lib/node-scope";
 import { sourceService } from "~/lib/sources";
-import type { NodeType } from "~/types/graph";
+import type { NodeType, Scope } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
+
+/**
+ * Thrown when a merge spans nodes whose effective scope is not uniform
+ * (a personal node and a reference node share the candidate set). Cleanup
+ * paths catch this and skip the merge; the route surface translates it
+ * into a 4xx.
+ */
+export class CrossScopeMergeError extends Error {
+  readonly nodeIds: ReadonlyArray<TypeId<"node">>;
+  readonly scopes: ReadonlyArray<Scope>;
+  constructor(
+    nodeIds: ReadonlyArray<TypeId<"node">>,
+    scopes: ReadonlyArray<Scope>,
+  ) {
+    super(
+      `Cross-scope merge refused: candidates span scopes [${[...scopes].sort().join(", ")}]`,
+    );
+    this.name = "CrossScopeMergeError";
+    this.nodeIds = nodeIds;
+    this.scopes = scopes;
+  }
+}
 
 /** Fetch a single node by ID with all active claims and source IDs. */
 export async function getNodeById(
@@ -313,6 +336,14 @@ export async function mergeNodes(
     .where(and(eq(nodes.userId, userId), inArray(nodes.id, nodeIds)));
 
   if (foundNodes.length !== nodeIds.length) return null;
+
+  // Refuse cross-scope merges. Same rule as dedup-sweep.
+  const scopeMap = await getEffectiveNodeScopes(db, userId, nodeIds);
+  const scopes = nodeIds.map((id) => scopeMap.get(id) ?? "personal");
+  const distinctScopes = new Set(scopes);
+  if (distinctScopes.size > 1) {
+    throw new CrossScopeMergeError(nodeIds, [...distinctScopes]);
+  }
 
   const survivorId = nodeIds[0]!;
   const consumedIds = nodeIds.slice(1);

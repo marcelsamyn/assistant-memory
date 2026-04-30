@@ -85,6 +85,13 @@ export interface TempSubgraph {
   claims: TempClaim[];
 }
 
+/**
+ * @deprecated Use the operation vocabulary in
+ * `src/lib/jobs/cleanup-operations.ts` (`CleanupOperationSchema` /
+ * `applyCleanupOperations`) instead. The prompt and dispatcher continue to
+ * reference this schema until PR 4i-c lands the prompt rewrite; new callers
+ * must use the operation-based path.
+ */
 export const CleanupProposalSchema = z.object({
   merges: z
     .array(

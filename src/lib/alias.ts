@@ -101,6 +101,30 @@ export async function deleteAlias(
   return deleted.length > 0;
 }
 
+/** Delete an alias matched by `(userId, normalizedAliasText, canonicalNodeId)`. */
+export async function deleteAliasByText(
+  database: DrizzleDB,
+  userId: string,
+  canonicalNodeId: TypeId<"node">,
+  aliasText: string,
+): Promise<boolean> {
+  const normalizedAliasText = normalizeAliasText(aliasText);
+  if (normalizedAliasText.length === 0) return false;
+
+  const deleted = await database
+    .delete(aliases)
+    .where(
+      and(
+        eq(aliases.userId, userId),
+        eq(aliases.canonicalNodeId, canonicalNodeId),
+        eq(aliases.normalizedAliasText, normalizedAliasText),
+      ),
+    )
+    .returning({ id: aliases.id });
+
+  return deleted.length > 0;
+}
+
 /** Fetch aliases for a set of nodes, grouped by canonical node id. */
 export async function listAliasesForNodeIds(
   database: DrizzleDB,

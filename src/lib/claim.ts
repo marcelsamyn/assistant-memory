@@ -4,7 +4,12 @@ import { claims, claimEmbeddings, nodes } from "~/db/schema";
 import { applyClaimLifecycle, fetchClaimsByIds } from "~/lib/claims/lifecycle";
 import { generateEmbeddings } from "~/lib/embeddings";
 import { ensureSystemSource } from "~/lib/sources";
-import type { ClaimStatus, Predicate } from "~/types/graph";
+import type {
+  AssertedByKind,
+  ClaimStatus,
+  Predicate,
+  Scope,
+} from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -24,6 +29,17 @@ export type CreateClaimInput = {
   statedAt?: Date | undefined;
   validFrom?: Date | undefined;
   validTo?: Date | undefined;
+  /**
+   * Provenance kind. Defaults to `"user"` to preserve the manual-API contract
+   * (`/claim/create` must NOT accept arbitrary `assertedByKind` from callers).
+   * System callers (cleanup operations, dream synthesis, etc.) override this.
+   */
+  assertedByKind?: AssertedByKind | undefined;
+  /**
+   * Defaults to `"personal"`. System callers that derive scope from a source
+   * (e.g. `add_claim` cleanup op) pass this through.
+   */
+  scope?: Scope | undefined;
 };
 
 /** Generate claim embedding text independent of node labels. */
@@ -107,8 +123,8 @@ export async function createClaim(
       statement: input.statement,
       description: input.description,
       sourceId,
-      scope: "personal",
-      assertedByKind: "user",
+      scope: input.scope ?? "personal",
+      assertedByKind: input.assertedByKind ?? "user",
       statedAt: input.statedAt ?? new Date(),
       validFrom: input.validFrom,
       validTo: input.validTo,
