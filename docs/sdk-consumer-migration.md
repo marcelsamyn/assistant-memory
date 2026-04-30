@@ -12,20 +12,30 @@ has the *what to change*.
 
 ## PR 4-iii — Eval harness, observability, placeholder cleanup
 
-Sub-PRs land incrementally; entries below are appended as each ships.
+**Commits:** `7f5055d`, `36008eb`, `b86ede0`.
 
-### 4iii-a — Placeholder Person cleanup job
-
-**Commit:** _pending_.
-
-#### REST
+### REST
 
 - **NEW:** `POST /maintenance/cleanup-placeholders` — surfaces placeholder `Person` nodes (`nodeMetadata.additionalData.unresolvedSpeaker = true`) older than `olderThanDays` for cleanup-pipeline review. Request: `{ userId, olderThanDays?, limit?, triggerCleanup? }`. Response: `{ placeholderCount, candidatesFound, placeholders, seededCleanupJob, jobId? }`. Surfacing is read-only by default; pass `triggerCleanup: true` to also enqueue an iterative `cleanup-graph` job with the surfaced ids as `seedIds`.
 
-#### SDK (`@marcelsamyn/memory`)
+### SDK (`@marcelsamyn/memory`)
 
 - **NEW method:** `MemoryClient.cleanupPlaceholders(payload)` → surfacing payload.
 - **NEW exports:** `CleanupPlaceholdersRequest`, `CleanupPlaceholdersResponse`, `cleanupPlaceholdersRequestSchema`, `cleanupPlaceholdersResponseSchema`.
+
+### Server-side observability
+
+No consumer impact, but worth knowing if hosts tail logs from this service:
+
+- Eight structured events now emit as one JSON line per occurrence: `claim.inserted`, `claim.superseded`, `claim.contradicted`, `claim.retracted`, `identity.resolved` (with `decision` + `signal` + `scopeBounded`), `atlas.derived`, `profile.synthesized`, `bootstrap_context.assembled`, `transcript.ingested`. All include `userId` plus event-specific fields. If you ship logs to a downstream sink (Datadog, OpenTelemetry, etc.), you can now consume these directly without parsing free-text log lines.
+
+### Internal: regression harness
+
+A `src/evals/memory/` test harness pins eleven memory stories deterministically. CLI runners: `pnpm run eval:memory` (full suite, JSON + Markdown artifact in `eval-output/`) and `pnpm run eval:identity-thresholds` (calibration sweep). Vitest gate: `RUN_EVALS=1 pnpm run test`. Internal-only — not relevant to host integration but a useful signal that the claims contract is stable across PRs.
+
+### Migration checklist for Petals
+
+No host code changes required for PR 4-iii. If you want to proactively triage placeholder Persons created by transcript ingestion (recommended once you ship transcripts to real users), wire a periodic call to `cleanupPlaceholders({ userId, triggerCleanup: true })` — daily or weekly is fine.
 
 ---
 
