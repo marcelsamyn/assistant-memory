@@ -6,6 +6,9 @@
 -- legacy_migration source IDs and structural source_links IDs minted by 0010.
 -- Existing app-level node/claim IDs are left stable.
 
+SELECT pg_advisory_xact_lock(1777558586, 14);
+--> statement-breakpoint
+
 CREATE TEMP TABLE _legacy_source_id_rewrites ON COMMIT DROP AS
 SELECT
   "id" AS old_id,

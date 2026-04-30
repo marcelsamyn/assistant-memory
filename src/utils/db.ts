@@ -1,22 +1,52 @@
 import { env } from "./env";
-import type db from "~/db";
+import type { DrizzleDB } from "~/db";
 
-let _db: typeof db | null = null;
+let _db: DrizzleDB | null = null;
+let _dbInit: Promise<DrizzleDB> | null = null;
 
-export const useDatabase = async () => {
-  if (!_db) {
-    const db = await import("~/db");
-    const { migrate } = await import("drizzle-orm/node-postgres/migrator");
+async function runMigrations(db: DrizzleDB): Promise<void> {
+  const { migrate } = await import("drizzle-orm/node-postgres/migrator");
+  const { Client } = await import("pg");
+  const lockClient = new Client({
+    connectionString: env.DATABASE_URL,
+    ssl: false,
+  });
 
-    if (env.RUN_MIGRATIONS === "true") {
-      await migrate(db.default, {
-        migrationsFolder: "./drizzle",
-      });
-    }
-
-    _db = db.default;
+  await lockClient.connect();
+  try {
+    await lockClient.query("SELECT pg_advisory_lock($1, $2)", [1777558586, 0]);
+    await migrate(db, {
+      migrationsFolder: "./drizzle",
+    });
+  } finally {
+    await lockClient.query(
+      "SELECT pg_advisory_unlock($1, $2)",
+      [1777558586, 0],
+    );
+    await lockClient.end();
   }
-  return _db;
+}
+
+async function loadDatabase(): Promise<DrizzleDB> {
+  const db = await import("~/db");
+
+  if (env.RUN_MIGRATIONS === "true") {
+    await runMigrations(db.default);
+  }
+
+  _db = db.default;
+  return db.default;
+}
+
+export const useDatabase = async (): Promise<DrizzleDB> => {
+  if (_db) return _db;
+  if (!_dbInit) {
+    _dbInit = loadDatabase().catch((error: unknown) => {
+      _dbInit = null;
+      throw error;
+    });
+  }
+  return _dbInit;
 };
 
 /**
@@ -30,6 +60,7 @@ export const useDatabase = async () => {
  * relying on vitest's module mocks (which don't apply when the CLI script
  * `pnpm run eval:memory` runs outside a vitest worker).
  */
-export const setTestDatabase = (override: typeof db | null): void => {
+export const setTestDatabase = (override: DrizzleDB | null): void => {
   _db = override;
+  _dbInit = override ? Promise.resolve(override) : null;
 };
