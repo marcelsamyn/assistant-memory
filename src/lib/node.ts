@@ -1,5 +1,6 @@
 /** Node operations: get, get sources, update, delete. */
 import type { GetNodeResponse, GetNodeSourcesResponse } from "./schemas/node";
+import { format } from "date-fns";
 import { and, eq, or, inArray, aliasedTable, sql } from "drizzle-orm";
 import {
   nodes,
@@ -19,7 +20,8 @@ import {
 import { ensureUser } from "~/lib/ingestion/ensure-user";
 import { normalizeLabel } from "~/lib/label";
 import { getEffectiveNodeScopes } from "~/lib/node-scope";
-import { sourceService } from "~/lib/sources";
+import { ensureSystemSource, sourceService } from "~/lib/sources";
+import { ensureDayNode } from "~/lib/temporal";
 import type { NodeType, Scope } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
@@ -265,22 +267,85 @@ export async function updateNode(
   };
 }
 
-/** Delete a node by ID. Cascading FKs handle claims, embeddings, sourceLinks. */
+/**
+ * Delete a node by ID. The Postgres FK graph handles every dependent row:
+ *
+ * - Claims where the node is the **subject** or **object** are removed via
+ *   `ON DELETE CASCADE` on `claims.subject_node_id` / `claims.object_node_id`.
+ *   Those claims are gone for good — their content (statement text, scalar
+ *   `objectValue`, etc.) is not preserved.
+ * - Claims that merely **attribute provenance** to this node (i.e.
+ *   `claims.asserted_by_node_id` points at it) are kept; the column is set to
+ *   `NULL` via `ON DELETE SET NULL`. Those claims remain `active` because the
+ *   factual assertion outlives the participant pointer.
+ * - `node_metadata`, `node_embeddings`, `aliases`, and `source_links` cascade
+ *   away with the node.
+ *
+ * The caller receives counts of both effects so the deletion can be audited
+ * (`affectedClaims.cascadeDeleted` and `affectedClaims.assertedByCleared`).
+ *
+ * NOTE: a claim's `statement` is human-readable narrative — it may textually
+ * reference the deleted node by label (or even by id). That is content drift,
+ * not a referential-integrity bug; the FK contract above governs structured
+ * pointers only.
+ */
 export async function deleteNode(
   userId: string,
   nodeId: TypeId<"node">,
-): Promise<boolean> {
+): Promise<{
+  deleted: boolean;
+  affectedClaims: { cascadeDeleted: number; assertedByCleared: number };
+}> {
   const db = await useDatabase();
 
-  const result = await db
-    .delete(nodes)
-    .where(and(eq(nodes.id, nodeId), eq(nodes.userId, userId)))
-    .returning({ id: nodes.id });
+  return db.transaction(async (tx) => {
+    // Count affected claims BEFORE the delete so we can report cascade vs
+    // set-null effects accurately. Both queries are scoped to `userId` to
+    // mirror the deletion's tenancy guard.
+    const [cascadeRow] = await tx
+      .select({ count: sql<number>`count(*)::int` })
+      .from(claims)
+      .where(
+        and(
+          eq(claims.userId, userId),
+          or(
+            eq(claims.subjectNodeId, nodeId),
+            eq(claims.objectNodeId, nodeId),
+          ),
+        ),
+      );
 
-  return result.length > 0;
+    const [assertedRow] = await tx
+      .select({ count: sql<number>`count(*)::int` })
+      .from(claims)
+      .where(
+        and(eq(claims.userId, userId), eq(claims.assertedByNodeId, nodeId)),
+      );
+
+    const result = await tx
+      .delete(nodes)
+      .where(and(eq(nodes.id, nodeId), eq(nodes.userId, userId)))
+      .returning({ id: nodes.id });
+
+    const deleted = result.length > 0;
+    return {
+      deleted,
+      affectedClaims: {
+        cascadeDeleted: deleted ? (cascadeRow?.count ?? 0) : 0,
+        assertedByCleared: deleted ? (assertedRow?.count ?? 0) : 0,
+      },
+    };
+  });
 }
 
-/** Create a new node with metadata and embedding. */
+/**
+ * Create a new node with metadata and embedding, and attach it to the
+ * Temporal day node for "today" via an `OCCURRED_ON` claim sourced from the
+ * per-user manual system source. Day-node attachment preserves the
+ * temporal-graph invariant that ingestion paths uphold (see
+ * `ensureSourceNode`), so date-scoped queries like `nodeType` can find
+ * manually-created nodes the same way they find ingested ones.
+ */
 export async function createNode(
   userId: string,
   nodeType: NodeType,
@@ -322,6 +387,26 @@ export async function createNode(
       nodeId: inserted.id,
       embedding,
       modelName: "jina-embeddings-v3",
+    });
+  }
+
+  // Link to today's day node via OCCURRED_ON, mirroring `ensureSourceNode`.
+  // Skip for Temporal nodes themselves to avoid a self-link / cycle.
+  if (nodeType !== "Temporal") {
+    const now = new Date();
+    const dayNodeId = await ensureDayNode(db, userId, now);
+    const sourceId = await ensureSystemSource(db, userId, "manual");
+    await db.insert(claims).values({
+      userId,
+      predicate: "OCCURRED_ON",
+      subjectNodeId: inserted.id,
+      objectNodeId: dayNodeId,
+      statement: `${nodeType} node occurred on ${format(now, "yyyy-MM-dd")}`,
+      sourceId,
+      scope: "personal",
+      assertedByKind: "system",
+      statedAt: now,
+      status: "active",
     });
   }
 

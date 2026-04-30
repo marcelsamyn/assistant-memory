@@ -541,4 +541,100 @@ describeIfServer("node operations", () => {
       await client.end();
     }
   });
+
+  it("attaches a manually-created node to today's day node via OCCURRED_ON", async () => {
+    // Regression for the linkage gap: `/node/create` previously did not link
+    // the new node to a Temporal day node, so `/query/node-type` (which
+    // traverses one hop from the day node) returned empty for nodes created
+    // through the manual API.
+    const userId = "user_create_node_day_link";
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+    vi.doMock("~/lib/embeddings", () => ({
+      generateEmbeddings: async () => ({
+        data: [{ embedding: Array.from({ length: 1024 }, () => 0) }],
+        usage: { total_tokens: 0 },
+      }),
+    }));
+
+    try {
+      await ensureMergeTables(client);
+      // The inline `sources` table created by the first test in this file is
+      // missing optional columns referenced by Drizzle's insert. Add them so
+      // `ensureSystemSource` (used by `createNode` for the manual source)
+      // succeeds without falling back to full migrations.
+      await client.query(`
+        ALTER TABLE "sources"
+          ADD COLUMN IF NOT EXISTS "parent_source" text,
+          ADD COLUMN IF NOT EXISTS "metadata" jsonb,
+          ADD COLUMN IF NOT EXISTS "last_ingested_at" timestamp with time zone,
+          ADD COLUMN IF NOT EXISTS "deleted_at" timestamp with time zone,
+          ADD COLUMN IF NOT EXISTS "content_type" varchar(100),
+          ADD COLUMN IF NOT EXISTS "content_length" integer;
+      `);
+
+      const { createNode } = await import("./node");
+      const created = await createNode(
+        userId,
+        "Person",
+        "Lila Test Person",
+        "A person created via /node/create",
+      );
+
+      // OCCURRED_ON claim links the new node to a Temporal day node.
+      const claimRows = await client.query<{
+        subject_node_id: string;
+        object_node_id: string | null;
+        predicate: string;
+        asserted_by_kind: string;
+      }>(
+        `SELECT "subject_node_id", "object_node_id", "predicate", "asserted_by_kind"
+         FROM "claims"
+         WHERE "user_id" = $1 AND "subject_node_id" = $2 AND "predicate" = 'OCCURRED_ON'`,
+        [userId, created.id],
+      );
+      expect(claimRows.rows).toHaveLength(1);
+      const dayLinkClaim = claimRows.rows[0]!;
+      expect(dayLinkClaim.subject_node_id).toBe(created.id);
+      expect(dayLinkClaim.asserted_by_kind).toBe("system");
+      expect(dayLinkClaim.object_node_id).not.toBeNull();
+
+      // The object node is a Temporal day node labelled YYYY-MM-DD.
+      const dayNodeRows = await client.query<{
+        node_type: string;
+        label: string;
+      }>(
+        `SELECT n."node_type", m."label"
+         FROM "nodes" n
+         INNER JOIN "node_metadata" m ON m."node_id" = n."id"
+         WHERE n."id" = $1`,
+        [dayLinkClaim.object_node_id],
+      );
+      expect(dayNodeRows.rows).toHaveLength(1);
+      expect(dayNodeRows.rows[0]?.node_type).toBe("Temporal");
+      expect(dayNodeRows.rows[0]?.label).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+      // The claim is sourced from the per-user manual system source.
+      const sourceRows = await client.query<{ type: string }>(
+        `SELECT s."type"
+         FROM "claims" c
+         INNER JOIN "sources" s ON s."id" = c."source_id"
+         WHERE c."subject_node_id" = $1 AND c."predicate" = 'OCCURRED_ON'`,
+        [created.id],
+      );
+      expect(sourceRows.rows[0]?.type).toBe("manual");
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.doUnmock("~/lib/embeddings");
+      vi.resetModules();
+      await client.end();
+    }
+  });
 });
