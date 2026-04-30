@@ -1,6 +1,6 @@
 /**
- * The eleven memory regression stories. Order is significant: the runner and
- * CI artifact iterate this array in declared order so reviewers can scan the
+ * The memory regression stories. Order is significant: the runner and CI
+ * artifact iterate this array in declared order so reviewers can scan the
  * report top-down without re-sorting.
  */
 import { story01ProjectLifecycle } from "./01-project-lifecycle";
@@ -14,6 +14,11 @@ import { story08AssistantFabrication } from "./08-assistant-fabrication";
 import { story09ReferenceScopeIsolation } from "./09-reference-scope-isolation";
 import { story10MultiPartyTranscript } from "./10-multi-party-transcript";
 import { story11CrossScopeMergeRefused } from "./11-cross-scope-merge-refused";
+import { story14BootstrapBundleShape } from "./14-bootstrap-bundle-shape";
+import { story15CommitmentsLifecycle } from "./15-commitments-lifecycle";
+import { story16CleanupOpsSurface } from "./16-cleanup-ops-surface";
+import { story17TrustHierarchyMatrix } from "./17-trust-hierarchy-matrix";
+import { story18DayNodeAttachment } from "./18-day-node-attachment";
 import type { EvalFixture } from "../types";
 
 export const ALL_STORIES: readonly EvalFixture[] = [
@@ -28,4 +33,9 @@ export const ALL_STORIES: readonly EvalFixture[] = [
   story09ReferenceScopeIsolation,
   story10MultiPartyTranscript,
   story11CrossScopeMergeRefused,
+  story14BootstrapBundleShape,
+  story15CommitmentsLifecycle,
+  story16CleanupOpsSurface,
+  story17TrustHierarchyMatrix,
+  story18DayNodeAttachment,
 ];
