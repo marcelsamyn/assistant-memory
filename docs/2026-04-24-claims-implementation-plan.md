@@ -22,23 +22,29 @@ The design doc gained five concepts (predicate policy registry, scope, provenanc
 
 Existing Phase 3 (synthesis + identity + atlas) keeps its shape but gains the read-model assembly layer, which sits on top of synthesis and the registry.
 
-## Implementation Status (2026-04-26)
+## Implementation Status (2026-04-30)
 
-- **Phase 1 — schema + provenance backbone — LANDED.** Commits `0f0e04d`, `b598d59`, `a4d23fd`. Claims table, migration, typeid rewrite, alias normalization, `/claim/*` and `/alias/*` routes, system-authored claims for Atlas/Dream/day linkage. All consumers cut over.
-- **Phase 2a — claims-native extraction + lifecycle v1 + alias authoring — LANDED.** Commit `f5d7181`. LLM extracts `nodes` + `relationshipClaims` + `attributeClaims` + `aliases`; source-ref threading via `formatConversationAsXml` + `insertNewSources`; source-scoped replacement; `applyClaimLifecycle` for `HAS_STATUS` supersession; alias upsert.
-- **Phase 2b — registry + scope + provenance + tasks foundation — IN PROGRESS.** Registry, additive schema fields, registry-driven lifecycle, default scope/provenance retrieval filters, `getOpenCommitments`, `POST /commitments/open`, and MCP `list_open_commitments` are implemented in the working tree. Extraction `assertionKind`, `currentlyOpenTasks` prompt injection, and tool-description snapshots remain. The 2b.9 invalidation hook is deferred to Phase 3 (no cache to invalidate yet).
-- **Phase 3 — profile synthesis + identity upgrade + atlas derivation + read-model assemblers + MCP tools — NOT STARTED.** Existing Phase 3, expanded.
-- **Phase 4 — transcript ingestion + cleanup rewrite + full eval harness — NOT STARTED.** Existing Phase 4, expanded.
+- **Phase 1 — schema + provenance backbone — LANDED.** Claims table, migration, typeid rewrite, alias normalization, `/claim/*` and `/alias/*` routes, system-authored claims for Atlas/Dream/day linkage. Lead commits: `0f0e04d`, `b598d59`, `a4d23fd`.
+- **Phase 2a — claims-native extraction + lifecycle v1 + alias authoring — LANDED.** LLM emits `nodes` + `relationshipClaims` + `attributeClaims` + `aliases`; source-scoped replacement; `applyClaimLifecycle` for `HAS_STATUS`; alias upsert. Lead commit: `f5d7181`.
+- **Phase 2b — registry + scope + provenance + tasks foundation — LANDED.** Registry, additive schema, registry-driven lifecycle with trust rule, default scope/provenance filters in semantic search, `currentlyOpenTasks` prompt injection, `getOpenCommitments` + `POST /commitments/open` + MCP `list_open_commitments` with snapshotted description. Lead commits: `397724c`, `f65d982`, `34b78ea`, `e29f49f`, `7df0102`, `245f1ce`, `6f6a58e`, `c709e68`, `8c69e9d`.
+- **Phase 3 — profile synthesis + identity upgrade + atlas derivation + read-model assemblers + MCP tools — LANDED.** PR 3-i: profile synthesis + scope-bounded four-signal identity resolution + background re-eval (`42fcc2b`, `c4eb446`, `1723b16`, `617a7c6`). PR 3-ii: subject-type-aware policy, registry-driven atlas, bootstrap context bundle, node card synthesis (`1436046`, `3f78288`, `28f1fbe`, `fe0ad01`). PR 3-iii: card-shaped `/context/search`, snake_case MCP surface (`bootstrap_memory` / `search_memory` / `search_reference` / `get_entity`), SDK rebuild (`ed2fcf8`, `ff9e6f0`, `43119f3`, `8ad57a5`).
+- **Phase 4 — transcript ingestion + cleanup rewrite + full eval harness — LANDED.** PR 4-i: scope-bounded dedup sweep + cleanup operation vocabulary + ContextBundle-driven cleanup prompt (`2b4d63e`, `f4c0341`, `53fa7b1`, `24e06bb`). PR 4-ii: `userSelfAliases` config + `POST /transcript/ingest` with speaker resolution and provenance-aware extraction (`b4ac6e1`, `7a13dfe`, `a15073e`). PR 4-iii: `cleanupPlaceholders` job + structured `logEvent` observability + 11-story regression harness with threshold calibration (`7f5055d`, `36008eb`, `b86ede0`).
 
-## Inventory Snapshot (current state, partial 2b)
+## Inventory Snapshot (current state)
 
-- `claims`, `claim_embeddings`, `scope`, `assertedByKind`, `assertedByNodeId`, `supersededByClaimId`, and `contradictedByClaimId` schemas live; `aliases.normalized_alias_text` + unique constraint live.
-- Extraction emits `relationshipClaims`, `attributeClaims`, `aliases` (`src/lib/extract-graph.ts`). `assertionKind` is **not** yet emitted; speaker map is **not** yet plumbed; `currentlyOpenTasks` injection is **not** yet plumbed.
-- Predicate-policy registry exists; lifecycle handles registry-driven `single_current_value` predicates including `HAS_STATUS` and `HAS_TASK_STATUS`.
+- `claims`, `claim_embeddings`, `scope`, `assertedByKind`, `assertedByNodeId`, `supersededByClaimId`, `contradictedByClaimId` schemas live; `aliases.normalized_alias_text` + unique constraint live.
+- Extraction emits `relationshipClaims`, `attributeClaims`, `aliases`, and per-claim `assertionKind`; transcript path threads `speakerMap` through `extractGraph` and stamps `assertedByNodeId` for non-self speakers (`src/lib/extract-graph.ts`).
+- Predicate-policy registry exists with subject-type overrides; lifecycle handles registry-driven `single_current_value` predicates (including `HAS_STATUS`, `HAS_TASK_STATUS`, and `OWNED_BY` / `DUE_ON` on Tasks) with the `assistant_inferred`-cannot-supersede-`user` trust rule.
 - Default semantic claim, one-hop, and node search paths exclude reference-scope and assistant-inferred personal claims unless explicitly opted in.
-- Full context bundles do not exist yet. The first read model exists: `getOpenCommitments` with `POST /commitments/open` and MCP `list_open_commitments`. Atlas is still a single artifact (`src/lib/atlas.ts`, `src/lib/jobs/atlas-user.ts`).
-- Manual API `/claim/*`, `/alias/*` live; `/transcript/ingest` does not exist.
-- MCP server (`src/lib/mcp/mcp-server.ts`) exposes existing query tools plus `list_open_commitments`; no `bootstrap_memory` or `search_reference` tools yet.
+- Atlas is registry-driven via claim-derived synthesis (`src/lib/atlas.ts`); profile synthesis rewrites `node_metadata.description` from active attribute claims (`src/lib/jobs/profile-synthesis.ts`).
+- Identity resolution (`src/lib/identity-resolution.ts`) covers signals 1–4 (canonical label, alias, scope-bounded embedding similarity, claim-profile compatibility) with decision trace.
+- Bootstrap context bundle assembler (`src/lib/context/assemble-bootstrap-context.ts`) emits sections `pinned`, `atlas`, `open_commitments`, `recent_supersessions`, `preferences`, with per-user cache and invalidation hook wired from lifecycle. Node card synthesis (`src/lib/context/node-card.ts`) feeds `searchMemory` / `searchReference` / `get_entity`.
+- MCP server (`src/lib/mcp/mcp-server.ts`) exposes `bootstrap_memory`, `search_memory`, `search_reference`, `get_entity`, `list_open_commitments`; tool descriptions pinned via inline snapshots.
+- SDK (`src/sdk/memory-client.ts`) exposes `bootstrapMemory`, `contextSearch` (covers personal + reference via `scope`), `ingestTranscript`, `setUserSelfAliases`, `cleanupPlaceholders`, plus pre-existing methods. No dedicated `searchReference` or `getOpenCommitments` SDK wrappers — callers use `contextSearch({ scope: 'reference' })` and `POST /commitments/open` directly.
+- Cleanup pipeline consumes `getConversationBootstrapContext` and emits the new operation vocabulary: `merge_nodes`, `delete_node`, `retract_claim`, `contradict_claim`, `add_claim`, `add_alias`, `remove_alias`, `promote_assertion`, `create_node` (`src/lib/jobs/cleanup-graph.ts`, `src/lib/jobs/cleanup-operations.ts`).
+- Transcript ingestion live at `POST /transcript/ingest` with placeholder-Person creation (`additionalData.unresolvedSpeaker = true`); `POST /maintenance/cleanup-placeholders` surfaces aged placeholders.
+- Observability: `src/lib/observability/log.ts` with wired events `claim.inserted`, `claim.superseded`, `claim.contradicted`, `claim.retracted`, `identity.resolved`, `identity.cross_scope_merge_refused`, `atlas.derived`, `profile.synthesized`, `bootstrap_context.assembled`, `transcript.ingested`.
+- Eval harness at `src/evals/memory/` exercises 11 regression stories deterministically; threshold-calibration sub-harness sweeps identity thresholds. CLI: `pnpm run eval:memory`, `pnpm run eval:identity-thresholds`.
 
 ---
 
