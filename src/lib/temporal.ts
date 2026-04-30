@@ -6,6 +6,7 @@ import * as schema from "~/db/schema";
 import { nodeEmbeddings, nodeMetadata, nodes } from "~/db/schema";
 import { NodeTypeEnum } from "~/types/graph";
 import { type TypeId } from "~/types/typeid";
+import { shouldSkipEmbeddingPersistence } from "~/utils/test-overrides";
 
 type Database = NodePgDatabase<typeof schema>;
 
@@ -47,26 +48,11 @@ export async function ensureDayNode(
   }
 
   const nodeDescription = `Represents the day ${dateLabel}`;
+  const skipEmbedding = shouldSkipEmbeddingPersistence();
 
-  const embeddingContent = `${dateLabel}: ${nodeDescription}`;
-  const embeddingsResult = await generateEmbeddings({
-    input: [embeddingContent],
-    model: "jina-embeddings-v3",
-    truncate: true,
-  });
-
-  if (
-    !embeddingsResult ||
-    !Array.isArray(embeddingsResult.data) ||
-    embeddingsResult.data.length === 0 ||
-    !embeddingsResult.data[0] ||
-    !embeddingsResult.data[0].embedding
-  ) {
-    throw new Error(
-      `Failed to generate valid embedding for day node: ${dateLabel}`,
-    );
-  }
-  const nodeEmbedding = embeddingsResult.data[0].embedding;
+  const nodeEmbedding = skipEmbedding
+    ? null
+    : await generateDayNodeEmbedding(dateLabel, nodeDescription);
 
   try {
     const [insertedNode] = await db
@@ -91,11 +77,13 @@ export async function ensureDayNode(
         label: dateLabel,
         description: nodeDescription,
       });
-      await tx.insert(nodeEmbeddings).values({
-        nodeId: actualNodeId,
-        embedding: nodeEmbedding,
-        modelName: "jina-embeddings-v3",
-      });
+      if (nodeEmbedding) {
+        await tx.insert(nodeEmbeddings).values({
+          nodeId: actualNodeId,
+          embedding: nodeEmbedding,
+          modelName: "jina-embeddings-v3",
+        });
+      }
     });
 
     return actualNodeId;
@@ -103,4 +91,24 @@ export async function ensureDayNode(
     console.error(`Failed to create day node ${dateLabel}:`, error);
     throw new Error(`Database operation failed for day node ${dateLabel}`);
   }
+}
+
+async function generateDayNodeEmbedding(
+  dateLabel: string,
+  nodeDescription: string,
+): Promise<number[]> {
+  const embeddingContent = `${dateLabel}: ${nodeDescription}`;
+  const embeddingsResult = await generateEmbeddings({
+    input: [embeddingContent],
+    model: "jina-embeddings-v3",
+    truncate: true,
+  });
+
+  const embedding = embeddingsResult?.data?.[0]?.embedding;
+  if (!embedding) {
+    throw new Error(
+      `Failed to generate valid embedding for day node: ${dateLabel}`,
+    );
+  }
+  return embedding;
 }

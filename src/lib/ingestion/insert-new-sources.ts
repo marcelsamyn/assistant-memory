@@ -3,6 +3,7 @@ import { sources } from "~/db/schema";
 import { sourceService, type SourceCreateInput } from "~/lib/sources";
 import { Scope, SourceType } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
+import { getSourceServiceOverride } from "~/utils/test-overrides";
 
 export interface SourceInput {
   externalId: string;
@@ -79,9 +80,11 @@ export async function insertNewSources(params: {
     return input;
   });
 
-  // Delegate insertion & storage
+  // Delegate insertion & storage. Eval harness can swap in a SQL-only stub
+  // via `setSourceServiceOverride` so transcript ingestion runs without MinIO.
+  const service = getSourceServiceOverride() ?? sourceService;
   const { successes: newInternalIds, failures } =
-    await sourceService.insertMany(childInputs);
+    await service.insertMany(childInputs);
   if (failures.length) {
     console.warn("Some sources failed to archive:", failures);
   }

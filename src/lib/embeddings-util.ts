@@ -4,6 +4,7 @@ import { nodeEmbeddings, claimEmbeddings } from "~/db/schema";
 import { claimEmbeddingText } from "~/lib/claim";
 import type { ClaimStatus, Predicate } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
+import { shouldSkipEmbeddingPersistence } from "~/utils/test-overrides";
 
 export interface EmbeddableNode {
   id: TypeId<"node">;
@@ -28,6 +29,7 @@ export async function generateAndInsertNodeEmbeddings(
   db: DrizzleDB,
   nodes: EmbeddableNode[],
 ) {
+  if (shouldSkipEmbeddingPersistence()) return;
   const validNodes = nodes.filter((n) => n.label && n.label.trim().length > 0);
   if (validNodes.length === 0) return;
 
@@ -67,6 +69,7 @@ export async function generateAndInsertClaimEmbeddings(
   db: DrizzleDB,
   claims: EmbeddableClaim[],
 ) {
+  if (shouldSkipEmbeddingPersistence()) return;
   if (claims.length === 0) return;
 
   const embeddingInputs = claims.map((claim) =>

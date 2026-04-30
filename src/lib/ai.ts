@@ -5,8 +5,11 @@ import {
   ChatCompletionUserMessageParam,
 } from "openai/resources.mjs";
 import { z } from "zod";
+import { getExtractionClientOverride } from "~/utils/test-overrides";
 
 export async function createCompletionClient(userId: string): Promise<OpenAI> {
+  const override = getExtractionClientOverride();
+  if (override) return override as OpenAI;
   const { OpenAI } = await import("openai");
   return new OpenAI({
     apiKey: env.MEMORY_OPENAI_API_KEY,

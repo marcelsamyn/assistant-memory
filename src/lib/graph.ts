@@ -36,6 +36,7 @@ import {
 } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
+import { shouldSkipSemanticSearch } from "~/utils/test-overrides";
 
 /** Node metadata with similarity */
 interface SearchResultBase {
@@ -170,6 +171,7 @@ function nodeHasScopeSupport(userId: string, scope: Scope): SQL<boolean> {
 export async function findSimilarNodes(
   opts: FindSimilarNodesOptions,
 ): Promise<NodeSearchResult[]> {
+  if (shouldSkipSemanticSearch()) return [];
   const {
     userId,
     limit = 10,
