@@ -166,14 +166,66 @@ Hosts that did string-match on the old XML output need to switch to JSON parsing
 
 ---
 
-## Earlier PRs
+## Phase 3-i / 3-ii — Profile synthesis + identity upgrade + Atlas rewrite
 
-Earlier consumer-impacting changes are recorded as commit messages on `main`
-(`git log --oneline`). Selected highlights, in case a consumer is jumping
-forward several phases:
+**Commits:** `42fcc2b`, `c4eb446`, `3f78288`, `1436046`, `28f1fbe`, `fe0ad01`, `43119f3`.
 
-- `1436046` — `(predicate, subjectType)` cardinality axis. No SDK change; consumers reading task ownership see at most one current `OWNED_BY` / `DUE_ON` per Task.
-- `3f78288` — Atlas now claim-derived. The Atlas REST surface is unchanged but content quality improves; consumers that cached old Atlas output should evict.
-- `28f1fbe` — `getConversationBootstrapContext` exists internally; not yet on the SDK as a method (added via the `bootstrap_memory` MCP tool in `ff9e6f0`).
-- `fe0ad01` — `NodeCard` synthesis exists internally; exposed via SDK / MCP in `ff9e6f0`.
-- `43119f3` — SDK build/exports fix. If you saw missing exports before this, re-pin to a build at or after this commit.
+Mostly internal quality improvements; consumer surface mostly stable.
+
+- `3f78288` — **Atlas is now claim-derived.** REST shape (`POST /query/atlas`) unchanged but content quality changed materially. Consumers caching Atlas output should evict on deploy.
+- `1436046` — `(predicate, subjectType)` cardinality axis. No SDK change; consumers reading Task ownership now see at most one current `OWNED_BY` / `DUE_ON` per Task at any time.
+- `c4eb446` — Identity resolution rewritten with four-signal trace (canonical label / alias / embedding / claim profile) and is scope-bounded — cross-scope merges no longer happen. Visible only in extraction outcomes; no API change.
+- `42fcc2b` — Profile synthesis job rewrites node descriptions from active claims. `nodeMetadata.description` content quality changes; shape is unchanged.
+- `28f1fbe`, `fe0ad01` — Internal `ContextBundle` and `NodeCard` synthesis layers. Exposed externally in PR 3-iii.
+- `43119f3` — SDK build/exports fix. Pin to a build at or after this commit; earlier builds had missing type re-exports.
+
+---
+
+## Phase 2b — Registry + scope + provenance + tasks foundation
+
+**Commits:** `397724c`, `f65d982`, `34b78ea`, `7df0102`, `e29f49f`, `245f1ce`, `c709e68`, `6f6a58e`, `8c69e9d`, `c8fd55e`, `30f50d1`.
+
+This phase introduced the columns and read paths that PRs 3-iii / 4-* build on. Several **default-behavior changes** that existing consumers may notice:
+
+### REST
+
+- **NEW:** `POST /commitments/open` — returns the user's currently open Tasks with `HAS_TASK_STATUS in ('pending', 'in_progress')`. Request: `{ userId, ownedBy?, dueBefore? }`. Response: `[{ taskId, label, owner, dueOn, statedAt, sourceId }]`. Use this instead of inferring open work from search hits — the read model is lifecycle-aware.
+- **CHANGED (additive but behavior-shifting):** `POST /query/search` default response now **excludes** claims with `assertedByKind = "assistant_inferred"` and **excludes** reference-scope nodes/claims unless explicitly opted in. Existing callers that relied on broader defaults will see fewer results. To restore prior behavior, pass `includeAssistantInferred: true` and/or `includeReference: true`. This is the recommended default — assistant-fabricated content was always low-confidence — but worth knowing if you are doing diff-based regression on search output.
+- **CHANGED:** `POST /ingest/document` accepts `scope: "personal" | "reference"`. Default is `personal`; reference-scope ingestion is required for curated material (books, papers) to keep it isolated from personal context.
+- **NEW raw-claim columns** visible on `/node/get`, `/node/neighborhood`, `/query/graph`, `/query/timeline`, `/query/search`: `scope`, `assertedByKind`, `assertedByNodeId`, `supersededByClaimId`, `contradictedByClaimId`, `validFrom`, `validTo`. Additive; old callers ignoring unknown fields are unaffected.
+
+### MCP
+
+- **NEW tool:** `list_open_commitments` (description pinned in `tool-descriptions.test.ts`). Use it before answering about "open / pending / in-progress / next / outstanding / completed / abandoned" work. The model is instructed to skip the call if a host already rendered an `open_commitments` section.
+
+### Schema additions
+
+- `claims.scope` (`personal` | `reference`). Defaults to `personal`. All existing rows backfilled.
+- `claims.assertedByKind` (`user` | `user_confirmed` | `participant` | `document_author` | `assistant_inferred` | `system`). Backfilled.
+- `claims.assertedByNodeId` (nullable, FK to `nodes`). Required when `assertedByKind = 'participant'` (CHECK constraint). Used in PR 4-ii.
+- `claims.supersededByClaimId`, `claims.contradictedByClaimId` (nullable, FK to `claims`). Set by lifecycle/cleanup paths.
+- New predicates: `HAS_TASK_STATUS` (attribute, single-current-value with supersede), `DUE_ON` (relationship, single-current-value on Task subjects).
+- New node type: `Task`.
+- `aliases.normalized_alias_text` column with `(userId, normalized_alias_text, canonical_node_id)` unique constraint. Migration is forward-only; existing alias rows backfilled.
+
+### Migration checklist for Petals
+
+1. If any host code reads search/claim output and depends on seeing `assistant_inferred` content, pass `includeAssistantInferred: true` explicitly. Otherwise, no change needed — the new defaults are stricter and safer.
+2. If you ingest reference material (books, papers, curated docs), pass `scope: "reference"` on `POST /ingest/document` so it doesn't pollute personal recall.
+3. If you render task/commitment UI, prefer `POST /commitments/open` over scraping search results. The endpoint returns lifecycle-aware data.
+4. If you render raw claim data anywhere, the new columns above are additive — display them or ignore them; nothing breaks.
+
+---
+
+## Phase 1 — Claims table + typeid rewrite + /claim/\* and /alias/\* routes
+
+**Commits:** `0f0e04d`, `b598d59`, `a4d23fd`, `f5d7181`.
+
+Foundational schema cutover from the old `edges`/`nodes` model to a `claims`/`nodes`/`aliases` model. If you are integrating with a build at or after PR 3-iii (which is the current SDK floor), you already have these. Recorded here for completeness:
+
+- **REMOVED:** `POST /edge/create`, `POST /edge/update`, `POST /edge/delete`, `POST /edge/get`. Calls return 404.
+- **NEW:** `POST /claim/create`, `POST /claim/update`, `POST /claim/delete` and `POST /alias/create`, `POST /alias/delete`. Manual write APIs for claims/aliases. The `/claim/create` route hard-codes `assertedByKind = 'user'` and `scope = 'personal'` — manual API callers cannot inject other provenance kinds.
+- **Schema:** all entity ids are now `typeid`-prefixed strings (`nod_*`, `clm_*`, `src_*`, `als_*`, etc.). Old numeric ids are gone. Migration `0009` performs the rename + backfill in a single transactional step per user.
+- **Extraction:** Phase 2a (`f5d7181`) made the LLM emit `relationshipClaims`, `attributeClaims`, and `aliases` directly. Source-ref threading is via formatted XML; source-scoped replacement makes re-ingestion idempotent. Internal change; the public `/ingest/conversation` and `/ingest/document` request shapes are unchanged.
+
+---
