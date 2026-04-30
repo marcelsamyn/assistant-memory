@@ -7,19 +7,6 @@ import {
 import { typeIdSchema } from "../../types/typeid.js";
 import { z } from "zod";
 
-const claimObjectSchema = z
-  .object({
-    objectNodeId: typeIdSchema("node").optional(),
-    objectValue: z.string().min(1).optional(),
-  })
-  .refine(
-    (value) =>
-      (value.objectNodeId === undefined) !== (value.objectValue === undefined),
-    {
-      message: "Exactly one of objectNodeId or objectValue is required",
-    },
-  );
-
 export const claimSchema = z.object({
   id: typeIdSchema("claim"),
   userId: z.string(),
@@ -43,26 +30,44 @@ export const claimSchema = z.object({
   updatedAt: z.coerce.date(),
 });
 
+export const createdClaimSchema = claimSchema.extend({
+  subjectLabel: z.string().nullable(),
+  objectLabel: z.string().nullable(),
+});
+
+export const createClaimRequestShape = {
+  userId: z.string(),
+  subjectNodeId: typeIdSchema("node"),
+  predicate: PredicateEnum,
+  statement: z.string().min(1),
+  sourceId: typeIdSchema("source").optional(),
+  description: z.string().optional(),
+  statedAt: z.coerce.date().optional(),
+  validFrom: z.coerce.date().optional(),
+  validTo: z.coerce.date().optional(),
+  objectNodeId: typeIdSchema("node").optional(),
+  objectValue: z.string().min(1).optional(),
+};
+
 export const createClaimRequestSchema = z
-  .object({
-    userId: z.string(),
-    subjectNodeId: typeIdSchema("node"),
-    predicate: PredicateEnum,
-    statement: z.string().min(1),
-    sourceId: typeIdSchema("source").optional(),
-    description: z.string().optional(),
-    statedAt: z.coerce.date().optional(),
-    validFrom: z.coerce.date().optional(),
-    validTo: z.coerce.date().optional(),
-  })
-  .and(claimObjectSchema);
+  .object(createClaimRequestShape)
+  .refine(
+    (value) =>
+      (value.objectNodeId === undefined) !== (value.objectValue === undefined),
+    {
+      message: "Exactly one of objectNodeId or objectValue is required",
+    },
+  );
+
+export const createClaimResponseSchema = z.object({
+  claim: createdClaimSchema,
+});
 
 export const claimResponseSchema = z.object({
   claim: claimSchema,
 });
 
-export const createClaimResponseSchema = claimResponseSchema;
-
+export type ClaimResponse = z.infer<typeof claimResponseSchema>;
 export type CreateClaimRequest = z.infer<typeof createClaimRequestSchema>;
 export type CreateClaimResponse = z.infer<typeof createClaimResponseSchema>;
 

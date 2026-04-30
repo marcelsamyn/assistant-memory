@@ -1,10 +1,13 @@
 import { defineEventHandler } from "h3";
-import { findDayNode, findOneHopNodes } from "~/lib/graph";
+import { findDayNode, findOneHopNodes, type OneHopNode } from "~/lib/graph";
 import {
+  type QueryNodeTypeResponse,
   queryNodeTypeRequestSchema,
   queryNodeTypeResponseSchema,
 } from "~/lib/schemas/query-node-type";
 import { useDatabase } from "~/utils/db";
+
+type LabeledOneHopNode = OneHopNode & { label: string };
 
 export default defineEventHandler(async (event) => {
   const { userId, types, date, includeFormattedResult } =
@@ -26,15 +29,23 @@ export default defineEventHandler(async (event) => {
   const connections = await findOneHopNodes(db, userId, [dayNodeId]);
 
   // Filter by requested types
-  const filtered = connections.filter((rec) => types.includes(rec.type));
+  const filtered = connections.filter(
+    (rec): rec is LabeledOneHopNode =>
+      rec.label !== null && types.includes(rec.type),
+  );
 
   // Deduplicate by nodeId
   const uniqueMap = new Map<string, (typeof filtered)[0]>();
   filtered.forEach((rec) => uniqueMap.set(rec.id, rec));
-  const uniqueRecords = Array.from(uniqueMap.values()).map((rec) => ({
+  const uniqueRecords: QueryNodeTypeResponse["nodes"] = Array.from(
+    uniqueMap.values(),
+  ).map((rec) => ({
     id: rec.id,
-    type: rec.type,
-    metadata: { label: rec.label!, description: rec.description || undefined },
+    nodeType: rec.type,
+    metadata: {
+      label: rec.label,
+      ...(rec.description !== null && { description: rec.description }),
+    },
   }));
 
   // Optional markdown formatting
@@ -43,7 +54,7 @@ export default defineEventHandler(async (event) => {
     formattedResult = `# Nodes of types ${types.join(", ")} on ${date}\n\n`;
     const byType = uniqueRecords.reduce(
       (acc, n) => {
-        (acc[n.type] = acc[n.type] || []).push(n);
+        (acc[n.nodeType] = acc[n.nodeType] || []).push(n);
         return acc;
       },
       {} as Record<string, typeof uniqueRecords>,

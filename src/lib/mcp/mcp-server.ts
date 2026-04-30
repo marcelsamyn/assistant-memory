@@ -1,6 +1,7 @@
 import { SSEServerTransport } from "./sse";
 import {
   BOOTSTRAP_MEMORY_DESCRIPTION,
+  CREATE_CLAIM_DESCRIPTION,
   GET_ENTITY_DESCRIPTION,
   LIST_OPEN_COMMITMENTS_DESCRIPTION,
   SEARCH_MEMORY_DESCRIPTION,
@@ -11,11 +12,12 @@ import {
   ResourceTemplate,
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { createClaim } from "~/lib/claim";
 import { getConversationBootstrapContext } from "~/lib/context/assemble-bootstrap-context";
 import { getNodeCard } from "~/lib/context/node-card";
+import { nodeCardSchema } from "~/lib/context/node-card-types";
 import { searchMemory, searchReference } from "~/lib/context/search-cards";
 import { contextBundleSchema } from "~/lib/context/types";
-import { nodeCardSchema } from "~/lib/context/node-card-types";
 import { saveMemory } from "~/lib/ingestion/save-document";
 import {
   getNodeById,
@@ -25,6 +27,11 @@ import {
 } from "~/lib/node";
 import { queryDayMemories } from "~/lib/query/day";
 import { getOpenCommitments } from "~/lib/query/open-commitments";
+import {
+  createClaimRequestShape,
+  createClaimRequestSchema,
+  createClaimResponseSchema,
+} from "~/lib/schemas/claim";
 import {
   bootstrapMemoryRequestSchema,
   getEntityRequestSchema,
@@ -223,6 +230,38 @@ server.tool(
         },
       ],
     };
+  },
+);
+
+server.tool(
+  "create_claim",
+  CREATE_CLAIM_DESCRIPTION,
+  createClaimRequestShape,
+  async (params) => {
+    try {
+      const input = createClaimRequestSchema.parse(params);
+      const claim = await createClaim(input);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              createClaimResponseSchema.parse({ claim }),
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("not found")) {
+        return {
+          content: [{ type: "text", text: e.message }],
+          isError: true,
+        };
+      }
+      throw e;
+    }
   },
 );
 

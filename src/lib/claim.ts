@@ -1,6 +1,6 @@
 /** Claim operations: create, retract, delete. */
 import { and, eq, inArray } from "drizzle-orm";
-import { claims, claimEmbeddings, nodes } from "~/db/schema";
+import { claims, claimEmbeddings, nodeMetadata, nodes } from "~/db/schema";
 import { applyClaimLifecycle, fetchClaimsByIds } from "~/lib/claims/lifecycle";
 import { generateEmbeddings } from "~/lib/embeddings";
 import { logEvent } from "~/lib/observability/log";
@@ -17,6 +17,11 @@ import { useDatabase } from "~/utils/db";
 type Database = Awaited<ReturnType<typeof useDatabase>>;
 
 export type ClaimSelect = typeof claims.$inferSelect;
+
+export type CreatedClaim = ClaimSelect & {
+  subjectLabel: string | null;
+  objectLabel: string | null;
+};
 
 export type CreateClaimInput = {
   userId: string;
@@ -53,22 +58,25 @@ export function claimEmbeddingText(claim: {
   return `${claim.predicate} ${claim.statement} status=${claim.status} statedAt=${claim.statedAt.toISOString()}`;
 }
 
-async function validateNodeOwnership(
+async function fetchOwnedNodeLabels(
   db: Database,
   userId: string,
   nodeIds: TypeId<"node">[],
-): Promise<void> {
+): Promise<Map<TypeId<"node">, string | null>> {
   const uniqueNodeIds = [...new Set(nodeIds)];
-  if (uniqueNodeIds.length === 0) return;
+  if (uniqueNodeIds.length === 0) return new Map();
 
   const found = await db
-    .select({ id: nodes.id })
+    .select({ id: nodes.id, label: nodeMetadata.label })
     .from(nodes)
+    .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
     .where(and(eq(nodes.userId, userId), inArray(nodes.id, uniqueNodeIds)));
 
   if (found.length !== uniqueNodeIds.length) {
     throw new Error("One or more nodes not found");
   }
+
+  return new Map(found.map((node) => [node.id, node.label ?? null]));
 }
 
 async function insertClaimEmbedding(
@@ -97,7 +105,7 @@ async function insertClaimEmbedding(
 /** Create a sourced claim. Uses the per-user manual source when sourceId is omitted. */
 export async function createClaim(
   input: CreateClaimInput,
-): Promise<ClaimSelect> {
+): Promise<CreatedClaim> {
   const db = await useDatabase();
   const hasObjectNode = input.objectNodeId !== undefined;
   const hasObjectValue = input.objectValue !== undefined;
@@ -105,7 +113,7 @@ export async function createClaim(
     throw new Error("Exactly one of objectNodeId or objectValue is required");
   }
 
-  await validateNodeOwnership(db, input.userId, [
+  const nodeLabels = await fetchOwnedNodeLabels(db, input.userId, [
     input.subjectNodeId,
     ...(input.objectNodeId !== undefined ? [input.objectNodeId] : []),
   ]);
@@ -154,7 +162,14 @@ export async function createClaim(
   if (!finalized) throw new Error("Failed to fetch created claim");
 
   await insertClaimEmbedding(db, finalized);
-  return finalized;
+  return {
+    ...finalized,
+    subjectLabel: nodeLabels.get(input.subjectNodeId) ?? null,
+    objectLabel:
+      input.objectNodeId !== undefined
+        ? (nodeLabels.get(input.objectNodeId) ?? null)
+        : null,
+  };
 }
 
 /** Hard-delete a claim by ID. */

@@ -1,11 +1,12 @@
-import { describe, expect, it } from "vitest";
 import {
   BOOTSTRAP_MEMORY_DESCRIPTION,
+  CREATE_CLAIM_DESCRIPTION,
   GET_ENTITY_DESCRIPTION,
   LIST_OPEN_COMMITMENTS_DESCRIPTION,
   SEARCH_MEMORY_DESCRIPTION,
   SEARCH_REFERENCE_DESCRIPTION,
 } from "./tool-descriptions";
+import { describe, expect, it } from "vitest";
 
 /**
  * Pin model-facing MCP tool descriptions so silent edits are caught in CI.
@@ -43,6 +44,12 @@ describe("MCP tool descriptions", () => {
   it("pins get_entity description", () => {
     expect(GET_ENTITY_DESCRIPTION).toMatchInlineSnapshot(
       `"Returns a single entity card by node id: current facts, preferences and goals, open commitments (for people), recent evidence, and aliases. Use when the user names a specific person, place, or concept whose id you already have from bootstrap_memory or search_memory and you need the full picture before answering."`,
+    );
+  });
+
+  it("pins create_claim description", () => {
+    expect(CREATE_CLAIM_DESCRIPTION).toMatchInlineSnapshot(
+      `"Creates a claim between an existing subject node and either an existing object node or a scalar object value. Returns the created claim plus subjectLabel and objectLabel so callers can immediately reflect the new relationship in the UI."`,
     );
   });
 });

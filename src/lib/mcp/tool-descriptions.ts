@@ -27,3 +27,6 @@ export const SEARCH_REFERENCE_DESCRIPTION =
 
 export const GET_ENTITY_DESCRIPTION =
   "Returns a single entity card by node id: current facts, preferences and goals, open commitments (for people), recent evidence, and aliases. Use when the user names a specific person, place, or concept whose id you already have from bootstrap_memory or search_memory and you need the full picture before answering.";
+
+export const CREATE_CLAIM_DESCRIPTION =
+  "Creates a claim between an existing subject node and either an existing object node or a scalar object value. Returns the created claim plus subjectLabel and objectLabel so callers can immediately reflect the new relationship in the UI.";
