@@ -9,7 +9,12 @@ import { TypeId } from "~/types/typeid";
 import { env } from "~/utils/env";
 
 const metadataSchema = z
-  .object({ rawContent: z.string().optional() })
+  .object({
+    rawContent: z.string().optional(),
+    /** Reference attribution surfaced via NodeCard.reference for reference-scope sources. */
+    author: z.string().min(1).optional(),
+    title: z.string().min(1).optional(),
+  })
   .catchall(z.unknown());
 type Metadata = z.infer<typeof metadataSchema>;
 

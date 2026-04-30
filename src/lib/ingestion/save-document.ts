@@ -17,6 +17,8 @@ export async function saveMemory(
     scope: req.document.scope,
     timestamp: req.document.timestamp ?? new Date(),
     updateExisting: req.updateExisting ?? false,
+    author: req.document.author,
+    title: req.document.title,
   });
 
   return {

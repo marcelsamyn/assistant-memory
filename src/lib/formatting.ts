@@ -72,6 +72,38 @@ ${xmlItems}
 }
 
 /**
+ * Renders a node label with its alias list as `Label (also: a, b)`. Aliases
+ * are deduplicated case-insensitively against the canonical label and against
+ * each other, preserving input order. The canonical label is never repeated
+ * inside the parenthetical. Used by NodeCard rendering, search-result XML, and
+ * any consumer that needs a single human-readable string for an entity.
+ */
+export function formatLabelWithAliases(
+  label: string,
+  aliases: readonly string[] = [],
+): string {
+  const canonical = label.trim();
+  const seen = new Set<string>();
+  if (canonical.length > 0) seen.add(canonical.toLowerCase());
+
+  const extras: string[] = [];
+  for (const alias of aliases) {
+    const trimmed = alias.trim();
+    if (trimmed.length === 0) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    extras.push(trimmed);
+  }
+
+  if (canonical.length === 0) {
+    return extras[0] ?? "";
+  }
+  if (extras.length === 0) return canonical;
+  return `${canonical} (also: ${extras.join(", ")})`;
+}
+
+/**
  * Formats a list of label/description pairs as XML
  */
 export function formatLabelDescList(

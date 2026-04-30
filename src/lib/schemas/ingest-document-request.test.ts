@@ -20,4 +20,28 @@ describe("ingestDocumentRequestSchema", () => {
     expect(parsed.updateExisting).toBe(true);
     expect(parsed.document.scope).toBe("reference");
   });
+
+  it("accepts optional author/title for reference attribution", () => {
+    const parsed = ingestDocumentRequestSchema.parse({
+      userId: "u1",
+      document: {
+        id: "d1",
+        content: "text",
+        scope: "reference",
+        author: "Jane Doe",
+        title: "How To Memory",
+      },
+    });
+    expect(parsed.document.author).toBe("Jane Doe");
+    expect(parsed.document.title).toBe("How To Memory");
+  });
+
+  it("rejects empty-string author/title", () => {
+    expect(() =>
+      ingestDocumentRequestSchema.parse({
+        userId: "u1",
+        document: { id: "d1", content: "text", author: "" },
+      }),
+    ).toThrow();
+  });
 });

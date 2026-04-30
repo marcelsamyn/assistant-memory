@@ -1,14 +1,20 @@
 /**
- * Node card synthesis — assembles a `NodeCard` for a single node id.
+ * Node card synthesis — assembles a `NodeCard` for one or more node ids.
  *
- * Used by Phase 3 read APIs (`getEntityContext`, search-as-cards). Pulls the
- * node + metadata, derives scope from source/claim support, batches alias and
- * object-label lookups, and partitions active claims by the predicate policy
- * registry into `currentFacts` (single_current_value) and `preferencesGoals`
- * (multi_value attributes that feed the atlas). Trust filter mirrors profile
- * synthesis: `assertedByKind ∈ {user, user_confirmed, system}`.
+ * Used by Phase 3 read APIs (`getEntityContext`, `searchMemory`,
+ * `searchReference`). Pulls the node + metadata, derives scope from
+ * source/claim support, batches alias and object-label lookups, and
+ * partitions active claims by the predicate policy registry into
+ * `currentFacts` (single_current_value) and `preferencesGoals` (multi_value
+ * attributes that feed the atlas). Trust filter mirrors profile synthesis:
+ * `assertedByKind ∈ {user, user_confirmed, system}`.
  *
- * Common aliases: NodeCard, getNodeCard, get_entity, node card synthesis.
+ * `getNodeCards` is the batch entry point — search APIs flow N nodeIds
+ * through one round of queries instead of N×6. `getNodeCard` is a thin
+ * single-id wrapper.
+ *
+ * Common aliases: NodeCard, getNodeCard, getNodeCards, get_entity, node card
+ * synthesis, batch node card.
  */
 import { and, desc, eq, exists, inArray, or, sql } from "drizzle-orm";
 import { listAliasesForNodeIds } from "~/lib/alias";
@@ -45,6 +51,11 @@ import type {
 export interface GetNodeCardParams {
   userId: string;
   nodeId: TypeId<"node">;
+}
+
+export interface GetNodeCardsParams {
+  userId: string;
+  nodeIds: readonly TypeId<"node">[];
 }
 
 const TRUSTED_KINDS = [
@@ -84,7 +95,16 @@ const referenceMetadataSchema = z
   })
   .passthrough();
 
+interface NodeBasics {
+  nodeType: NodeType;
+  label: string | null;
+  summary: string | null;
+  hasPersonalSupport: boolean;
+  hasReferenceSupport: boolean;
+}
+
 interface ActiveClaimRow {
+  subjectNodeId: TypeId<"node">;
   claimId: TypeId<"claim">;
   predicate: Predicate;
   objectValue: string | null;
@@ -96,24 +116,16 @@ interface ActiveClaimRow {
 }
 
 /**
- * Returns whether the node has any personal-scope support (a personal source
- * link or a personal active claim touching it). Mirrors the pattern in
- * `findSimilarNodes` and `runProfileSynthesis`'s `hasPersonalScopeSupport`,
- * inlined here so we get the answer in the same row read as the node fetch.
+ * Batch fetch of node basics with per-row scope-support flags. The `EXISTS`
+ * subqueries are correlated against `nodes.id`, so a single query returns one
+ * row per node with the same answers the per-id version computed.
  */
-async function loadNodeBasics(
+async function loadNodesBasicsMany(
   userId: string,
-  nodeId: TypeId<"node">,
-): Promise<
-  | {
-      nodeType: NodeType;
-      label: string | null;
-      summary: string | null;
-      hasPersonalSupport: boolean;
-      hasReferenceSupport: boolean;
-    }
-  | null
-> {
+  nodeIds: readonly TypeId<"node">[],
+): Promise<Map<TypeId<"node">, NodeBasics>> {
+  const result = new Map<TypeId<"node">, NodeBasics>();
+  if (nodeIds.length === 0) return result;
   const db = await useDatabase();
 
   const personalSourceLink = db
@@ -122,7 +134,7 @@ async function loadNodeBasics(
     .innerJoin(sources, eq(sources.id, sourceLinks.sourceId))
     .where(
       and(
-        eq(sourceLinks.nodeId, nodeId),
+        eq(sourceLinks.nodeId, nodes.id),
         eq(sources.userId, userId),
         eq(sources.scope, "personal"),
       ),
@@ -137,8 +149,8 @@ async function loadNodeBasics(
         eq(claims.scope, "personal"),
         eq(claims.status, "active"),
         or(
-          eq(claims.subjectNodeId, nodeId),
-          eq(claims.objectNodeId, nodeId),
+          eq(claims.subjectNodeId, nodes.id),
+          eq(claims.objectNodeId, nodes.id),
         ),
       ),
     );
@@ -149,7 +161,7 @@ async function loadNodeBasics(
     .innerJoin(sources, eq(sources.id, sourceLinks.sourceId))
     .where(
       and(
-        eq(sourceLinks.nodeId, nodeId),
+        eq(sourceLinks.nodeId, nodes.id),
         eq(sources.userId, userId),
         eq(sources.scope, "reference"),
       ),
@@ -164,14 +176,15 @@ async function loadNodeBasics(
         eq(claims.scope, "reference"),
         eq(claims.status, "active"),
         or(
-          eq(claims.subjectNodeId, nodeId),
-          eq(claims.objectNodeId, nodeId),
+          eq(claims.subjectNodeId, nodes.id),
+          eq(claims.objectNodeId, nodes.id),
         ),
       ),
     );
 
-  const [row] = await db
+  const rows = await db
     .select({
+      nodeId: nodes.id,
       nodeType: nodes.nodeType,
       label: nodeMetadata.label,
       summary: nodeMetadata.description,
@@ -180,17 +193,20 @@ async function loadNodeBasics(
     })
     .from(nodes)
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-    .where(and(eq(nodes.id, nodeId), eq(nodes.userId, userId)))
-    .limit(1);
+    .where(
+      and(eq(nodes.userId, userId), inArray(nodes.id, nodeIds as TypeId<"node">[])),
+    );
 
-  if (!row) return null;
-  return {
-    nodeType: row.nodeType,
-    label: row.label,
-    summary: row.summary,
-    hasPersonalSupport: row.hasPersonalSupport === true,
-    hasReferenceSupport: row.hasReferenceSupport === true,
-  };
+  for (const row of rows) {
+    result.set(row.nodeId, {
+      nodeType: row.nodeType,
+      label: row.label,
+      summary: row.summary,
+      hasPersonalSupport: row.hasPersonalSupport === true,
+      hasReferenceSupport: row.hasReferenceSupport === true,
+    });
+  }
+  return result;
 }
 
 /**
@@ -207,13 +223,21 @@ function deriveScope(
   return "personal";
 }
 
-async function loadActiveClaimsForSubject(
+/**
+ * Batch fetch of active claims for the given subject node ids, grouped by
+ * subject. Within each group rows are returned newest-first (matches the
+ * per-card ordering used by `currentFacts` / `recentEvidence`).
+ */
+async function loadActiveClaimsBySubjectMany(
   userId: string,
-  nodeId: TypeId<"node">,
-): Promise<ActiveClaimRow[]> {
+  nodeIds: readonly TypeId<"node">[],
+): Promise<Map<TypeId<"node">, ActiveClaimRow[]>> {
+  const result = new Map<TypeId<"node">, ActiveClaimRow[]>();
+  if (nodeIds.length === 0) return result;
   const db = await useDatabase();
-  return db
+  const rows = await db
     .select({
+      subjectNodeId: claims.subjectNodeId,
       claimId: claims.id,
       predicate: claims.predicate,
       objectValue: claims.objectValue,
@@ -227,11 +251,18 @@ async function loadActiveClaimsForSubject(
     .where(
       and(
         eq(claims.userId, userId),
-        eq(claims.subjectNodeId, nodeId),
+        inArray(claims.subjectNodeId, nodeIds as TypeId<"node">[]),
         eq(claims.status, "active"),
       ),
     )
     .orderBy(desc(claims.statedAt), desc(claims.createdAt));
+
+  for (const nodeId of nodeIds) result.set(nodeId, []);
+  for (const row of rows) {
+    const bucket = result.get(row.subjectNodeId);
+    if (bucket) bucket.push(row);
+  }
+  return result;
 }
 
 async function batchResolveLabels(
@@ -251,18 +282,16 @@ async function batchResolveLabels(
 }
 
 /**
- * Collect canonical label + alias rows, deduplicated by lowercased text,
- * preserving canonical-first ordering.
+ * Build the alias list (canonical first, dedup case-insensitive) for a single
+ * node from a pre-fetched alias map. Centralized here so `getNodeCards` can
+ * fetch all alias rows in one round-trip.
  */
-async function buildAliasList(
-  userId: string,
+function buildAliasListFromMap(
   nodeId: TypeId<"node">,
   canonicalLabel: string,
-): Promise<string[]> {
-  const db = await useDatabase();
-  const aliasMap = await listAliasesForNodeIds(db, userId, [nodeId]);
+  aliasMap: Map<TypeId<"node">, { aliasText: string }[]>,
+): string[] {
   const aliasRows = aliasMap.get(nodeId) ?? [];
-
   const seen = new Set<string>();
   const ordered: string[] = [];
   const push = (text: string): void => {
@@ -271,45 +300,50 @@ async function buildAliasList(
     seen.add(key);
     ordered.push(text);
   };
-
   push(canonicalLabel);
   for (const alias of aliasRows) push(alias.aliasText);
   return ordered;
 }
 
 /**
- * For reference nodes we walk `sourceLinks → sources` to find author/title in
- * source metadata. The most-recent reference source wins (most-recent =
- * largest `lastIngestedAt`, falling back to `createdAt`) so a re-ingested
- * version of the same book overrides stale metadata.
+ * Batch reference-metadata lookup. Returns the most-recent reference source
+ * (largest `lastIngestedAt`, fallback `createdAt`) per node id, mirroring the
+ * per-id behavior so re-ingested versions of the same book override stale
+ * metadata.
  */
-async function loadReferenceMetadata(
+async function loadReferenceMetadataMany(
   userId: string,
-  nodeId: TypeId<"node">,
-): Promise<NodeCardReference | null> {
+  nodeIds: readonly TypeId<"node">[],
+): Promise<Map<TypeId<"node">, NodeCardReference>> {
+  const result = new Map<TypeId<"node">, NodeCardReference>();
+  if (nodeIds.length === 0) return result;
   const db = await useDatabase();
   const rows = await db
-    .select({ metadata: sources.metadata })
+    .select({
+      nodeId: sourceLinks.nodeId,
+      metadata: sources.metadata,
+    })
     .from(sourceLinks)
     .innerJoin(sources, eq(sources.id, sourceLinks.sourceId))
     .where(
       and(
-        eq(sourceLinks.nodeId, nodeId),
         eq(sources.userId, userId),
         eq(sources.scope, "reference"),
+        inArray(sourceLinks.nodeId, nodeIds as TypeId<"node">[]),
       ),
     )
     .orderBy(desc(sources.lastIngestedAt), desc(sources.createdAt));
 
   for (const row of rows) {
+    if (result.has(row.nodeId)) continue; // first-wins per node
     const parsed = referenceMetadataSchema.safeParse(row.metadata ?? {});
     if (!parsed.success) continue;
     const author = parsed.data.author ?? null;
     const title = parsed.data.title ?? null;
     if (author === null && title === null) continue;
-    return { author, title };
+    result.set(row.nodeId, { author, title });
   }
-  return null;
+  return result;
 }
 
 function isCurrentFactClaim(
@@ -332,29 +366,16 @@ function isPreferenceGoalClaim(claim: ActiveClaimRow): boolean {
   return PREFERENCE_KINDS.includes(claim.assertedByKind as (typeof PREFERENCE_KINDS)[number]);
 }
 
-export async function getNodeCard(
-  params: GetNodeCardParams,
-): Promise<NodeCard | null> {
-  const { userId, nodeId } = params;
-
-  const basics = await loadNodeBasics(userId, nodeId);
-  if (basics === null) return null;
-
-  const scope = deriveScope(
-    basics.hasPersonalSupport,
-    basics.hasReferenceSupport,
-  );
-
-  const [activeClaims, aliasList] = await Promise.all([
-    loadActiveClaimsForSubject(userId, nodeId),
-    buildAliasList(userId, nodeId, basics.label ?? ""),
-  ]);
-
-  // Object-label resolution for relationship claims: batch lookup once.
-  const relationshipObjectIds = activeClaims
-    .filter((claim) => claim.objectNodeId !== null)
-    .map((claim) => claim.objectNodeId as TypeId<"node">);
-  const labelByNodeId = await batchResolveLabels(relationshipObjectIds);
+function assembleCard(
+  nodeId: TypeId<"node">,
+  basics: NodeBasics,
+  activeClaims: ActiveClaimRow[],
+  aliasList: string[],
+  labelByNodeId: Map<TypeId<"node">, string | null>,
+  referenceMeta: NodeCardReference | undefined,
+  openCommitments: NodeCard["openCommitments"] | undefined,
+): NodeCard {
+  const scope = deriveScope(basics.hasPersonalSupport, basics.hasReferenceSupport);
 
   const currentFacts: NodeCardCurrentFact[] = [];
   const preferencesGoals: NodeCardPreferenceGoal[] = [];
@@ -376,8 +397,6 @@ export async function getNodeCard(
       continue;
     }
     if (isPreferenceGoalClaim(claim)) {
-      // Narrow to AttributePredicate after the predicate-set guard so the
-      // schema's `AttributePredicateEnum` type holds.
       const attrPredicate = AttributePredicateEnum.parse(claim.predicate);
       preferencesGoals.push({
         predicate: attrPredicate,
@@ -410,22 +429,116 @@ export async function getNodeCard(
     recentEvidence,
   };
 
-  if (basics.nodeType === "Person") {
-    const commitments = await getOpenCommitments({
-      userId,
-      ownedBy: nodeId,
-    });
-    if (commitments.length > 0) {
-      card.openCommitments = commitments;
-    }
+  if (openCommitments && openCommitments.length > 0) {
+    card.openCommitments = openCommitments;
   }
-
-  if (scope === "reference") {
-    const referenceMeta = await loadReferenceMetadata(userId, nodeId);
-    if (referenceMeta !== null) {
-      card.reference = referenceMeta;
-    }
+  if (scope === "reference" && referenceMeta) {
+    card.reference = referenceMeta;
   }
-
   return card;
+}
+
+/**
+ * Batch entry point. Returns a `Map` keyed by node id; ids that don't resolve
+ * (deleted or wrong user) are simply absent from the result. Used by the
+ * card-shaped search APIs and `getEntityContext` so a 10-card response stays
+ * O(constant DB round-trips) instead of O(N).
+ */
+export async function getNodeCards(
+  params: GetNodeCardsParams,
+): Promise<Map<TypeId<"node">, NodeCard>> {
+  const { userId } = params;
+  const uniqueIds = [...new Set(params.nodeIds)];
+  const result = new Map<TypeId<"node">, NodeCard>();
+  if (uniqueIds.length === 0) return result;
+
+  const basicsMap = await loadNodesBasicsMany(userId, uniqueIds);
+  const resolvedIds = uniqueIds.filter((id) => basicsMap.has(id));
+  if (resolvedIds.length === 0) return result;
+
+  const db = await useDatabase();
+  const [claimsBySubject, aliasMap] = await Promise.all([
+    loadActiveClaimsBySubjectMany(userId, resolvedIds),
+    listAliasesForNodeIds(db, userId, resolvedIds),
+  ]);
+
+  // Collect all relationship object node ids and reference-scope ids in one
+  // pass so the next two batch queries are minimal.
+  const objectIdSet = new Set<TypeId<"node">>();
+  const referenceCandidates: TypeId<"node">[] = [];
+  const personIds: TypeId<"node">[] = [];
+  for (const id of resolvedIds) {
+    const basics = basicsMap.get(id)!;
+    const claimsForId = claimsBySubject.get(id) ?? [];
+    for (const claim of claimsForId) {
+      if (claim.objectNodeId !== null) objectIdSet.add(claim.objectNodeId);
+    }
+    const scope = deriveScope(
+      basics.hasPersonalSupport,
+      basics.hasReferenceSupport,
+    );
+    if (scope === "reference") referenceCandidates.push(id);
+    if (basics.nodeType === "Person") personIds.push(id);
+  }
+
+  const [labelByNodeId, referenceMetaByNodeId, openCommitmentsByPerson] =
+    await Promise.all([
+      batchResolveLabels(Array.from(objectIdSet)),
+      loadReferenceMetadataMany(userId, referenceCandidates),
+      loadOpenCommitmentsForPersons(userId, personIds),
+    ]);
+
+  for (const nodeId of resolvedIds) {
+    const basics = basicsMap.get(nodeId)!;
+    const aliasList = buildAliasListFromMap(
+      nodeId,
+      basics.label ?? "",
+      aliasMap,
+    );
+    const card = assembleCard(
+      nodeId,
+      basics,
+      claimsBySubject.get(nodeId) ?? [],
+      aliasList,
+      labelByNodeId,
+      referenceMetaByNodeId.get(nodeId),
+      openCommitmentsByPerson.get(nodeId),
+    );
+    result.set(nodeId, card);
+  }
+  return result;
+}
+
+/**
+ * Per-Person open-commitments fetch. `getOpenCommitments` already queries the
+ * subset of claims under HAS_TASK_STATUS / OWNED_BY / DUE_ON; running it in
+ * parallel for the small subset of Person ids in a card batch is the simplest
+ * shape until the read-model pipeline lands a true batch query.
+ */
+async function loadOpenCommitmentsForPersons(
+  userId: string,
+  personIds: readonly TypeId<"node">[],
+): Promise<Map<TypeId<"node">, NodeCard["openCommitments"]>> {
+  const result = new Map<TypeId<"node">, NodeCard["openCommitments"]>();
+  if (personIds.length === 0) return result;
+  const entries = await Promise.all(
+    personIds.map(async (id) => {
+      const commitments = await getOpenCommitments({ userId, ownedBy: id });
+      return [id, commitments] as const;
+    }),
+  );
+  for (const [id, commitments] of entries) {
+    result.set(id, commitments);
+  }
+  return result;
+}
+
+export async function getNodeCard(
+  params: GetNodeCardParams,
+): Promise<NodeCard | null> {
+  const cards = await getNodeCards({
+    userId: params.userId,
+    nodeIds: [params.nodeId],
+  });
+  return cards.get(params.nodeId) ?? null;
 }

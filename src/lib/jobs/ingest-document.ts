@@ -15,6 +15,8 @@ export const IngestDocumentJobInputSchema = z.object({
   timestamp: z.string().datetime().pipe(z.coerce.date()), // Handled by route, always a Date here
   scope: ScopeEnum.optional().default("personal"),
   updateExisting: z.boolean().optional().default(false),
+  author: z.string().min(1).optional(),
+  title: z.string().min(1).optional(),
 });
 
 export type IngestDocumentJobInput = z.infer<
@@ -33,6 +35,8 @@ export async function ingestDocument({
   timestamp,
   scope,
   updateExisting,
+  author,
+  title,
 }: IngestDocumentParams): Promise<void> {
   await ensureUser(db, userId);
 
@@ -88,8 +92,8 @@ export async function ingestDocument({
         timestamp,
         content, // Store content directly for documents
         metadata: {
-          // You could add other document-specific metadata here if needed
-          // e.g., original filename, author, etc.
+          ...(author !== undefined && { author }),
+          ...(title !== undefined && { title }),
         },
       },
     ]);
