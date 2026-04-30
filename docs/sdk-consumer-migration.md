@@ -10,7 +10,60 @@ has the *what to change*.
 
 ---
 
-## PR 4-i — Cleanup pipeline rewrite (this commit window)
+## PR 4-ii — Transcript ingestion + userSelfAliases
+
+**Commits:** `b4ac6e1`, `7a13dfe`.
+
+### REST
+
+- **NEW:** `POST /user/self-aliases` — set the labels by which the user appears in transcripts. Request: `{ userId, aliases: string[] }`. Response: `{ aliases: string[] }`. Replaces the full list each call (no granular add/remove). Persisted on `user_profiles.metadata.userSelfAliases`.
+- **NEW:** `POST /transcript/ingest` — ingest a multi-party transcript with per-utterance speaker provenance. Request:
+  ```ts
+  {
+    userId: string;
+    transcriptId: string;          // stable external id (re-ingest is no-op)
+    occurredAt: string;             // ISO date
+    scope?: "personal" | "reference"; // default "personal"
+    knownParticipants?: { label: string; nodeId: TypeId<"node"> }[];
+    userSelfAliasesOverride?: string[]; // overrides stored aliases for this call only
+    content:
+      | { kind: "raw"; text: string }
+      | { kind: "segmented"; utterances: { speakerLabel: string; content: string; timestamp?: string }[] };
+  }
+  ```
+  Response: `{ message, jobId, transcriptSourceId, utteranceCount, resolvedSpeakers, unresolvedSpeakers }`. Job is async — caller must wait for the worker before searching against the new claims.
+
+  Speaker resolution priority: `userSelfAliasesOverride` (or stored `userSelfAliases`) → `knownParticipants` → existing alias system → placeholder `Person` node with `additionalData.unresolvedSpeaker = true`. Placeholder Persons currently accumulate; sweep job lands in PR 4-iii.
+
+### SDK (`@marcelsamyn/memory`)
+
+- **NEW methods:**
+  - `MemoryClient.setUserSelfAliases(payload)` → `{ aliases }`.
+  - `MemoryClient.ingestTranscript(payload)` → ingestion ack.
+- **NEW exports:** `SetUserSelfAliasesRequest`, `SetUserSelfAliasesResponse`, `IngestTranscriptRequest`, `IngestTranscriptResponse`, `userProfileMetadataSchema`.
+
+### Schema additions (additive, no migration impact for consumers)
+
+- `claims.assertedByKind = "participant"` is now reachable in real data (previously rejected by extraction). When you read raw claims, `participant`-kind rows always have `assertedByNodeId` populated — that node is the speaker.
+- `sources.metadata` for transcript child rows now carries `speakerLabel: string` and `speakerNodeId: TypeId<"node">`. Optional fields; old conversation/document sources unchanged.
+- New source `type` value `"meeting_transcript"` (parent rows of transcripts). Children remain `type: "conversation_message"` and link via `parentSource`.
+- `nodeMetadata.additionalData` may carry `unresolvedSpeaker: true` (placeholder Persons created from unresolvable transcript labels) or `isUserSelf: true` (the user's own Person node, bootstrapped lazily on first transcript ingest). Treat these as informational hints.
+
+### MCP — no changes
+
+No MCP tool surface changes in this PR. Transcript ingestion is host-driven (the host decides when a chunk of transcript is "ready"); the assistant doesn't call the ingest API itself.
+
+### Migration checklist for Petals
+
+1. Bump SDK to a build at or after commit `7a13dfe`.
+2. If you support meeting/transcript imports in the host UI, wire the new `ingestTranscript` SDK method. Pre-segmented input is the easier path if you already have utterance objects (e.g., from Otter / Granola / Zoom transcripts).
+3. Surface a "your aliases" setting in the host so users can register the labels they appear under in transcripts. Persist via `setUserSelfAliases`. The plan recommends defaulting to `[user.displayName, user.email.split('@')[0]]` and letting the user edit.
+4. If you render raw claim data anywhere (debug panels, graph viz), be aware `assertedByKind` may now be `"participant"` for transcript-derived claims; render `assertedByNodeId` as the speaker.
+5. No backfill required — existing conversation/document sources and claims are untouched.
+
+---
+
+## PR 4-i — Cleanup pipeline rewrite
 
 - `dedupSweep` REST response gains `crossScopeCollisionsSkipped: number` (additive, non-breaking).
 - Cleanup pipeline now emits the operation vocabulary `{ operations: [...] }` (`merge_nodes`, `delete_node`, `retract_claim`, `contradict_claim`, `add_claim`, `add_alias`, `remove_alias`, `promote_assertion`, `create_node`). The legacy `{ merges, deletes, additions, newNodes }` proposal shape is gone. Internal-only — no public REST/MCP surface ships cleanup directly today, but if a host invokes it, this is the new payload.
