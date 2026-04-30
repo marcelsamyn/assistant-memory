@@ -43,6 +43,11 @@ import {
   ingestDocumentResponseSchema,
 } from "../lib/schemas/ingest-document-request.js";
 import {
+  IngestTranscriptRequest,
+  IngestTranscriptResponse,
+  ingestTranscriptResponseSchema,
+} from "../lib/schemas/ingest-transcript.js";
+import {
   BatchDeleteNodesRequest,
   BatchDeleteNodesResponse,
   batchDeleteNodesResponseSchema,
@@ -204,6 +209,23 @@ export class MemoryClient {
       "POST",
       "/ingest/conversation",
       ingestConversationResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Ingest a multi-party transcript with speaker provenance. Pass either
+   * raw text (segmented server-side) or a pre-segmented utterance array.
+   * `userSelfAliasesOverride` substitutes for the stored user-self aliases
+   * for this single ingestion only.
+   */
+  async ingestTranscript(
+    payload: IngestTranscriptRequest,
+  ): Promise<IngestTranscriptResponse> {
+    return this._fetch(
+      "POST",
+      "/transcript/ingest",
+      ingestTranscriptResponseSchema,
       payload,
     );
   }

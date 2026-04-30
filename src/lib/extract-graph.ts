@@ -129,6 +129,20 @@ interface SimilarNodeForPrompt {
   timestamp: string;
 }
 
+/**
+ * Resolved speaker entry passed in by transcript ingestion. Maps a raw
+ * speaker label (as it appears in the transcript and on each child source's
+ * metadata) to the Person nodeId it resolves to plus whether that node is
+ * the user-self. The presence of a non-empty map switches the extraction
+ * prompt and `_resolveAssertedByKind` into transcript mode.
+ */
+export interface SpeakerMapEntry {
+  nodeId: TypeId<"node">;
+  isUserSelf: boolean;
+}
+
+export type ExtractGraphSpeakerMap = Map<string, SpeakerMapEntry>;
+
 interface ExtractGraphParams {
   userId: string;
   sourceType: SourceType;
@@ -137,6 +151,7 @@ interface ExtractGraphParams {
   linkedNodeId: TypeId<"node">;
   sourceRefs?: SourceRef[];
   content: string;
+  speakerMap?: ExtractGraphSpeakerMap;
 }
 
 // --- Main extractGraph function ---
@@ -148,6 +163,7 @@ export async function extractGraph({
   linkedNodeId,
   sourceRefs = [],
   content,
+  speakerMap,
 }: ExtractGraphParams) {
   const db = await useDatabase();
   const resolvedSourceRefs =
@@ -223,6 +239,8 @@ export async function extractGraph({
     cappedOpenCommitments,
   );
 
+  const speakerMapPromptSection = _formatSpeakerMapSection(speakerMap);
+
   const { createCompletionClient } = await import("./ai");
   const client = await createCompletionClient(userId);
 
@@ -244,6 +262,8 @@ ${formatNodesForPrompt(nodesForPromptFormatting)}
 }
 
 ${openCommitmentsPromptSection}
+
+${speakerMapPromptSection}
 
 Extract the graph from the following ${sourceType}:
 
@@ -269,7 +289,13 @@ EVERY claim (relationship and attribute) MUST include an "assertionKind" field. 
 ${
   sourceType === "document"
     ? `- "document_author" — for ALL claims extracted from this document. The document text is the asserter.`
-    : `- "user" — the user explicitly stated this fact themselves (default for user-stated content).
+    : speakerMap && speakerMap.size > 0
+      ? `- "user" — the user-self speaker (see "Speakers in this transcript") asserted this fact.
+- "user_confirmed" — the user-self speaker explicitly agreed with another speaker's statement.
+- "participant" — another (non-user-self) speaker asserted this fact. Set "assertedBySpeakerLabel" to the EXACT label from the speaker list.
+- "assistant_inferred" — only if you must extract something that no speaker actually said.
+- For EVERY claim, also set "assertedBySpeakerLabel" to the speaker who said it, using the labels exactly as listed in "Speakers in this transcript". Unrecognized labels will cause the claim to be dropped.`
+      : `- "user" — the user explicitly stated this fact themselves (default for user-stated content).
 - "user_confirmed" — the assistant said something and the user explicitly agreed (e.g., user replied "yes", "right", "exactly", "correct").
 - "assistant_inferred" — used ONLY if you decide to extract something that the assistant said and the user did NOT confirm. Prefer to NOT extract these at all; if you must, mark them with this kind so they are demoted later.
 - NEVER use "user" for an assistant-only statement.
@@ -280,7 +306,11 @@ Few-shot examples:
 ${
   sourceType === "document"
     ? `- Document text: "The Eiffel Tower is located in Paris." → relationship claim with assertionKind: "document_author".`
-    : `- User says "I started working at Acme last week." → assertionKind: "user".
+    : speakerMap && speakerMap.size > 0
+      ? `- Speaker "Alice" (user-self) says "I shipped the spec." → assertionKind: "user", assertedBySpeakerLabel: "Alice".
+- Speaker "Bob" (non user-self) says "I'll send the PR tomorrow." → assertionKind: "participant", assertedBySpeakerLabel: "Bob".
+- Speaker "Bob" says "You're moving to Paris next month." Speaker "Alice" (user-self) replies "Yeah." → for the (Alice, LIVES_IN, Paris) claim use assertionKind: "user_confirmed", assertedBySpeakerLabel: "Alice".`
+      : `- User says "I started working at Acme last week." → assertionKind: "user".
 - Assistant: "So you live in Paris now?" User: "Yes." → assertionKind: "user_confirmed" for the (user, LIVES_IN, Paris) claim (if extracted).
 - Assistant: "It sounds like you might be a software engineer." User does not respond. → do NOT extract. If you must, assertionKind: "assistant_inferred".`
 }
@@ -386,6 +416,7 @@ Focus on extracting the most significant and meaningful information that the USE
     idMap,
     sourceRefMap,
     sourceType,
+    speakerMap,
   );
 
   await _processAndInsertLlmAliases(db, userId, uniqueParsedLlmAliases, idMap);
@@ -783,6 +814,7 @@ async function _processAndInsertLlmClaims(
   idMap: Map<string, TypeId<"node">>,
   sourceRefMap: Map<string, SourceRef>,
   sourceType: SourceType,
+  speakerMap: ExtractGraphSpeakerMap | undefined,
 ): Promise<Array<typeof claims.$inferSelect>> {
   const claimInserts: Array<typeof claims.$inferInsert> = [];
   const sourceScopeMap = await _fetchSourceScopeMap(
@@ -823,8 +855,8 @@ async function _processAndInsertLlmClaims(
       continue;
     }
 
-    const assertedByKind = _resolveAssertedByKind(llmClaim, sourceType);
-    if (assertedByKind === null) continue;
+    const provenance = _resolveAssertedByKind(llmClaim, sourceType, speakerMap);
+    if (provenance === null) continue;
 
     claimInserts.push({
       userId,
@@ -835,7 +867,8 @@ async function _processAndInsertLlmClaims(
       description: llmClaim.statement,
       sourceId: claimSource.sourceId,
       scope,
-      assertedByKind,
+      assertedByKind: provenance.kind,
+      assertedByNodeId: provenance.nodeId,
       statedAt: claimSource.statedAt,
       validFrom: _parseOptionalDate(llmClaim.validFrom),
       validTo: _parseOptionalDate(llmClaim.validTo),
@@ -874,8 +907,8 @@ async function _processAndInsertLlmClaims(
       continue;
     }
 
-    const assertedByKind = _resolveAssertedByKind(llmClaim, sourceType);
-    if (assertedByKind === null) continue;
+    const provenance = _resolveAssertedByKind(llmClaim, sourceType, speakerMap);
+    if (provenance === null) continue;
 
     claimInserts.push({
       userId,
@@ -886,7 +919,8 @@ async function _processAndInsertLlmClaims(
       description: llmClaim.statement,
       sourceId: claimSource.sourceId,
       scope,
-      assertedByKind,
+      assertedByKind: provenance.kind,
+      assertedByNodeId: provenance.nodeId,
       statedAt: claimSource.statedAt,
       validFrom: _parseOptionalDate(llmClaim.validFrom),
       validTo: _parseOptionalDate(llmClaim.validTo),
@@ -929,13 +963,28 @@ function _defaultAssertedByKind(sourceType: SourceType): AssertedByKind {
   return "user";
 }
 
+interface ResolvedProvenance {
+  kind: AssertedByKind;
+  /** Required (and only allowed) when `kind === 'participant'`. */
+  nodeId: TypeId<"node"> | null;
+}
+
 /**
- * Resolve the per-claim `assertedByKind`, defending against missing or
- * unsupported values from the LLM.
+ * Resolve the per-claim `assertedByKind` (and `assertedByNodeId` for
+ * participants), defending against missing or unsupported values from the
+ * LLM.
  *
- * - Null/undefined kind → fall back to per-sourceType default and warn.
- * - `participant` → unsupported until transcript ingestion lands; skip and warn.
- * - Otherwise → use the LLM's value.
+ * Without a `speakerMap`, behavior is unchanged from PR 4i:
+ *   - Null/undefined kind → fall back to per-sourceType default and warn.
+ *   - `participant` → unsupported; skip and warn.
+ *   - Otherwise → use the LLM's value.
+ *
+ * With a `speakerMap` (transcript ingestion), `assertedBySpeakerLabel` is
+ * required and resolved through the map:
+ *   - user-self speaker → `kind = 'user'`.
+ *   - any other resolved speaker → `kind = 'participant'`,
+ *     `nodeId = resolved nodeId`.
+ *   - unresolvable label → reject the claim with a warning.
  *
  * Returns `null` if the claim should be skipped.
  */
@@ -946,13 +995,18 @@ function _resolveAssertedByKind(
     sourceRef: string;
   },
   sourceType: SourceType,
-): AssertedByKind | null {
+  speakerMap: ExtractGraphSpeakerMap | undefined,
+): ResolvedProvenance | null {
+  if (speakerMap && speakerMap.size > 0) {
+    return _resolveTranscriptProvenance(llmClaim, speakerMap);
+  }
+
   if (!llmClaim.assertionKind) {
     const fallback = _defaultAssertedByKind(sourceType);
     console.warn(
       `LLM omitted assertionKind for claim from sourceRef ${llmClaim.sourceRef}; falling back to ${fallback}.`,
     );
-    return fallback;
+    return { kind: fallback, nodeId: null };
   }
 
   if (llmClaim.assertionKind === "participant") {
@@ -962,7 +1016,66 @@ function _resolveAssertedByKind(
     return null;
   }
 
-  return llmClaim.assertionKind;
+  return { kind: llmClaim.assertionKind, nodeId: null };
+}
+
+function _resolveTranscriptProvenance(
+  llmClaim: {
+    assertionKind?: AssertedByKind | undefined;
+    assertedBySpeakerLabel?: string | undefined;
+    sourceRef: string;
+  },
+  speakerMap: ExtractGraphSpeakerMap,
+): ResolvedProvenance | null {
+  const label = llmClaim.assertedBySpeakerLabel?.trim();
+  if (!label) {
+    console.warn(
+      `Skipping transcript claim from sourceRef ${llmClaim.sourceRef}: missing assertedBySpeakerLabel.`,
+    );
+    return null;
+  }
+  const speaker = _lookupSpeaker(speakerMap, label);
+  if (!speaker) {
+    console.warn(
+      `Skipping transcript claim from sourceRef ${llmClaim.sourceRef}: unresolvable speaker label '${label}'.`,
+    );
+    return null;
+  }
+  if (speaker.isUserSelf) {
+    // Honor an explicit `user_confirmed` only; otherwise collapse to `user`.
+    const kind: AssertedByKind =
+      llmClaim.assertionKind === "user_confirmed" ? "user_confirmed" : "user";
+    return { kind, nodeId: null };
+  }
+  return { kind: "participant", nodeId: speaker.nodeId };
+}
+
+function _lookupSpeaker(
+  speakerMap: ExtractGraphSpeakerMap,
+  label: string,
+): SpeakerMapEntry | undefined {
+  const direct = speakerMap.get(label);
+  if (direct) return direct;
+  // Case-insensitive fallback so the LLM doesn't have to match casing
+  // exactly (the prompt asks it to, but the model occasionally normalizes).
+  const target = label.toLowerCase();
+  for (const [key, value] of speakerMap.entries()) {
+    if (key.toLowerCase() === target) return value;
+  }
+  return undefined;
+}
+
+function _formatSpeakerMapSection(
+  speakerMap: ExtractGraphSpeakerMap | undefined,
+): string {
+  if (!speakerMap || speakerMap.size === 0) return "";
+  const lines = [...speakerMap.entries()].map(([label, entry]) => {
+    const role = entry.isUserSelf ? "user-self" : "other-participant";
+    return `- speakerLabel: ${label}; nodeId: ${entry.nodeId}; role: ${role}`;
+  });
+  return `Speakers in this transcript:
+For each claim, set "assertedBySpeakerLabel" to the speaker who said it, using these labels exactly. Claims whose speaker label is missing or not in this list will be dropped.
+${lines.join("\n")}`;
 }
 
 async function _processAndInsertLlmAliases(

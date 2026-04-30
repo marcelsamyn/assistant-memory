@@ -5,6 +5,7 @@ export * from "../lib/context/types.js";
 export * from "../lib/context/node-card-types.js";
 export * from "../lib/schemas/ingest-document-request.js";
 export * from "../lib/schemas/ingest-conversation.js";
+export * from "../lib/schemas/ingest-transcript.js";
 export * from "../lib/schemas/query-search.js";
 export * from "../lib/schemas/query-atlas.js";
 export * from "../lib/schemas/query-day.js";

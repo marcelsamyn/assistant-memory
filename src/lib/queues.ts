@@ -6,6 +6,7 @@ import { dream } from "./jobs/dream";
 import { IdentityReevalJobInputSchema } from "./jobs/identity-reeval";
 import { IngestConversationJobInputSchema } from "./jobs/ingest-conversation";
 import { IngestDocumentJobInputSchema } from "./jobs/ingest-document";
+import { IngestTranscriptJobInputSchema } from "./jobs/ingest-transcript";
 import { ProfileSynthesisJobInputSchema } from "./jobs/profile-synthesis";
 import { summarizeUserConversations } from "./jobs/summarize-conversation";
 import { DeepResearchJobInputSchema } from "./schemas/deep-research";
@@ -207,6 +208,21 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
           "./jobs/dedup-sweep"
         );
         await runDocDedupSweep(userId);
+      } else if (job.name === "ingest-transcript") {
+        const data = IngestTranscriptJobInputSchema.parse(job.data);
+        console.log(
+          `Starting ingest-transcript job for user ${data.userId}, transcript ${data.transcriptId}`,
+        );
+        const { ingestTranscript } = await import("./jobs/ingest-transcript");
+        const result = await ingestTranscript({ db, ...data });
+        console.log(
+          `Ingested transcript ${data.transcriptId} for user ${data.userId}: ${result.utteranceCount} utterances, ${result.resolvedSpeakers} resolved speakers, ${result.unresolvedSpeakers} unresolved.`,
+        );
+
+        const { runDedupSweep: runTranscriptDedupSweep } = await import(
+          "./jobs/dedup-sweep"
+        );
+        await runTranscriptDedupSweep(data.userId);
       } else if (job.name === "profile-synthesis") {
         const { userId, nodeId } = ProfileSynthesisJobInputSchema.parse(
           job.data,

@@ -14,6 +14,14 @@ const metadataSchema = z
     /** Reference attribution surfaced via NodeCard.reference for reference-scope sources. */
     author: z.string().min(1).optional(),
     title: z.string().min(1).optional(),
+    /**
+     * Transcript speaker provenance (Phase 4 PR 4ii-b). Persisted on each
+     * `conversation_message` child source ingested via `/transcript/ingest`
+     * so re-extraction is deterministic without re-running speaker
+     * resolution.
+     */
+    speakerLabel: z.string().min(1).optional(),
+    speakerNodeId: z.string().min(1).optional(),
   })
   .catchall(z.unknown());
 type Metadata = z.infer<typeof metadataSchema>;
