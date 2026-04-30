@@ -14,6 +14,7 @@ import { story08AssistantFabrication } from "./08-assistant-fabrication";
 import { story09ReferenceScopeIsolation } from "./09-reference-scope-isolation";
 import { story10MultiPartyTranscript } from "./10-multi-party-transcript";
 import { story11CrossScopeMergeRefused } from "./11-cross-scope-merge-refused";
+import { story13CleanupOpSubgraphBounding } from "./13-cleanup-op-subgraph-bounding";
 import { story14BootstrapBundleShape } from "./14-bootstrap-bundle-shape";
 import { story15CommitmentsLifecycle } from "./15-commitments-lifecycle";
 import { story16CleanupOpsSurface } from "./16-cleanup-ops-surface";
@@ -33,6 +34,7 @@ export const ALL_STORIES: readonly EvalFixture[] = [
   story09ReferenceScopeIsolation,
   story10MultiPartyTranscript,
   story11CrossScopeMergeRefused,
+  story13CleanupOpSubgraphBounding,
   story14BootstrapBundleShape,
   story15CommitmentsLifecycle,
   story16CleanupOpsSurface,
