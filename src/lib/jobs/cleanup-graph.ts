@@ -1,13 +1,26 @@
+/**
+ * Subgraph-driven LLM cleanup pipeline.
+ *
+ * Builds a focused subgraph from seed nodes, asks an LLM to propose
+ * cleanup operations from the vocabulary in `cleanup-operations.ts`, and
+ * applies them via `applyCleanupOperations`. Provenance (`assertedByKind`,
+ * `scope`) and real claim ids are surfaced to the model so it can use the
+ * `retract_claim`, `contradict_claim`, and `promote_assertion` operations.
+ *
+ * Common aliases: cleanup-graph, proposeGraphCleanup, buildCleanupPrompt,
+ * cleanup pipeline, cleanup prompt builder.
+ */
 import { createCompletionClient } from "../ai";
-import {
-  generateAndInsertClaimEmbeddings,
-  generateAndInsertNodeEmbeddings,
-  type EmbeddableClaim,
-} from "../embeddings-util";
+import { getConversationBootstrapContext } from "../context/assemble-bootstrap-context";
+import type { ContextBundle } from "../context/types";
+import { generateAndInsertNodeEmbeddings } from "../embeddings-util";
 import { findOneHopNodes, findSimilarNodes } from "../graph";
-import { normalizeLabel } from "../label";
-import { ensureSystemSource } from "../sources";
 import { TemporaryIdMapper } from "../temporary-id-mapper";
+import {
+  applyCleanupOperations,
+  CleanupOperationsSchema,
+  type CleanupOperations,
+} from "./cleanup-operations";
 import { sql, eq, gte, desc, and, inArray } from "drizzle-orm";
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
 import { z } from "zod";
@@ -16,11 +29,15 @@ import {
   nodes,
   claims,
   nodeMetadata,
-  sourceLinks,
   nodeEmbeddings,
+  sourceLinks,
 } from "~/db/schema";
-import { NodeTypeEnum, RelationshipPredicateEnum } from "~/types/graph";
-import type { NodeType, RelationshipPredicate } from "~/types/graph";
+import type {
+  AssertedByKind,
+  NodeType,
+  RelationshipPredicate,
+  Scope,
+} from "~/types/graph";
 import { TypeId, typeIdSchema } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -55,13 +72,19 @@ export interface GraphNode {
 }
 
 /**
- * Core graph types
+ * Core graph types — relationship-shaped claims surfaced to the cleanup LLM.
+ * Carries provenance so the model can see which claims are
+ * `assistant_inferred` vs user-attributed and decide between
+ * `retract_claim` / `promote_assertion` / no-op.
  */
 export interface GraphClaim {
+  id: TypeId<"claim">;
   subject: TypeId<"node">;
   object: TypeId<"node">;
   predicate: RelationshipPredicate;
   statement: string;
+  scope: Scope;
+  assertedByKind: AssertedByKind;
 }
 export interface Subgraph {
   nodes: GraphNode[];
@@ -75,10 +98,13 @@ export interface TempNode extends GraphNode {
   tempId: string;
 }
 export interface TempClaim {
+  id: TypeId<"claim">;
   subjectTemp: string;
   objectTemp: string;
   predicate: RelationshipPredicate;
   statement: string;
+  scope: Scope;
+  assertedByKind: AssertedByKind;
 }
 export interface TempSubgraph {
   nodes: TempNode[];
@@ -86,84 +112,15 @@ export interface TempSubgraph {
 }
 
 /**
- * @deprecated Use the operation vocabulary in
- * `src/lib/jobs/cleanup-operations.ts` (`CleanupOperationSchema` /
- * `applyCleanupOperations`) instead. The prompt and dispatcher continue to
- * reference this schema until PR 4i-c lands the prompt rewrite; new callers
- * must use the operation-based path.
- */
-export const CleanupProposalSchema = z.object({
-  merges: z
-    .array(
-      z.object({
-        keep: z.string().describe("Temp ID of node to keep"),
-        remove: z.string().describe("Temp ID of node to merge/remove"),
-      }),
-    )
-    .describe(
-      "Pairs of temp node IDs to merge (remove into keep); use for nodes that are duplicates or should be merged",
-    ),
-  deletes: z
-    .array(
-      z.object({
-        tempId: z.string().describe("Temp ID of node to delete"),
-      }),
-    )
-    .describe("Temp node IDs to delete (if completely irrelevant)"),
-  additions: z
-    .array(
-      z.object({
-        subject: z.string().describe("Temp ID of subject node"),
-        object: z.string().describe("Temp ID of object node"),
-        predicate: RelationshipPredicateEnum.describe("Claim predicate"),
-        statement: z.string().describe("Concise sentence stating the claim"),
-      }),
-    )
-    .describe("New claims to add"),
-  newNodes: z
-    .array(
-      z.object({
-        tempId: z.string().describe("Temp ID for new node"),
-        label: z.string().describe("Label for new node"),
-        description: z.string().describe("Description for new node"),
-        type: NodeTypeEnum.describe("Type of new node"),
-      }),
-    )
-    .describe("New nodes to create"),
-});
-
-/**
- * Cleanup proposal from LLM
- */
-export type CleanupProposal = z.infer<typeof CleanupProposalSchema>;
-
-/**
- * Detailed result of cleanup execution
+ * Detailed result of cleanup execution. Reported as best-effort counts so
+ * the iterative loop can decide whether to harvest more seeds.
  */
 export interface CleanupGraphResult {
-  merged: Array<{
-    keep: TypeId<"node">;
-    keepLabel: string;
-    keepDescription?: string;
-    remove: TypeId<"node">;
-    removeLabel: string;
-    removeDescription?: string;
-  }>;
-  removed: Array<{
-    nodeId: TypeId<"node">;
-    label: string;
-    description?: string;
-  }>;
-  addedClaims: Array<{
-    subject: TypeId<"node">;
-    object: TypeId<"node">;
-    predicate: RelationshipPredicate;
-  }>;
-  createdNodes: Array<{
-    nodeId: TypeId<"node">;
-    label: string;
-    description?: string;
-  }>;
+  applied: number;
+  skipped: number;
+  errors: Array<{ kind: string; message: string }>;
+  /** Real node ids touched by the applied operations. */
+  affectedNodeIds: TypeId<"node">[];
 }
 
 /**
@@ -176,7 +133,8 @@ export interface CleanupGraphIterationParams extends CleanupGraphParams {
 }
 
 /**
- * Core single-iteration cleanup: builds subgraph from seedIds and applies LLM proposal
+ * Core single-iteration cleanup: builds subgraph from seedIds, asks the LLM
+ * for a list of operations, and applies them via the new dispatcher.
  */
 export async function cleanupGraphIteration(
   params: CleanupGraphIterationParams,
@@ -208,13 +166,28 @@ export async function cleanupGraphIteration(
   }
   // 2. map to temporary IDs
   const { tempSubgraph, mapper } = toTempSubgraph(sub);
-  // 3. propose cleanup via LLM
-  const proposal = await proposeGraphCleanup(userId, tempSubgraph, llmModelId);
-  // 4. apply proposal to DB
+  // 3. propose cleanup via LLM (operation vocabulary)
+  const { operations } = await proposeGraphCleanup(
+    userId,
+    tempSubgraph,
+    llmModelId,
+  );
+  // 4. apply operations to DB
   const db = await useDatabase();
-  const result = await applyCleanupProposal(proposal, mapper, db, userId);
+  const applyResult = await applyCleanupOperations(
+    db,
+    userId,
+    operations,
+    mapper,
+  );
+  const result: CleanupGraphResult = {
+    applied: applyResult.applied,
+    skipped: applyResult.skipped,
+    errors: applyResult.errors,
+    affectedNodeIds: applyResult.affectedNodeIds,
+  };
   // 5. log summary and return
-  logCleanupSummary(params, result);
+  logCleanupSummary(params, result, operations.length);
   return result;
 }
 
@@ -315,22 +288,24 @@ async function buildSubgraph(
         nextIds.push(c.id);
       }
       claimsList.push({
+        id: c.claimId,
         subject: c.claimSubjectId,
         object: c.claimObjectId,
         predicate: c.predicate as RelationshipPredicate,
         statement: c.statement,
+        scope: c.scope,
+        assertedByKind: c.assertedByKind,
       });
     }
     currentIds = nextIds;
     if (!currentIds.length) break;
   }
-  // dedupe claims
+  // dedupe claims by id
   const unique: GraphClaim[] = [];
   const seen = new Set<string>();
   for (const claim of claimsList) {
-    const key = `${claim.subject}|${claim.object}|${claim.predicate}|${claim.statement}`;
-    if (!seen.has(key)) {
-      seen.add(key);
+    if (!seen.has(claim.id)) {
+      seen.add(claim.id);
       unique.push(claim);
     }
   }
@@ -360,30 +335,46 @@ function toTempSubgraph(sub: Subgraph): {
     const src = sub.nodes.find((n) => n.id === claim.subject)!;
     const tgt = sub.nodes.find((n) => n.id === claim.object)!;
     return {
+      id: claim.id,
       subjectTemp: mapper.getId(src)!,
       objectTemp: mapper.getId(tgt)!,
       predicate: claim.predicate,
       statement: claim.statement,
+      scope: claim.scope,
+      assertedByKind: claim.assertedByKind,
     };
   });
   return { tempSubgraph: { nodes: tempNodes, claims: tempClaims }, mapper };
 }
 
 /**
- * Step 4: get cleanup proposal from LLM
+ * Render a `ContextBundle` as labeled prompt blocks. Each section becomes
+ * a `<section kind="…">` tag with its content; the section's `usage` hint
+ * is included as a leading comment line so the model knows how the host
+ * intends the section to be used. Empty bundles render as the empty
+ * string (the assembler already drops empty sections).
  */
-async function proposeGraphCleanup(
-  userId: string,
+function renderBundleSections(bundle: ContextBundle): string {
+  if (bundle.sections.length === 0) return "";
+  return bundle.sections
+    .map(
+      (section) =>
+        `<section kind="${section.kind}">\n<!-- ${section.usage} -->\n${section.content}\n</section>`,
+    )
+    .join("\n\n");
+}
+
+/**
+ * Build the cleanup prompt from a temp subgraph + bootstrap context bundle.
+ *
+ * Pure function — no DB / network. Extracted so the rendered string can be
+ * tested directly and the prompt can evolve without touching the LLM call
+ * site.
+ */
+export function buildCleanupPrompt(
   temp: TempSubgraph,
-  modelId: string,
-): Promise<CleanupProposal> {
-  const client = await createCompletionClient(userId);
-
-  // Fetch user atlas for context about user corrections and current state
-  const { getAtlas } = await import("../atlas");
-  const db = await useDatabase();
-  const { description: userAtlas } = await getAtlas(db, userId);
-
+  bundle: ContextBundle,
+): string {
   const nodesList = temp.nodes
     .map(
       (n) =>
@@ -393,275 +384,82 @@ async function proposeGraphCleanup(
   const claimsList = temp.claims
     .map(
       (claim) =>
-        `<claim subject="${claim.subjectTemp}" object="${claim.objectTemp}" predicate="${claim.predicate}">${claim.statement}</claim>`,
+        `<claim id="${claim.id}" subject="${claim.subjectTemp}" object="${claim.objectTemp}" predicate="${claim.predicate}" provenance="[${claim.assertedByKind}, ${claim.scope}]">${claim.statement}</claim>`,
     )
     .join("\n");
-  const prompt = `You are a graph cleaning assistant. Your task is to analyze this claim subgraph and propose improvements to ensure accuracy, remove redundancies, and maintain data quality.
-${
-  userAtlas
-    ? `
-**User Atlas Context:**
-The following is the current User Atlas, which represents the most up-to-date factual information about the user. Use this to identify any nodes in the graph that contradict or are outdated compared to the atlas.
+  const bundleText = renderBundleSections(bundle);
 
-<user_atlas>
-${userAtlas}
-</user_atlas>
-`
-    : ""
+  return `You are a graph cleaning assistant. Your task is to analyze this claim subgraph and propose cleanup operations to ensure accuracy, remove redundancies, and reconcile contradictions.
+
+Output a single JSON object \`{ "operations": [...] }\` matching the cleanup operation vocabulary:
+
+- \`merge_nodes { keepTempId, removeTempIds }\` — collapse duplicates / aliases. Prefer this over \`delete_node\` whenever two nodes plausibly represent the same entity.
+- \`delete_node { tempId }\` — only when the node is truly irrelevant or has no salvageable claims.
+- \`retract_claim { claimId, reason }\` — claim is wrong or unsupported. Use \`assistant_inferred\` claims that lack any corroborating evidence in the bundle / subgraph as the primary candidates.
+- \`contradict_claim { claimId, contradictedByClaimId, reason }\` — citation REQUIRED. Use only when another claim already in this subgraph (or referenced in the bundle's evidence) contradicts the original. Pass the citing claim's real id in \`contradictedByClaimId\`.
+- \`promote_assertion { claimId, corroboratingSourceId, reason }\` — when an \`assistant_inferred\` claim is corroborated by a user-attributed source visible in the bundle (i.e., bundle evidence cites a claim with the same fact, attributed to \`user\` or \`user_confirmed\`). The corroborating source id is the \`sourceId\` field on that bundle evidence row.
+- \`add_claim { subjectTempId, objectTempId? | objectValue?, predicate, statement, sourceClaimId? }\` — system-authored. Use SPARINGLY and only for facts directly inferrable from the subgraph (e.g., a transitive relation visible in two existing claims). When at all possible, cite \`sourceClaimId\` from the subgraph (the real \`clm_*\` id) so scope is inherited correctly. Never invent facts not grounded in the subgraph.
+- \`add_alias { nodeTempId, aliasText }\` / \`remove_alias { nodeTempId, aliasText }\` — alias hygiene.
+- \`create_node { tempId, label, description, type }\` — only if a referenced entity is genuinely missing.
+
+ID rules:
+- Operations that touch nodes (\`merge_nodes\`, \`delete_node\`, \`add_claim\`, \`add_alias\`, \`remove_alias\`, \`create_node\`) reference temp ids: the \`tempId\` of an existing subgraph node (\`temp_node_*\`) or the \`tempId\` you declared on a prior \`create_node\`.
+- Operations that touch claims (\`retract_claim\`, \`contradict_claim\`, \`promote_assertion\`) reference REAL claim ids — the \`id="clm_..."\` attribute on each \`<claim>\` line below.
+
+Cleaning rules:
+1. **Reconcile against the bundle.** The bundle below reflects the user's current state; claims that contradict it should be \`contradict_claim\` (with citation) or \`retract_claim\` (with reason). Atlas / open_commitments / preferences are authoritative.
+2. **Provenance gates retraction.** A claim with \`provenance=[assistant_inferred, …]\` and no corroboration in the bundle or in adjacent claims is the canonical \`retract_claim\` target. Do NOT retract claims with \`provenance=[user, …]\` or \`[user_confirmed, …]\` unless the bundle explicitly contradicts them.
+3. **Promote, don't duplicate.** When the bundle's evidence shows a \`user\`/\`user_confirmed\` claim that says the same thing as an \`assistant_inferred\` subgraph claim, emit \`promote_assertion\` rather than \`add_claim\`.
+4. **Prefer \`merge_nodes\` over \`delete_node\`.** If two nodes plausibly refer to the same entity (similar labels, overlapping aliases, compatible types), merge.
+5. **No fabricated facts.** Never \`add_claim\` something that isn't already inferrable from the subgraph + bundle. System-authored claims must cite a \`sourceClaimId\` whenever possible.
+6. **Idempotence.** Don't add a claim that duplicates an existing relationship visible in the subgraph.
+
+${bundleText ? `<bundle>\n${bundleText}\n</bundle>\n\n` : ""}<subgraph>
+<nodes>
+${nodesList}
+</nodes>
+<claims>
+${claimsList}
+</claims>
+</subgraph>
+`;
 }
 
-**Critical Cleaning Rules:**
+/**
+ * Step 4: get cleanup operations from LLM. Returns a parsed
+ * `CleanupOperations` payload (`{ operations: [...] }`).
+ */
+export async function proposeGraphCleanup(
+  userId: string,
+  temp: TempSubgraph,
+  modelId: string,
+): Promise<CleanupOperations> {
+  const client = await createCompletionClient(userId);
 
-1. **Check Against User Atlas**: If a User Atlas is provided above, use it as the source of truth:
-   - Delete any nodes that contradict information in the atlas
-   - Remove nodes that represent outdated information superseded by the atlas
-   - The atlas reflects user corrections and the most current factual information
+  // Bundle is the structured equivalent of the legacy "user atlas" string —
+  // five sections (pinned, atlas, open_commitments, recent_supersessions,
+  // preferences) with usage hints + evidence refs.
+  const bundle = await getConversationBootstrapContext({ userId });
 
-2. **Remove Redundant Nodes**: Identify and merge nodes that represent the same entity or concept. Look for:
-   - Duplicate entities with slightly different labels (e.g., "John Smith" and "John")
-   - Multiple nodes describing the same event or concept
-   - Nodes that could be consolidated without losing information
+  const prompt = buildCleanupPrompt(temp, bundle);
 
-3. **Delete Incorrect or Speculative Information**: Remove nodes that represent:
-   - Speculative or assumed information (not explicitly stated facts)
-   - Outdated information that has been superseded or contradicted
-   - Unclear or non-useful nodes with vague descriptions
-   - Nodes that don't represent factual information about the user
-
-4. **Identify Contradictions**: When you find contradicting information:
-   - Keep the most recent or most specific information
-   - Delete older or vaguer contradicting nodes
-   - Prefer user-stated facts over inferred information
-   - Always prefer atlas information over graph nodes when they conflict
-
-	5. **Improve Connections**: Add missing claims between related nodes that should be connected
-
-	6. **Remove Redundant Claims**: Don't create claims that duplicate existing relationships
-
-**Your Response Should Include:**
-- **merges**: Pairs of temp IDs where nodes are duplicates (remove will be merged into keep)
-- **deletes**: Temp IDs of nodes to completely remove (speculative, outdated, or unclear)
-- **additions**: New claims to add (with concise, factual statements)
-- **newNodes**: Any new nodes needed (only if genuinely missing and factual)
-
-**Important**: Be aggressive about removing redundant and speculative information. Quality and accuracy are more important than quantity.
-
-Nodes:
-${nodesList}
-
-Claims:
-${claimsList}
-	`;
   const completion = await client.beta.chat.completions.parse({
     messages: [{ role: "user", content: prompt }],
     model: modelId,
     response_format: zodResponseFormat(
-      CleanupProposalSchema,
-      "CleanupProposal",
+      CleanupOperationsSchema,
+      "CleanupOperations",
     ),
   });
   const parsed = completion.choices[0]?.message.parsed;
-  if (!parsed) throw new Error("Failed to parse cleanup proposal");
+  if (!parsed) throw new Error("Failed to parse cleanup operations");
   return parsed;
 }
 
 /**
- * Step 5: apply cleanup operations
- */
-async function applyCleanupProposal(
-  proposal: CleanupProposal,
-  mapper: TemporaryIdMapper<GraphNode, string>,
-  db: Awaited<ReturnType<typeof useDatabase>>,
-  userId: string,
-): Promise<CleanupGraphResult> {
-  const cleanupSourceId = await ensureSystemSource(db, userId, "manual");
-  return db.transaction(async (tx) => {
-    const merged: CleanupGraphResult["merged"] = [];
-    const removed: CleanupGraphResult["removed"] = [];
-    const addedClaimsResult: CleanupGraphResult["addedClaims"] = [];
-    const createdNodes: Array<
-      CleanupGraphResult["createdNodes"][number] & { tempId?: string }
-    > = [];
-
-    // Preprocessing: remap temp IDs for merges
-    const remap = new Map<string, string>();
-    for (const { keep, remove } of proposal.merges) {
-      remap.set(remove, keep);
-    }
-    // Rewrite deletes with remapped IDs and dedupe
-    const newDeletes = Array.from(
-      new Set(proposal.deletes.map((d) => remap.get(d.tempId) ?? d.tempId)),
-    ).map((tempId) => ({ tempId }));
-    // Rewrite additions with remapped IDs, drop self-claims
-    const newClaimsToCreate = proposal.additions
-      .map(({ subject, object, predicate, statement }) => ({
-        subject: remap.get(subject) ?? subject,
-        object: remap.get(object) ?? object,
-        predicate,
-        statement,
-      }))
-      .filter((claim) => claim.subject !== claim.object);
-    // Keep newNodes as-is
-    const newNodesToCreate = [...proposal.newNodes];
-
-    // Step 1: Create new nodes
-    for (const n of newNodesToCreate) {
-      const inserted = await tx
-        .insert(nodes)
-        .values({ userId, nodeType: n.type })
-        .returning({ id: nodes.id });
-      const nodeId = inserted[0]?.id;
-      if (!nodeId) continue;
-      await tx.insert(nodeMetadata).values({
-        nodeId,
-        label: n.label,
-        canonicalLabel: normalizeLabel(n.label),
-        description: n.description,
-      });
-      createdNodes.push({
-        nodeId,
-        label: n.label,
-        description: n.description,
-        tempId: n.tempId,
-      });
-    }
-
-    // Step 2: Merges
-    for (const m of proposal.merges) {
-      const keepNode = mapper.getItem(m.keep);
-      const removeNode = mapper.getItem(m.remove);
-      if (!keepNode || !removeNode) continue;
-      const keepId = keepNode.id;
-      const removeId = removeNode.id;
-      await rewireNodeClaims(tx, removeId, keepId, userId);
-      await rewireSourceLinks(tx, removeId, keepId);
-      await deleteNode(tx, removeId, userId);
-      merged.push({
-        keep: keepId,
-        keepLabel: keepNode.label,
-        keepDescription: keepNode.description,
-        remove: removeId,
-        removeLabel: removeNode.label,
-        removeDescription: removeNode.description,
-      });
-    }
-
-    // Step 3: Additions (new claims)
-    const claimInserts: Array<typeof claims.$inferInsert> = [];
-    for (const claim of newClaimsToCreate) {
-      const srcNodeOriginal = mapper.getItem(claim.subject);
-      const tgtNodeOriginal = mapper.getItem(claim.object);
-
-      const srcNodeNew = createdNodes.find((cn) => cn.tempId === claim.subject);
-      const tgtNodeNew = createdNodes.find((cn) => cn.tempId === claim.object);
-
-      const srcId = srcNodeOriginal?.id ?? srcNodeNew?.nodeId;
-      const tgtId = tgtNodeOriginal?.id ?? tgtNodeNew?.nodeId;
-
-      if (!srcId || !tgtId) {
-        console.warn(
-          `Skipping claim creation due to missing node mapping: ${claim.subject} -> ${claim.object}`,
-        );
-        continue;
-      }
-      claimInserts.push({
-        userId,
-        subjectNodeId: srcId,
-        objectNodeId: tgtId,
-        predicate: claim.predicate,
-        statement: claim.statement,
-        description: claim.statement,
-        sourceId: cleanupSourceId,
-        scope: "personal",
-        assertedByKind: "system",
-        statedAt: new Date(),
-        status: "active",
-        metadata: {},
-      });
-    }
-
-    let insertedClaimRecords: Array<typeof claims.$inferSelect> = [];
-    if (claimInserts.length > 0) {
-      insertedClaimRecords = await tx
-        .insert(claims)
-        .values(claimInserts)
-        .returning();
-
-      for (const r of insertedClaimRecords) {
-        if (!r.objectNodeId) continue;
-        addedClaimsResult.push({
-          subject: r.subjectNodeId,
-          object: r.objectNodeId,
-          predicate: r.predicate as RelationshipPredicate,
-        });
-      }
-    }
-
-    // Step 4: Deletes
-    for (const d of newDeletes) {
-      const nodeToDelete = mapper.getItem(d.tempId);
-      if (!nodeToDelete) continue;
-
-      // Check if this node was supposed to be kept from a merge operation
-      // If so, it means the LLM decided to merge AND delete the same original node which doesn't make sense.
-      // Or, it's trying to delete a newly created node (which also doesn't make sense if it just created it).
-      // For now, we'll prioritize merge instructions. If a node is a 'keep' in a merge, don't delete it.
-      const isKeepNodeInMerge = proposal.merges.some(
-        (m) => m.keep === d.tempId,
-      );
-      if (isKeepNodeInMerge) {
-        console.warn(
-          `Attempted to delete node ${d.tempId} (${nodeToDelete.label}) which was also marked as 'keep' in a merge. Skipping delete.`,
-        );
-        continue;
-      }
-
-      await deleteNode(tx, nodeToDelete.id, userId);
-      removed.push({
-        nodeId: nodeToDelete.id,
-        label: nodeToDelete.label,
-        description: nodeToDelete.description,
-      });
-    }
-
-    // Step 5: Generate embeddings for new nodes and claims
-    // Run embedding generation concurrently
-    await Promise.all([
-      generateAndInsertClaimEmbeddings(
-        tx,
-        insertedClaimRecords.map(
-          (claimRecord): EmbeddableClaim => ({
-            claimId: claimRecord.id,
-            predicate: claimRecord.predicate,
-            statement: claimRecord.statement,
-            status: claimRecord.status,
-            statedAt: claimRecord.statedAt,
-          }),
-        ),
-      ),
-      // Generate and insert node embeddings
-      generateAndInsertNodeEmbeddings(
-        tx,
-        createdNodes.map((n) => ({
-          id: n.nodeId,
-          label: n.label,
-          description: n.description,
-        })),
-      ),
-    ]);
-
-    // Return structured result
-    return {
-      merged,
-      removed,
-      addedClaims: addedClaimsResult,
-      createdNodes: createdNodes,
-    };
-  });
-}
-
-/**
- * Rewire claims from removeId to keepId for a given user.
+ * Rewire claims from removeId to keepId for a given user. Still exported
+ * because the dedup-sweep job uses it directly (separate code path from
+ * the operation dispatcher).
  */
 export async function rewireNodeClaims(
   tx: DrizzleDB,
@@ -704,7 +502,9 @@ export async function rewireNodeClaims(
 }
 
 /**
- * Rewire source_links entries from removeId to keepId
+ * Rewire source_links entries from removeId to keepId. Used by the dedup
+ * sweep; the operation dispatcher delegates to {@link mergeNodes} which
+ * handles its own source_links consolidation.
  */
 export async function rewireSourceLinks(
   tx: DrizzleDB,
@@ -727,7 +527,8 @@ export async function rewireSourceLinks(
 }
 
 /**
- * Delete a node for a given user; cascades remove related data
+ * Delete a node for a given user; cascades remove related data. Used by
+ * the dedup-sweep code path.
  */
 export async function deleteNode(
   tx: DrizzleDB,
@@ -745,61 +546,12 @@ export async function deleteNode(
 function logCleanupSummary(
   params: CleanupGraphParams,
   result: CleanupGraphResult,
+  operationCount: number,
 ): void {
   console.info(
     `[CLEANUP] user=${params.userId} seeds=${params.entryNodeLimit} hops=${params.graphHopDepth} ` +
-      `merged=${result.merged.length} removed=${result.removed.length} ` +
-      `addedClaims=${result.addedClaims.length} createdNodes=${result.createdNodes.length}`,
+      `ops=${operationCount} applied=${result.applied} skipped=${result.skipped} errors=${result.errors.length}`,
   );
-}
-
-// Logs a human-readable overview of the LLM cleanup proposal using the mapper
-export function logProposalOverview(
-  proposal: CleanupProposal,
-  mapper: TemporaryIdMapper<GraphNode, string>,
-): void {
-  console.log("=== Graph Cleanup Proposal Overview ===");
-
-  if (proposal.merges.length) {
-    console.log("Merges:");
-    proposal.merges.forEach(({ keep, remove }) => {
-      const keepNode = mapper.getItem(keep as TypeId<"node">);
-      const removeNode = mapper.getItem(remove as TypeId<"node">);
-      console.log(
-        ` - Merge: ${keep} (${keepNode?.label || ""} / ${keepNode?.description || ""}) <- ${remove} (${removeNode?.label || ""} / ${removeNode?.description || ""})`,
-      );
-    });
-  }
-
-  if (proposal.deletes.length) {
-    console.log("Deletes:");
-    proposal.deletes.forEach(({ tempId }) => {
-      const node = mapper.getItem(tempId as TypeId<"node">);
-      console.log(
-        ` - Delete: ${tempId} (${node?.label || ""} / ${node?.description || ""})`,
-      );
-    });
-  }
-
-  if (proposal.additions.length) {
-    console.log("Claim additions:");
-    proposal.additions.forEach(({ subject, object, predicate, statement }) => {
-      const sNode = mapper.getItem(subject as TypeId<"node">);
-      const tNode = mapper.getItem(object as TypeId<"node">);
-      console.log(
-        ` - Add Claim: ${sNode?.label || ""} -> ${tNode?.label || ""} (${predicate}) - ${statement}`,
-      );
-    });
-  }
-
-  if (proposal.newNodes.length) {
-    console.log("New Nodes:");
-    proposal.newNodes.forEach(({ tempId, label, description, type }) => {
-      console.log(
-        ` - New Node: ${tempId}: ${label} (${type}) - ${description || ""}`,
-      );
-    });
-  }
 }
 
 /**

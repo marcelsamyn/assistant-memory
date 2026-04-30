@@ -486,6 +486,12 @@ export interface ApplyCleanupOperationsResult {
   applied: number;
   skipped: number;
   errors: Array<{ kind: CleanupOperation["kind"]; message: string }>;
+  /**
+   * Real node ids touched by node-shaped operations: merge survivors,
+   * newly-created nodes, and subjects of `add_claim`. Used by the
+   * iterative cleanup loop to harvest follow-up seeds.
+   */
+  affectedNodeIds: TypeId<"node">[];
 }
 
 /**
@@ -513,10 +519,12 @@ export async function applyCleanupOperations(
   }
   const resolveTempId: TempIdResolver = (tempId) => tempIdToNodeId.get(tempId);
 
+  const affectedNodeIds = new Set<TypeId<"node">>();
   const result: ApplyCleanupOperationsResult = {
     applied: 0,
     skipped: 0,
     errors: [],
+    affectedNodeIds: [],
   };
 
   for (const op of operations) {
@@ -529,6 +537,7 @@ export async function applyCleanupOperations(
         (tempId, realId) => {
           tempIdToNodeId.set(tempId, realId);
         },
+        (nodeId) => affectedNodeIds.add(nodeId),
       );
       if (ok) result.applied += 1;
       else result.skipped += 1;
@@ -549,6 +558,7 @@ export async function applyCleanupOperations(
     }
   }
 
+  result.affectedNodeIds = Array.from(affectedNodeIds);
   return result;
 }
 
@@ -558,6 +568,7 @@ async function runOne(
   op: CleanupOperation,
   resolveTempId: TempIdResolver,
   registerTempId: (tempId: string, realId: TypeId<"node">) => void,
+  trackAffected: (nodeId: TypeId<"node">) => void,
 ): Promise<boolean> {
   switch (op.kind) {
     case "merge_nodes": {
@@ -567,6 +578,7 @@ async function runOne(
       for (const removeTempId of op.removeTempIds) {
         registerTempId(removeTempId, merged.survivorId);
       }
+      trackAffected(merged.survivorId);
       return true;
     }
     case "delete_node":
@@ -587,7 +599,10 @@ async function runOne(
         );
       }
       const created = await addClaim(database, userId, op, resolveTempId);
-      return created !== null;
+      if (created === null) return false;
+      trackAffected(created.subjectNodeId);
+      if (created.objectNodeId) trackAffected(created.objectNodeId);
+      return true;
     }
     case "add_alias":
       return addAlias(database, userId, op, resolveTempId);
@@ -601,6 +616,7 @@ async function runOne(
       const newId = await createNodeOp(database, userId, op);
       if (!newId) return false;
       registerTempId(op.tempId, newId);
+      trackAffected(newId);
       return true;
     }
   }

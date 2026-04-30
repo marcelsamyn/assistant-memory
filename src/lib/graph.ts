@@ -58,10 +58,13 @@ export interface OneHopNode {
   label: string | null;
   description: string | null;
 
+  claimId: TypeId<"claim">;
   claimSubjectId: TypeId<"node">;
   claimObjectId: TypeId<"node">;
   predicate: Predicate;
   statement: string;
+  scope: Scope;
+  assertedByKind: AssertedByKind;
   subjectLabel: string | null;
   objectLabel: string | null;
 }
@@ -316,10 +319,13 @@ export async function findOneHopNodes(
     options;
   const sub = db
     .select({
+      claimId: claims.id,
       subjectId: claims.subjectNodeId,
       objectId: sql<TypeId<"node">>`${claims.objectNodeId}`.as("objectId"),
       predicate: claims.predicate,
       statement: claims.statement,
+      scope: claims.scope,
+      assertedByKind: claims.assertedByKind,
       nodeId: sql<
         TypeId<"node">
       >`CASE WHEN ${inArray(claims.subjectNodeId, nodeIds)} THEN ${claims.objectNodeId} ELSE ${claims.subjectNodeId} END`.as(
@@ -356,10 +362,13 @@ export async function findOneHopNodes(
       description: nodeMetadata.description,
       timestamp: nodes.createdAt,
 
+      claimId: sub.claimId,
       predicate: sub.predicate,
       statement: sub.statement,
       claimSubjectId: sub.subjectId,
       claimObjectId: sub.objectId,
+      scope: sub.scope,
+      assertedByKind: sub.assertedByKind,
       subjectLabel: srcMeta.label,
       objectLabel: tgtMeta.label,
     })

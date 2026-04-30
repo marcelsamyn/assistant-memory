@@ -40,14 +40,7 @@ function pickNextSeeds(
 }
 
 function harvestNewSeeds(result: CleanupGraphResult): TypeId<"node">[] {
-  const keepIds = result.merged.map((m) => m.keep);
-  const otherIds = Array.from(
-    new Set<TypeId<"node">>([
-      ...result.createdNodes.map((n) => n.nodeId),
-      ...result.addedClaims.flatMap((claim) => [claim.subject, claim.object]),
-    ]),
-  );
-  return [...keepIds, ...otherIds];
+  return result.affectedNodeIds;
 }
 
 /**
@@ -99,9 +92,7 @@ export async function runIterativeCleanup(
 
     successCount++;
     console.debug(
-      `[cleanup-iter] Successful iteration ${successCount}: merges=${
-        result.merged.length
-      }, adds=${result.addedClaims.length}, creates=${result.createdNodes.length}`,
+      `[cleanup-iter] Successful iteration ${successCount}: applied=${result.applied}, skipped=${result.skipped}, errors=${result.errors.length}, affectedNodes=${result.affectedNodeIds.length}`,
     );
 
     // mark seeds as processed
