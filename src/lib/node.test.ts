@@ -473,6 +473,140 @@ describeIfServer("node operations", () => {
     }
   });
 
+  it("cascades dependent claims and clears participant provenance on deleteNode", async () => {
+    // Regression for the "phantom target" report: deleting a node must take
+    // every claim with the node as subject or object (`ON DELETE CASCADE`),
+    // and must NULL `asserted_by_node_id` for participant claims while leaving
+    // those claims active (`ON DELETE SET NULL`). The reported counts let
+    // callers audit the blast radius after a destructive op.
+    const userId = "user_delete_cascade";
+    const targetNodeId = newTypeId("node");
+    const subjectNodeId = newTypeId("node");
+    const otherNodeId = newTypeId("node");
+    const objectClaimId = newTypeId("claim");
+    const subjectClaimId = newTypeId("claim");
+    const participantClaimId = newTypeId("claim");
+    const sourceId = newTypeId("source");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+    vi.doMock("~/lib/embeddings", () => ({
+      generateEmbeddings: async () => ({
+        data: [{ embedding: Array.from({ length: 1024 }, () => 0) }],
+        usage: { total_tokens: 0 },
+      }),
+    }));
+
+    try {
+      await ensureMergeTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES
+           ($1, $4, 'Person'),
+           ($2, $4, 'Task'),
+           ($3, $4, 'Person')`,
+        [targetNodeId, subjectNodeId, otherNodeId, userId],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label") VALUES
+           ($1, $4, 'Midday Marcel', 'midday marcel'),
+           ($2, $5, 'Ship the report', 'ship the report'),
+           ($3, $6, 'Other Person', 'other person')`,
+        [
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          targetNodeId,
+          subjectNodeId,
+          otherNodeId,
+        ],
+      );
+      await client.query(
+        `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+         VALUES ($1, $2, 'manual', 'manual:user_delete_cascade', 'completed')`,
+        [sourceId, userId],
+      );
+      // Three claims:
+      //  1. target as OBJECT (OWNED_BY) — must cascade-delete.
+      //  2. target as SUBJECT (HAS_PREFERENCE attribute) — must cascade-delete.
+      //  3. target as ASSERTED_BY (participant) on a claim about a DIFFERENT
+      //     subject/object — must SURVIVE with asserted_by_node_id NULL.
+      await client.query(
+        `INSERT INTO "claims" (
+           "id", "user_id", "subject_node_id", "object_node_id", "object_value",
+           "predicate", "statement", "source_id", "scope", "asserted_by_kind",
+           "asserted_by_node_id", "stated_at", "status"
+         ) VALUES
+           ($1, $9, $4, $5, NULL, 'OWNED_BY', 'Task owned by Midday Marcel.',
+            $8, 'personal', 'user', NULL, now(), 'active'),
+           ($2, $9, $5, NULL, 'tighter spec', 'HAS_PREFERENCE',
+            'Midday Marcel prefers a tighter spec.', $8, 'personal', 'user',
+            NULL, now(), 'active'),
+           ($3, $9, $6, NULL, 'tea', 'HAS_PREFERENCE',
+            'Other Person prefers tea (per Midday Marcel).', $8, 'personal',
+            'participant', $7, now(), 'active')`,
+        [
+          objectClaimId,
+          subjectClaimId,
+          participantClaimId,
+          subjectNodeId,
+          targetNodeId,
+          otherNodeId,
+          targetNodeId, // asserted_by for claim 3
+          sourceId,
+          userId,
+        ],
+      );
+
+      const { deleteNode } = await import("./node");
+      const result = await deleteNode(userId, targetNodeId);
+      expect(result.deleted).toBe(true);
+      expect(result.affectedClaims.cascadeDeleted).toBe(2);
+      expect(result.affectedClaims.assertedByCleared).toBe(1);
+
+      // Target node is gone.
+      const remainingNodes = await client.query<{ id: string }>(
+        `SELECT "id" FROM "nodes" WHERE "id" = $1`,
+        [targetNodeId],
+      );
+      expect(remainingNodes.rows).toHaveLength(0);
+
+      // Cascade-deleted claims are gone — no phantom rows pointing at the
+      // erased node (the bug reported).
+      const cascadeRows = await client.query<{ id: string }>(
+        `SELECT "id" FROM "claims" WHERE "id" = ANY($1)`,
+        [[objectClaimId, subjectClaimId]],
+      );
+      expect(cascadeRows.rows).toHaveLength(0);
+
+      // Participant claim survives, attribution nulled, still active.
+      const participantRows = await client.query<{
+        id: string;
+        status: string;
+        asserted_by_node_id: string | null;
+      }>(
+        `SELECT "id", "status", "asserted_by_node_id" FROM "claims" WHERE "id" = $1`,
+        [participantClaimId],
+      );
+      expect(participantRows.rows).toHaveLength(1);
+      expect(participantRows.rows[0]).toMatchObject({
+        status: "active",
+        asserted_by_node_id: null,
+      });
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.doUnmock("~/lib/embeddings");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
   it("clears unresolvedSpeaker on the survivor when a resolved Person is merged into a placeholder", async () => {
     // PR 4iii Issue 5: if the survivor is the placeholder (e.g., older
     // createdAt) and the consumed node is a resolved Person, the survivor's

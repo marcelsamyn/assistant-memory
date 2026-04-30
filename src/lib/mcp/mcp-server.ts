@@ -335,7 +335,7 @@ server.tool(
   "delete node",
   deleteNodeRequestSchema.shape,
   async ({ userId, nodeId }) => {
-    const deleted = await deleteNode(userId, nodeId);
+    const { deleted, affectedClaims } = await deleteNode(userId, nodeId);
     if (!deleted) {
       return {
         content: [{ type: "text", text: "Node not found" }],
@@ -343,7 +343,15 @@ server.tool(
       };
     }
     return {
-      content: [{ type: "text", text: "Node deleted successfully" }],
+      content: [
+        {
+          type: "text",
+          text:
+            `Node deleted successfully. ` +
+            `Cascaded ${affectedClaims.cascadeDeleted} claim(s); ` +
+            `cleared participant attribution on ${affectedClaims.assertedByCleared} claim(s).`,
+        },
+      ],
     };
   },
 );

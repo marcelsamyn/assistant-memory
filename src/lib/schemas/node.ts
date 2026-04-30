@@ -106,8 +106,22 @@ export const deleteNodeRequestSchema = z.object({
   nodeId: typeIdSchema("node"),
 });
 
+/**
+ * Counts of claims affected by a node deletion. `cascadeDeleted` covers claims
+ * removed because the node was the subject or object (FK `ON DELETE CASCADE`).
+ * `assertedByCleared` covers participant-provenance claims whose
+ * `assertedByNodeId` was nulled (FK `ON DELETE SET NULL`); those claims remain
+ * active but lose attribution. Callers can use these to audit downstream
+ * effects after a destructive operation.
+ */
+export const deleteNodeAffectedClaimsSchema = z.object({
+  cascadeDeleted: z.number().int().nonnegative(),
+  assertedByCleared: z.number().int().nonnegative(),
+});
+
 export const deleteNodeResponseSchema = z.object({
   deleted: z.literal(true),
+  affectedClaims: deleteNodeAffectedClaimsSchema,
 });
 
 export type DeleteNodeRequest = z.infer<typeof deleteNodeRequestSchema>;
