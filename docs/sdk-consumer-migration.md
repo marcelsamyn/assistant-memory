@@ -10,7 +10,16 @@ has the *what to change*.
 
 ---
 
-## PR 3-iii — Card-shaped reads + snake_case MCP tools (this commit window)
+## PR 4-i — Cleanup pipeline rewrite (this commit window)
+
+- `dedupSweep` REST response gains `crossScopeCollisionsSkipped: number` (additive, non-breaking).
+- Cleanup pipeline now emits the operation vocabulary `{ operations: [...] }` (`merge_nodes`, `delete_node`, `retract_claim`, `contradict_claim`, `add_claim`, `add_alias`, `remove_alias`, `promote_assertion`, `create_node`). The legacy `{ merges, deletes, additions, newNodes }` proposal shape is gone. Internal-only — no public REST/MCP surface ships cleanup directly today, but if a host invokes it, this is the new payload.
+- `mergeNodes` SDK method now throws on cross-scope merge attempts. Catch as `CrossScopeMergeError` if your SDK build re-exports it; otherwise match on `error.name === "CrossScopeMergeError"` or the message prefix `"Cross-scope merge refused:"`.
+- `OneHopNode` (returned by `/query/search` `connections` and `/query/graph`) gains additive fields `claimId`, `scope`, `assertedByKind`. Existing callers ignoring unknown fields are unaffected.
+
+---
+
+## PR 3-iii — Card-shaped reads + snake_case MCP tools
 
 **Commits:** `ed2fcf8`, `ff9e6f0`, `af6a15a`.
 

@@ -469,7 +469,7 @@ A Phase-4 maintenance job that surfaces placeholder `Person` nodes (`metadata.un
 
 ### Phase 4 PR slicing
 
-- **PR 4-i**: dedup sweep + cleanup rewrite + new operations.
+- **PR 4-i**: dedup sweep + cleanup rewrite + new operations. **Done.** Landed across three commits: (a) `2b4d63e` scope-bounded dedup sweep with provenance-aware claim tiebreaking and `crossScopeCollisionsSkipped` counter; (b) `f4c0341` cleanup operation vocabulary (`merge_nodes` / `delete_node` / `retract_claim` / `contradict_claim` / `add_claim` / `add_alias` / `remove_alias` / `promote_assertion` / `create_node`) plus `applyCleanupOperations` dispatcher and `CrossScopeMergeError`; (c) this commit — `proposeGraphCleanup` consumes `getConversationBootstrapContext`, renders subgraph claims with `assertedByKind` + `scope` + real claim ids, emits the new vocabulary, and the deprecated `applyCleanupProposal` / `CleanupProposalSchema` are removed.
 - **PR 4-ii**: transcript ingestion + speaker mapping + userSelfAliases.
 - **PR 4-iii**: full eval harness + observability + placeholder cleanup job.
 
