@@ -408,6 +408,7 @@ export const userProfiles = pgTable("user_profiles", {
     .references(() => users.id)
     .notNull(),
   content: text().notNull(), // The descriptive text
+  metadata: jsonb().notNull().default({}),
   lastUpdatedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
   // Index on (userId)

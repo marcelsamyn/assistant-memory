@@ -123,6 +123,11 @@ import {
   SummarizeResponse,
   summarizeResponseSchema,
 } from "../lib/schemas/summarize.js";
+import {
+  SetUserSelfAliasesRequest,
+  SetUserSelfAliasesResponse,
+  setUserSelfAliasesResponseSchema,
+} from "../lib/schemas/user-self-aliases.js";
 import { z } from "zod";
 
 export interface MemoryClientOptions {
@@ -442,6 +447,23 @@ export class MemoryClient {
       "POST",
       "/node/neighborhood",
       nodeNeighborhoodResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Replace the user's self-aliases (labels they appear under in
+   * transcripts, e.g. "Marcel", "MS", "marcel@samyn.co"). Used by Phase 4
+   * transcript ingestion to attribute claims to the user-self speaker.
+   * Replaces the full list — there is no per-alias add/remove.
+   */
+  async setUserSelfAliases(
+    payload: SetUserSelfAliasesRequest,
+  ): Promise<SetUserSelfAliasesResponse> {
+    return this._fetch(
+      "POST",
+      "/user/self-aliases",
+      setUserSelfAliasesResponseSchema,
       payload,
     );
   }
