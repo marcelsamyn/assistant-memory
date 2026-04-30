@@ -417,6 +417,17 @@ export async function createNodeOp(
  * the original via the registry-driven lifecycle engine; multi-valued
  * predicates coexist (both rows remain `active`).
  *
+ * Supersession contract (do not break this without re-checking call sites):
+ * the new `user_confirmed` claim must outrank the original `assistant_inferred`
+ * row in `compareLifecycleOrder`. Today this holds two ways: (a) the new claim
+ * has a strictly-later `statedAt` (we pass `new Date()` explicitly below — even
+ * when the original's `statedAt` is "now", the new row's wall-clock value is
+ * always >=), and (b) the trust-rank tiebreaker puts `user_confirmed` after
+ * `assistant_inferred` when `statedAt` ties at the second. Future maintainers
+ * editing `compareLifecycleOrder` MUST keep `user_confirmed` outranking
+ * `assistant_inferred` on tie, otherwise promotion silently no-ops on
+ * batch-ingested same-second claims.
+ *
  * Throws {@link PromoteAssertionError} when:
  * - the original claim is missing or owned by another user
  * - the original is not `assistant_inferred`
@@ -464,6 +475,8 @@ export async function promoteAssertion(
   // createClaim runs lifecycle + embedding insertion. Single-valued predicates
   // will supersede the original automatically (trust ranking puts
   // user_confirmed > assistant_inferred); multi-valued coexist.
+  // `statedAt` is passed explicitly (rather than relying on createClaim's
+  // default) to make the supersession contract above legible at the call site.
   return createClaim({
     userId,
     subjectNodeId: original.subjectNodeId,
@@ -475,6 +488,7 @@ export async function promoteAssertion(
     sourceId: corroborating.id,
     scope: corroborating.scope,
     assertedByKind: "user_confirmed",
+    statedAt: new Date(),
   });
 }
 
@@ -503,12 +517,22 @@ export interface ApplyCleanupOperationsResult {
  * {@link mergeNodes} manages its own. All other operations share a single
  * transaction. `CrossScopeMergeError` is caught and logged (no row changes
  * for that op); other errors propagate.
+ *
+ * `allowedClaimIds` (optional) bounds claim-targeting operations
+ * (`retract_claim`, `contradict_claim`, `promote_assertion`) to the set of
+ * real claim ids that were rendered into the prompt. Any op referencing a
+ * claim id outside the set is rejected (recorded in `errors`, no DB write).
+ * For `contradict_claim` the citation (`contradictedByClaimId`) is checked
+ * too — the model must cite a claim the user has shown it. When the parameter
+ * is omitted (e.g. unit-test callers exercising helpers directly), no bound
+ * is enforced, preserving the previous behavior.
  */
 export async function applyCleanupOperations(
   databaseOverride: DbOrTx | undefined,
   userId: string,
   operations: CleanupOperation[],
   idMapper: TemporaryIdMapper<GraphNode, string>,
+  allowedClaimIds?: ReadonlySet<TypeId<"claim">>,
 ): Promise<ApplyCleanupOperationsResult> {
   const database = databaseOverride ?? (await useDatabase());
 
@@ -528,6 +552,14 @@ export async function applyCleanupOperations(
   };
 
   for (const op of operations) {
+    const guardError = checkAllowedClaimIds(op, allowedClaimIds);
+    if (guardError) {
+      console.warn(
+        `[cleanup-ops] out_of_subgraph_claim_ref user=${userId} kind=${op.kind} ${guardError}`,
+      );
+      result.errors.push({ kind: op.kind, message: guardError });
+      continue;
+    }
     try {
       const ok = await runOne(
         database,
@@ -560,6 +592,41 @@ export async function applyCleanupOperations(
 
   result.affectedNodeIds = Array.from(affectedNodeIds);
   return result;
+}
+
+/**
+ * Reject claim-targeting ops whose claim ids fall outside the rendered
+ * subgraph. Returns an error message string when the op should be rejected,
+ * `null` otherwise. Returns `null` when the bound is undefined (legacy
+ * callers / unit tests that don't pass a subgraph).
+ */
+function checkAllowedClaimIds(
+  op: CleanupOperation,
+  allowedClaimIds: ReadonlySet<TypeId<"claim">> | undefined,
+): string | null {
+  if (allowedClaimIds === undefined) return null;
+  switch (op.kind) {
+    case "retract_claim":
+      if (!allowedClaimIds.has(op.claimId)) {
+        return `retract_claim references claim ${op.claimId} outside the rendered subgraph`;
+      }
+      return null;
+    case "contradict_claim":
+      if (!allowedClaimIds.has(op.claimId)) {
+        return `contradict_claim references claim ${op.claimId} outside the rendered subgraph`;
+      }
+      if (!allowedClaimIds.has(op.contradictedByClaimId)) {
+        return `contradict_claim cites claim ${op.contradictedByClaimId} outside the rendered subgraph`;
+      }
+      return null;
+    case "promote_assertion":
+      if (!allowedClaimIds.has(op.claimId)) {
+        return `promote_assertion references claim ${op.claimId} outside the rendered subgraph`;
+      }
+      return null;
+    default:
+      return null;
+  }
 }
 
 async function runOne(

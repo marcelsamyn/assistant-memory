@@ -172,13 +172,17 @@ export async function cleanupGraphIteration(
     tempSubgraph,
     llmModelId,
   );
-  // 4. apply operations to DB
+  // 4. apply operations to DB. The allowed-claim-id set bounds the dispatcher
+  // to claims actually rendered into the prompt; the LLM cannot reference
+  // out-of-subgraph claim ids it hallucinated or recalled from earlier turns.
   const db = await useDatabase();
+  const allowedClaimIds = new Set<TypeId<"claim">>(sub.claims.map((c) => c.id));
   const applyResult = await applyCleanupOperations(
     db,
     userId,
     operations,
     mapper,
+    allowedClaimIds,
   );
   const result: CleanupGraphResult = {
     applied: applyResult.applied,

@@ -901,4 +901,336 @@ describeIfServer("cleanup operation helpers", () => {
     );
     expect(claimsAfter.rows).toHaveLength(1);
   });
+
+  it("retract_claim with claim id outside allowed set is rejected and recorded in errors", async () => {
+    const userId = "user_retract_oob";
+    const subjectId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const insideClaimId = newTypeId("claim");
+    const outsideClaimId = newTypeId("claim");
+
+    await seedUserAndNodes(rootClient, userId, [
+      { id: subjectId, nodeType: "Person", label: "alice" },
+    ]);
+    await seedSource(rootClient, {
+      sourceId,
+      userId,
+      type: "manual",
+      externalId: "manual:user_retract_oob",
+      scope: "personal",
+    });
+    await seedClaim(rootClient, {
+      id: insideClaimId,
+      userId,
+      subjectNodeId: subjectId,
+      predicate: "HAS_STATUS",
+      statement: "Alice is in.",
+      sourceId,
+      objectValue: "in",
+    });
+    await seedClaim(rootClient, {
+      id: outsideClaimId,
+      userId,
+      subjectNodeId: subjectId,
+      predicate: "HAS_STATUS",
+      statement: "Alice is out (other subgraph).",
+      sourceId,
+      objectValue: "out",
+    });
+
+    const { applyCleanupOperations } = await import("./cleanup-operations");
+    const allowed = new Set<TypeId<"claim">>([insideClaimId]);
+    const result = await applyCleanupOperations(
+      database,
+      userId,
+      [{ kind: "retract_claim", claimId: outsideClaimId, reason: "halluc" }],
+      buildMapper([]),
+      allowed,
+    );
+    expect(result.applied).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.kind).toBe("retract_claim");
+    expect(result.errors[0]?.message).toMatch(/outside the rendered subgraph/);
+
+    const after = await rootClient.query<{ status: string }>(
+      `SELECT "status" FROM "claims" WHERE "id" = $1`,
+      [outsideClaimId],
+    );
+    expect(after.rows[0]?.status).toBe("active");
+  });
+
+  it("contradict_claim with contradictedByClaimId outside allowed set is rejected", async () => {
+    const userId = "user_contradict_oob";
+    const subjectId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const insideClaimId = newTypeId("claim");
+    const outsideCitingId = newTypeId("claim");
+
+    await seedUserAndNodes(rootClient, userId, [
+      { id: subjectId, nodeType: "Person", label: "bob" },
+    ]);
+    await seedSource(rootClient, {
+      sourceId,
+      userId,
+      type: "manual",
+      externalId: "manual:user_contradict_oob",
+      scope: "personal",
+    });
+    await seedClaim(rootClient, {
+      id: insideClaimId,
+      userId,
+      subjectNodeId: subjectId,
+      predicate: "HAS_STATUS",
+      statement: "Bob is gone.",
+      sourceId,
+      objectValue: "gone",
+    });
+    await seedClaim(rootClient, {
+      id: outsideCitingId,
+      userId,
+      subjectNodeId: subjectId,
+      predicate: "HAS_STATUS",
+      statement: "Bob is here (other subgraph).",
+      sourceId,
+      objectValue: "here",
+    });
+
+    const { applyCleanupOperations } = await import("./cleanup-operations");
+    const allowed = new Set<TypeId<"claim">>([insideClaimId]);
+    const result = await applyCleanupOperations(
+      database,
+      userId,
+      [
+        {
+          kind: "contradict_claim",
+          claimId: insideClaimId,
+          contradictedByClaimId: outsideCitingId,
+          reason: "model cited an unseen claim",
+        },
+      ],
+      buildMapper([]),
+      allowed,
+    );
+    expect(result.applied).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.kind).toBe("contradict_claim");
+    expect(result.errors[0]?.message).toMatch(
+      /cites claim .* outside the rendered subgraph/,
+    );
+
+    const after = await rootClient.query<{ status: string }>(
+      `SELECT "status" FROM "claims" WHERE "id" = $1`,
+      [insideClaimId],
+    );
+    expect(after.rows[0]?.status).toBe("active");
+  });
+
+  it("promote_assertion with claim id outside allowed set is rejected", async () => {
+    const userId = "user_promote_oob";
+    const subjectId = newTypeId("node");
+    const inferredSource = newTypeId("source");
+    const corroboratingSource = newTypeId("source");
+    const insideClaimId = newTypeId("claim");
+    const outsideClaimId = newTypeId("claim");
+
+    await seedUserAndNodes(rootClient, userId, [
+      { id: subjectId, nodeType: "Concept", label: "topic" },
+    ]);
+    await seedSource(rootClient, {
+      sourceId: inferredSource,
+      userId,
+      type: "conversation_message",
+      externalId: "msg:oob:inferred",
+      scope: "personal",
+    });
+    await seedSource(rootClient, {
+      sourceId: corroboratingSource,
+      userId,
+      type: "conversation_message",
+      externalId: "msg:oob:corroborating",
+      scope: "personal",
+    });
+    await seedClaim(rootClient, {
+      id: insideClaimId,
+      userId,
+      subjectNodeId: subjectId,
+      predicate: "HAS_STATUS",
+      statement: "Topic is in progress (visible).",
+      sourceId: inferredSource,
+      objectValue: "in_progress",
+      assertedByKind: "assistant_inferred",
+    });
+    await seedClaim(rootClient, {
+      id: outsideClaimId,
+      userId,
+      subjectNodeId: subjectId,
+      predicate: "HAS_STATUS",
+      statement: "Topic is paused (other subgraph).",
+      sourceId: inferredSource,
+      objectValue: "paused",
+      assertedByKind: "assistant_inferred",
+    });
+
+    const { applyCleanupOperations } = await import("./cleanup-operations");
+    const allowed = new Set<TypeId<"claim">>([insideClaimId]);
+    const result = await applyCleanupOperations(
+      database,
+      userId,
+      [
+        {
+          kind: "promote_assertion",
+          claimId: outsideClaimId,
+          corroboratingSourceId: corroboratingSource,
+          reason: "model picked an unseen claim",
+        },
+      ],
+      buildMapper([]),
+      allowed,
+    );
+    expect(result.applied).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.kind).toBe("promote_assertion");
+    expect(result.errors[0]?.message).toMatch(/outside the rendered subgraph/);
+
+    // No new claim row should have been created.
+    const claimsAfter = await rootClient.query<{ id: string }>(
+      `SELECT "id" FROM "claims" WHERE "user_id" = $1`,
+      [userId],
+    );
+    expect(claimsAfter.rows).toHaveLength(2);
+  });
+
+  it("promote_assertion supersedes the original even when statedAt collides at the second", async () => {
+    // Pins the supersession contract: user_confirmed must outrank
+    // assistant_inferred via the lifecycle engine, regardless of whether
+    // statedAt differs (past) or ties at the second (same-second batch).
+    const userId = "user_promote_tiebreak";
+    const subjectId = newTypeId("node");
+    const inferredSource = newTypeId("source");
+    const corroboratingSource = newTypeId("source");
+    const pastClaimId = newTypeId("claim");
+    const sameSecondClaimId = newTypeId("claim");
+
+    await seedUserAndNodes(rootClient, userId, [
+      { id: subjectId, nodeType: "Concept", label: "topic_tiebreak" },
+    ]);
+    await seedSource(rootClient, {
+      sourceId: inferredSource,
+      userId,
+      type: "conversation_message",
+      externalId: "msg:tiebreak:inferred",
+      scope: "personal",
+    });
+    await seedSource(rootClient, {
+      sourceId: corroboratingSource,
+      userId,
+      type: "conversation_message",
+      externalId: "msg:tiebreak:corroborating",
+      scope: "personal",
+    });
+
+    // Case A: original statedAt one second in the past — promotion should
+    // supersede via the strictly-later statedAt.
+    const oneSecondAgo = new Date(Date.now() - 1_000);
+    await seedClaim(rootClient, {
+      id: pastClaimId,
+      userId,
+      subjectNodeId: subjectId,
+      predicate: "HAS_STATUS",
+      statement: "Topic is in progress (past stated).",
+      sourceId: inferredSource,
+      objectValue: "in_progress_past",
+      assertedByKind: "assistant_inferred",
+      statedAt: oneSecondAgo,
+    });
+
+    const { applyCleanupOperations } = await import("./cleanup-operations");
+    const pastResult = await applyCleanupOperations(
+      database,
+      userId,
+      [
+        {
+          kind: "promote_assertion",
+          claimId: pastClaimId,
+          corroboratingSourceId: corroboratingSource,
+          reason: "user confirmed (past)",
+        },
+      ],
+      buildMapper([]),
+    );
+    expect(pastResult.errors).toHaveLength(0);
+    expect(pastResult.applied).toBe(1);
+
+    const pastRow = await rootClient.query<{
+      status: string;
+      superseded_by_claim_id: string | null;
+    }>(
+      `SELECT "status", "superseded_by_claim_id" FROM "claims" WHERE "id" = $1`,
+      [pastClaimId],
+    );
+    expect(pastRow.rows[0]?.status).toBe("superseded");
+    expect(pastRow.rows[0]?.superseded_by_claim_id).not.toBeNull();
+
+    // Case B: original statedAt = now() and we promote in the same `it`.
+    // statedAt may collide at the second; lifecycle must still supersede via
+    // the trust-rank tiebreaker (user_confirmed > assistant_inferred).
+    await seedClaim(rootClient, {
+      id: sameSecondClaimId,
+      userId,
+      subjectNodeId: subjectId,
+      predicate: "HAS_PREFERENCE",
+      statement: "Topic is preferred (same-second).",
+      sourceId: inferredSource,
+      objectValue: "preferred_same_second",
+      assertedByKind: "assistant_inferred",
+      statedAt: new Date(),
+    });
+    // HAS_PREFERENCE is multi-valued — substitute single-valued HAS_STATUS
+    // with a fresh subject so the same-second case exercises supersession.
+    const singleSubjectId = newTypeId("node");
+    const singleClaimId = newTypeId("claim");
+    await seedUserAndNodes(rootClient, userId, [
+      {
+        id: singleSubjectId,
+        nodeType: "Concept",
+        label: "topic_single",
+      },
+    ]);
+    await seedClaim(rootClient, {
+      id: singleClaimId,
+      userId,
+      subjectNodeId: singleSubjectId,
+      predicate: "HAS_STATUS",
+      statement: "Single topic in progress (same-second).",
+      sourceId: inferredSource,
+      objectValue: "in_progress_now",
+      assertedByKind: "assistant_inferred",
+      statedAt: new Date(),
+    });
+    const sameSecondResult = await applyCleanupOperations(
+      database,
+      userId,
+      [
+        {
+          kind: "promote_assertion",
+          claimId: singleClaimId,
+          corroboratingSourceId: corroboratingSource,
+          reason: "user confirmed (same-second)",
+        },
+      ],
+      buildMapper([]),
+    );
+    expect(sameSecondResult.errors).toHaveLength(0);
+    expect(sameSecondResult.applied).toBe(1);
+
+    const sameRow = await rootClient.query<{
+      status: string;
+      superseded_by_claim_id: string | null;
+    }>(
+      `SELECT "status", "superseded_by_claim_id" FROM "claims" WHERE "id" = $1`,
+      [singleClaimId],
+    );
+    expect(sameRow.rows[0]?.status).toBe("superseded");
+    expect(sameRow.rows[0]?.superseded_by_claim_id).not.toBeNull();
+  });
 });
