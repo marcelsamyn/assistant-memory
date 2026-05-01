@@ -12,10 +12,17 @@
  * retract_claim, contradict_claim, merge_nodes, add_claim, add_alias.
  */
 import { CrossScopeMergeError, mergeNodes } from "../node";
-import { and, eq } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DrizzleDB } from "~/db";
-import { claims, nodeMetadata, nodes, sources } from "~/db/schema";
+import {
+  aliases,
+  claims,
+  nodeMetadata,
+  nodes,
+  sourceLinks,
+  sources,
+} from "~/db/schema";
 import { createAlias, deleteAliasByText } from "~/lib/alias";
 import { createClaim, type ClaimSelect } from "~/lib/claim";
 import { applyClaimLifecycle } from "~/lib/claims/lifecycle";
@@ -145,6 +152,17 @@ type DbOrTx = DrizzleDB;
 /** A live tempId → real id map maintained across an op sequence. */
 type TempIdResolver = (tempId: string) => TypeId<"node"> | undefined;
 
+const RETRACTABLE_KINDS = new Set<ClaimSelect["assertedByKind"]>([
+  "assistant_inferred",
+]);
+
+const CONTRADICTION_CITATION_KINDS = new Set<ClaimSelect["assertedByKind"]>([
+  "user",
+  "user_confirmed",
+  "participant",
+  "document_author",
+]);
+
 /** Thrown by `promote_assertion` when the source claim is not eligible. */
 export class PromoteAssertionError extends Error {
   readonly claimId: TypeId<"claim">;
@@ -155,23 +173,90 @@ export class PromoteAssertionError extends Error {
   }
 }
 
+/** Thrown when cleanup tries to retract a claim whose provenance is protected. */
+export class RetractionNotAllowedError extends Error {
+  readonly claimId: TypeId<"claim">;
+  readonly assertedByKind: ClaimSelect["assertedByKind"];
+  constructor(claim: ClaimSelect) {
+    super(
+      `retract_claim refused for ${claim.assertedByKind} claim ${claim.id}; use contradict_claim with a cited claim instead`,
+    );
+    this.name = "RetractionNotAllowedError";
+    this.claimId = claim.id;
+    this.assertedByKind = claim.assertedByKind;
+  }
+}
+
+/** Thrown when cleanup tries to contradict a claim without a valid citation. */
+export class ContradictionNotAllowedError extends Error {
+  readonly claimId: TypeId<"claim">;
+  readonly contradictedByClaimId: TypeId<"claim">;
+  constructor(
+    claimId: TypeId<"claim">,
+    contradictedByClaimId: TypeId<"claim">,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ContradictionNotAllowedError";
+    this.claimId = claimId;
+    this.contradictedByClaimId = contradictedByClaimId;
+  }
+}
+
+/** Thrown when cleanup tries to hard-delete a node that still has evidence. */
+export class DeleteNodeNotAllowedError extends Error {
+  readonly nodeId: TypeId<"node">;
+  constructor(
+    nodeId: TypeId<"node">,
+    counts: { claims: number; sourceLinks: number; aliases: number },
+  ) {
+    super(
+      `delete_node refused for ${nodeId}; node still has claims=${counts.claims}, sourceLinks=${counts.sourceLinks}, aliases=${counts.aliases}`,
+    );
+    this.name = "DeleteNodeNotAllowedError";
+    this.nodeId = nodeId;
+  }
+}
+
 // =============================================================================
 // Per-op helpers
 // =============================================================================
 
 /**
- * Retract a claim: set status to `retracted` and re-run lifecycle so any
- * supersession chain that depended on this claim recomputes.
+ * Retract an assistant-inferred claim: set status to `retracted` and re-run
+ * lifecycle so any supersession chain that depended on this claim recomputes.
+ *
+ * Guardrail: cleanup may not retract claims attributed to users, documents,
+ * participants, or system sources. "Not present in the bootstrap bundle" is
+ * not evidence that a sourced claim is false. Non-inferred claims must use
+ * `contradict_claim` with an explicit cited claim instead.
  */
 export async function retractClaim(
   database: DbOrTx,
   userId: string,
   op: RetractClaimOp,
 ): Promise<ClaimSelect | null> {
+  const [claim] = await database
+    .select()
+    .from(claims)
+    .where(and(eq(claims.id, op.claimId), eq(claims.userId, userId)))
+    .limit(1);
+
+  if (!claim) return null;
+  if (!RETRACTABLE_KINDS.has(claim.assertedByKind)) {
+    throw new RetractionNotAllowedError(claim);
+  }
+
   const [updated] = await database
     .update(claims)
     .set({ status: "retracted", updatedAt: new Date() })
-    .where(and(eq(claims.id, op.claimId), eq(claims.userId, userId)))
+    .where(
+      and(
+        eq(claims.id, op.claimId),
+        eq(claims.userId, userId),
+        eq(claims.assertedByKind, "assistant_inferred"),
+      ),
+    )
     .returning();
 
   if (!updated) return null;
@@ -187,17 +272,36 @@ export async function retractClaim(
 }
 
 /**
- * Mark a claim as contradicted by another (cited) claim. The citation is
- * required at the schema layer; this helper additionally validates that the
- * cited claim exists and is owned by the same user.
+ * Mark a claim as contradicted by another sourced claim.
+ *
+ * Policy:
+ * - the citation must be a different claim
+ * - the citation must be active
+ * - the citation must be source-backed provenance, not assistant/system output
+ * - the citation and target must live in the same scope
  */
 export async function contradictClaim(
   database: DbOrTx,
   userId: string,
   op: ContradictClaimOp,
 ): Promise<ClaimSelect | null> {
+  if (op.claimId === op.contradictedByClaimId) {
+    throw new ContradictionNotAllowedError(
+      op.claimId,
+      op.contradictedByClaimId,
+      "contradict_claim cannot cite the same claim it contradicts",
+    );
+  }
+
+  const [target] = await database
+    .select()
+    .from(claims)
+    .where(and(eq(claims.id, op.claimId), eq(claims.userId, userId)))
+    .limit(1);
+  if (!target) return null;
+
   const [citing] = await database
-    .select({ id: claims.id })
+    .select()
     .from(claims)
     .where(
       and(eq(claims.id, op.contradictedByClaimId), eq(claims.userId, userId)),
@@ -206,6 +310,27 @@ export async function contradictClaim(
   if (!citing) {
     throw new Error(
       `contradict_claim citation ${op.contradictedByClaimId} not found for user`,
+    );
+  }
+  if (citing.status !== "active") {
+    throw new ContradictionNotAllowedError(
+      op.claimId,
+      op.contradictedByClaimId,
+      `contradict_claim citation ${op.contradictedByClaimId} is ${citing.status}, expected active`,
+    );
+  }
+  if (!CONTRADICTION_CITATION_KINDS.has(citing.assertedByKind)) {
+    throw new ContradictionNotAllowedError(
+      op.claimId,
+      op.contradictedByClaimId,
+      `contradict_claim citation ${op.contradictedByClaimId} is ${citing.assertedByKind}, expected source-backed provenance`,
+    );
+  }
+  if (target.scope !== citing.scope) {
+    throw new ContradictionNotAllowedError(
+      op.claimId,
+      op.contradictedByClaimId,
+      `contradict_claim scope mismatch: target is ${target.scope}, citation is ${citing.scope}`,
     );
   }
 
@@ -397,11 +522,51 @@ export async function deleteNodeOp(
     console.warn(`delete_node: unresolved temp id ${op.tempId}; skipping`);
     return false;
   }
+
+  await assertNodeCanBeHardDeleted(database, userId, nodeId);
+
   const deleted = await database
     .delete(nodes)
     .where(and(eq(nodes.id, nodeId), eq(nodes.userId, userId)))
     .returning({ id: nodes.id });
   return deleted.length > 0;
+}
+
+async function assertNodeCanBeHardDeleted(
+  database: DbOrTx,
+  userId: string,
+  nodeId: TypeId<"node">,
+): Promise<void> {
+  const [claimRow, sourceLinkRow, aliasRow] = await Promise.all([
+    database
+      .select({ count: sql<number>`count(*)::int` })
+      .from(claims)
+      .where(
+        and(
+          eq(claims.userId, userId),
+          or(eq(claims.subjectNodeId, nodeId), eq(claims.objectNodeId, nodeId)),
+        ),
+      ),
+    database
+      .select({ count: sql<number>`count(*)::int` })
+      .from(sourceLinks)
+      .where(eq(sourceLinks.nodeId, nodeId)),
+    database
+      .select({ count: sql<number>`count(*)::int` })
+      .from(aliases)
+      .where(
+        and(eq(aliases.userId, userId), eq(aliases.canonicalNodeId, nodeId)),
+      ),
+  ]);
+
+  const counts = {
+    claims: claimRow[0]?.count ?? 0,
+    sourceLinks: sourceLinkRow[0]?.count ?? 0,
+    aliases: aliasRow[0]?.count ?? 0,
+  };
+  if (counts.claims > 0 || counts.sourceLinks > 0 || counts.aliases > 0) {
+    throw new DeleteNodeNotAllowedError(nodeId, counts);
+  }
 }
 
 /** Create a brand-new node and register it in the resolver under its tempId. */

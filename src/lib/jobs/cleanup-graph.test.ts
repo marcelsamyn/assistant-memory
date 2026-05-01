@@ -23,7 +23,8 @@ function makeBundle(): ContextBundle {
       {
         kind: "open_commitments",
         content: "- Send spec to Bob (due 2026-05-01)",
-        usage: "Tasks the user owes someone; do not infer pending work elsewhere.",
+        usage:
+          "Tasks the user owes someone; do not infer pending work elsewhere.",
       },
       {
         kind: "preferences",
@@ -100,9 +101,7 @@ describe("buildCleanupPrompt", () => {
     )!;
     const userClaim = sub.claims.find((c) => c.assertedByKind === "user")!;
 
-    expect(prompt).toContain(
-      `provenance="[assistant_inferred, personal]"`,
-    );
+    expect(prompt).toContain(`provenance="[assistant_inferred, personal]"`);
     expect(prompt).toContain(`provenance="[user, personal]"`);
     expect(prompt).toContain(`id="${inferred.id}"`);
     expect(prompt).toContain(`id="${userClaim.id}"`);
@@ -128,6 +127,8 @@ describe("buildCleanupPrompt", () => {
     // Node-touching ops use temp ids, claim-touching ops use real ids.
     expect(prompt).toMatch(/temp ids/i);
     expect(prompt).toMatch(/REAL claim ids/);
+    expect(prompt).toContain("Absence from the bundle is NEVER sufficient");
+    expect(prompt).toContain("ACTIVE, same-scope, source-backed claim");
   });
 
   it("renders the subgraph nodes and claims inside <subgraph>", () => {

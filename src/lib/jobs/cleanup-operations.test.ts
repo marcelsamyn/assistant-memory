@@ -308,6 +308,7 @@ describeIfServer("cleanup operation helpers", () => {
       statement: "Alice is active.",
       sourceId,
       objectValue: "active",
+      assertedByKind: "assistant_inferred",
     });
 
     const { applyCleanupOperations } = await import("./cleanup-operations");
@@ -344,6 +345,59 @@ describeIfServer("cleanup operation helpers", () => {
     } finally {
       setLogSink();
     }
+  });
+
+  it("retract_claim refuses migrated/user-attributed claims", async () => {
+    const userId = "user_retract_legacy_refused";
+    const subjectId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const claimId = newTypeId("claim");
+
+    await seedUserAndNodes(rootClient, userId, [
+      { id: subjectId, nodeType: "Concept", label: "legacy topic" },
+    ]);
+    await seedSource(rootClient, {
+      sourceId,
+      userId,
+      type: "legacy_migration",
+      externalId: `legacy_migration:${userId}`,
+      scope: "personal",
+    });
+    await seedClaim(rootClient, {
+      id: claimId,
+      userId,
+      subjectNodeId: subjectId,
+      predicate: "RELATED_TO",
+      statement: "Legacy topic related to another migrated concept.",
+      sourceId,
+      objectValue: "another migrated concept",
+      assertedByKind: "user",
+    });
+
+    const { applyCleanupOperations } = await import("./cleanup-operations");
+    const result = await applyCleanupOperations(
+      database,
+      userId,
+      [
+        {
+          kind: "retract_claim",
+          claimId,
+          reason: "not corroborated by bundle",
+        },
+      ],
+      buildMapper([]),
+    );
+
+    expect(result.applied).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.kind).toBe("retract_claim");
+    expect(result.errors[0]?.message).toMatch(/refused for user claim/);
+
+    const after = await rootClient.query<{ status: string }>(
+      `SELECT "status" FROM "claims" WHERE "id" = $1`,
+      [claimId],
+    );
+    expect(after.rows[0]?.status).toBe("active");
   });
 
   it("contradict_claim sets contradicted_by_claim_id and status", async () => {
@@ -425,6 +479,233 @@ describeIfServer("cleanup operation helpers", () => {
     } finally {
       setLogSink();
     }
+  });
+
+  it("contradict_claim refuses assistant-inferred citations", async () => {
+    const userId = "user_contradict_inferred_citation";
+    const subjectId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const claimId = newTypeId("claim");
+    const citingId = newTypeId("claim");
+
+    await seedUserAndNodes(rootClient, userId, [
+      { id: subjectId, nodeType: "Person", label: "bob" },
+    ]);
+    await seedSource(rootClient, {
+      sourceId,
+      userId,
+      type: "conversation_message",
+      externalId: "msg:user_contradict_inferred_citation",
+      scope: "personal",
+    });
+    await seedClaim(rootClient, {
+      id: claimId,
+      userId,
+      subjectNodeId: subjectId,
+      predicate: "HAS_STATUS",
+      statement: "Bob is gone.",
+      sourceId,
+      objectValue: "gone",
+      assertedByKind: "user",
+    });
+    await seedClaim(rootClient, {
+      id: citingId,
+      userId,
+      subjectNodeId: subjectId,
+      predicate: "HAS_STATUS",
+      statement: "Bob is here.",
+      sourceId,
+      objectValue: "here",
+      assertedByKind: "assistant_inferred",
+    });
+
+    const { applyCleanupOperations } = await import("./cleanup-operations");
+    const result = await applyCleanupOperations(
+      database,
+      userId,
+      [
+        {
+          kind: "contradict_claim",
+          claimId,
+          contradictedByClaimId: citingId,
+          reason: "assistant guessed the opposite",
+        },
+      ],
+      buildMapper([]),
+    );
+
+    expect(result.applied).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.kind).toBe("contradict_claim");
+    expect(result.errors[0]?.message).toMatch(/source-backed provenance/);
+
+    const after = await rootClient.query<{ status: string }>(
+      `SELECT "status" FROM "claims" WHERE "id" = $1`,
+      [claimId],
+    );
+    expect(after.rows[0]?.status).toBe("active");
+  });
+
+  it("contradict_claim refuses cross-scope citations", async () => {
+    const userId = "user_contradict_cross_scope";
+    const subjectId = newTypeId("node");
+    const personalSourceId = newTypeId("source");
+    const referenceSourceId = newTypeId("source");
+    const claimId = newTypeId("claim");
+    const citingId = newTypeId("claim");
+
+    await seedUserAndNodes(rootClient, userId, [
+      { id: subjectId, nodeType: "Concept", label: "topic" },
+    ]);
+    await seedSource(rootClient, {
+      sourceId: personalSourceId,
+      userId,
+      type: "conversation_message",
+      externalId: "msg:user_contradict_cross_scope",
+      scope: "personal",
+    });
+    await seedSource(rootClient, {
+      sourceId: referenceSourceId,
+      userId,
+      type: "document",
+      externalId: "doc:user_contradict_cross_scope",
+      scope: "reference",
+    });
+    await seedClaim(rootClient, {
+      id: claimId,
+      userId,
+      subjectNodeId: subjectId,
+      predicate: "HAS_STATUS",
+      statement: "Topic is personal.",
+      sourceId: personalSourceId,
+      objectValue: "personal",
+      scope: "personal",
+      assertedByKind: "user",
+    });
+    await seedClaim(rootClient, {
+      id: citingId,
+      userId,
+      subjectNodeId: subjectId,
+      predicate: "HAS_STATUS",
+      statement: "Topic is only reference material.",
+      sourceId: referenceSourceId,
+      objectValue: "reference",
+      scope: "reference",
+      assertedByKind: "document_author",
+    });
+
+    const { applyCleanupOperations } = await import("./cleanup-operations");
+    const result = await applyCleanupOperations(
+      database,
+      userId,
+      [
+        {
+          kind: "contradict_claim",
+          claimId,
+          contradictedByClaimId: citingId,
+          reason: "reference doc said something different",
+        },
+      ],
+      buildMapper([]),
+    );
+
+    expect(result.applied).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.kind).toBe("contradict_claim");
+    expect(result.errors[0]?.message).toMatch(/scope mismatch/);
+
+    const after = await rootClient.query<{ status: string }>(
+      `SELECT "status" FROM "claims" WHERE "id" = $1`,
+      [claimId],
+    );
+    expect(after.rows[0]?.status).toBe("active");
+  });
+
+  it("delete_node deletes only evidence-free orphan nodes", async () => {
+    const userId = "user_delete_orphan";
+    const nodeId = newTypeId("node");
+    await seedUserAndNodes(rootClient, userId, [
+      { id: nodeId, nodeType: "Concept", label: "empty shell" },
+    ]);
+
+    const graphNode: GraphNode & { tempId: string } = {
+      id: nodeId,
+      tempId: "temp_node_1",
+      label: "empty shell",
+      description: "",
+      type: "Concept",
+    };
+
+    const { applyCleanupOperations } = await import("./cleanup-operations");
+    const result = await applyCleanupOperations(
+      database,
+      userId,
+      [{ kind: "delete_node", tempId: "temp_node_1" }],
+      buildMapper([graphNode]),
+    );
+
+    expect(result.applied).toBe(1);
+    expect(result.errors).toHaveLength(0);
+
+    const after = await rootClient.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM "nodes" WHERE "id" = $1`,
+      [nodeId],
+    );
+    expect(after.rows[0]?.count).toBe("0");
+  });
+
+  it("delete_node refuses nodes that still have claims", async () => {
+    const userId = "user_delete_with_claims_refused";
+    const nodeId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const claimId = newTypeId("claim");
+    await seedUserAndNodes(rootClient, userId, [
+      { id: nodeId, nodeType: "Concept", label: "claimed topic" },
+    ]);
+    await seedSource(rootClient, {
+      sourceId,
+      userId,
+      type: "legacy_migration",
+      externalId: `legacy_migration:${userId}`,
+      scope: "personal",
+    });
+    await seedClaim(rootClient, {
+      id: claimId,
+      userId,
+      subjectNodeId: nodeId,
+      predicate: "RELATED_TO",
+      statement: "Claimed topic related to imported memory.",
+      sourceId,
+      objectValue: "imported memory",
+      assertedByKind: "user",
+    });
+
+    const graphNode: GraphNode & { tempId: string } = {
+      id: nodeId,
+      tempId: "temp_node_1",
+      label: "claimed topic",
+      description: "",
+      type: "Concept",
+    };
+
+    const { applyCleanupOperations } = await import("./cleanup-operations");
+    const result = await applyCleanupOperations(
+      database,
+      userId,
+      [{ kind: "delete_node", tempId: "temp_node_1" }],
+      buildMapper([graphNode]),
+    );
+
+    expect(result.applied).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.kind).toBe("delete_node");
+    expect(result.errors[0]?.message).toMatch(/still has claims=1/);
+
+    const after = await rootClient.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM "nodes" WHERE "id" = $1`,
+      [nodeId],
+    );
+    expect(after.rows[0]?.count).toBe("1");
   });
 
   it("add_claim stamps system kind and inherits scope from source claim", async () => {

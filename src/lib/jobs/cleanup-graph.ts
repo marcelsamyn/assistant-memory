@@ -398,9 +398,9 @@ export function buildCleanupPrompt(
 Output a single JSON object \`{ "operations": [...] }\` matching the cleanup operation vocabulary:
 
 - \`merge_nodes { keepTempId, removeTempIds }\` — collapse duplicates / aliases. Prefer this over \`delete_node\` whenever two nodes plausibly represent the same entity.
-- \`delete_node { tempId }\` — only when the node is truly irrelevant or has no salvageable claims.
-- \`retract_claim { claimId, reason }\` — claim is wrong or unsupported. Use \`assistant_inferred\` claims that lack any corroborating evidence in the bundle / subgraph as the primary candidates.
-- \`contradict_claim { claimId, contradictedByClaimId, reason }\` — citation REQUIRED. Use only when another claim already in this subgraph (or referenced in the bundle's evidence) contradicts the original. Pass the citing claim's real id in \`contradictedByClaimId\`.
+- \`delete_node { tempId }\` — only for orphan nodes with no claims, source links, or aliases. Prefer \`merge_nodes\` for duplicates and claim-level operations for bad facts.
+- \`retract_claim { claimId, reason }\` — ONLY for \`assistant_inferred\` claims that lack corroboration in the bundle / subgraph. Never use this for \`user\`, \`user_confirmed\`, \`participant\`, \`document_author\`, or \`system\` claims.
+- \`contradict_claim { claimId, contradictedByClaimId, reason }\` — citation REQUIRED. Use only when another ACTIVE, same-scope, source-backed claim already in this subgraph contradicts the original. Pass the citing claim's real id in \`contradictedByClaimId\`. Do not cite \`assistant_inferred\` or \`system\` claims.
 - \`promote_assertion { claimId, corroboratingSourceId, reason }\` — when an \`assistant_inferred\` claim is corroborated by a user-attributed source visible in the bundle (i.e., bundle evidence cites a claim with the same fact, attributed to \`user\` or \`user_confirmed\`). The corroborating source id is the \`sourceId\` field on that bundle evidence row.
 - \`add_claim { subjectTempId, objectTempId? | objectValue?, predicate, statement, sourceClaimId? }\` — system-authored. Use SPARINGLY and only for facts directly inferrable from the subgraph (e.g., a transitive relation visible in two existing claims). When at all possible, cite \`sourceClaimId\` from the subgraph (the real \`clm_*\` id) so scope is inherited correctly. Never invent facts not grounded in the subgraph.
 - \`add_alias { nodeTempId, aliasText }\` / \`remove_alias { nodeTempId, aliasText }\` — alias hygiene.
@@ -411,12 +411,13 @@ ID rules:
 - Operations that touch claims (\`retract_claim\`, \`contradict_claim\`, \`promote_assertion\`) reference REAL claim ids — the \`id="clm_..."\` attribute on each \`<claim>\` line below.
 
 Cleaning rules:
-1. **Reconcile against the bundle.** The bundle below reflects the user's current state; claims that contradict it should be \`contradict_claim\` (with citation) or \`retract_claim\` (with reason). Atlas / open_commitments / preferences are authoritative.
-2. **Provenance gates retraction.** A claim with \`provenance=[assistant_inferred, …]\` and no corroboration in the bundle or in adjacent claims is the canonical \`retract_claim\` target. Do NOT retract claims with \`provenance=[user, …]\` or \`[user_confirmed, …]\` unless the bundle explicitly contradicts them.
-3. **Promote, don't duplicate.** When the bundle's evidence shows a \`user\`/\`user_confirmed\` claim that says the same thing as an \`assistant_inferred\` subgraph claim, emit \`promote_assertion\` rather than \`add_claim\`.
-4. **Prefer \`merge_nodes\` over \`delete_node\`.** If two nodes plausibly refer to the same entity (similar labels, overlapping aliases, compatible types), merge.
-5. **No fabricated facts.** Never \`add_claim\` something that isn't already inferrable from the subgraph + bundle. System-authored claims must cite a \`sourceClaimId\` whenever possible.
-6. **Idempotence.** Don't add a claim that duplicates an existing relationship visible in the subgraph.
+1. **The bundle is not the full memory.** It is high-signal current context, not a complete evidence set. Absence from the bundle is NEVER sufficient reason to retract or contradict a sourced claim.
+2. **Reconcile against explicit contradictions.** Claims that directly contradict a specific claim visible in this subgraph should be \`contradict_claim\` with that cited claim id. Atlas / open_commitments / preferences guide cleanup, but they are not standalone citations.
+3. **Provenance gates retraction.** A claim with \`provenance=[assistant_inferred, …]\` and no corroboration in the bundle or in adjacent claims is the only valid \`retract_claim\` target. Do NOT retract claims with \`provenance=[user, …]\`, \`[user_confirmed, …]\`, \`[participant, …]\`, \`[document_author, …]\`, or \`[system, …]\`.
+4. **Promote, don't duplicate.** When the bundle's evidence shows a \`user\`/\`user_confirmed\` claim that says the same thing as an \`assistant_inferred\` subgraph claim, emit \`promote_assertion\` rather than \`add_claim\`.
+5. **Prefer \`merge_nodes\` over \`delete_node\`.** If two nodes plausibly refer to the same entity (similar labels, overlapping aliases, compatible types), merge.
+6. **No fabricated facts.** Never \`add_claim\` something that isn't already inferrable from the subgraph + bundle. System-authored claims must cite a \`sourceClaimId\` whenever possible.
+7. **Idempotence.** Don't add a claim that duplicates an existing relationship visible in the subgraph.
 
 ${bundleText ? `<bundle>\n${bundleText}\n</bundle>\n\n` : ""}<subgraph>
 <nodes>
