@@ -465,6 +465,40 @@ describeIfServer("ingestTranscript", () => {
         expect(child.metadata?.["speakerLabel"]).toBeTypeOf("string");
         expect(child.metadata?.["speakerNodeId"]).toBeTypeOf("string");
       }
+      const speakerNodeIds = [
+        ...new Set(
+          children
+            .map((child) => child.metadata?.["speakerNodeId"])
+            .filter((nodeId): nodeId is string => typeof nodeId === "string"),
+        ),
+      ];
+      expect(speakerNodeIds).toHaveLength(3);
+      const speakerSourceLinks = await client.query<{
+        source_id: string;
+        node_id: string;
+      }>(
+        `SELECT source_id, node_id
+         FROM source_links
+         WHERE node_id = ANY($1::text[])`,
+        [speakerNodeIds],
+      );
+      for (const speakerNodeId of speakerNodeIds) {
+        expect(
+          speakerSourceLinks.rows.some(
+            (row) =>
+              row.node_id === speakerNodeId && row.source_id === parents[0]?.id,
+          ),
+        ).toBe(true);
+      }
+      for (const child of children) {
+        expect(
+          speakerSourceLinks.rows.some(
+            (row) =>
+              row.source_id === child.id &&
+              row.node_id === child.metadata?.["speakerNodeId"],
+          ),
+        ).toBe(true);
+      }
 
       // Claim provenance
       const claimRows = await client.query<{
@@ -539,6 +573,45 @@ describeIfServer("ingestTranscript", () => {
         [userId],
       );
       expect(userSelfRows.rows).toHaveLength(1);
+
+      const prunableOrphanRows = await client.query<{ id: string }>(
+        `SELECT n.id
+         FROM nodes n
+         WHERE n.user_id = $1
+           AND n.node_type = ANY($2::text[])
+           AND NOT EXISTS (
+             SELECT 1 FROM claims c
+             WHERE c.user_id = $1
+               AND (
+                 c.subject_node_id = n.id
+                 OR c.object_node_id = n.id
+                 OR c.asserted_by_node_id = n.id
+               )
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM source_links sl WHERE sl.node_id = n.id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM aliases a
+             WHERE a.user_id = $1 AND a.canonical_node_id = n.id
+           )`,
+        [
+          userId,
+          [
+            "Person",
+            "Location",
+            "Event",
+            "Object",
+            "Emotion",
+            "Concept",
+            "Media",
+            "Feedback",
+            "Idea",
+            "Task",
+          ],
+        ],
+      );
+      expect(prunableOrphanRows.rows).toEqual([]);
     } finally {
       unmockCommon();
       await client.end();

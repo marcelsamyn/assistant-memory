@@ -309,10 +309,7 @@ export async function deleteNode(
       .where(
         and(
           eq(claims.userId, userId),
-          or(
-            eq(claims.subjectNodeId, nodeId),
-            eq(claims.objectNodeId, nodeId),
-          ),
+          or(eq(claims.subjectNodeId, nodeId), eq(claims.objectNodeId, nodeId)),
         ),
       );
 
@@ -382,12 +379,17 @@ export async function createNode(
     { id: inserted.id, label, description: description ?? null },
   ]);
 
+  const sourceId = await ensureSystemSource(db, userId, "manual");
+  await db
+    .insert(sourceLinks)
+    .values({ sourceId, nodeId: inserted.id })
+    .onConflictDoNothing();
+
   // Link to today's day node via OCCURRED_ON, mirroring `ensureSourceNode`.
   // Skip for Temporal nodes themselves to avoid a self-link / cycle.
   if (nodeType !== "Temporal") {
     const now = new Date();
     const dayNodeId = await ensureDayNode(db, userId, now);
-    const sourceId = await ensureSystemSource(db, userId, "manual");
     await db.insert(claims).values({
       userId,
       predicate: "OCCURRED_ON",

@@ -78,11 +78,25 @@ async function createAtlasUserTestTables(client: Client): Promise<void> {
       "user_id" text NOT NULL REFERENCES "users"("id"),
       "type" varchar(50) NOT NULL,
       "external_id" text NOT NULL,
+      "parent_source" text,
       "scope" varchar(16) DEFAULT 'personal' NOT NULL,
+      "metadata" jsonb,
+      "last_ingested_at" timestamp with time zone,
       "status" varchar(20) DEFAULT 'completed',
+      "deleted_at" timestamp with time zone,
+      "content_type" varchar(100),
+      "content_length" integer,
       "created_at" timestamp with time zone DEFAULT now() NOT NULL,
       CONSTRAINT "sources_user_type_external_unique"
         UNIQUE ("user_id", "type", "external_id")
+    );
+    CREATE TABLE IF NOT EXISTS "source_links" (
+      "id" text PRIMARY KEY NOT NULL,
+      "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
+      "node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+      "specific_location" text,
+      "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+      CONSTRAINT "source_links_source_node_unique" UNIQUE ("source_id", "node_id")
     );
     CREATE TABLE IF NOT EXISTS "claims" (
       "id" text PRIMARY KEY NOT NULL,
@@ -160,7 +174,9 @@ describe("rankAtlasClaims (pure ranking)", () => {
       makeClaim(
         `a${idx.toString()}`,
         subjectA,
-        new Date(`2026-04-${(10 + idx).toString().padStart(2, "0")}T00:00:00.000Z`),
+        new Date(
+          `2026-04-${(10 + idx).toString().padStart(2, "0")}T00:00:00.000Z`,
+        ),
       ),
     );
     const centrality = new Map<TypeId<"node">, number>([[subjectA, 10]]);
@@ -173,7 +189,9 @@ describe("rankAtlasClaims (pure ranking)", () => {
 describe("composeAtlasContent", () => {
   it("renders pinned-then-derived when both present", () => {
     const composed = composeAtlasContent("Stay calm.", "Marcel ships things.");
-    expect(composed).toBe("# Pinned\nStay calm.\n\n# Derived\nMarcel ships things.");
+    expect(composed).toBe(
+      "# Pinned\nStay calm.\n\n# Derived\nMarcel ships things.",
+    );
   });
 
   it("omits pinned section when empty", () => {
@@ -273,7 +291,11 @@ describeIfServer("processAtlasJob", () => {
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
       await client.query(
         `INSERT INTO "user_profiles" ("id", "user_id", "content") VALUES ($1, $2, $3)`,
-        [newTypeId("user_profile"), userId, "I prefer concise, direct answers."],
+        [
+          newTypeId("user_profile"),
+          userId,
+          "I prefer concise, direct answers.",
+        ],
       );
       await client.query(
         `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES
@@ -448,7 +470,9 @@ describeIfServer("processAtlasJob", () => {
       );
       const stored = atlasRow.rows[0];
       expect(stored?.description).toContain("# Pinned");
-      expect(stored?.description).toContain("I prefer concise, direct answers.");
+      expect(stored?.description).toContain(
+        "I prefer concise, direct answers.",
+      );
       expect(stored?.description).toContain("# Derived");
       expect(stored?.description).toContain("senior engineer");
       const hash = stored?.additional_data?.atlasUserHash;
@@ -684,9 +708,9 @@ describeIfServer("processAtlasJob", () => {
 
       expect(enqueueCalls).toHaveLength(1);
       expect(enqueueCalls[0]?.name).toBe("atlas-user");
-      expect(
-        (enqueueCalls[0]?.opts as { jobId?: string }).jobId,
-      ).toBe(`atlas-user:${userId}:supersede`);
+      expect((enqueueCalls[0]?.opts as { jobId?: string }).jobId).toBe(
+        `atlas-user:${userId}:supersede`,
+      );
       expect(
         (enqueueCalls[0]?.opts as { delay?: number }).delay,
       ).toBeGreaterThan(0);

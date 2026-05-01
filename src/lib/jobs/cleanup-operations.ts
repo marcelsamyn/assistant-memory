@@ -544,7 +544,11 @@ async function assertNodeCanBeHardDeleted(
       .where(
         and(
           eq(claims.userId, userId),
-          or(eq(claims.subjectNodeId, nodeId), eq(claims.objectNodeId, nodeId)),
+          or(
+            eq(claims.subjectNodeId, nodeId),
+            eq(claims.objectNodeId, nodeId),
+            eq(claims.assertedByNodeId, nodeId),
+          ),
         ),
       ),
     database

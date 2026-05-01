@@ -18,6 +18,7 @@
  */
 import { z } from "zod";
 import type { DrizzleDB } from "~/db";
+import { sourceLinks } from "~/db/schema";
 import { extractGraph } from "~/lib/extract-graph";
 import { ensureSourceNode } from "~/lib/ingestion/ensure-source-node";
 import { ensureUser } from "~/lib/ingestion/ensure-user";
@@ -25,15 +26,15 @@ import { insertNewSources } from "~/lib/ingestion/insert-new-sources";
 import { logEvent } from "~/lib/observability/log";
 import { safeToISOString } from "~/lib/safe-date";
 import {
-  defaultSegmentTranscriptClient,
-  type SegmentedUtterance,
-  type SegmentTranscriptClient,
-} from "~/lib/transcript/segment-transcript";
-import {
   resolveSpeakers,
   type ResolvedSpeaker,
   type SpeakerMap,
 } from "~/lib/transcript/resolve-speakers";
+import {
+  defaultSegmentTranscriptClient,
+  type SegmentedUtterance,
+  type SegmentTranscriptClient,
+} from "~/lib/transcript/segment-transcript";
 import { getUserSelfAliases } from "~/lib/user-profile";
 import { NodeTypeEnum, ScopeEnum } from "~/types/graph";
 import { typeIdSchema, type TypeId } from "~/types/typeid";
@@ -147,6 +148,14 @@ export async function ingestTranscript(
     childSourceType: "conversation_message",
     scope,
     childSources,
+  });
+  await linkSpeakersToTranscriptSources({
+    db,
+    transcriptSourceId,
+    sourceRefs,
+    utterances,
+    transcriptId,
+    speakerMap,
   });
 
   const transcriptNodeId = await ensureSourceNode({
@@ -263,6 +272,51 @@ function formatTranscriptForExtraction(
       return `<utterance id="${escapeXml(externalId)}" speaker="${speaker}">${escaped}</utterance>`;
     })
     .join("\n");
+}
+
+async function linkSpeakersToTranscriptSources({
+  db,
+  transcriptSourceId,
+  sourceRefs,
+  utterances,
+  transcriptId,
+  speakerMap,
+}: {
+  db: DrizzleDB;
+  transcriptSourceId: TypeId<"source">;
+  sourceRefs: Array<{ externalId: string; sourceId: TypeId<"source"> }>;
+  utterances: SegmentedUtterance[];
+  transcriptId: string;
+  speakerMap: SpeakerMap;
+}): Promise<void> {
+  const sourceIdsByExternalId = new Map(
+    sourceRefs.map((ref) => [ref.externalId, ref.sourceId]),
+  );
+  const linkRowsByKey = new Map<
+    string,
+    { sourceId: TypeId<"source">; nodeId: TypeId<"node"> }
+  >();
+  const addLink = (
+    sourceId: TypeId<"source">,
+    nodeId: TypeId<"node">,
+  ): void => {
+    linkRowsByKey.set(`${sourceId}:${nodeId}`, { sourceId, nodeId });
+  };
+
+  for (const speaker of speakerMap.values()) {
+    addLink(transcriptSourceId, speaker.nodeId);
+  }
+
+  utterances.forEach((utterance, index) => {
+    const speaker = lookupSpeaker(speakerMap, utterance.speakerLabel);
+    const sourceId = sourceIdsByExternalId.get(`${transcriptId}:${index}`);
+    if (speaker && sourceId) addLink(sourceId, speaker.nodeId);
+  });
+
+  const linkRows = [...linkRowsByKey.values()];
+  if (linkRows.length === 0) return;
+
+  await db.insert(sourceLinks).values(linkRows).onConflictDoNothing();
 }
 
 function escapeXml(value: string): string {

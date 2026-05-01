@@ -2,12 +2,13 @@ import { addDays, formatISO } from "date-fns";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import type { DrizzleDB } from "~/db";
-import { nodes, nodeMetadata, nodeEmbeddings } from "~/db/schema";
+import { claims, nodes, nodeMetadata, nodeEmbeddings } from "~/db/schema";
 import { crateTextCompletion, performStructuredAnalysis } from "~/lib/ai";
 import { generateEmbeddings } from "~/lib/embeddings";
 import { formatNodesForPrompt } from "~/lib/formatting";
 import { findSimilarNodes, type NodeSearchResult } from "~/lib/graph";
 import { safeToISOString } from "~/lib/safe-date";
+import { ensureSystemSource } from "~/lib/sources";
 import { NodeTypeEnum } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
@@ -219,21 +220,38 @@ async function persistDream(
   label: string,
   dreamContent: string,
 ) {
-  const inserted = await db
-    .insert(nodes)
-    .values({
+  const sourceId = await ensureSystemSource(db, userId, "manual");
+  const createdAt = new Date();
+  const newNode = await db.transaction(async (tx) => {
+    const [inserted] = await tx
+      .insert(nodes)
+      .values({
+        userId,
+        nodeType: NodeTypeEnum.enum.AssistantDream,
+        createdAt,
+      })
+      .returning({ id: nodes.id });
+    if (!inserted) return null;
+    await tx.insert(nodeMetadata).values({
+      nodeId: inserted.id,
+      label,
+      description: dreamContent,
+    });
+    await tx.insert(claims).values({
       userId,
-      nodeType: NodeTypeEnum.enum.AssistantDream,
-      createdAt: new Date(),
-    })
-    .returning({ id: nodes.id });
-  if (!inserted.length) return;
-  const newNode = inserted[0]!;
-  await db.insert(nodeMetadata).values({
-    nodeId: newNode.id,
-    label,
-    description: dreamContent,
+      predicate: "OCCURRED_ON",
+      subjectNodeId: inserted.id,
+      objectNodeId: dayId,
+      statement: `Assistant dream occurred on ${createdAt.toISOString().slice(0, 10)}.`,
+      sourceId,
+      scope: "personal",
+      assertedByKind: "system",
+      statedAt: createdAt,
+      status: "active",
+    });
+    return inserted;
   });
+  if (!newNode) return;
   const emb = await generateEmbeddings({
     model: "jina-embeddings-v3",
     task: "retrieval.passage",

@@ -98,6 +98,11 @@ import {
   openCommitmentsResponseSchema,
 } from "../lib/schemas/open-commitments.js";
 import {
+  PruneOrphanNodesRequest,
+  PruneOrphanNodesResponse,
+  pruneOrphanNodesResponseSchema,
+} from "../lib/schemas/prune-orphan-nodes.js";
+import {
   QueryAtlasNodesRequest,
   QueryAtlasNodesResponse,
   queryAtlasNodesResponseSchema,
@@ -372,6 +377,22 @@ export class MemoryClient {
       "POST",
       "/maintenance/cleanup-placeholders",
       cleanupPlaceholdersResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Deterministically prune legacy/entity nodes that have no evidence: no
+   * claims, no source links, and no aliases. Dry-run defaults to true at the
+   * API boundary; pass `dryRun: false` for scheduled pruning.
+   */
+  async pruneOrphanNodes(
+    payload: PruneOrphanNodesRequest,
+  ): Promise<PruneOrphanNodesResponse> {
+    return this._fetch(
+      "POST",
+      "/maintenance/prune-orphan-nodes",
+      pruneOrphanNodesResponseSchema,
       payload,
     );
   }

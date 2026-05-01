@@ -180,6 +180,7 @@ interface InsertClaimArgs {
   assertedByKind?: string;
   objectNodeId?: TypeId<"node"> | null;
   objectValue?: string | null;
+  assertedByNodeId?: TypeId<"node"> | null;
   status?: string;
   statedAt?: Date;
 }
@@ -189,8 +190,8 @@ async function seedClaim(client: Client, args: InsertClaimArgs): Promise<void> {
     `INSERT INTO "claims" (
        "id", "user_id", "subject_node_id", "object_node_id", "object_value",
        "predicate", "statement", "source_id", "scope", "asserted_by_kind",
-       "stated_at", "status"
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+       "asserted_by_node_id", "stated_at", "status"
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
     [
       args.id,
       args.userId,
@@ -202,6 +203,7 @@ async function seedClaim(client: Client, args: InsertClaimArgs): Promise<void> {
       args.sourceId,
       args.scope ?? "personal",
       args.assertedByKind ?? "user",
+      args.assertedByNodeId ?? null,
       args.statedAt ?? new Date(),
       args.status ?? "active",
     ],
@@ -704,6 +706,62 @@ describeIfServer("cleanup operation helpers", () => {
     const after = await rootClient.query<{ count: string }>(
       `SELECT COUNT(*)::text AS count FROM "nodes" WHERE "id" = $1`,
       [nodeId],
+    );
+    expect(after.rows[0]?.count).toBe("1");
+  });
+
+  it("delete_node refuses nodes used as participant provenance", async () => {
+    const userId = "user_delete_speaker_refused";
+    const speakerId = newTypeId("node");
+    const subjectId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const claimId = newTypeId("claim");
+    await seedUserAndNodes(rootClient, userId, [
+      { id: speakerId, nodeType: "Person", label: "speaker" },
+      { id: subjectId, nodeType: "Concept", label: "meeting topic" },
+    ]);
+    await seedSource(rootClient, {
+      sourceId,
+      userId,
+      type: "conversation_message",
+      externalId: "msg:speaker",
+      scope: "personal",
+    });
+    await seedClaim(rootClient, {
+      id: claimId,
+      userId,
+      subjectNodeId: subjectId,
+      predicate: "HAS_STATUS",
+      statement: "The meeting topic is ready.",
+      sourceId,
+      objectValue: "ready",
+      assertedByKind: "participant",
+      assertedByNodeId: speakerId,
+    });
+
+    const graphNode: GraphNode & { tempId: string } = {
+      id: speakerId,
+      tempId: "temp_node_1",
+      label: "speaker",
+      description: "",
+      type: "Person",
+    };
+
+    const { applyCleanupOperations } = await import("./cleanup-operations");
+    const result = await applyCleanupOperations(
+      database,
+      userId,
+      [{ kind: "delete_node", tempId: "temp_node_1" }],
+      buildMapper([graphNode]),
+    );
+
+    expect(result.applied).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.message).toMatch(/still has claims=1/);
+
+    const after = await rootClient.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM "nodes" WHERE "id" = $1`,
+      [speakerId],
     );
     expect(after.rows[0]?.count).toBe("1");
   });

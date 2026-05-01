@@ -2,7 +2,7 @@ import { ensureUser } from "./ingestion/ensure-user";
 import { ensureSystemSource } from "./sources";
 import { and, eq } from "drizzle-orm";
 import { DrizzleDB } from "~/db";
-import { nodes, nodeMetadata, claims } from "~/db/schema";
+import { nodes, nodeMetadata, claims, sourceLinks } from "~/db/schema";
 import { NodeTypeEnum } from "~/types/graph";
 import { type TypeId } from "~/types/typeid";
 
@@ -51,6 +51,11 @@ export async function ensureAtlasNode(
     label: "Atlas",
     description: "",
   });
+  const sourceId = await ensureSystemSource(db, userId, "manual");
+  await db
+    .insert(sourceLinks)
+    .values({ sourceId, nodeId: atlasNodeId })
+    .onConflictDoNothing();
 
   return atlasNodeId;
 }
@@ -130,6 +135,11 @@ export async function ensureAssistantEntity(
   await db
     .insert(nodeMetadata)
     .values({ nodeId: assistantNodeId, label: assistantId, description: "" });
+  const sourceId = await ensureSystemSource(db, userId, "manual");
+  await db
+    .insert(sourceLinks)
+    .values({ sourceId, nodeId: assistantNodeId })
+    .onConflictDoNothing();
   return assistantNodeId;
 }
 
@@ -163,6 +173,10 @@ export async function ensureAssistantAtlasNode(
     .insert(nodeMetadata)
     .values({ nodeId: atlasNodeId, label: assistantId, description: "" });
   const sourceId = await ensureSystemSource(db, userId, "manual");
+  await db
+    .insert(sourceLinks)
+    .values({ sourceId, nodeId: atlasNodeId })
+    .onConflictDoNothing();
   await db.insert(claims).values({
     userId,
     subjectNodeId: atlasNodeId,

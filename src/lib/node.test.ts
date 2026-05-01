@@ -659,10 +659,9 @@ describeIfServer("node operations", () => {
 
       const survivorRow = await client.query<{
         additional_data: Record<string, unknown> | null;
-      }>(
-        `SELECT "additional_data" FROM "node_metadata" WHERE "node_id" = $1`,
-        [placeholderId],
-      );
+      }>(`SELECT "additional_data" FROM "node_metadata" WHERE "node_id" = $1`, [
+        placeholderId,
+      ]);
       const additional = survivorRow.rows[0]?.additional_data;
       expect(additional).not.toBeNull();
       // Flag is gone, but other keys are preserved.
@@ -764,6 +763,15 @@ describeIfServer("node operations", () => {
         [created.id],
       );
       expect(sourceRows.rows[0]?.type).toBe("manual");
+
+      const sourceLinkRows = await client.query<{ type: string }>(
+        `SELECT s."type"
+         FROM "source_links" sl
+         INNER JOIN "sources" s ON s."id" = sl."source_id"
+         WHERE sl."node_id" = $1`,
+        [created.id],
+      );
+      expect(sourceLinkRows.rows.map((row) => row.type)).toContain("manual");
     } finally {
       vi.doUnmock("~/utils/db");
       vi.doUnmock("~/lib/embeddings");

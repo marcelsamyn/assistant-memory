@@ -18,6 +18,15 @@ has the _what to change_.
 
 ---
 
+## SDK addition — orphan node pruning
+
+- **NEW REST:** `POST /maintenance/prune-orphan-nodes` — deterministic maintenance for evidence-free legacy/entity nodes. A candidate has no claims as subject/object/speaker, no source links, and no aliases. Request: `{ userId, olderThanDays?, limit?, sampleLimit?, dryRun?, nodeTypes? }`. `dryRun` defaults to `true`; response includes `hasMore` for batch loops.
+- **NEW SDK method:** `MemoryClient.pruneOrphanNodes(payload)` → `PruneOrphanNodesResponse`.
+- **NEW exports:** `PruneOrphanNodesRequest`, `PruneOrphanNodesResponse`, `pruneOrphanNodesRequestSchema`, `pruneOrphanNodesResponseSchema`.
+- Default scanned node types are entity/task-like only: `Person`, `Location`, `Event`, `Object`, `Emotion`, `Concept`, `Media`, `Feedback`, `Idea`, `Task`. Generated/structural node types (`Conversation`, `Document`, `Temporal`, `Atlas`, `AssistantDream`) are excluded unless explicitly passed in `nodeTypes`.
+
+---
+
 ## SDK addition — `bootstrapMemory`
 
 - **NEW REST:** `POST /context/bootstrap` — same `ContextBundle` shape as MCP `bootstrap_memory`. Request: `{ userId, forceRefresh? }`. Response: `{ sections, assembledAt }`. Cached 6h per user; pass `forceRefresh: true` to bypass.

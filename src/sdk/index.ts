@@ -16,6 +16,7 @@ export * from "../lib/schemas/summarize.js";
 export * from "../lib/schemas/cleanup.js";
 export * from "../lib/schemas/cleanup-placeholders.js";
 export * from "../lib/schemas/open-commitments.js";
+export * from "../lib/schemas/prune-orphan-nodes.js";
 export * from "../lib/schemas/dream.js";
 export * from "../lib/schemas/scratchpad.js";
 export * from "../lib/schemas/node.js";
