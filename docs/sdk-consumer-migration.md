@@ -5,8 +5,16 @@ chat hosts, internal tooling) need to react to. Newest-first. Each entry is
 concrete: what to delete, what to add, and what stays the same.
 
 When in doubt, the plan
-(`docs/2026-04-24-claims-implementation-plan.md`) has the *why*; this file
-has the *what to change*.
+(`docs/2026-04-24-claims-implementation-plan.md`) has the _why_; this file
+has the _what to change_.
+
+---
+
+## SDK addition — commitments and deterministic dedup
+
+- **NEW SDK method:** `MemoryClient.getOpenCommitments(payload)` → `OpenCommitmentsResponse`. Wraps `POST /commitments/open`. Use this for lifecycle-aware pending/in-progress work; do not infer open work from semantic search.
+- **NEW SDK method:** `MemoryClient.dedupSweep(payload)` → `DedupSweepResponse`. Wraps `POST /cleanup/dedup-sweep`. `MemoryClient.cleanup(...)` already runs this internally before LLM cleanup, so call `dedupSweep` directly only for cheap/admin-only exact-label hygiene.
+- **NEW exports:** `OpenCommitmentsRequest`, `OpenCommitmentsResponse`, `openCommitmentsRequestSchema`, `openCommitmentsResponseSchema`, plus the existing dedup sweep types from `cleanup`.
 
 ---
 
@@ -55,6 +63,7 @@ No host code changes required for PR 4-iii. If you want to proactively triage pl
 
 - **NEW:** `POST /user/self-aliases` — set the labels by which the user appears in transcripts. Request: `{ userId, aliases: string[] }`. Response: `{ aliases: string[] }`. Replaces the full list each call (no granular add/remove). Persisted on `user_profiles.metadata.userSelfAliases`.
 - **NEW:** `POST /transcript/ingest` — ingest a multi-party transcript with per-utterance speaker provenance. Request:
+
   ```ts
   {
     userId: string;
@@ -68,6 +77,7 @@ No host code changes required for PR 4-iii. If you want to proactively triage pl
       | { kind: "segmented"; utterances: { speakerLabel: string; content: string; timestamp?: string }[] };
   }
   ```
+
   Response: `{ message, jobId, transcriptSourceId, utteranceCount, resolvedSpeakers, unresolvedSpeakers }`. Job is async — caller must wait for the worker before searching against the new claims.
 
   Speaker resolution priority: `userSelfAliasesOverride` (or stored `userSelfAliases`) → `knownParticipants` → existing alias system → placeholder `Person` node with `additionalData.unresolvedSpeaker = true`. Placeholder Persons currently accumulate; sweep job lands in PR 4-iii.
@@ -129,12 +139,12 @@ No MCP tool surface changes in this PR. Transcript ingestion is host-driven (the
 
 The legacy space-named tool is gone. Consumers that registered prompts or hard-coded tool names need to update.
 
-| Removed (old) | Add (new) | Notes |
-|---|---|---|
-| `"search memory"` (returned XML string of raw similar nodes/claims/connections) | `search_memory` (snake_case; returns JSON `ContextSearchResponse`) | Default personal scope; never returns reference-derived cards. |
-| — | `search_reference` (new) | Reference-scope only. Required when the prompt asks the model to cite curated material rather than the user's own memory. |
-| — | `bootstrap_memory` (new) | Call **once** at conversation start. Returns the `ContextBundle` (pinned, atlas, open_commitments, recent_supersessions, preferences sections). Cached 6h per user; pass `forceRefresh: true` to bypass. Hosts that already render their own startup section may skip this and tell the model not to call it. |
-| — | `get_entity` (new) | Single-entity card lookup by `nodeId`. Use after the model has an id from `search_memory` / `bootstrap_memory` and needs the full picture. |
+| Removed (old)                                                                   | Add (new)                                                          | Notes                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `"search memory"` (returned XML string of raw similar nodes/claims/connections) | `search_memory` (snake_case; returns JSON `ContextSearchResponse`) | Default personal scope; never returns reference-derived cards.                                                                                                                                                                                                                                                |
+| —                                                                               | `search_reference` (new)                                           | Reference-scope only. Required when the prompt asks the model to cite curated material rather than the user's own memory.                                                                                                                                                                                     |
+| —                                                                               | `bootstrap_memory` (new)                                           | Call **once** at conversation start. Returns the `ContextBundle` (pinned, atlas, open_commitments, recent_supersessions, preferences sections). Cached 6h per user; pass `forceRefresh: true` to bypass. Hosts that already render their own startup section may skip this and tell the model not to call it. |
+| —                                                                               | `get_entity` (new)                                                 | Single-entity card lookup by `nodeId`. Use after the model has an id from `search_memory` / `bootstrap_memory` and needs the full picture.                                                                                                                                                                    |
 
 `save memory`, `list_open_commitments`, `retrieve memories relevant for today`, `read scratchpad` / `write scratchpad` / `edit scratchpad`, and the `get node` / `update node` / `delete node` tools are **unchanged**.
 
@@ -185,7 +195,7 @@ Mostly internal quality improvements; consumer surface mostly stable.
 
 **Commits:** `397724c`, `f65d982`, `34b78ea`, `7df0102`, `e29f49f`, `245f1ce`, `c709e68`, `6f6a58e`, `8c69e9d`, `c8fd55e`, `30f50d1`.
 
-This phase introduced the columns and read paths that PRs 3-iii / 4-* build on. Several **default-behavior changes** that existing consumers may notice:
+This phase introduced the columns and read paths that PRs 3-iii / 4-\* build on. Several **default-behavior changes** that existing consumers may notice:
 
 ### REST
 

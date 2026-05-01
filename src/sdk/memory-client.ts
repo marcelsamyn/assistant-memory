@@ -1,3 +1,4 @@
+import { ContextBundle, contextBundleSchema } from "../lib/context/types.js";
 import {
   CreateAliasRequest,
   CreateAliasResponse,
@@ -26,17 +27,19 @@ import {
   CleanupRequest,
   CleanupResponse,
   cleanupResponseSchema,
+  DedupSweepRequest,
+  DedupSweepResponse,
+  dedupSweepResponseSchema,
 } from "../lib/schemas/cleanup.js";
-import {
-  BootstrapMemoryRequest,
-  bootstrapMemoryRequestSchema,
-} from "../lib/schemas/context.js";
-import { ContextBundle, contextBundleSchema } from "../lib/context/types.js";
 import {
   ContextSearchRequest,
   ContextSearchResponse,
   contextSearchResponseSchema,
 } from "../lib/schemas/context-search.js";
+import {
+  BootstrapMemoryRequest,
+  bootstrapMemoryRequestSchema,
+} from "../lib/schemas/context.js";
 import {
   DreamRequest,
   DreamResponse,
@@ -89,6 +92,11 @@ import {
   CreateNodeResponse,
   createNodeResponseSchema,
 } from "../lib/schemas/node.js";
+import {
+  OpenCommitmentsRequest,
+  OpenCommitmentsResponse,
+  openCommitmentsResponseSchema,
+} from "../lib/schemas/open-commitments.js";
 import {
   QueryAtlasNodesRequest,
   QueryAtlasNodesResponse,
@@ -338,6 +346,20 @@ export class MemoryClient {
   }
 
   /**
+   * Run the deterministic exact-label dedup sweep without the LLM cleanup
+   * pass. `cleanup()` already invokes this before iterative cleanup; call
+   * this directly only for cheap/admin-only graph hygiene.
+   */
+  async dedupSweep(payload: DedupSweepRequest): Promise<DedupSweepResponse> {
+    return this._fetch(
+      "POST",
+      "/cleanup/dedup-sweep",
+      dedupSweepResponseSchema,
+      payload,
+    );
+  }
+
+  /**
    * Surface aged placeholder `Person` nodes (created when a transcript
    * speaker could not be resolved) for cleanup-pipeline review. Surfacing
    * is read-only by default; pass `triggerCleanup: true` to also enqueue
@@ -356,6 +378,23 @@ export class MemoryClient {
 
   async dream(payload: DreamRequest): Promise<DreamResponse> {
     return this._fetch("POST", "/dream", dreamResponseSchema, payload);
+  }
+
+  /**
+   * Lifecycle-aware open commitments view. Returns only Task nodes whose
+   * latest trusted personal `HAS_TASK_STATUS` is `pending` or `in_progress`.
+   * Use this instead of semantic search when answering about outstanding,
+   * next, pending, follow-up, completed, or abandoned work.
+   */
+  async getOpenCommitments(
+    payload: OpenCommitmentsRequest,
+  ): Promise<OpenCommitmentsResponse> {
+    return this._fetch(
+      "POST",
+      "/commitments/open",
+      openCommitmentsResponseSchema,
+      payload,
+    );
   }
 
   async readScratchpad(
