@@ -6,8 +6,10 @@ import {
 } from "~/lib/schemas/node";
 
 export default defineEventHandler(async (event) => {
-  const { userId, nodeId } = getNodeRequestSchema.parse(await readBody(event));
-  const result = await getNodeById(userId, nodeId);
+  const { userId, nodeId, claimFilter } = getNodeRequestSchema.parse(
+    await readBody(event),
+  );
+  const result = await getNodeById(userId, nodeId, claimFilter);
   if (!result) {
     throw createError({ statusCode: 404, statusMessage: "Node not found" });
   }

@@ -5,11 +5,12 @@ import { applyClaimLifecycle, fetchClaimsByIds } from "~/lib/claims/lifecycle";
 import { generateEmbeddings } from "~/lib/embeddings";
 import { logEvent } from "~/lib/observability/log";
 import { ensureSystemSource } from "~/lib/sources";
-import type {
-  AssertedByKind,
-  ClaimStatus,
-  Predicate,
-  Scope,
+import {
+  TaskStatusEnum,
+  type AssertedByKind,
+  type ClaimStatus,
+  type Predicate,
+  type Scope,
 } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
@@ -17,6 +18,31 @@ import { useDatabase } from "~/utils/db";
 type Database = Awaited<ReturnType<typeof useDatabase>>;
 
 export type ClaimSelect = typeof claims.$inferSelect;
+
+/**
+ * Thrown when an attribute claim's `objectValue` doesn't match the canonical
+ * vocabulary for its predicate (e.g. `HAS_TASK_STATUS` outside `TaskStatusEnum`).
+ * Routes translate this into a 400 so SDK callers can surface a structured
+ * error instead of relying on string-matching the message.
+ */
+export class InvalidObjectValueError extends Error {
+  readonly predicate: Predicate;
+  readonly objectValue: string;
+  readonly allowedValues: ReadonlyArray<string>;
+  constructor(
+    predicate: Predicate,
+    objectValue: string,
+    allowedValues: ReadonlyArray<string>,
+  ) {
+    super(
+      `Invalid objectValue "${objectValue}" for predicate ${predicate}; allowed: ${allowedValues.join(", ")}`,
+    );
+    this.name = "InvalidObjectValueError";
+    this.predicate = predicate;
+    this.objectValue = objectValue;
+    this.allowedValues = allowedValues;
+  }
+}
 
 export type CreatedClaim = ClaimSelect & {
   subjectLabel: string | null;
@@ -36,11 +62,19 @@ export type CreateClaimInput = {
   validFrom?: Date | undefined;
   validTo?: Date | undefined;
   /**
-   * Provenance kind. Defaults to `"user"` to preserve the manual-API contract
-   * (`/claim/create` must NOT accept arbitrary `assertedByKind` from callers).
-   * System callers (cleanup operations, dream synthesis, etc.) override this.
+   * Provenance kind. Defaults to `"user"` to preserve the historical
+   * manual-API contract. Trusted clients (with their own auth/UX context)
+   * may pass `"user_confirmed"` or `"assistant_inferred"` to record more
+   * precise provenance; system callers (cleanup, dream synthesis, etc.)
+   * pass `"system"`.
    */
   assertedByKind?: AssertedByKind | undefined;
+  /**
+   * Optional pointer to the participant/node that made the assertion. Only
+   * meaningful when `assertedByKind` is `"participant"` or `"document_author"`;
+   * for typical user/assistant claims, leave undefined.
+   */
+  assertedByNodeId?: TypeId<"node"> | undefined;
   /**
    * Defaults to `"personal"`. System callers that derive scope from a source
    * (e.g. `add_claim` cleanup op) pass this through.
@@ -113,6 +147,24 @@ export async function createClaim(
     throw new Error("Exactly one of objectNodeId or objectValue is required");
   }
 
+  // HAS_TASK_STATUS carries a canonical vocabulary that the open-commitments
+  // read model relies on. Reject anything outside `TaskStatusEnum` at the
+  // write boundary so different SDK consumers can't drift apart on labels
+  // ("done" vs "completed" vs "complete").
+  if (
+    input.predicate === "HAS_TASK_STATUS" &&
+    input.objectValue !== undefined
+  ) {
+    const parsed = TaskStatusEnum.safeParse(input.objectValue);
+    if (!parsed.success) {
+      throw new InvalidObjectValueError(
+        input.predicate,
+        input.objectValue,
+        TaskStatusEnum.options,
+      );
+    }
+  }
+
   const nodeLabels = await fetchOwnedNodeLabels(db, input.userId, [
     input.subjectNodeId,
     ...(input.objectNodeId !== undefined ? [input.objectNodeId] : []),
@@ -134,6 +186,7 @@ export async function createClaim(
       sourceId,
       scope: input.scope ?? "personal",
       assertedByKind: input.assertedByKind ?? "user",
+      assertedByNodeId: input.assertedByNodeId,
       statedAt: input.statedAt ?? new Date(),
       validFrom: input.validFrom,
       validTo: input.validTo,

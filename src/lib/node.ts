@@ -1,5 +1,9 @@
 /** Node operations: get, get sources, update, delete. */
-import type { GetNodeResponse, GetNodeSourcesResponse } from "./schemas/node";
+import type {
+  GetNodeClaimFilter,
+  GetNodeResponse,
+  GetNodeSourcesResponse,
+} from "./schemas/node";
 import { format } from "date-fns";
 import { and, eq, or, inArray, aliasedTable, sql } from "drizzle-orm";
 import {
@@ -11,6 +15,7 @@ import {
   sources,
 } from "~/db/schema";
 import { listAliasesForNodeIds } from "~/lib/alias";
+import { createClaim } from "~/lib/claim";
 import { generateEmbeddings } from "~/lib/embeddings";
 import { generateAndInsertNodeEmbeddings } from "~/lib/embeddings-util";
 import {
@@ -23,7 +28,7 @@ import { normalizeLabel } from "~/lib/label";
 import { getEffectiveNodeScopes } from "~/lib/node-scope";
 import { ensureSystemSource, sourceService } from "~/lib/sources";
 import { ensureDayNode } from "~/lib/temporal";
-import type { NodeType, Scope } from "~/types/graph";
+import type { AssertedByKind, NodeType, Predicate, Scope } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -66,10 +71,18 @@ function readUnresolvedSpeakerFlag(additionalData: unknown): boolean {
   return false;
 }
 
-/** Fetch a single node by ID with all active claims and source IDs. */
+/**
+ * Fetch a single node by ID with claims and source IDs.
+ *
+ * By default only `active` claims are returned, matching the historical
+ * behaviour. Callers can pass `claimFilter` to narrow by predicate or to
+ * include non-active claims (e.g. `superseded`, `retracted`) when they need
+ * lifecycle history.
+ */
 export async function getNodeById(
   userId: string,
   nodeId: TypeId<"node">,
+  claimFilter?: GetNodeClaimFilter,
 ): Promise<GetNodeResponse | null> {
   const db = await useDatabase();
 
@@ -91,6 +104,20 @@ export async function getNodeById(
   // Fetch all active claims touching this node (subject or object).
   const srcMeta = aliasedTable(nodeMetadata, "srcMeta");
   const tgtMeta = aliasedTable(nodeMetadata, "tgtMeta");
+
+  const predicateFilter =
+    claimFilter?.predicates && claimFilter.predicates.length > 0
+      ? inArray(claims.predicate, claimFilter.predicates)
+      : undefined;
+  // An explicit empty `statuses: []` is treated as "no status constraint",
+  // so callers can opt into the full lifecycle history; omitting the field
+  // (or passing only "active") preserves the historical default.
+  const statusFilter =
+    claimFilter?.statuses === undefined
+      ? eq(claims.status, "active")
+      : claimFilter.statuses.length === 0
+        ? undefined
+        : inArray(claims.status, claimFilter.statuses);
 
   const claimRows = await db
     .select({
@@ -116,7 +143,8 @@ export async function getNodeById(
     .where(
       and(
         eq(claims.userId, userId),
-        eq(claims.status, "active"),
+        statusFilter,
+        predicateFilter,
         or(eq(claims.subjectNodeId, nodeId), eq(claims.objectNodeId, nodeId)),
       ),
     );
@@ -337,23 +365,45 @@ export async function deleteNode(
 }
 
 /**
+ * Bootstrap claim spec passed to {@link createNode}. The new node is the
+ * subject; `objectNodeId` xor `objectValue` is required.
+ */
+export interface CreateNodeInitialClaimInput {
+  predicate: Predicate;
+  statement: string;
+  description?: string | undefined;
+  objectNodeId?: TypeId<"node"> | undefined;
+  objectValue?: string | undefined;
+  assertedByKind?: AssertedByKind | undefined;
+  assertedByNodeId?: TypeId<"node"> | undefined;
+}
+
+/**
  * Create a new node with metadata and embedding, and attach it to the
  * Temporal day node for "today" via an `OCCURRED_ON` claim sourced from the
  * per-user manual system source. Day-node attachment preserves the
  * temporal-graph invariant that ingestion paths uphold (see
  * `ensureSourceNode`), so date-scoped queries like `nodeType` can find
  * manually-created nodes the same way they find ingested ones.
+ *
+ * `initialClaims` lets callers bootstrap the node with required claims
+ * (e.g. a `Task` with its `HAS_TASK_STATUS` and `OWNED_BY`) so it is never
+ * observable in a half-bootstrapped state. Claims are written sequentially
+ * after the node is created; if any one fails, the node is deleted and the
+ * original error is re-thrown.
  */
 export async function createNode(
   userId: string,
   nodeType: NodeType,
   label: string,
   description?: string,
+  initialClaims?: ReadonlyArray<CreateNodeInitialClaimInput>,
 ): Promise<{
   id: TypeId<"node">;
   nodeType: NodeType;
   label: string;
   description: string | null;
+  initialClaimIds: TypeId<"claim">[];
 }> {
   const db = await useDatabase();
   await ensureUser(db, userId);
@@ -404,7 +454,40 @@ export async function createNode(
     });
   }
 
-  return { id: inserted.id, nodeType, label, description: description ?? null };
+  const initialClaimIds: TypeId<"claim">[] = [];
+  if (initialClaims && initialClaims.length > 0) {
+    try {
+      for (const claim of initialClaims) {
+        const created = await createClaim({
+          userId,
+          subjectNodeId: inserted.id,
+          predicate: claim.predicate,
+          statement: claim.statement,
+          description: claim.description,
+          objectNodeId: claim.objectNodeId,
+          objectValue: claim.objectValue,
+          assertedByKind: claim.assertedByKind,
+          assertedByNodeId: claim.assertedByNodeId,
+        });
+        initialClaimIds.push(created.id);
+      }
+    } catch (err) {
+      // Roll back the node so callers don't see a half-bootstrapped record.
+      // FK ON DELETE CASCADE removes already-created claims and metadata.
+      await db
+        .delete(nodes)
+        .where(and(eq(nodes.id, inserted.id), eq(nodes.userId, userId)));
+      throw err;
+    }
+  }
+
+  return {
+    id: inserted.id,
+    nodeType,
+    label,
+    description: description ?? null,
+    initialClaimIds,
+  };
 }
 
 /** Merge multiple nodes into one. First node is the survivor. */

@@ -10,6 +10,59 @@ has the _what to change_.
 
 ---
 
+## SDK addition — commitment due-date lifecycle, write-time enums, atomic node bootstrap
+
+Driven by Petals integration feedback. Five changes; all additive, no breaking changes to existing endpoints.
+
+### 1. New endpoint: `POST /commitments/due` — set / clear a Task's due date
+
+- **NEW SDK method:** `MemoryClient.setCommitmentDue(payload)` → `SetCommitmentDueResponse`. Symmetric with the `dueOn` field on `getOpenCommitments` (read).
+- Request: `{ userId, taskId, dueOn: "YYYY-MM-DD" | null, note?, assertedByKind? }`.
+  - `dueOn: "YYYY-MM-DD"` resolves/creates the canonical Temporal node server-side, asserts a new `DUE_ON` claim, and lets the predicate-policy override (`Task` subject) supersede the prior date automatically.
+  - `dueOn: null` retracts every active `DUE_ON` claim on the task. No new claim is asserted.
+  - `note` is optional and lands in the new claim's `description` (parity with how Petals' commitment tools propagate notes).
+- Response: `{ taskId, dueOn, claimId, retractedClaimIds }`. `claimId` is the new active `DUE_ON` claim (or `null` on the clear path); `retractedClaimIds` only populates on the explicit clear path.
+- Wrong type / cross-user calls throw a typed `TaskNotFoundError` and the route returns `404` with `data: { name, taskId }`.
+- **NEW exports:** `SetCommitmentDueRequest`, `SetCommitmentDueResponse`, `setCommitmentDueRequestSchema`, `setCommitmentDueResponseSchema`.
+
+### 2. Canonical task-status enum exposed; write-time validation enforced
+
+- **NEW exports** (re-exported from `~/types/graph` so SDK callers don't reach into `types/`): `TaskStatusEnum`, `AssertedByKindEnum`, `ClaimStatusEnum`, `NodeTypeEnum`, `PredicateEnum`, `AttributePredicateEnum`, `RelationshipPredicateEnum`, `ScopeEnum`, plus their inferred types.
+- `TaskStatusEnum` is the canonical vocabulary: `"pending" | "in_progress" | "done" | "abandoned"`. Note: this **differs** from the `["pending", "in_progress", "completed", "cancelled"]` set Petals' integration drafted — please align Petals' tool schemas to the SDK enum (the open-commitments read view filters to `pending | in_progress`; `done` and `abandoned` are the terminal vocabulary, not `completed`/`cancelled`).
+- `POST /claim/create` now validates `objectValue` against `TaskStatusEnum` when `predicate === "HAS_TASK_STATUS"` and rejects anything else with `400`. Error shape: `data: { name: "InvalidObjectValueError", predicate, objectValue, allowedValues }`. The error class is exported as `InvalidObjectValueError` so callers can pattern-match instead of string-matching.
+- `HAS_STATUS` is intentionally not yet validated — its vocabulary is broader and not pinned. Same approach can be added there later if needed.
+
+### 3. `createClaim` accepts explicit `assertedByKind` / `assertedByNodeId`
+
+- `POST /claim/create` now accepts optional `assertedByKind` and `assertedByNodeId` on the request body. Defaults preserve the historical contract (`assertedByKind: "user"`, `assertedByNodeId: null`).
+- Use `"user_confirmed"` when the user explicitly affirmed the assertion (e.g. "yes, remember that I prefer X"); `"assistant_inferred"` when the assistant proactively asserts without direct confirmation (e.g. closing a commitment from inferred signal). Cleanup / dedup / dream passes use `assertedByKind` to decide what to consolidate vs. preserve, so feeding it accurately makes those passes smarter.
+- `assertedByNodeId` is only meaningful for participant-provenance claims (transcripts, document authorship). For typical user/assistant claims, leave it unset.
+- The previous comment in `lib/claim.ts` claimed the manual API "must NOT accept arbitrary `assertedByKind` from callers" — that constraint is lifted; trusted SDK callers (with their own auth) opt in.
+
+### 4. `getNode` accepts a server-side claim filter
+
+- `POST /node/get` now accepts an optional `claimFilter: { predicates?, statuses? }`. Default behaviour (no filter) is unchanged — only `active` claims are returned.
+  - `predicates: [...]` narrows the response to claims with those predicates (subject _or_ object side, same as today).
+  - `statuses: [...]` overrides the implicit `active` default. Pass `["active", "superseded"]` to see lifecycle history; pass `[]` (empty array) to drop the status filter entirely.
+- Concrete win for Petals' `setCommitmentStatus`: replace `getNode(taskId)` + client-side filtering with `getNode({ taskId, claimFilter: { predicates: ["HAS_TASK_STATUS"] } })`.
+- **NEW exports:** `getNodeClaimFilterSchema`, `GetNodeClaimFilter`.
+
+### 5. `createNode` accepts `initialClaims` for atomic bootstrap
+
+- `POST /node/create` now accepts an optional `initialClaims: Array<{ predicate, statement, objectNodeId? | objectValue?, description?, assertedByKind?, assertedByNodeId? }>`.
+- Claims are written sequentially after the node insert. If any claim fails (validation, FK, lifecycle), the node is deleted (FK `ON DELETE CASCADE` removes already-created claims) and the original error re-throws — no half-bootstrapped record survives.
+- Response now also returns `initialClaimIds: TypeId<"claim">[]` in the order claims were supplied. Empty array when no `initialClaims` were sent, so existing callers see `node` exactly as before plus an empty array.
+- Concrete win for Petals' `createCommitment`: collapse the three-call sequence (`createNode(Task)` → `createClaim(HAS_TASK_STATUS)` → `createClaim(OWNED_BY)`) into one `createNode` call where the Task is never observable without its required status claim. Validation errors (e.g. an invalid `HAS_TASK_STATUS` value) surface as `400 InvalidObjectValueError` and the node is rolled back automatically.
+- **NEW exports:** `createNodeInitialClaimSchema`, `CreateNodeInitialClaim`.
+
+### Notes on items NOT shipped from the feedback
+
+- **Standalone `resolveTemporalNode` helper** (alternate proposal in feedback #1): not added. `setCommitmentDue` is the right level of abstraction for due dates; if `OCCURRED_ON` / `OCCURRED_AT` need a similar lift later, we'll revisit. Petals should not call `createNode({ nodeType: "Temporal", ... })` directly — Temporal nodes are deduped server-side by `YYYY-MM-DD` label, but that invariant is not part of the public contract. Use `setCommitmentDue` for due dates; for arbitrary date references, file a follow-up.
+- **`HAS_STATUS` write-time vocabulary**: deliberately not pinned yet (no canonical enum exists for it the way `TaskStatusEnum` does for `HAS_TASK_STATUS`). If Petals needs this, propose an enum and we'll add it the same way.
+- **Generic `batchCreateClaims` endpoint**: skipped in favour of `initialClaims` on `createNode`, which covers the concrete bootstrap case. If a non-bootstrap batching need surfaces (e.g. `setCommitmentDue`-style retract+assert wrappers for other predicates), we'll add a dedicated endpoint with a typed shape rather than a generic batch.
+
+---
+
 ## SDK addition — commitments and deterministic dedup
 
 - **NEW SDK method:** `MemoryClient.getOpenCommitments(payload)` → `OpenCommitmentsResponse`. Wraps `POST /commitments/open`. Use this for lifecycle-aware pending/in-progress work; do not infer open work from semantic search.

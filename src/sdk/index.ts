@@ -28,3 +28,5 @@ export * from "../lib/schemas/query-atlas-nodes.js";
 export * from "../lib/schemas/node-neighborhood.js";
 export * from "../lib/schemas/user-self-aliases.js";
 export * from "../lib/schemas/user-profile-metadata.js";
+export * from "../lib/schemas/enums.js";
+export * from "../lib/schemas/set-commitment-due.js";

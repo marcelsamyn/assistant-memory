@@ -147,6 +147,11 @@ import {
   scratchpadEditResponseSchema,
 } from "../lib/schemas/scratchpad.js";
 import {
+  SetCommitmentDueRequest,
+  SetCommitmentDueResponse,
+  setCommitmentDueResponseSchema,
+} from "../lib/schemas/set-commitment-due.js";
+import {
   SummarizeRequest,
   SummarizeResponse,
   summarizeResponseSchema,
@@ -414,6 +419,23 @@ export class MemoryClient {
       "POST",
       "/commitments/open",
       openCommitmentsResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Set or clear a Task's due date. Pass `dueOn: "YYYY-MM-DD"` to assert a
+   * new `DUE_ON` claim (the predicate lifecycle supersedes any prior date),
+   * or `dueOn: null` to retract every active `DUE_ON` claim on the task.
+   * The server resolves/creates the canonical Temporal node internally.
+   */
+  async setCommitmentDue(
+    payload: SetCommitmentDueRequest,
+  ): Promise<SetCommitmentDueResponse> {
+    return this._fetch(
+      "POST",
+      "/commitments/due",
+      setCommitmentDueResponseSchema,
       payload,
     );
   }

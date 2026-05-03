@@ -47,6 +47,21 @@ export const createClaimRequestShape = {
   validTo: z.coerce.date().optional(),
   objectNodeId: typeIdSchema("node").optional(),
   objectValue: z.string().min(1).optional(),
+  /**
+   * Provenance of the assertion. Defaults to `"user"` when omitted, which
+   * matches the historical contract for this endpoint. Trusted clients (with
+   * their own auth/UX context) can pass `"user_confirmed"` for explicit
+   * user-acknowledged writes or `"assistant_inferred"` when the assistant is
+   * proactively asserting without direct user confirmation. Cleanup and
+   * dedup heuristics use this to decide what to consolidate vs. preserve.
+   */
+  assertedByKind: AssertedByKindEnum.optional(),
+  /**
+   * Optional pointer to the participant/node that asserted the claim — only
+   * meaningful for participant-provenance claims (transcripts, document
+   * authorship). For typical user/assistant assertions, leave undefined.
+   */
+  assertedByNodeId: typeIdSchema("node").optional(),
 };
 
 export const createClaimRequestSchema = z

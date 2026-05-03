@@ -10,10 +10,30 @@ import { z } from "zod";
 
 // --- Get Node ---
 
+/**
+ * Optional server-side claim filter for `getNode`. By default the response
+ * includes only `active` claims touching the node; callers that want a
+ * narrower slice (e.g. only the active `HAS_TASK_STATUS` for a Task) can
+ * filter by predicate, and callers that need lifecycle history (superseded,
+ * retracted, contradicted) can opt in via `statuses`.
+ *
+ * - `predicates` — empty array means "no predicate constraint" (same as
+ *   omitting the field).
+ * - `statuses` — empty array means "no status constraint", which returns
+ *   claims of every status, including non-active ones.
+ */
+export const getNodeClaimFilterSchema = z.object({
+  predicates: z.array(PredicateEnum).optional(),
+  statuses: z.array(ClaimStatusEnum).optional(),
+});
+
 export const getNodeRequestSchema = z.object({
   userId: z.string(),
   nodeId: typeIdSchema("node"),
+  claimFilter: getNodeClaimFilterSchema.optional(),
 });
+
+export type GetNodeClaimFilter = z.infer<typeof getNodeClaimFilterSchema>;
 
 export const getNodeClaimSchema = z.object({
   id: typeIdSchema("claim"),
@@ -129,11 +149,46 @@ export type DeleteNodeResponse = z.infer<typeof deleteNodeResponseSchema>;
 
 // --- Create Node ---
 
+/**
+ * Bootstrap claim attached to a freshly created node. The new node fills
+ * the `subjectNodeId` slot, so callers only specify the predicate, statement,
+ * and either an `objectNodeId` or `objectValue`. Used to avoid intermediate
+ * states where a node exists without its required status/owner claims (e.g.
+ * a Task with no `HAS_TASK_STATUS` would be invisible to open-commitments).
+ */
+export const createNodeInitialClaimSchema = z
+  .object({
+    predicate: PredicateEnum,
+    statement: z.string().min(1),
+    description: z.string().optional(),
+    objectNodeId: typeIdSchema("node").optional(),
+    objectValue: z.string().min(1).optional(),
+    assertedByKind: AssertedByKindEnum.optional(),
+    assertedByNodeId: typeIdSchema("node").optional(),
+  })
+  .refine(
+    (value) =>
+      (value.objectNodeId === undefined) !== (value.objectValue === undefined),
+    {
+      message: "Exactly one of objectNodeId or objectValue is required",
+    },
+  );
+
+export type CreateNodeInitialClaim = z.infer<
+  typeof createNodeInitialClaimSchema
+>;
+
 export const createNodeRequestSchema = z.object({
   userId: z.string(),
   nodeType: NodeTypeEnum,
   label: z.string().min(1),
   description: z.string().optional(),
+  /**
+   * Optional list of claims to assert against the new node as its subject.
+   * Written sequentially after the node insert; if any claim fails, the
+   * node is deleted to avoid leaving a half-bootstrapped record.
+   */
+  initialClaims: z.array(createNodeInitialClaimSchema).optional(),
 });
 
 export const createNodeResponseSchema = z.object({
@@ -143,6 +198,11 @@ export const createNodeResponseSchema = z.object({
     label: z.string(),
     description: z.string().nullable(),
   }),
+  /**
+   * IDs of claims created from `initialClaims`, in the order they were
+   * supplied. Empty when no `initialClaims` were sent.
+   */
+  initialClaimIds: z.array(typeIdSchema("claim")),
 });
 
 export type CreateNodeRequest = z.infer<typeof createNodeRequestSchema>;
