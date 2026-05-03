@@ -24,6 +24,7 @@ has the _what to change_.
 - **NEW SDK method:** `MemoryClient.pruneOrphanNodes(payload)` → `PruneOrphanNodesResponse`.
 - **NEW exports:** `PruneOrphanNodesRequest`, `PruneOrphanNodesResponse`, `pruneOrphanNodesRequestSchema`, `pruneOrphanNodesResponseSchema`.
 - Default scanned node types are entity/task-like only: `Person`, `Location`, `Event`, `Object`, `Emotion`, `Concept`, `Media`, `Feedback`, `Idea`, `Task`. Generated/structural node types (`Conversation`, `Document`, `Temporal`, `Atlas`, `AssistantDream`) are excluded unless explicitly passed in `nodeTypes`.
+- `MemoryClient.cleanup(...)` now runs orphan pruning first by default with `{ dryRun: false, olderThanDays: 7, limit: 10000, sampleLimit: 0 }`. Pass `pruneOrphanNodes: false` only for diagnostics or if an operator is running the standalone endpoint separately.
 
 ---
 

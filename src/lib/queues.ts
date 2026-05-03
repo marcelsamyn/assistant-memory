@@ -1,6 +1,5 @@
 import { assistantDreamJob } from "./jobs/atlas-assistant";
 import { processAtlasJob } from "./jobs/atlas-user";
-import { z } from "zod";
 import { CleanupGraphJobInputSchema } from "./jobs/cleanup-graph";
 import { dream } from "./jobs/dream";
 import { IdentityReevalJobInputSchema } from "./jobs/identity-reeval";
@@ -12,6 +11,7 @@ import { summarizeUserConversations } from "./jobs/summarize-conversation";
 import { DeepResearchJobInputSchema } from "./schemas/deep-research";
 import { FlowProducer, Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
+import { z } from "zod";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 import { env } from "~/utils/env";
@@ -99,9 +99,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         // synchronously already.
         const { userId } = AtlasUserJobInputSchema.parse(job.data);
         const result = await processAtlasJob(db, userId);
-        console.log(
-          `Atlas user job for ${userId}: ${result.status}`,
-        );
+        console.log(`Atlas user job for ${userId}: ${result.status}`);
       } else if (job.name === "ingest-conversation") {
         const { userId, conversationId, messages } =
           IngestConversationJobInputSchema.parse(job.data);
@@ -256,7 +254,23 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
           `Starting cleanup-graph job for user ${data.userId}, since ${data.since.toISOString()}`,
         );
 
-        // First, run basic cleanup operations
+        if (data.pruneOrphanNodes) {
+          const { pruneOrphanNodes } = await import(
+            "./jobs/prune-orphan-nodes"
+          );
+          const pruneResult = await pruneOrphanNodes({
+            userId: data.userId,
+            dryRun: false,
+            olderThanDays: data.orphanPruneOlderThanDays,
+            limit: data.orphanPruneLimit,
+            sampleLimit: 0,
+          });
+          console.log(
+            `Orphan prune completed: deleted ${pruneResult.deletedCount}/${pruneResult.candidateCount} candidates, hasMore=${pruneResult.hasMore.toString()}`,
+          );
+        }
+
+        // Then run basic cleanup operations
         const { truncateLongLabels, generateMissingNodeEmbeddings } =
           await import("./jobs/cleanup-graph");
 
