@@ -6,6 +6,13 @@ export * from "../lib/context/node-card-types.js";
 export * from "../lib/schemas/ingest-document-request.js";
 export * from "../lib/schemas/ingest-conversation.js";
 export * from "../lib/schemas/ingest-transcript.js";
+export * from "../lib/schemas/metric-observation.js";
+export * from "../lib/schemas/metric-read.js";
+export * from "../lib/schemas/metric-write.js";
+export {
+  proposedMetricDefinitionSchema,
+  type ProposedMetricDefinition,
+} from "../lib/schemas/metric-definition.js";
 export * from "../lib/schemas/query-search.js";
 export * from "../lib/schemas/query-atlas.js";
 export * from "../lib/schemas/query-day.js";

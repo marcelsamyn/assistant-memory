@@ -11,6 +11,7 @@ import {
   index,
   unique,
   integer,
+  boolean,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import {
@@ -448,3 +449,161 @@ export const scratchpadsRelations = relations(scratchpads, ({ one }) => ({
     references: [users.id],
   }),
 }));
+
+// --- Metrics ---
+
+export const metricDefinitions = pgTable(
+  "metric_definitions",
+  {
+    id: typeId("metric_definition").primaryKey().notNull(),
+    userId: text()
+      .references(() => users.id)
+      .notNull(),
+    slug: text().notNull(),
+    label: text().notNull(),
+    description: text().notNull(),
+    unit: text().notNull(),
+    aggregationHint: varchar("aggregation_hint", { length: 8 })
+      .notNull()
+      .$type<"avg" | "sum" | "min" | "max">(),
+    validRangeMin: text("valid_range_min"),
+    validRangeMax: text("valid_range_max"),
+    needsReview: boolean("needs_review").notNull().default(false),
+    reviewTaskNodeId: typeIdNoDefault("node", {
+      name: "review_task_node_id",
+    }).references(() => nodes.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("metric_definitions_user_slug_unique").on(table.userId, table.slug),
+    index("metric_definitions_user_id_idx").on(table.userId),
+    index("metric_definitions_user_needs_review_idx")
+      .on(table.userId)
+      .where(sql`${table.needsReview} = true`),
+    check(
+      "metric_definitions_aggregation_hint_ck",
+      sql`"aggregation_hint" IN ('avg','sum','min','max')`,
+    ),
+  ],
+);
+
+export const metricObservations = pgTable(
+  "metric_observations",
+  {
+    id: typeId("metric_observation").primaryKey().notNull(),
+    userId: text()
+      .references(() => users.id)
+      .notNull(),
+    metricDefinitionId: typeId("metric_definition", {
+      name: "metric_definition_id",
+    })
+      .references(() => metricDefinitions.id, { onDelete: "cascade" })
+      .notNull(),
+    value: text().notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    note: text(),
+    eventNodeId: typeIdNoDefault("node", {
+      name: "event_node_id",
+    }).references(() => nodes.id, { onDelete: "set null" }),
+    sourceId: typeId("source")
+      .references(() => sources.id, { onDelete: "cascade" })
+      .notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("metric_observations_user_def_occurred_idx").on(
+      table.userId,
+      table.metricDefinitionId,
+      table.occurredAt.desc(),
+    ),
+    index("metric_observations_user_occurred_idx").on(
+      table.userId,
+      table.occurredAt.desc(),
+    ),
+    index("metric_observations_event_node_idx")
+      .on(table.eventNodeId)
+      .where(sql`${table.eventNodeId} IS NOT NULL`),
+    index("metric_observations_source_id_idx").on(table.sourceId),
+  ],
+);
+
+export const metricDefinitionEmbeddings = pgTable(
+  "metric_definition_embeddings",
+  {
+    id: typeId("metric_definition_embedding").primaryKey().notNull(),
+    metricDefinitionId: typeId("metric_definition", {
+      name: "metric_definition_id",
+    })
+      .references(() => metricDefinitions.id, { onDelete: "cascade" })
+      .notNull(),
+    embedding: vector("embedding", { dimensions: 1024 }).notNull(),
+    modelName: varchar("model_name", { length: 100 }).notNull(),
+    createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("metric_def_emb_idx").using(
+      "hnsw",
+      table.embedding.op("vector_cosine_ops"),
+    ),
+    index("metric_def_emb_def_id_idx").on(table.metricDefinitionId),
+    unique("metric_def_emb_def_unique").on(table.metricDefinitionId),
+  ],
+);
+
+export const metricDefinitionsRelations = relations(
+  metricDefinitions,
+  ({ one, many }) => ({
+    user: one(users, {
+      fields: [metricDefinitions.userId],
+      references: [users.id],
+    }),
+    embedding: one(metricDefinitionEmbeddings, {
+      fields: [metricDefinitions.id],
+      references: [metricDefinitionEmbeddings.metricDefinitionId],
+    }),
+    observations: many(metricObservations),
+    reviewTaskNode: one(nodes, {
+      fields: [metricDefinitions.reviewTaskNodeId],
+      references: [nodes.id],
+    }),
+  }),
+);
+
+export const metricObservationsRelations = relations(
+  metricObservations,
+  ({ one }) => ({
+    user: one(users, {
+      fields: [metricObservations.userId],
+      references: [users.id],
+    }),
+    definition: one(metricDefinitions, {
+      fields: [metricObservations.metricDefinitionId],
+      references: [metricDefinitions.id],
+    }),
+    eventNode: one(nodes, {
+      fields: [metricObservations.eventNodeId],
+      references: [nodes.id],
+    }),
+    source: one(sources, {
+      fields: [metricObservations.sourceId],
+      references: [sources.id],
+    }),
+  }),
+);
+
+export const metricDefinitionEmbeddingsRelations = relations(
+  metricDefinitionEmbeddings,
+  ({ one }) => ({
+    definition: one(metricDefinitions, {
+      fields: [metricDefinitionEmbeddings.metricDefinitionId],
+      references: [metricDefinitions.id],
+    }),
+  }),
+);

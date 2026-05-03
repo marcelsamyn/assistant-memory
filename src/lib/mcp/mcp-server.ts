@@ -2,8 +2,12 @@ import { SSEServerTransport } from "./sse";
 import {
   BOOTSTRAP_MEMORY_DESCRIPTION,
   CREATE_CLAIM_DESCRIPTION,
+  GET_METRIC_SERIES_DESCRIPTION,
+  GET_METRIC_SUMMARY_DESCRIPTION,
   GET_ENTITY_DESCRIPTION,
   LIST_OPEN_COMMITMENTS_DESCRIPTION,
+  LIST_METRICS_DESCRIPTION,
+  RECORD_METRIC_DESCRIPTION,
   SEARCH_MEMORY_DESCRIPTION,
   SEARCH_REFERENCE_DESCRIPTION,
 } from "./tool-descriptions";
@@ -19,6 +23,10 @@ import { nodeCardSchema } from "~/lib/context/node-card-types";
 import { searchMemory, searchReference } from "~/lib/context/search-cards";
 import { contextBundleSchema } from "~/lib/context/types";
 import { saveMemory } from "~/lib/ingestion/save-document";
+import { listMetrics } from "~/lib/metrics/list";
+import { recordMetricObservations } from "~/lib/metrics/observations";
+import { getMetricSeries } from "~/lib/metrics/series";
+import { getMetricSummary } from "~/lib/metrics/summary";
 import {
   getNodeById,
   getNodeSources,
@@ -41,6 +49,18 @@ import {
   contextSearchResponseSchema,
 } from "~/lib/schemas/context-search";
 import { ingestDocumentRequestSchema } from "~/lib/schemas/ingest-document-request";
+import {
+  getMetricSeriesRequestSchema,
+  getMetricSeriesResponseSchema,
+  getMetricSummaryRequestSchema,
+  getMetricSummaryResponseSchema,
+  listMetricsRequestSchema,
+  listMetricsResponseSchema,
+} from "~/lib/schemas/metric-read";
+import {
+  recordMetricRequestSchema,
+  recordMetricResponseSchema,
+} from "~/lib/schemas/metric-write";
 import {
   getNodeRequestSchema,
   getNodeSourcesRequestSchema,
@@ -262,6 +282,123 @@ server.tool(
       }
       throw e;
     }
+  },
+);
+
+server.tool(
+  "record_metric",
+  RECORD_METRIC_DESCRIPTION,
+  recordMetricRequestSchema.shape,
+  async ({ userId, metric, value, occurredAt, note }) => {
+    const result = await recordMetricObservations({
+      userId,
+      source: { type: "metric_manual" },
+      createDefinitions: true,
+      events: [],
+      observations: [{ metric, value, occurredAt, note: note ?? null }],
+    });
+    const [observation] = result.observations;
+    const response = {
+      inserted: result.inserted,
+      errors: result.errors,
+      definitionCreated: observation?.definitionCreated ?? false,
+      needsReview: observation?.needsReview ?? false,
+      reviewTaskNodeId: observation?.reviewTaskNodeId ?? null,
+    };
+    if (result.errors.length > 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(recordMetricResponseSchema.parse(response)),
+          },
+        ],
+        isError: true,
+      };
+    }
+    if (observation === undefined) {
+      return {
+        content: [
+          { type: "text", text: "Metric observation was not recorded" },
+        ],
+        isError: true,
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            recordMetricResponseSchema.parse(response),
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  "list_metrics",
+  LIST_METRICS_DESCRIPTION,
+  listMetricsRequestSchema.shape,
+  async (params) => {
+    const metrics = await listMetrics(params);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            listMetricsResponseSchema.parse({ metrics }),
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  "get_metric_series",
+  GET_METRIC_SERIES_DESCRIPTION,
+  getMetricSeriesRequestSchema.shape,
+  async (params) => {
+    const result = await getMetricSeries(params);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            getMetricSeriesResponseSchema.parse(result),
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  "get_metric_summary",
+  GET_METRIC_SUMMARY_DESCRIPTION,
+  getMetricSummaryRequestSchema.shape,
+  async (params) => {
+    const result = await getMetricSummary(params);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            getMetricSummaryResponseSchema.parse(result),
+            null,
+            2,
+          ),
+        },
+      ],
+    };
   },
 );
 

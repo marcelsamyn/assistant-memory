@@ -9,9 +9,11 @@ import { formatNodesForPrompt } from "./formatting";
 import { findSimilarNodes, findOneHopNodes, findNodesByType } from "./graph";
 import { resolveIdentity } from "./identity-resolution";
 import { normalizeLabel } from "./label";
+import { recordMetricObservations } from "./metrics/observations";
 import { getOpenCommitments } from "./query/open-commitments";
-import { type OpenCommitment } from "./schemas/open-commitments";
 import { safeToISOString } from "./safe-date";
+import { metricDefinitionInputSchema } from "./schemas/metric-write";
+import { type OpenCommitment } from "./schemas/open-commitments";
 import { TemporaryIdMapper } from "./temporary-id-mapper";
 import { and, eq, inArray } from "drizzle-orm";
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
@@ -92,11 +94,46 @@ const llmAliasSchema = z.object({
 });
 type LlmOutputAlias = z.infer<typeof llmAliasSchema>;
 
+const llmMetricEventObservationSchema = z.object({
+  metric: metricDefinitionInputSchema,
+  value: z.number(),
+  note: z.string().nullable().optional(),
+});
+
+const llmMetricStandaloneObservationSchema =
+  llmMetricEventObservationSchema.extend({
+    occurredAt: z.string().datetime(),
+  });
+
+const llmMetricEventSchema = z.object({
+  eventKey: z
+    .string()
+    .regex(/^[a-z0-9_-]{1,80}$/)
+    .describe("stable event key unique within this extraction"),
+  label: z.string().min(1).max(200),
+  occurredAt: z.string().datetime(),
+  eventNodeId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "optional temporary or existing Event node id when claims also reference it",
+    ),
+  observations: z.array(llmMetricEventObservationSchema),
+});
+
+const llmMetricsSchema = z.object({
+  events: z.array(llmMetricEventSchema).optional(),
+  standalone: z.array(llmMetricStandaloneObservationSchema).optional(),
+});
+type LlmOutputMetrics = z.infer<typeof llmMetricsSchema>;
+
 const llmExtractionSchema = z.object({
   nodes: z.array(llmNodeSchema),
   relationshipClaims: z.array(llmRelationshipClaimSchema),
   attributeClaims: z.array(llmAttributeClaimSchema),
   aliases: z.array(llmAliasSchema),
+  metrics: llmMetricsSchema.optional(),
 });
 
 type SourceRef = {
@@ -339,9 +376,18 @@ For each element, create a node with:
 	- Attribute claims use objectValue and an attribute predicate, such as HAS_STATUS, HAS_PREFERENCE, HAS_GOAL, or MADE_DECISION.
 	- ONLY create claims for facts explicitly stated by the user, not assistant assumptions.
 	- In the claim statement, write one concise sentence that can stand alone as the sourced assertion.
-		- Every claim must include a sourceRef copied exactly from the token after "sourceRef:" in the allowed source refs above. Do not include statedAt text.
+	- Every claim must include a sourceRef copied exactly from the token after "sourceRef:" in the allowed source refs above. Do not include statedAt text.
 	- Emit aliases when the source uses a nickname, abbreviation, alternate spelling, or shorter name for a node.
 	- Ideally, relationship claims link to already-existing nodes. If the node isn't existing, create it.
+
+Optional numeric metrics:
+- If the source contains numeric readings the user is tracking about themselves, emit them in the optional "metrics" object.
+- Use metrics only for numeric time-series readings with units, such as body weight, running distance, running pace, average heart rate, sleep duration, sleep score, steps, or readiness score.
+- Do not use metrics for booleans, moods, statuses, preferences, goals, plans, or one-off facts better represented as claims.
+- Every metric must include a metric definition: slug, label, description, unit, and aggregationHint ("avg", "sum", "min", or "max").
+- For readings tied to one event, group them in metrics.events[] with a stable eventKey, label, and occurredAt. If you also create an Event node for non-metric claims about the same event, put that node id in eventNodeId so the readings attach to it.
+- For free-floating readings, put them in metrics.standalone[] with their own occurredAt.
+- Store values in the canonical unit you declare. For durations, prefer seconds.
 
 Rules of the graph:
 - Nodes are unique by type and label
@@ -420,6 +466,12 @@ Focus on extracting the most significant and meaningful information that the USE
   );
 
   await _processAndInsertLlmAliases(db, userId, uniqueParsedLlmAliases, idMap);
+  await _processAndRecordLlmMetrics({
+    userId,
+    sourceId,
+    metrics: parsedLlmOutput.metrics,
+    idMap,
+  });
 
   // Capture timestamp BEFORE lifecycle so the invalidation hook can detect
   // any claim that transitioned out of `active` during this run.
@@ -956,6 +1008,73 @@ async function _fetchSourceScopeMap(
     );
 
   return new Map(sourceRows.map((source) => [source.id, source.scope]));
+}
+
+async function _processAndRecordLlmMetrics({
+  userId,
+  sourceId,
+  metrics,
+  idMap,
+}: {
+  userId: string;
+  sourceId: TypeId<"source">;
+  metrics: LlmOutputMetrics | undefined;
+  idMap: Map<string, TypeId<"node">>;
+}): Promise<void> {
+  const observations = (metrics?.standalone ?? []).map((observation) => ({
+    metric: observation.metric,
+    value: observation.value,
+    occurredAt: new Date(observation.occurredAt),
+    note: observation.note ?? null,
+  }));
+
+  const events = (metrics?.events ?? []).flatMap((event) => {
+    const eventNodeId =
+      event.eventNodeId === undefined
+        ? undefined
+        : idMap.get(event.eventNodeId);
+    if (event.eventNodeId !== undefined && eventNodeId === undefined) {
+      console.warn(
+        `Metric event will create its own node because the referenced node was not found: ${event.eventNodeId}`,
+      );
+    }
+
+    if (eventNodeId !== undefined) {
+      observations.push(
+        ...event.observations.map((observation) => ({
+          metric: observation.metric,
+          value: observation.value,
+          occurredAt: new Date(event.occurredAt),
+          note: observation.note ?? null,
+          eventNodeId,
+        })),
+      );
+      return [];
+    }
+
+    return [
+      {
+        eventKey: event.eventKey,
+        label: event.label,
+        occurredAt: new Date(event.occurredAt),
+        observations: event.observations.map((observation) => ({
+          metric: observation.metric,
+          value: observation.value,
+          note: observation.note ?? null,
+        })),
+      },
+    ];
+  });
+
+  if (observations.length === 0 && events.length === 0) return;
+  await recordMetricObservations({
+    userId,
+    source: { sourceId },
+    createDefinitions: true,
+    replaceSourceObservations: true,
+    events,
+    observations,
+  });
 }
 
 function _defaultAssertedByKind(sourceType: SourceType): AssertedByKind {

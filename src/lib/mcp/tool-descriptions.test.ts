@@ -1,8 +1,12 @@
 import {
   BOOTSTRAP_MEMORY_DESCRIPTION,
   CREATE_CLAIM_DESCRIPTION,
+  GET_METRIC_SERIES_DESCRIPTION,
+  GET_METRIC_SUMMARY_DESCRIPTION,
   GET_ENTITY_DESCRIPTION,
   LIST_OPEN_COMMITMENTS_DESCRIPTION,
+  LIST_METRICS_DESCRIPTION,
+  RECORD_METRIC_DESCRIPTION,
   SEARCH_MEMORY_DESCRIPTION,
   SEARCH_REFERENCE_DESCRIPTION,
 } from "./tool-descriptions";
@@ -50,6 +54,30 @@ describe("MCP tool descriptions", () => {
   it("pins create_claim description", () => {
     expect(CREATE_CLAIM_DESCRIPTION).toMatchInlineSnapshot(
       `"Creates a claim between an existing subject node and either an existing object node or a scalar object value. Returns the created claim plus subjectLabel and objectLabel so callers can immediately reflect the new relationship in the UI."`,
+    );
+  });
+
+  it("pins record_metric description", () => {
+    expect(RECORD_METRIC_DESCRIPTION).toMatchInlineSnapshot(
+      `"Records a single numeric reading the user is tracking (weight, distance, sleep duration, mood score). Provide a metric definition (slug, label, unit, aggregation hint) — the system reuses existing definitions for similar concepts and creates new ones automatically. Use for ad-hoc readings the user mentions in chat ("log that I weighed 78kg"). Do not use for retrospective bulk imports."`,
+    );
+  });
+
+  it("pins list_metrics description", () => {
+    expect(LIST_METRICS_DESCRIPTION).toMatchInlineSnapshot(
+      `"Returns the user's tracked metric definitions with lightweight stats (count, latest value, first/latest timestamps). Call before answering questions about what's being tracked, or before get_metric_series so you have a definition id and the right unit. Optionally filter by needsReview to surface metrics that need user disambiguation."`,
+    );
+  });
+
+  it("pins get_metric_series description", () => {
+    expect(GET_METRIC_SERIES_DESCRIPTION).toMatchInlineSnapshot(
+      `"Returns time-bucketed series for one or more metrics. Use for charts and for answering "how has X changed over time" questions. Pass metric ids from list_metrics, a from/to range, and a bucket size (none|hour|day|week|month). The aggregation defaults to each metric's stored hint (steps→sum, HR→avg) — only override agg if the question demands a different statistic."`,
+    );
+  });
+
+  it("pins get_metric_summary description", () => {
+    expect(GET_METRIC_SUMMARY_DESCRIPTION).toMatchInlineSnapshot(
+      `"Returns a quick summary for one metric: latest value, 7d/30d/90d window stats, and a coarse trend (up|down|flat). Use for "what's my X been like lately" questions where a full series is overkill. For comparisons across metrics or precise charts, use get_metric_series instead."`,
     );
   });
 });

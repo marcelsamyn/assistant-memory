@@ -258,6 +258,42 @@ The integration only works if these are true:
 - `POST /query/day` – get a quick summary of a particular day.
 - `GET /sse` and `POST /messages` – MCP over HTTP using Server‑Sent Events.
 
+## Metrics
+
+Assistant Memory also stores numeric time-series readings separately from claims. Use this for values such as body weight, running distance, pace, heart rate, sleep duration, readiness scores, and steps.
+
+Write paths:
+
+- `POST /metrics/observations` records one explicit reading and can create or reuse a metric definition.
+- `POST /metrics/observations/bulk` records many readings by existing metric slug. Bulk imports never create definitions; unknown slugs are returned as per-row errors.
+- Conversation and document ingestion can extract metrics implicitly and attach event-linked readings to Event nodes.
+
+Single write example:
+
+```json
+{
+  "userId": "user_123",
+  "metric": {
+    "slug": "body_weight",
+    "label": "Body weight",
+    "description": "Morning bathroom scale weight",
+    "unit": "kg",
+    "aggregationHint": "avg"
+  },
+  "value": 78.2,
+  "occurredAt": "2026-05-03T07:30:00Z",
+  "note": "post-run"
+}
+```
+
+Read paths:
+
+- `POST /metrics/list` returns definitions with units, review state, and lightweight stats.
+- `POST /metrics/series` returns raw or bucketed points for one or more metric definitions.
+- `POST /metrics/summary` returns latest value, 7d/30d/90d stats, and a coarse trend.
+
+New definitions are deduplicated by exact slug first, then definition embedding similarity. Near-duplicate definitions are created with `needsReview: true` and surfaced as normal open Task commitments.
+
 ## Why use it?
 
 - Keep sensitive data on your own servers.

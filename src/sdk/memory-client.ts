@@ -61,6 +61,25 @@ import {
   ingestTranscriptResponseSchema,
 } from "../lib/schemas/ingest-transcript.js";
 import {
+  GetMetricSeriesRequest,
+  GetMetricSeriesResponse,
+  GetMetricSummaryRequest,
+  GetMetricSummaryResponse,
+  ListMetricsRequest,
+  ListMetricsResponse,
+  getMetricSeriesResponseSchema,
+  getMetricSummaryResponseSchema,
+  listMetricsResponseSchema,
+} from "../lib/schemas/metric-read.js";
+import {
+  BulkRecordMetricsRequest,
+  BulkRecordMetricsResponse,
+  RecordMetricRequest,
+  RecordMetricResponse,
+  bulkRecordMetricsResponseSchema,
+  recordMetricResponseSchema,
+} from "../lib/schemas/metric-write.js";
+import {
   BatchDeleteNodesRequest,
   BatchDeleteNodesResponse,
   batchDeleteNodesResponseSchema,
@@ -343,6 +362,59 @@ export class MemoryClient {
       "POST",
       "/query/timeline",
       queryTimelineResponseSchema,
+      payload,
+    );
+  }
+
+  async recordMetric(
+    payload: RecordMetricRequest,
+  ): Promise<RecordMetricResponse> {
+    return this._fetch(
+      "POST",
+      "/metrics/observations",
+      recordMetricResponseSchema,
+      payload,
+    );
+  }
+
+  async recordMetricsBulk(
+    payload: BulkRecordMetricsRequest,
+  ): Promise<BulkRecordMetricsResponse> {
+    return this._fetch(
+      "POST",
+      "/metrics/observations/bulk",
+      bulkRecordMetricsResponseSchema,
+      payload,
+    );
+  }
+
+  async listMetrics(payload: ListMetricsRequest): Promise<ListMetricsResponse> {
+    return this._fetch(
+      "POST",
+      "/metrics/list",
+      listMetricsResponseSchema,
+      payload,
+    );
+  }
+
+  async getMetricSeries(
+    payload: GetMetricSeriesRequest,
+  ): Promise<GetMetricSeriesResponse> {
+    return this._fetch(
+      "POST",
+      "/metrics/series",
+      getMetricSeriesResponseSchema,
+      payload,
+    );
+  }
+
+  async getMetricSummary(
+    payload: GetMetricSummaryRequest,
+  ): Promise<GetMetricSummaryResponse> {
+    return this._fetch(
+      "POST",
+      "/metrics/summary",
+      getMetricSummaryResponseSchema,
       payload,
     );
   }

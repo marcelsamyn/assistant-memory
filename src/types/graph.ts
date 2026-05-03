@@ -101,7 +101,9 @@ export type SourceType =
   | "legacy_migration"
   | "manual"
   | "meeting_transcript"
-  | "external_conversation";
+  | "external_conversation"
+  | "metric_push"
+  | "metric_manual";
 
 export type SourceStatus =
   | "pending"

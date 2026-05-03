@@ -15,6 +15,9 @@ export const ID_TYPE_NAMES = [
   "user_profile",
   "message",
   "scratchpad",
+  "metric_definition",
+  "metric_observation",
+  "metric_definition_embedding",
 ] as const;
 
 export const ID_TYPE_PREFIXES = {
@@ -29,6 +32,9 @@ export const ID_TYPE_PREFIXES = {
   user_profile: "upf",
   message: "msg",
   scratchpad: "spad",
+  metric_definition: "mdef",
+  metric_observation: "mobs",
+  metric_definition_embedding: "memb",
 } as const satisfies Record<(typeof ID_TYPE_NAMES)[number], string>;
 
 export type IdType = (typeof ID_TYPE_NAMES)[number];
