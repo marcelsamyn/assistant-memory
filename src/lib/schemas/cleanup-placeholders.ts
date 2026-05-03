@@ -4,7 +4,7 @@
  * iterative cleanup job seeded with the surfaced placeholder ids.
  */
 import { z } from "zod";
-import { typeIdSchema } from "~/types/typeid";
+import { typeIdSchema } from "~/types/typeid.js";
 
 export const cleanupPlaceholdersRequestSchema = z.object({
   userId: z.string().startsWith("user_"),

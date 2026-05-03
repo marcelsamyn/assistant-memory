@@ -2,6 +2,7 @@
   "private": false,
   "name": "@marcelsamyn/memory",
   "version": "1.2.0",
+  "type": "module",
   "main": "dist/server/index.mjs",
   "types": "dist/server/index.d.ts",
   "exports": {
@@ -23,7 +24,8 @@
   ],
   "scripts": {
     "build": "nitro build",
-    "build-sdk": "tsc --project tsconfig.sdk.json && tsc-alias --project tsconfig.sdk.json",
+    "build-sdk": "tsc --project tsconfig.sdk.json && tsc-alias --project tsconfig.sdk.json --resolve-full-paths --resolve-full-extension .js && node scripts/verify-sdk-build.mjs",
+    "verify-sdk": "node scripts/verify-sdk-build.mjs",
     "dev": "nitro dev",
     "prepare": "nitro prepare",
     "preview": "node .output/server/index.mjs",

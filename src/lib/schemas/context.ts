@@ -7,7 +7,7 @@
  * Common aliases: bootstrap memory schema, get_entity schema, bootstrap_memory.
  */
 import { z } from "zod";
-import { typeIdSchema } from "~/types/typeid";
+import { typeIdSchema } from "~/types/typeid.js";
 
 export const bootstrapMemoryRequestSchema = z.object({
   userId: z.string(),

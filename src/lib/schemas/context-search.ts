@@ -8,9 +8,9 @@
  * search_memory schema, search_reference schema.
  */
 import { z } from "zod";
-import { nodeCardSchema } from "~/lib/context/node-card-types";
-import { claimEvidenceSchema } from "~/lib/context/types";
-import { NodeTypeEnum } from "~/types/graph";
+import { nodeCardSchema } from "~/lib/context/node-card-types.js";
+import { claimEvidenceSchema } from "~/lib/context/types.js";
+import { NodeTypeEnum } from "~/types/graph.js";
 
 export const contextSearchRequestSchema = z.object({
   userId: z.string(),

@@ -7,8 +7,8 @@
  * not a model judgment.
  */
 import { z } from "zod";
-import { NodeTypeEnum } from "~/types/graph";
-import { typeIdSchema } from "~/types/typeid";
+import { NodeTypeEnum } from "~/types/graph.js";
+import { typeIdSchema } from "~/types/typeid.js";
 
 export const pruneOrphanNodesRequestSchema = z.object({
   userId: z.string().startsWith("user_"),

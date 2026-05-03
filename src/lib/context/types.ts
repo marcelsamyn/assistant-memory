@@ -10,7 +10,7 @@
  * read-model bundle.
  */
 import { z } from "zod";
-import { typeIdSchema } from "~/types/typeid";
+import { typeIdSchema } from "~/types/typeid.js";
 
 /** Reference to a supporting claim, surfaced alongside rendered sections. */
 export const claimEvidenceSchema = z.object({

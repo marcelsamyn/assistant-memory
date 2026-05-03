@@ -8,8 +8,8 @@
  * Stored aliases are never mutated.
  */
 import { z } from "zod";
-import { ScopeEnum } from "~/types/graph";
-import { typeIdSchema } from "~/types/typeid";
+import { ScopeEnum } from "~/types/graph.js";
+import { typeIdSchema } from "~/types/typeid.js";
 
 export const transcriptUtteranceSchema = z.object({
   speakerLabel: z.string().min(1),

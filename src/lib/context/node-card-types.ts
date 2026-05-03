@@ -9,16 +9,16 @@
  *
  * Common aliases: NodeCard, entity card, get_entity output, node card shape.
  */
+import { claimEvidenceSchema } from "./types.js";
 import { z } from "zod";
-import { claimEvidenceSchema } from "./types";
+import { openCommitmentSchema } from "~/lib/schemas/open-commitments.js";
 import {
   AttributePredicateEnum,
   NodeTypeEnum,
   PredicateEnum,
   ScopeEnum,
-} from "~/types/graph";
-import { typeIdSchema } from "~/types/typeid";
-import { openCommitmentSchema } from "~/lib/schemas/open-commitments";
+} from "~/types/graph.js";
+import { typeIdSchema } from "~/types/typeid.js";
 
 /**
  * Active `single_current_value` attribute claim about the node, plus any
@@ -52,7 +52,9 @@ export const nodeCardPreferenceGoalSchema = z.object({
   statedAt: z.coerce.date(),
   evidence: claimEvidenceSchema,
 });
-export type NodeCardPreferenceGoal = z.infer<typeof nodeCardPreferenceGoalSchema>;
+export type NodeCardPreferenceGoal = z.infer<
+  typeof nodeCardPreferenceGoalSchema
+>;
 
 /**
  * Compact recent evidence row — top-N active claims for the node ordered by
@@ -63,7 +65,9 @@ export const nodeCardRecentEvidenceSchema = z.object({
   sourceId: typeIdSchema("source"),
   statedAt: z.coerce.date(),
 });
-export type NodeCardRecentEvidence = z.infer<typeof nodeCardRecentEvidenceSchema>;
+export type NodeCardRecentEvidence = z.infer<
+  typeof nodeCardRecentEvidenceSchema
+>;
 
 /**
  * Reference metadata for `scope === 'reference'` nodes. Pulled from the
