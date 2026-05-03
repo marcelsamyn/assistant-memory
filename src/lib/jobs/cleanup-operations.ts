@@ -123,7 +123,7 @@ export const CleanupOperationSchema = z.discriminatedUnion("kind", [
 ]);
 
 export const CleanupOperationsSchema = z.object({
-  operations: z.array(CleanupOperationSchema),
+  operations: z.array(CleanupOperationSchema).max(10),
 });
 
 export type CleanupOperation = z.infer<typeof CleanupOperationSchema>;

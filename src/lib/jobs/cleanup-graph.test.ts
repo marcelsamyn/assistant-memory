@@ -46,6 +46,10 @@ function makeTempSubgraph(): TempSubgraph {
         label: "Marcel",
         description: "User",
         type: "Person",
+        evidenceClaimCount: 2,
+        sourceLinkCount: 1,
+        aliasCount: 0,
+        deleteAllowed: false,
       },
       {
         id: newTypeId("node"),
@@ -53,6 +57,10 @@ function makeTempSubgraph(): TempSubgraph {
         label: "Antwerp",
         description: "City",
         type: "Location",
+        evidenceClaimCount: 2,
+        sourceLinkCount: 0,
+        aliasCount: 1,
+        deleteAllowed: false,
       },
     ],
     claims: [
@@ -64,6 +72,8 @@ function makeTempSubgraph(): TempSubgraph {
         statement: "Marcel lives in Antwerp.",
         scope: "personal",
         assertedByKind: "user",
+        retractAllowed: false,
+        contradictionCitationAllowed: true,
       },
       {
         id: claimAssistantInferred,
@@ -73,6 +83,8 @@ function makeTempSubgraph(): TempSubgraph {
         statement: "Marcel visited Antwerp last weekend.",
         scope: "personal",
         assertedByKind: "assistant_inferred",
+        retractAllowed: true,
+        contradictionCitationAllowed: false,
       },
     ],
   };
@@ -103,8 +115,30 @@ describe("buildCleanupPrompt", () => {
 
     expect(prompt).toContain(`provenance="[assistant_inferred, personal]"`);
     expect(prompt).toContain(`provenance="[user, personal]"`);
+    expect(prompt).toContain(`retractAllowed="true"`);
+    expect(prompt).toContain(`contradictionCitationAllowed="true"`);
     expect(prompt).toContain(`id="${inferred.id}"`);
     expect(prompt).toContain(`id="${userClaim.id}"`);
+  });
+
+  it("renders explicit eligible target lists and node evidence counts", () => {
+    const sub = makeTempSubgraph();
+    const prompt = buildCleanupPrompt(sub, makeBundle());
+    const inferred = sub.claims.find(
+      (c) => c.assertedByKind === "assistant_inferred",
+    )!;
+    const userClaim = sub.claims.find((c) => c.assertedByKind === "user")!;
+
+    expect(prompt).toContain("<eligible_delete_nodes>");
+    expect(prompt).toContain("(none)");
+    expect(prompt).toContain("<eligible_retract_claims>");
+    expect(prompt).toContain(`- ${inferred.id}`);
+    expect(prompt).toContain("<eligible_contradiction_citations>");
+    expect(prompt).toContain(`- ${userClaim.id}`);
+    expect(prompt).toContain(`deleteAllowed="false"`);
+    expect(prompt).toContain(`evidenceClaims="2"`);
+    expect(prompt).toContain(`sourceLinks="1"`);
+    expect(prompt).toContain(`aliases="1"`);
   });
 
   it("documents the new operation vocabulary and id rules", () => {
@@ -127,6 +161,7 @@ describe("buildCleanupPrompt", () => {
     // Node-touching ops use temp ids, claim-touching ops use real ids.
     expect(prompt).toMatch(/temp ids/i);
     expect(prompt).toMatch(/REAL claim ids/);
+    expect(prompt).toContain("Return at most 10 operations");
     expect(prompt).toContain("Absence from the bundle is NEVER sufficient");
     expect(prompt).toContain("ACTIVE, same-scope, source-backed claim");
   });

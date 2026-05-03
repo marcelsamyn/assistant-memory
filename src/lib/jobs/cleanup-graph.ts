@@ -21,23 +21,19 @@ import {
   CleanupOperationsSchema,
   type CleanupOperations,
 } from "./cleanup-operations";
-import { sql, eq, gte, desc, and, inArray } from "drizzle-orm";
+import { sql, eq, gte, desc, and, inArray, or, isNull } from "drizzle-orm";
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
 import { z } from "zod";
 import { DrizzleDB } from "~/db";
 import {
+  aliases,
   nodes,
   claims,
   nodeMetadata,
   nodeEmbeddings,
   sourceLinks,
 } from "~/db/schema";
-import type {
-  AssertedByKind,
-  NodeType,
-  RelationshipPredicate,
-  Scope,
-} from "~/types/graph";
+import type { AssertedByKind, NodeType, Predicate, Scope } from "~/types/graph";
 import { TypeId, typeIdSchema } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -72,6 +68,10 @@ export interface GraphNode {
   label: string;
   description: string;
   type: NodeType;
+  evidenceClaimCount?: number;
+  sourceLinkCount?: number;
+  aliasCount?: number;
+  deleteAllowed?: boolean;
 }
 
 /**
@@ -83,11 +83,14 @@ export interface GraphNode {
 export interface GraphClaim {
   id: TypeId<"claim">;
   subject: TypeId<"node">;
-  object: TypeId<"node">;
-  predicate: RelationshipPredicate;
+  object: TypeId<"node"> | null;
+  objectValue: string | null;
+  predicate: Predicate;
   statement: string;
   scope: Scope;
   assertedByKind: AssertedByKind;
+  retractAllowed: boolean;
+  contradictionCitationAllowed: boolean;
 }
 export interface Subgraph {
   nodes: GraphNode[];
@@ -103,11 +106,14 @@ export interface TempNode extends GraphNode {
 export interface TempClaim {
   id: TypeId<"claim">;
   subjectTemp: string;
-  objectTemp: string;
-  predicate: RelationshipPredicate;
+  objectTemp?: string;
+  objectValue?: string | null;
+  predicate: Predicate;
   statement: string;
   scope: Scope;
   assertedByKind: AssertedByKind;
+  retractAllowed: boolean;
+  contradictionCitationAllowed: boolean;
 }
 export interface TempSubgraph {
   nodes: TempNode[];
@@ -221,6 +227,156 @@ export async function fetchEntryNodes(
   return rows.map((r) => r.nodeId);
 }
 
+function emptyEvidenceCounts(): {
+  evidenceClaimCount: number;
+  sourceLinkCount: number;
+  aliasCount: number;
+} {
+  return {
+    evidenceClaimCount: 0,
+    sourceLinkCount: 0,
+    aliasCount: 0,
+  };
+}
+
+function makeGraphNode(row: {
+  id: TypeId<"node">;
+  type: NodeType;
+  label: string | null;
+  description: string | null;
+}): GraphNode {
+  return {
+    id: row.id,
+    label: row.label ?? "",
+    description: row.description ?? "",
+    type: row.type,
+    ...emptyEvidenceCounts(),
+    deleteAllowed: false,
+  };
+}
+
+async function fetchNodeEvidenceCounts(
+  db: DrizzleDB,
+  userId: string,
+  nodeIds: readonly TypeId<"node">[],
+): Promise<
+  Map<
+    TypeId<"node">,
+    { evidenceClaimCount: number; sourceLinkCount: number; aliasCount: number }
+  >
+> {
+  const result = new Map<
+    TypeId<"node">,
+    { evidenceClaimCount: number; sourceLinkCount: number; aliasCount: number }
+  >();
+  const uniqueNodeIds = [...new Set(nodeIds)];
+  if (uniqueNodeIds.length === 0) return result;
+  for (const nodeId of uniqueNodeIds) result.set(nodeId, emptyEvidenceCounts());
+
+  const [claimRows, sourceLinkRows, aliasRows] = await Promise.all([
+    db
+      .select({
+        id: claims.id,
+        subjectNodeId: claims.subjectNodeId,
+        objectNodeId: claims.objectNodeId,
+        assertedByNodeId: claims.assertedByNodeId,
+      })
+      .from(claims)
+      .where(
+        and(
+          eq(claims.userId, userId),
+          or(
+            inArray(claims.subjectNodeId, uniqueNodeIds),
+            inArray(claims.objectNodeId, uniqueNodeIds),
+            inArray(claims.assertedByNodeId, uniqueNodeIds),
+          ),
+        ),
+      ),
+    db
+      .select({ nodeId: sourceLinks.nodeId })
+      .from(sourceLinks)
+      .where(inArray(sourceLinks.nodeId, uniqueNodeIds)),
+    db
+      .select({ nodeId: aliases.canonicalNodeId })
+      .from(aliases)
+      .where(
+        and(
+          eq(aliases.userId, userId),
+          inArray(aliases.canonicalNodeId, uniqueNodeIds),
+        ),
+      ),
+  ]);
+
+  for (const claim of claimRows) {
+    const touched = new Set(
+      [claim.subjectNodeId, claim.objectNodeId, claim.assertedByNodeId].filter(
+        (nodeId): nodeId is TypeId<"node"> =>
+          nodeId !== null && result.has(nodeId),
+      ),
+    );
+    for (const nodeId of touched) {
+      const counts = result.get(nodeId);
+      if (counts) counts.evidenceClaimCount += 1;
+    }
+  }
+  for (const row of sourceLinkRows) {
+    const counts = result.get(row.nodeId);
+    if (counts) counts.sourceLinkCount += 1;
+  }
+  for (const row of aliasRows) {
+    const counts = result.get(row.nodeId);
+    if (counts) counts.aliasCount += 1;
+  }
+
+  return result;
+}
+
+async function fetchSubgraphClaims(
+  db: DrizzleDB,
+  userId: string,
+  nodeIds: readonly TypeId<"node">[],
+  limit: number,
+): Promise<GraphClaim[]> {
+  const uniqueNodeIds = [...new Set(nodeIds)];
+  if (uniqueNodeIds.length === 0) return [];
+
+  const rows = await db
+    .select({
+      id: claims.id,
+      subject: claims.subjectNodeId,
+      object: claims.objectNodeId,
+      objectValue: claims.objectValue,
+      predicate: claims.predicate,
+      statement: claims.statement,
+      scope: claims.scope,
+      assertedByKind: claims.assertedByKind,
+    })
+    .from(claims)
+    .where(
+      and(
+        eq(claims.userId, userId),
+        eq(claims.status, "active"),
+        inArray(claims.subjectNodeId, uniqueNodeIds),
+        or(
+          isNull(claims.objectNodeId),
+          inArray(claims.objectNodeId, uniqueNodeIds),
+        ),
+      ),
+    )
+    .orderBy(desc(claims.createdAt), desc(claims.id))
+    .limit(limit);
+
+  return rows.map((claim) => ({
+    ...claim,
+    retractAllowed: claim.assertedByKind === "assistant_inferred",
+    contradictionCitationAllowed:
+      claim.assertedByKind === "user" ||
+      claim.assertedByKind === "user_confirmed" ||
+      claim.assertedByKind === "participant" ||
+      claim.assertedByKind === "document_author",
+  }));
+}
+
 /**
  * Step 2: expand to a subgraph
  */
@@ -247,12 +403,7 @@ async function buildSubgraph(
   // store nodes in insertion order
   const nodeMap = new Map<TypeId<"node">, GraphNode>();
   for (const r of seedMetaRows) {
-    nodeMap.set(r.id, {
-      id: r.id,
-      label: r.label ?? "",
-      description: r.description ?? "",
-      type: r.type,
-    });
+    nodeMap.set(r.id, makeGraphNode(r));
   }
   // semantic neighbors (run in parallel)
   const seeds = Array.from(nodeMap.values());
@@ -269,61 +420,65 @@ async function buildSubgraph(
   for (const neighbors of neighborResults) {
     for (const n of neighbors) {
       if (!nodeMap.has(n.id)) {
-        nodeMap.set(n.id, {
-          id: n.id,
-          label: n.label ?? "",
-          description: n.description ?? "",
-          type: n.type,
-        });
+        nodeMap.set(
+          n.id,
+          makeGraphNode({
+            id: n.id,
+            label: n.label,
+            description: n.description,
+            type: n.type,
+          }),
+        );
       }
     }
   }
-  const claimsList: GraphClaim[] = [];
   // Expand connections
   let currentIds = Array.from(nodeMap.keys());
   for (let hop = 1; hop <= hopDepth; hop++) {
-    const conns = await findOneHopNodes(db, userId, currentIds);
+    const conns = await findOneHopNodes(db, userId, currentIds, {
+      includeAssistantInferred: true,
+    });
     const nextIds: typeof currentIds = [];
     for (const c of conns) {
       if (!nodeMap.has(c.id)) {
-        nodeMap.set(c.id, {
-          id: c.id,
-          label: c.label ?? "",
-          description: c.description ?? "",
-          type: c.type,
-        });
+        nodeMap.set(
+          c.id,
+          makeGraphNode({
+            id: c.id,
+            label: c.label,
+            description: c.description,
+            type: c.type,
+          }),
+        );
         nextIds.push(c.id);
       }
-      claimsList.push({
-        id: c.claimId,
-        subject: c.claimSubjectId,
-        object: c.claimObjectId,
-        predicate: c.predicate as RelationshipPredicate,
-        statement: c.statement,
-        scope: c.scope,
-        assertedByKind: c.assertedByKind,
-      });
     }
     currentIds = nextIds;
     if (!currentIds.length) break;
   }
-  // dedupe claims by id
-  const unique: GraphClaim[] = [];
-  const seen = new Set<string>();
-  for (const claim of claimsList) {
-    if (!seen.has(claim.id)) {
-      seen.add(claim.id);
-      unique.push(claim);
-    }
-  }
-  // trim nodes & claims, ensuring claims only reference kept nodes
-  const nodesArr = Array.from(nodeMap.values()).slice(0, maxNodes);
-  const nodeIdsSet = new Set(nodesArr.map((n) => n.id));
-  const claimsArr = unique
-    .filter(
-      (claim) => nodeIdsSet.has(claim.subject) && nodeIdsSet.has(claim.object),
-    )
-    .slice(0, maxClaims);
+  const baseNodesArr = Array.from(nodeMap.values()).slice(0, maxNodes);
+  const evidenceCounts = await fetchNodeEvidenceCounts(
+    db,
+    userId,
+    baseNodesArr.map((node) => node.id),
+  );
+  const nodesArr = baseNodesArr.map((node) => {
+    const counts = evidenceCounts.get(node.id) ?? emptyEvidenceCounts();
+    return {
+      ...node,
+      ...counts,
+      deleteAllowed:
+        counts.evidenceClaimCount === 0 &&
+        counts.sourceLinkCount === 0 &&
+        counts.aliasCount === 0,
+    };
+  });
+  const claimsArr = await fetchSubgraphClaims(
+    db,
+    userId,
+    nodesArr.map((node) => node.id),
+    maxClaims,
+  );
   return { nodes: nodesArr, claims: claimsArr };
 }
 
@@ -340,16 +495,23 @@ function toTempSubgraph(sub: Subgraph): {
   const tempNodes = mapper.mapItems(sub.nodes);
   const tempClaims: TempClaim[] = sub.claims.map((claim) => {
     const src = sub.nodes.find((n) => n.id === claim.subject)!;
-    const tgt = sub.nodes.find((n) => n.id === claim.object)!;
-    return {
+    const tgt =
+      claim.object !== null
+        ? sub.nodes.find((n) => n.id === claim.object)
+        : undefined;
+    const tempClaim: TempClaim = {
       id: claim.id,
       subjectTemp: mapper.getId(src)!,
-      objectTemp: mapper.getId(tgt)!,
       predicate: claim.predicate,
       statement: claim.statement,
       scope: claim.scope,
       assertedByKind: claim.assertedByKind,
+      retractAllowed: claim.retractAllowed,
+      contradictionCitationAllowed: claim.contradictionCitationAllowed,
     };
+    if (tgt) tempClaim.objectTemp = mapper.getId(tgt)!;
+    if (claim.objectValue !== null) tempClaim.objectValue = claim.objectValue;
+    return tempClaim;
   });
   return { tempSubgraph: { nodes: tempNodes, claims: tempClaims }, mapper };
 }
@@ -385,25 +547,40 @@ export function buildCleanupPrompt(
   const nodesList = temp.nodes
     .map(
       (n) =>
-        `<node tempId="${n.tempId}" label="${n.label}" type="${n.type}">${n.description}</node>`,
+        `<node tempId="${n.tempId}" label="${n.label}" type="${n.type}" deleteAllowed="${(n.deleteAllowed === true).toString()}" evidenceClaims="${(n.evidenceClaimCount ?? 0).toString()}" sourceLinks="${(n.sourceLinkCount ?? 0).toString()}" aliases="${(n.aliasCount ?? 0).toString()}">${n.description}</node>`,
     )
     .join("\n");
   const claimsList = temp.claims
-    .map(
-      (claim) =>
-        `<claim id="${claim.id}" subject="${claim.subjectTemp}" object="${claim.objectTemp}" predicate="${claim.predicate}" provenance="[${claim.assertedByKind}, ${claim.scope}]">${claim.statement}</claim>`,
-    )
+    .map((claim) => {
+      const objectAttr =
+        claim.objectTemp !== undefined
+          ? ` object="${claim.objectTemp}"`
+          : ` objectValue="${claim.objectValue ?? ""}"`;
+      return `<claim id="${claim.id}" subject="${claim.subjectTemp}"${objectAttr} predicate="${claim.predicate}" provenance="[${claim.assertedByKind}, ${claim.scope}]" retractAllowed="${claim.retractAllowed.toString()}" contradictionCitationAllowed="${claim.contradictionCitationAllowed.toString()}">${claim.statement}</claim>`;
+    })
+    .join("\n");
+  const deleteTargets = temp.nodes
+    .filter((node) => node.deleteAllowed === true)
+    .map((node) => `- ${node.tempId} (${node.type}: ${node.label})`)
+    .join("\n");
+  const retractTargets = temp.claims
+    .filter((claim) => claim.retractAllowed)
+    .map((claim) => `- ${claim.id}`)
+    .join("\n");
+  const contradictionCitationTargets = temp.claims
+    .filter((claim) => claim.contradictionCitationAllowed)
+    .map((claim) => `- ${claim.id}`)
     .join("\n");
   const bundleText = renderBundleSections(bundle);
 
   return `You are a graph cleaning assistant. Your task is to analyze this claim subgraph and propose cleanup operations to ensure accuracy, remove redundancies, and reconcile contradictions.
 
-Output a single JSON object \`{ "operations": [...] }\` matching the cleanup operation vocabulary:
+Output a single JSON object \`{ "operations": [...] }\` matching the cleanup operation vocabulary. Return at most 10 operations. It is correct to return \`{ "operations": [] }\` when there are no high-confidence fixes.
 
 - \`merge_nodes { keepTempId, removeTempIds }\` — collapse duplicates / aliases. Prefer this over \`delete_node\` whenever two nodes plausibly represent the same entity.
-- \`delete_node { tempId }\` — only for orphan nodes with no claims, source links, or aliases. Prefer \`merge_nodes\` for duplicates and claim-level operations for bad facts.
-- \`retract_claim { claimId, reason }\` — ONLY for \`assistant_inferred\` claims that lack corroboration in the bundle / subgraph. Never use this for \`user\`, \`user_confirmed\`, \`participant\`, \`document_author\`, or \`system\` claims.
-- \`contradict_claim { claimId, contradictedByClaimId, reason }\` — citation REQUIRED. Use only when another ACTIVE, same-scope, source-backed claim already in this subgraph contradicts the original. Pass the citing claim's real id in \`contradictedByClaimId\`. Do not cite \`assistant_inferred\` or \`system\` claims.
+- \`delete_node { tempId }\` — only for nodes explicitly listed under \`eligible_delete_nodes\` below. If that list is empty, do not emit \`delete_node\`.
+- \`retract_claim { claimId, reason }\` — only for claims explicitly listed under \`eligible_retract_claims\` below. If that list is empty, do not emit \`retract_claim\`.
+- \`contradict_claim { claimId, contradictedByClaimId, reason }\` — citation REQUIRED. Use only when another ACTIVE, same-scope, source-backed claim already in this subgraph contradicts the original. \`contradictedByClaimId\` must be listed under \`eligible_contradiction_citations\` below.
 - \`promote_assertion { claimId, corroboratingSourceId, reason }\` — when an \`assistant_inferred\` claim is corroborated by a user-attributed source visible in the bundle (i.e., bundle evidence cites a claim with the same fact, attributed to \`user\` or \`user_confirmed\`). The corroborating source id is the \`sourceId\` field on that bundle evidence row.
 - \`add_claim { subjectTempId, objectTempId? | objectValue?, predicate, statement, sourceClaimId? }\` — system-authored. Use SPARINGLY and only for facts directly inferrable from the subgraph (e.g., a transitive relation visible in two existing claims). When at all possible, cite \`sourceClaimId\` from the subgraph (the real \`clm_*\` id) so scope is inherited correctly. Never invent facts not grounded in the subgraph.
 - \`add_alias { nodeTempId, aliasText }\` / \`remove_alias { nodeTempId, aliasText }\` — alias hygiene.
@@ -421,6 +598,19 @@ Cleaning rules:
 5. **Prefer \`merge_nodes\` over \`delete_node\`.** If two nodes plausibly refer to the same entity (similar labels, overlapping aliases, compatible types), merge.
 6. **No fabricated facts.** Never \`add_claim\` something that isn't already inferrable from the subgraph + bundle. System-authored claims must cite a \`sourceClaimId\` whenever possible.
 7. **Idempotence.** Don't add a claim that duplicates an existing relationship visible in the subgraph.
+8. **Action flags are hard gates.** Do not emit an operation when its target is not in the matching eligible list below. These lists already account for hidden attribute claims, participant provenance, source links, and aliases that may not be otherwise obvious in the subgraph.
+
+<eligible_targets>
+<eligible_delete_nodes>
+${deleteTargets || "(none)"}
+</eligible_delete_nodes>
+<eligible_retract_claims>
+${retractTargets || "(none)"}
+</eligible_retract_claims>
+<eligible_contradiction_citations>
+${contradictionCitationTargets || "(none)"}
+</eligible_contradiction_citations>
+</eligible_targets>
 
 ${bundleText ? `<bundle>\n${bundleText}\n</bundle>\n\n` : ""}<subgraph>
 <nodes>
