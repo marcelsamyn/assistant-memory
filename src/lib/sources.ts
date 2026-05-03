@@ -4,11 +4,12 @@ import { Readable } from "stream";
 import { z } from "zod";
 import db, { type DrizzleDB } from "~/db";
 import { sources, SourcesInsert } from "~/db/schema";
+import { logEvent } from "~/lib/observability/log";
 import { Scope, SourceType } from "~/types/graph";
-import { TypeId } from "~/types/typeid";
+import { typeIdSchema, type TypeId } from "~/types/typeid";
 import { env } from "~/utils/env";
 
-const metadataSchema = z
+export const sourceMetadataSchema = z
   .object({
     rawContent: z.string().optional(),
     /** Reference attribution surfaced via NodeCard.reference for reference-scope sources. */
@@ -24,7 +25,15 @@ const metadataSchema = z
     speakerNodeId: z.string().min(1).optional(),
   })
   .catchall(z.unknown());
-type Metadata = z.infer<typeof metadataSchema>;
+type Metadata = z.infer<typeof sourceMetadataSchema>;
+
+const storageErrorSchema = z
+  .object({
+    code: z.string().optional(),
+    statusCode: z.number().optional(),
+    cause: z.unknown().optional(),
+  })
+  .passthrough();
 
 function toErrorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -34,6 +43,44 @@ function toErrorMessage(err: unknown): string {
   } catch {
     return String(err);
   }
+}
+
+export function isMissingSourceBlobError(error: unknown): boolean {
+  const parsed = storageErrorSchema.safeParse(error);
+  if (!parsed.success) return false;
+
+  const code = parsed.data.code;
+  if (code === "NoSuchKey" || code === "NotFound") return true;
+  if (parsed.data.statusCode === 404) return true;
+
+  return parsed.data.cause
+    ? isMissingSourceBlobError(parsed.data.cause)
+    : false;
+}
+
+function sourceObjectPrefix(userId: string): string {
+  return `${userId}/`;
+}
+
+function sourceObjectKey(userId: string, sourceId: TypeId<"source">): string {
+  return `${sourceObjectPrefix(userId)}${sourceId}`;
+}
+
+function parseSourceIdFromObjectName(
+  userId: string,
+  objectName: string,
+): TypeId<"source"> | null {
+  const prefix = sourceObjectPrefix(userId);
+  if (!objectName.startsWith(prefix)) return null;
+
+  const parsed = typeIdSchema("source").safeParse(
+    objectName.slice(prefix.length),
+  );
+  return parsed.success ? parsed.data : null;
+}
+
+export interface SourceBlobStore {
+  listBlobSourceIds(userId: string): Promise<ReadonlySet<TypeId<"source">>>;
 }
 
 /** Discriminated union of inline vs blob payload */
@@ -107,7 +154,7 @@ export class SourceService {
         externalId: input.externalId,
         parentSource: input.parentId,
         scope: input.scope ?? "personal",
-        metadata: metadataSchema.parse(input.metadata ?? {}),
+        metadata: sourceMetadataSchema.parse(input.metadata ?? {}),
         lastIngestedAt: input.timestamp,
         status: "pending" as const,
       }),
@@ -145,14 +192,12 @@ export class SourceService {
         );
         continue;
       }
-      const key = `${input.userId}/${row.id}`;
-
       // Inline payload if small enough or content provided
       if (
         input.content !== undefined ||
         (input.fileBuffer && input.fileBuffer.length <= this.inlineThreshold)
       ) {
-        const existingMeta = metadataSchema.parse(row.metadata);
+        const existingMeta = sourceMetadataSchema.parse(row.metadata);
         const updatedMeta: Metadata = {
           ...existingMeta,
           rawContent: input.content ?? input.fileBuffer!.toString("utf-8"),
@@ -169,6 +214,7 @@ export class SourceService {
       }
       // Blob payload
       else if (input.fileBuffer) {
+        const key = sourceObjectKey(row.userId, row.id);
         try {
           await new Promise<void>((resolve, reject) => {
             this.minioClient.putObject(
@@ -216,7 +262,7 @@ export class SourceService {
   /** Hard delete a source: remove blob then drop the DB row */
   async deleteHard(userId: string, sourceId: TypeId<"source">): Promise<void> {
     await this.ensureBucket();
-    const key = `${userId}/${sourceId}`;
+    const key = sourceObjectKey(userId, sourceId);
     // delete blob, ignore errors
     try {
       await new Promise<void>((resolve, reject) => {
@@ -242,30 +288,74 @@ export class SourceService {
         and(eq(src.userId, userId), inArray(src.id, sourceIds)),
     });
     const results: RawResult[] = [];
-    await this.ensureBucket();
 
     for (const row of rows) {
-      const meta = metadataSchema.parse(row.metadata ?? {});
-      if (meta.rawContent) {
+      const meta = sourceMetadataSchema.parse(row.metadata ?? {});
+      if (meta.rawContent !== undefined) {
         results.push({
           kind: "inline",
           sourceId: row.id,
           content: meta.rawContent,
         });
+      } else if (row.contentLength === null && row.contentType === null) {
+        continue;
       } else {
-        const key = `${userId}/${row.id}`;
-        const stream = await this.minioClient.getObject(this.bucket, key);
-        const buffer = await this.streamToBuffer(stream as Readable);
+        const key = sourceObjectKey(userId, row.id);
+        let stream: Readable;
+        try {
+          stream = (await this.minioClient.getObject(
+            this.bucket,
+            key,
+          )) as Readable;
+        } catch (error) {
+          if (isMissingSourceBlobError(error)) {
+            logEvent("source.blob.missing", {
+              userId,
+              sourceId: row.id,
+              key,
+            });
+            continue;
+          }
+          throw error;
+        }
+        const buffer = await this.streamToBuffer(stream);
         results.push({
           kind: "blob",
           sourceId: row.id,
           buffer,
-          contentType: row.contentType!,
+          contentType: row.contentType ?? "application/octet-stream",
         });
       }
     }
 
     return results;
+  }
+
+  async listBlobSourceIds(
+    userId: string,
+  ): Promise<ReadonlySet<TypeId<"source">>> {
+    const bucketExists = await this.minioClient.bucketExists(this.bucket);
+    if (!bucketExists) {
+      throw new Error(`Source bucket ${this.bucket} does not exist`);
+    }
+
+    const prefix = sourceObjectPrefix(userId);
+    const objectStream = this.minioClient.listObjectsV2(
+      this.bucket,
+      prefix,
+      true,
+    );
+
+    return new Promise((resolve, reject) => {
+      const sourceIds = new Set<TypeId<"source">>();
+      objectStream.on("data", (item) => {
+        if (!item.name) return;
+        const sourceId = parseSourceIdFromObjectName(userId, item.name);
+        if (sourceId) sourceIds.add(sourceId);
+      });
+      objectStream.on("error", reject);
+      objectStream.on("end", () => resolve(sourceIds));
+    });
   }
 
   /** Fetch textual payload, decoding blob as utf-8 */

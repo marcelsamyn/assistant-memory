@@ -10,6 +10,7 @@ import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
+import type { SourceBlobStore } from "~/lib/sources";
 import { newTypeId, type TypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -65,8 +66,13 @@ async function createTables(client: Client): Promise<void> {
       "type" varchar(50) NOT NULL,
       "external_id" text NOT NULL,
       "scope" varchar(16) DEFAULT 'personal' NOT NULL,
+      "metadata" jsonb,
+      "last_ingested_at" timestamp with time zone,
       "status" varchar(20) DEFAULT 'completed',
       "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+      "deleted_at" timestamp with time zone,
+      "content_type" varchar(100),
+      "content_length" integer,
       UNIQUE ("user_id", "type", "external_id")
     );
     CREATE TABLE IF NOT EXISTS "source_links" (
@@ -147,13 +153,36 @@ async function seedNode(
 
 async function seedSource(
   client: Client,
-  args: { sourceId: TypeId<"source">; userId: string },
+  args: {
+    sourceId: TypeId<"source">;
+    userId: string;
+    blobBacked?: boolean;
+  },
 ): Promise<void> {
   await client.query(
-    `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "scope")
-     VALUES ($1, $2, 'legacy_migration', $3, 'personal')`,
-    [args.sourceId, args.userId, `legacy_migration:${args.userId}`],
+    `INSERT INTO "sources" (
+       "id", "user_id", "type", "external_id", "scope", "metadata",
+       "content_type", "content_length"
+     )
+     VALUES ($1, $2, 'legacy_migration', $3, 'personal', '{}'::jsonb, $4, $5)`,
+    [
+      args.sourceId,
+      args.userId,
+      `legacy_migration:${args.sourceId}`,
+      args.blobBacked ? "text/plain" : null,
+      args.blobBacked ? 42 : null,
+    ],
   );
+}
+
+function blobStoreWithExistingSources(
+  sourceIds: TypeId<"source">[],
+): SourceBlobStore {
+  return {
+    async listBlobSourceIds() {
+      return new Set(sourceIds);
+    },
+  };
 }
 
 describeIfServer("pruneOrphanNodes", () => {
@@ -298,5 +327,96 @@ describeIfServer("pruneOrphanNodes", () => {
     expect(remaining.rows.map((row) => row.id).sort()).toEqual(
       [claimNodeId, sourceLinkedId, aliasNodeId, speakerNodeId].sort(),
     );
+  });
+
+  it("deletes missing blob-backed sources before pruning newly orphaned nodes", async () => {
+    const userId = "user_prune_missing_blob";
+    const nodeId = newTypeId("node");
+    const sourceId = newTypeId("source");
+
+    await seedNode(rootClient, {
+      id: nodeId,
+      userId,
+      nodeType: "Concept",
+      label: "source-only concept",
+    });
+    await seedSource(rootClient, { sourceId, userId, blobBacked: true });
+    await rootClient.query(
+      `INSERT INTO "source_links" ("id", "source_id", "node_id")
+       VALUES ($1, $2, $3)`,
+      [newTypeId("source_link"), sourceId, nodeId],
+    );
+    await rootClient.query(
+      `INSERT INTO "claims" (
+        "id", "user_id", "subject_node_id", "object_value", "predicate",
+        "statement", "source_id", "scope", "asserted_by_kind", "stated_at"
+      ) VALUES ($1, $2, $3, 'value', 'RELATED_TO', 'Claim backed by missing blob.', $4, 'personal', 'user', now())`,
+      [newTypeId("claim"), userId, nodeId, sourceId],
+    );
+
+    const { pruneOrphanNodes } = await import("./prune-orphan-nodes");
+    const result = await pruneOrphanNodes(
+      { userId, dryRun: false, limit: 10 },
+      database,
+      blobStoreWithExistingSources([]),
+    );
+
+    expect(result.sourceScanCount).toBe(1);
+    expect(result.missingBlobSourceCandidateCount).toBe(1);
+    expect(result.deletedMissingBlobSourceCount).toBe(1);
+    expect(result.candidateCount).toBe(1);
+    expect(result.deletedCount).toBe(1);
+    expect(result.missingBlobSources.map((source) => source.id)).toEqual([
+      sourceId,
+    ]);
+    expect(result.candidates.map((node) => node.id)).toEqual([nodeId]);
+
+    const counts = await rootClient.query<{
+      nodes: string;
+      sources: string;
+      claims: string;
+      sourceLinks: string;
+    }>(
+      `SELECT
+        (SELECT COUNT(*)::text FROM "nodes" WHERE "user_id" = $1) AS "nodes",
+        (SELECT COUNT(*)::text FROM "sources" WHERE "user_id" = $1) AS "sources",
+        (SELECT COUNT(*)::text FROM "claims" WHERE "user_id" = $1) AS "claims",
+        (SELECT COUNT(*)::text FROM "source_links") AS "sourceLinks"`,
+      [userId],
+    );
+    expect(counts.rows[0]).toEqual({
+      nodes: "0",
+      sources: "0",
+      claims: "0",
+      sourceLinks: "0",
+    });
+  });
+
+  it("preserves blob-backed sources whose objects still exist", async () => {
+    const userId = "user_prune_existing_blob";
+    const sourceId = newTypeId("source");
+
+    await rootClient.query(
+      `INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`,
+      [userId],
+    );
+    await seedSource(rootClient, { sourceId, userId, blobBacked: true });
+
+    const { pruneOrphanNodes } = await import("./prune-orphan-nodes");
+    const result = await pruneOrphanNodes(
+      { userId, dryRun: false, limit: 10 },
+      database,
+      blobStoreWithExistingSources([sourceId]),
+    );
+
+    expect(result.sourceScanCount).toBe(1);
+    expect(result.missingBlobSourceCandidateCount).toBe(0);
+    expect(result.deletedMissingBlobSourceCount).toBe(0);
+
+    const remaining = await rootClient.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM "sources" WHERE "user_id" = $1`,
+      [userId],
+    );
+    expect(remaining.rows[0]?.count).toBe("1");
   });
 });

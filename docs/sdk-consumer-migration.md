@@ -20,7 +20,7 @@ has the _what to change_.
 
 ## SDK addition — orphan node pruning
 
-- **NEW REST:** `POST /maintenance/prune-orphan-nodes` — deterministic maintenance for evidence-free legacy/entity nodes. A candidate has no claims as subject/object/speaker, no source links, and no aliases. Request: `{ userId, olderThanDays?, limit?, sampleLimit?, dryRun?, nodeTypes? }`. `dryRun` defaults to `true`; response includes `hasMore` for batch loops.
+- **NEW REST:** `POST /maintenance/prune-orphan-nodes` — deterministic maintenance for broken blob-backed sources and evidence-free legacy/entity nodes. It first removes source rows whose blob payload no longer exists, then prunes nodes made evidence-free by that repair. A node candidate has no claims as subject/object/speaker, no source links, and no aliases. Request: `{ userId, olderThanDays?, limit?, sourceScanLimit?, sampleLimit?, dryRun?, nodeTypes? }`. `dryRun` defaults to `true`; response includes `hasMore` for node batches and `sourceScanHasMore` when the source scan hit its cap.
 - **NEW SDK method:** `MemoryClient.pruneOrphanNodes(payload)` → `PruneOrphanNodesResponse`.
 - **NEW exports:** `PruneOrphanNodesRequest`, `PruneOrphanNodesResponse`, `pruneOrphanNodesRequestSchema`, `pruneOrphanNodesResponseSchema`.
 - Default scanned node types are entity/task-like only: `Person`, `Location`, `Event`, `Object`, `Emotion`, `Concept`, `Media`, `Feedback`, `Idea`, `Task`. Generated/structural node types (`Conversation`, `Document`, `Temporal`, `Atlas`, `AssistantDream`) are excluded unless explicitly passed in `nodeTypes`.

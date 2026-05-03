@@ -266,7 +266,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
             sampleLimit: 0,
           });
           console.log(
-            `Orphan prune completed: deleted ${pruneResult.deletedCount}/${pruneResult.candidateCount} candidates, hasMore=${pruneResult.hasMore.toString()}`,
+            `Orphan prune completed: deleted ${pruneResult.deletedCount}/${pruneResult.candidateCount} node candidates, deletedMissingBlobSources=${pruneResult.deletedMissingBlobSourceCount}/${pruneResult.missingBlobSourceCandidateCount}, hasMore=${pruneResult.hasMore.toString()}, sourceScanHasMore=${pruneResult.sourceScanHasMore.toString()}`,
           );
         }
 
