@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { listMetricsRequestSchema } from "~/lib/schemas/metric-read";
 import { newTypeId } from "~/types/typeid";
 
 type QueryResult = ReadonlyArray<unknown>;
@@ -44,6 +45,15 @@ function fakeDatabase(results: QueryResult[]) {
 }
 
 describe("listMetrics", () => {
+  it("accepts an empty search filter from UI forms", () => {
+    expect(() =>
+      listMetricsRequestSchema.parse({
+        userId: "user_metrics",
+        filter: { search: "" },
+      }),
+    ).not.toThrow();
+  });
+
   it("returns definitions with stats and active filtering", async () => {
     const metricId = newTypeId("metric_definition");
     const inactiveMetricId = newTypeId("metric_definition");

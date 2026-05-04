@@ -35,7 +35,7 @@ export const listMetricsRequestSchema = z.object({
     .object({
       active: z.boolean().optional(),
       needsReview: z.boolean().optional(),
-      search: z.string().min(1).max(200).optional(),
+      search: z.string().max(200).optional(),
     })
     .optional(),
 });

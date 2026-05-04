@@ -12,7 +12,6 @@ import { normalizeLabel } from "./label";
 import { recordMetricObservations } from "./metrics/observations";
 import { getOpenCommitments } from "./query/open-commitments";
 import { safeToISOString } from "./safe-date";
-import { metricDefinitionInputSchema } from "./schemas/metric-write";
 import { type OpenCommitment } from "./schemas/open-commitments";
 import { TemporaryIdMapper } from "./temporary-id-mapper";
 import { and, eq, inArray } from "drizzle-orm";
@@ -94,8 +93,18 @@ const llmAliasSchema = z.object({
 });
 type LlmOutputAlias = z.infer<typeof llmAliasSchema>;
 
+const llmMetricDefinitionSchema = z.object({
+  slug: z.string().describe("lowercase snake_case stable identifier"),
+  label: z.string().min(1).max(200),
+  description: z.string().min(1).max(2000),
+  unit: z.string().min(1).max(40),
+  aggregationHint: z.enum(["avg", "sum", "min", "max"]),
+  validRangeMin: z.number().optional(),
+  validRangeMax: z.number().optional(),
+});
+
 const llmMetricEventObservationSchema = z.object({
-  metric: metricDefinitionInputSchema,
+  metric: llmMetricDefinitionSchema,
   value: z.number(),
   note: z.string().nullable().optional(),
 });
@@ -108,7 +117,6 @@ const llmMetricStandaloneObservationSchema =
 const llmMetricEventSchema = z.object({
   eventKey: z
     .string()
-    .regex(/^[a-z0-9_-]{1,80}$/)
     .describe("stable event key unique within this extraction"),
   label: z.string().min(1).max(200),
   occurredAt: z.string().datetime(),

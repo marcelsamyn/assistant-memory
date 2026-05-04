@@ -29,6 +29,7 @@ export async function listMetrics({
   filter,
 }: ListMetricsRequest): Promise<MetricDefinitionWithStats[]> {
   const db = await useDatabase();
+  const search = filter?.search === "" ? undefined : filter?.search;
   const definitions = await db
     .select()
     .from(metricDefinitions)
@@ -38,12 +39,12 @@ export async function listMetrics({
         filter?.needsReview === undefined
           ? undefined
           : eq(metricDefinitions.needsReview, filter.needsReview),
-        filter?.search === undefined
+        search === undefined
           ? undefined
           : or(
-              ilike(metricDefinitions.slug, `%${filter.search}%`),
-              ilike(metricDefinitions.label, `%${filter.search}%`),
-              ilike(metricDefinitions.description, `%${filter.search}%`),
+              ilike(metricDefinitions.slug, `%${search}%`),
+              ilike(metricDefinitions.label, `%${search}%`),
+              ilike(metricDefinitions.description, `%${search}%`),
             ),
       ),
     )
