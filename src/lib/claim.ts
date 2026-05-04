@@ -14,6 +14,7 @@ import {
 } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
+import { shouldSkipEmbeddingPersistence } from "~/utils/test-overrides";
 
 type Database = Awaited<ReturnType<typeof useDatabase>>;
 
@@ -120,6 +121,8 @@ async function insertClaimEmbedding(
     "id" | "predicate" | "statement" | "status" | "statedAt"
   >,
 ): Promise<void> {
+  if (shouldSkipEmbeddingPersistence()) return;
+
   const embResponse = await generateEmbeddings({
     model: "jina-embeddings-v3",
     task: "retrieval.passage",

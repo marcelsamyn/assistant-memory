@@ -30,7 +30,7 @@ import type { GraphNode } from "~/lib/jobs/cleanup-graph";
 import { TemporaryIdMapper } from "~/lib/temporary-id-mapper";
 import type { TypeId } from "~/types/typeid";
 
-function buildMapper(_ctx: EvalContext): TemporaryIdMapper<GraphNode, string> {
+function buildMapper(): TemporaryIdMapper<GraphNode, string> {
   // The subgraph mapper is unused by claim-targeting ops, but the dispatcher
   // requires the parameter, so we hand it an empty-but-valid instance.
   const mapper = new TemporaryIdMapper<GraphNode, string>(
@@ -103,7 +103,7 @@ export const story13CleanupOpSubgraphBounding: EvalFixture = {
             ctx.db,
             ctx.userId,
             ops,
-            buildMapper(ctx),
+            buildMapper(),
             new Set([alphaId]),
           );
           if (result.applied !== 0) {
@@ -151,7 +151,7 @@ export const story13CleanupOpSubgraphBounding: EvalFixture = {
             ctx.db,
             ctx.userId,
             ops,
-            buildMapper(ctx),
+            buildMapper(),
             new Set([alphaId]),
           );
           if (result.applied !== 0) {
@@ -204,7 +204,7 @@ export const story13CleanupOpSubgraphBounding: EvalFixture = {
             ctx.db,
             ctx.userId,
             ops,
-            buildMapper(ctx),
+            buildMapper(),
             new Set([alphaId]),
           );
           if (result.applied !== 0) {
@@ -259,7 +259,7 @@ export const story13CleanupOpSubgraphBounding: EvalFixture = {
             ctx.db,
             ctx.userId,
             ops,
-            buildMapper(ctx),
+            buildMapper(),
             new Set([betaId]),
           );
           if (result.applied !== 1) {

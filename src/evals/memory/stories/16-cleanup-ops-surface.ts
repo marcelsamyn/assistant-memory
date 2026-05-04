@@ -107,20 +107,8 @@ export const story16CleanupOpsSurface: EvalFixture = {
       objectName: "alpha",
       sourceName: "convA",
       statement: "Marcel is related to Project Alpha.",
-      assertedByKind: "user",
+      assertedByKind: "assistant_inferred",
       statedAt: new Date("2026-04-23T09:00:00Z"),
-    });
-
-    // Anchor a claim on `doomed` so delete_node has cascade work to do.
-    await seedClaim(ctx, {
-      name: "doomedAnchor",
-      subjectName: "doomed",
-      predicate: "HAS_PREFERENCE",
-      objectValue: "obsolete",
-      sourceName: "convA",
-      statement: "Discarded idea is obsolete.",
-      assertedByKind: "user",
-      statedAt: new Date("2026-04-24T09:00:00Z"),
     });
   },
   steps: [
@@ -243,7 +231,8 @@ export const story16CleanupOpsSurface: EvalFixture = {
         },
       ],
     },
-    // Step 9 — delete_node (doomed). Has one HAS_PREFERENCE claim cascade.
+    // Step 9 — delete_node (doomed). The cleanup op only hard-deletes
+    // evidence-free nodes.
     {
       kind: "applyCleanupOperations",
       seedNodeIds: (ctx) => [ctx.nodes.get("doomed")!],
@@ -480,7 +469,7 @@ export const story16CleanupOpsSurface: EvalFixture = {
       },
       {
         description:
-          "delete_node removed the doomed node and cascade-deleted its anchor claim",
+          "delete_node removed the evidence-free doomed node",
         run: async (ctx) => {
           const [row] = await ctx.db
             .select({ id: nodes.id })
@@ -488,16 +477,6 @@ export const story16CleanupOpsSurface: EvalFixture = {
             .where(eq(nodes.id, ctx.nodes.get("doomed")!));
           if (row) {
             return { pass: false, message: "doomed node still present" };
-          }
-          const [anchor] = await ctx.db
-            .select({ id: claims.id })
-            .from(claims)
-            .where(eq(claims.id, ctx.claims.get("doomedAnchor")!));
-          if (anchor) {
-            return {
-              pass: false,
-              message: "doomed anchor claim was not cascaded",
-            };
           }
           return { pass: true };
         },

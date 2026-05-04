@@ -31,6 +31,7 @@ import { ensureDayNode } from "~/lib/temporal";
 import type { AssertedByKind, NodeType, Predicate, Scope } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
+import { shouldSkipEmbeddingPersistence } from "~/utils/test-overrides";
 
 /**
  * Thrown when a merge spans nodes whose effective scope is not uniform
@@ -268,7 +269,11 @@ export async function updateNode(
   }
 
   // Re-generate embedding if label changed
-  if (newLabel && updates.label !== undefined) {
+  if (
+    newLabel &&
+    updates.label !== undefined &&
+    !shouldSkipEmbeddingPersistence()
+  ) {
     const embText = `${newLabel}: ${row.description ?? ""}`;
     const embResponse = await generateEmbeddings({
       model: "jina-embeddings-v3",
@@ -651,23 +656,25 @@ export async function mergeNodes(
   });
 
   // Re-generate embedding (outside transaction — external API call)
-  const embText = `${finalLabel}: ${finalDescription ?? ""}`;
-  const embResponse = await generateEmbeddings({
-    model: "jina-embeddings-v3",
-    task: "retrieval.passage",
-    input: [embText],
-    truncate: true,
-  });
-  const embedding = embResponse.data[0]?.embedding;
-  if (embedding) {
-    await db
-      .delete(nodeEmbeddings)
-      .where(eq(nodeEmbeddings.nodeId, survivorId));
-    await db.insert(nodeEmbeddings).values({
-      nodeId: survivorId,
-      embedding,
-      modelName: "jina-embeddings-v3",
+  if (!shouldSkipEmbeddingPersistence()) {
+    const embText = `${finalLabel}: ${finalDescription ?? ""}`;
+    const embResponse = await generateEmbeddings({
+      model: "jina-embeddings-v3",
+      task: "retrieval.passage",
+      input: [embText],
+      truncate: true,
     });
+    const embedding = embResponse.data[0]?.embedding;
+    if (embedding) {
+      await db
+        .delete(nodeEmbeddings)
+        .where(eq(nodeEmbeddings.nodeId, survivorId));
+      await db.insert(nodeEmbeddings).values({
+        nodeId: survivorId,
+        embedding,
+        modelName: "jina-embeddings-v3",
+      });
+    }
   }
 
   return {
