@@ -12,137 +12,30 @@ import { normalizeLabel } from "./label";
 import { recordMetricObservations } from "./metrics/observations";
 import { getOpenCommitments } from "./query/open-commitments";
 import { safeToISOString } from "./safe-date";
+import {
+  llmExtractionSchema,
+  type LlmOutputAlias,
+  type LlmOutputAttributeClaim,
+  type LlmOutputMetrics,
+  type LlmOutputNode,
+  type LlmOutputRelationshipClaim,
+} from "./schemas/llm-extraction";
 import { type OpenCommitment } from "./schemas/open-commitments";
 import { TemporaryIdMapper } from "./temporary-id-mapper";
 import { and, eq, inArray } from "drizzle-orm";
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
-import { z } from "zod";
 import { type DrizzleDB } from "~/db";
 import { claims, nodeMetadata, nodes, sourceLinks, sources } from "~/db/schema";
 import {
   AssertedByKind,
-  AssertedByKindEnum,
   AttributePredicateEnum,
-  NodeTypeEnum,
-  RelationshipPredicateEnum,
+  type NodeType,
   Scope,
   SourceType,
 } from "~/types/graph";
 import { type TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 import { env } from "~/utils/env";
-
-const llmNodeSchema = z.object({
-  id: z.string().describe("id to reference in claims"),
-  type: NodeTypeEnum.describe("one of the allowed node types"),
-  label: z.string().describe("human-readable name/title"),
-  description: z.string().describe("longer text description").optional(),
-});
-type LlmOutputNode = z.infer<typeof llmNodeSchema>;
-
-const llmRelationshipClaimSchema = z.object({
-  subjectId: z.string().describe("id of the subject node"),
-  objectId: z.string().describe("id of the object node"),
-  predicate: RelationshipPredicateEnum.describe(
-    "one of the allowed predicates",
-  ),
-  statement: z.string().describe("short sentence stating the sourced claim"),
-  sourceRef: z
-    .string()
-    .min(1)
-    .describe("source reference that supports the claim"),
-  assertionKind: AssertedByKindEnum.describe(
-    "who asserted this claim (see CRITICAL EXTRACTION RULES)",
-  ),
-  // Accepted but ignored in this phase — no speaker map yet, so participant
-  // claims are rejected downstream until transcript ingestion lands.
-  assertedBySpeakerLabel: z.string().optional(),
-  statedAt: z.string().datetime().optional(),
-  validFrom: z.string().datetime().optional(),
-  validTo: z.string().datetime().optional(),
-});
-type LlmOutputRelationshipClaim = z.infer<typeof llmRelationshipClaimSchema>;
-
-const llmAttributeClaimSchema = z.object({
-  subjectId: z.string().describe("id of the subject node"),
-  predicate: AttributePredicateEnum.describe("one of the allowed predicates"),
-  objectValue: z.string().describe("scalar value for the attribute claim"),
-  statement: z.string().describe("short sentence stating the sourced claim"),
-  sourceRef: z
-    .string()
-    .min(1)
-    .describe("source reference that supports the claim"),
-  assertionKind: AssertedByKindEnum.describe(
-    "who asserted this claim (see CRITICAL EXTRACTION RULES)",
-  ),
-  // Accepted but ignored in this phase — no speaker map yet, so participant
-  // claims are rejected downstream until transcript ingestion lands.
-  assertedBySpeakerLabel: z.string().optional(),
-  statedAt: z.string().datetime().optional(),
-  validFrom: z.string().datetime().optional(),
-  validTo: z.string().datetime().optional(),
-});
-type LlmOutputAttributeClaim = z.infer<typeof llmAttributeClaimSchema>;
-
-const llmAliasSchema = z.object({
-  subjectId: z.string().describe("id of the node being aliased"),
-  aliasText: z
-    .string()
-    .min(1)
-    .describe("alternate name or spelling for the node"),
-});
-type LlmOutputAlias = z.infer<typeof llmAliasSchema>;
-
-const llmMetricDefinitionSchema = z.object({
-  slug: z.string().describe("lowercase snake_case stable identifier"),
-  label: z.string().min(1).max(200),
-  description: z.string().min(1).max(2000),
-  unit: z.string().min(1).max(40),
-  aggregationHint: z.enum(["avg", "sum", "min", "max"]),
-  validRangeMin: z.number().optional(),
-  validRangeMax: z.number().optional(),
-});
-
-const llmMetricEventObservationSchema = z.object({
-  metric: llmMetricDefinitionSchema,
-  value: z.number(),
-  note: z.string().nullable().optional(),
-});
-
-const llmMetricStandaloneObservationSchema =
-  llmMetricEventObservationSchema.extend({
-    occurredAt: z.string().datetime(),
-  });
-
-const llmMetricEventSchema = z.object({
-  eventKey: z
-    .string()
-    .describe("stable event key unique within this extraction"),
-  label: z.string().min(1).max(200),
-  occurredAt: z.string().datetime(),
-  eventNodeId: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(
-      "optional temporary or existing Event node id when claims also reference it",
-    ),
-  observations: z.array(llmMetricEventObservationSchema),
-});
-
-const llmMetricsSchema = z.object({
-  events: z.array(llmMetricEventSchema).optional(),
-  standalone: z.array(llmMetricStandaloneObservationSchema).optional(),
-});
-type LlmOutputMetrics = z.infer<typeof llmMetricsSchema>;
-
-const llmExtractionSchema = z.object({
-  nodes: z.array(llmNodeSchema),
-  relationshipClaims: z.array(llmRelationshipClaimSchema),
-  attributeClaims: z.array(llmAttributeClaimSchema),
-  aliases: z.array(llmAliasSchema),
-  metrics: llmMetricsSchema.optional(),
-});
 
 type SourceRef = {
   externalId: string;
@@ -152,7 +45,7 @@ type SourceRef = {
 
 interface NodeForLLMPrompt {
   id: string;
-  type: z.infer<typeof NodeTypeEnum>;
+  type: NodeType;
   label: string | null;
   timestamp: string;
   description?: string | null;
@@ -163,12 +56,12 @@ interface ProcessedNode {
   id: TypeId<"node">;
   label: string;
   description: string | undefined;
-  nodeType: z.infer<typeof NodeTypeEnum>;
+  nodeType: NodeType;
 }
 
 interface SimilarNodeForPrompt {
   id: TypeId<"node">;
-  type: z.infer<typeof NodeTypeEnum>;
+  type: NodeType;
   label: string | null;
   description: string | null;
   timestamp: string;
