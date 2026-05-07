@@ -600,6 +600,8 @@ export async function fetchClaimsBetweenNodeIds(
       id: claims.id,
       subject: claims.subjectNodeId,
       object: sql<TypeId<"node">>`${claims.objectNodeId}`.as("object"),
+      subjectLabel: src.label,
+      objectLabel: tgt.label,
       predicate: claims.predicate,
       statement: claims.statement,
       description: claims.description,
