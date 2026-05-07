@@ -117,6 +117,11 @@ import {
   createNodeResponseSchema,
 } from "../lib/schemas/node.js";
 import {
+  NodesBySourceRequest,
+  NodesBySourceResponse,
+  nodesBySourceResponseSchema,
+} from "../lib/schemas/nodes-by-source.js";
+import {
   OpenCommitmentsRequest,
   OpenCommitmentsResponse,
   openCommitmentsResponseSchema,
@@ -176,16 +181,6 @@ import {
   setCommitmentDueResponseSchema,
 } from "../lib/schemas/set-commitment-due.js";
 import {
-  SummarizeRequest,
-  SummarizeResponse,
-  summarizeResponseSchema,
-} from "../lib/schemas/summarize.js";
-import {
-  NodesBySourceRequest,
-  NodesBySourceResponse,
-  nodesBySourceResponseSchema,
-} from "../lib/schemas/nodes-by-source.js";
-import {
   GetSourceRequest,
   GetSourceResponse,
   ListSourcesRequest,
@@ -193,6 +188,11 @@ import {
   getSourceResponseSchema,
   listSourcesResponseSchema,
 } from "../lib/schemas/sources.js";
+import {
+  SummarizeRequest,
+  SummarizeResponse,
+  summarizeResponseSchema,
+} from "../lib/schemas/summarize.js";
 import {
   SetUserSelfAliasesRequest,
   SetUserSelfAliasesResponse,

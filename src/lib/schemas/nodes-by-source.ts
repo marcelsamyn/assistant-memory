@@ -6,10 +6,10 @@
  * nodes. Used by hosts that want to inject a project's full attached
  * source set into a chat without semantic search uncertainty.
  */
-import { z } from "zod";
 import { NodeTypeEnum, ScopeEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
 import { getNodeClaimSchema } from "./node.js";
+import { z } from "zod";
 
 const DEFAULT_EXCLUDED_NODE_TYPES = [
   NodeTypeEnum.enum.AssistantDream,
