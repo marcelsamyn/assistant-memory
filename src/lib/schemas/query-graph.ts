@@ -27,6 +27,8 @@ export const queryGraphClaimSchema = z.object({
   id: typeIdSchema("claim"),
   subject: typeIdSchema("node"),
   object: typeIdSchema("node"),
+  subjectLabel: z.string().nullable(),
+  objectLabel: z.string().nullable(),
   predicate: PredicateEnum,
   statement: z.string(),
   description: z.string().nullable().optional(),

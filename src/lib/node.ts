@@ -715,6 +715,8 @@ export async function getNodeNeighborhood(
     id: TypeId<"claim">;
     subject: TypeId<"node">;
     object: TypeId<"node"> | null;
+    subjectLabel: string | null;
+    objectLabel: string | null;
     predicate: string;
     statement: string;
     description: string | null;
