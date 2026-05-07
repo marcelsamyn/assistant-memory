@@ -30,11 +30,11 @@ services:
   # File-conversion sidecar used by the ingest-file worker. Wraps
   # Microsoft's MarkItDown (PDF/DOCX/XLSX/PPTX/HTML/RTF/EPUB/audio/images)
   # behind a small FastAPI surface — see services/markitdown/server.py.
+  # Image is built and pushed by .github/workflows/markitdown-build.yml;
+  # the Memory worker reaches it on the internal compose network at
+  # http://markitdown:8080 (no host port needed).
   markitdown:
-    build:
-      context: ./services/markitdown
-    ports:
-      - "8081:8080"
+    image: ghcr.io/marcelsamyn/assistant-memory-markitdown:latest
 
 volumes:
   postgres_data:
