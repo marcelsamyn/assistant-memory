@@ -5,7 +5,7 @@ const cleanupSinceSchema = z
   .pipe(z.coerce.date());
 
 export const cleanupRequestSchema = z.object({
-  userId: z.string().startsWith("user_"), // Assuming typeIdSchema might be relevant here if user_ IDs have a prefix_ part
+  userId: z.string(),
   since: cleanupSinceSchema,
   entryNodeLimit: z.number().int().positive().default(5),
   semanticNeighborLimit: z.number().int().positive().default(15),
@@ -25,7 +25,7 @@ export type CleanupRequest = z.input<typeof cleanupRequestSchema>;
 export type CleanupResponse = z.infer<typeof cleanupResponseSchema>;
 
 export const dedupSweepRequestSchema = z.object({
-  userId: z.string().startsWith("user_"),
+  userId: z.string(),
 });
 
 export const dedupSweepResponseSchema = z.object({

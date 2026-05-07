@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 export const dreamRequestSchema = z.object({
-  userId: z.string().startsWith("user_"), // Consider typeIdSchema if applicable
-  assistantId: z.string(), // Consider typeIdSchema if applicable
+  userId: z.string(),
+  assistantId: z.string(),
   assistantDescription: z.string(),
 });
 

@@ -7,7 +7,7 @@ import { z } from "zod";
 import { typeIdSchema } from "~/types/typeid.js";
 
 export const cleanupPlaceholdersRequestSchema = z.object({
-  userId: z.string().startsWith("user_"),
+  userId: z.string(),
   olderThanDays: z.number().int().positive().default(7),
   limit: z.number().int().positive().max(500).default(50),
   /**

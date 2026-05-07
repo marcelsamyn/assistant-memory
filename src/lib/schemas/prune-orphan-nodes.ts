@@ -12,7 +12,7 @@ import { NodeTypeEnum } from "~/types/graph.js";
 import { typeIdSchema } from "~/types/typeid.js";
 
 export const pruneOrphanNodesRequestSchema = z.object({
-  userId: z.string().startsWith("user_"),
+  userId: z.string(),
   olderThanDays: z.number().int().nonnegative().default(7),
   limit: z.number().int().positive().max(10_000).default(1_000),
   sourceScanLimit: z.number().int().positive().max(50_000).default(10_000),
