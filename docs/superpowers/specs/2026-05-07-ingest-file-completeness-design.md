@@ -72,8 +72,11 @@ Add three optional parameters:
 interface ExtractGraphParams {
   // ...existing fields
   replaceClaimsForSources?: boolean; // default true
-  contentNote?: string;              // optional preamble injected above <document>
-  onLlmIO?: (info: { prompt: string; response: unknown }) => Promise<void> | void;
+  contentNote?: string; // optional preamble injected above <document>
+  onLlmIO?: (info: {
+    prompt: string;
+    response: unknown;
+  }) => Promise<void> | void;
 }
 ```
 
@@ -91,8 +94,8 @@ The prompt's document-mode block is also updated:
 - Drop the trailing `"Quality and accuracy are more important than quantity."`
   line for `sourceType === "document"`.
 - Replace it with: `"For documents, exhaustively extract every concrete fact,
-  claim, person, organization, place, concept, decision, and recommendation
-  the text asserts. Do not summarize."`
+claim, person, organization, place, concept, decision, and recommendation
+the text asserts. Do not summarize."`
 
 The non-document prompts (conversation, transcript) are untouched.
 
@@ -106,7 +109,9 @@ const chunks = chunkMarkdown(converted.markdown, env.INGEST_CHUNK_MAX_CHARS);
 
 if (chunks.length <= 1) {
   // existing single-call path, unchanged
-  await extractGraph({ /* ...as today, content: converted.markdown */ });
+  await extractGraph({
+    /* ...as today, content: converted.markdown */
+  });
 } else {
   for (const [index, chunk] of chunks.entries()) {
     await extractGraph({

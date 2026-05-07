@@ -17,7 +17,7 @@ import { z } from "zod";
 import { DrizzleDB } from "~/db";
 import { sources } from "~/db/schema";
 import { convertToMarkdown } from "~/lib/converters/markitdown";
-import { extractGraph } from "~/lib/extract-graph";
+import { runChunkedExtraction } from "~/lib/ingestion/chunked-extract";
 import { ensureSourceNode } from "~/lib/ingestion/ensure-source-node";
 import { ensureUser } from "~/lib/ingestion/ensure-user";
 import { sourceService } from "~/lib/sources";
@@ -118,7 +118,13 @@ export async function ingestFile({
     nodeType: NodeTypeEnum.enum.Document,
   });
 
-  await extractGraph({
+  // Surface the converter-derived title (or filename as fallback) so the LLM
+  // knows the content was authored by an external party — without this hint
+  // long documents like e-books frequently produce claims attributed to the
+  // user (e.g., "the user chose KDP") instead of the document/author.
+  const documentTitle = converted.title ?? filename;
+
+  await runChunkedExtraction({
     userId,
     sourceType: "document",
     sourceId: sourceId as TypeId<"source">,
@@ -132,6 +138,8 @@ export async function ingestFile({
       },
     ],
     content: converted.markdown,
+    logLabel: filename,
+    documentMetadata: { title: documentTitle },
   });
 
   await db

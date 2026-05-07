@@ -1121,4 +1121,184 @@ describeIfServer("extractGraph claim-native insertion", () => {
       await client.end();
     }
   });
+
+  it("supports chunked re-entry: replaceClaimsForSources=false preserves prior claims, contentNote is injected, onLlmIO observes prompt and response", async () => {
+    const userId = "user_chunked";
+    const aliceNodeId = newTypeId("node");
+    const documentNodeId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const priorClaimId = newTypeId("claim");
+    const statedAt = new Date("2026-04-30T10:00:00.000Z");
+    const llmResponse = {
+      nodes: [],
+      relationshipClaims: [],
+      attributeClaims: [],
+      aliases: [],
+    };
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+    let capturedPrompt = "";
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+    vi.doMock("./graph", () => ({
+      findSimilarNodes: async () => [],
+      findOneHopNodes: async () => [],
+      findNodesByType: async () => [],
+    }));
+    vi.doMock("./embeddings-util", () => ({
+      generateAndInsertClaimEmbeddings: async () => undefined,
+      generateAndInsertNodeEmbeddings: async () => undefined,
+    }));
+    vi.doMock("./debug-utils", () => ({
+      debugGraph: () => undefined,
+    }));
+    vi.doMock("./ai", () => ({
+      createCompletionClient: async () => ({
+        beta: {
+          chat: {
+            completions: {
+              parse: async (input: {
+                messages: Array<{ content: string }>;
+              }) => {
+                capturedPrompt = input.messages[0]?.content ?? "";
+                return {
+                  choices: [{ message: { parsed: llmResponse } }],
+                };
+              },
+            },
+          },
+        },
+      }),
+    }));
+
+    try {
+      await createExtractionTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `
+          INSERT INTO "nodes" ("id", "user_id", "node_type")
+            VALUES
+              ($1, $3, 'Person'),
+              ($2, $3, 'Document')
+        `,
+        [aliceNodeId, documentNodeId, userId],
+      );
+      await client.query(
+        `
+          INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label", "description")
+            VALUES
+              ($1, $3, 'Alice', 'alice', null),
+              ($2, $4, 'Some Document', 'some document', null)
+        `,
+        [
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          aliceNodeId,
+          documentNodeId,
+        ],
+      );
+      await client.query(
+        `
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+            VALUES ($1, $2, 'document', 'doc_chunked', 'completed')
+        `,
+        [sourceId, userId],
+      );
+      // A pre-existing active claim sourced to the same source — would
+      // normally be wiped by the source-scoped replacement at the top of
+      // extractGraph. With replaceClaimsForSources=false it must survive.
+      await database.insert(schema.claims).values([
+        {
+          id: priorClaimId,
+          userId,
+          subjectNodeId: aliceNodeId,
+          objectValue: "fact from earlier chunk",
+          predicate: "HAS_PREFERENCE",
+          statement: "Survives because we are mid-document.",
+          sourceId,
+          assertedByKind: "document_author",
+          statedAt,
+          status: "active",
+        },
+      ]);
+
+      const llmIoCalls: Array<{ prompt: string; response: unknown }> = [];
+      const spineNodeId = newTypeId("node");
+
+      const { extractGraph } = await import("./extract-graph");
+      await extractGraph({
+        userId,
+        sourceType: "document",
+        sourceId,
+        statedAt,
+        linkedNodeId: documentNodeId,
+        sourceRefs: [{ externalId: "doc_chunked", sourceId, statedAt }],
+        content: "Body of chunk 2.",
+        replaceClaimsForSources: false,
+        contentNote:
+          "This is section 2 of 5 of a longer document; extract every fact in this section.",
+        documentSpine: [
+          {
+            nodeId: spineNodeId,
+            label: "Self-Publishing on Amazon",
+            description: "Central theme spanning the document.",
+          },
+        ],
+        onLlmIO: (info) => {
+          llmIoCalls.push(info);
+        },
+      });
+
+      // Pre-existing claim must still be active.
+      const claimRows = await client.query<{
+        id: string;
+        status: string;
+      }>(`SELECT "id", "status" FROM "claims" WHERE "user_id" = $1`, [userId]);
+      expect(claimRows.rows).toEqual([{ id: priorClaimId, status: "active" }]);
+
+      // contentNote must reach the prompt.
+      expect(capturedPrompt).toContain("section 2 of 5");
+
+      // Document-mode prompt rewrite: the LLM must see the
+      // document-as-asserter framing and must NOT see the conversation-mode
+      // rules (which would re-introduce user-attribution claims like
+      // "the user chose KDP" when extracting an external author's book).
+      expect(capturedPrompt).toContain("When extracting from documents:");
+      expect(capturedPrompt).toContain(
+        "DOCUMENT (and its author) is the asserter",
+      );
+      expect(capturedPrompt).not.toContain(
+        "When extracting from conversations:",
+      );
+      expect(capturedPrompt).not.toContain(
+        "ONLY extract facts that the USER explicitly stated",
+      );
+
+      // Document spine block must surface the pre-created spine concepts
+      // with their existingNodeIds so the LLM can link extracted entities
+      // back to the document's purpose via RELATED_TO claims.
+      expect(capturedPrompt).toContain("DOCUMENT SPINE CONCEPTS:");
+      expect(capturedPrompt).toContain(spineNodeId);
+      expect(capturedPrompt).toContain("Self-Publishing on Amazon");
+
+      // onLlmIO must be invoked exactly once with the prompt and the parsed
+      // response.
+      expect(llmIoCalls).toHaveLength(1);
+      expect(llmIoCalls[0]?.prompt).toBe(capturedPrompt);
+      expect(llmIoCalls[0]?.response).toEqual(llmResponse);
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.doUnmock("./graph");
+      vi.doUnmock("./embeddings-util");
+      vi.doUnmock("./debug-utils");
+      vi.doUnmock("./ai");
+      vi.resetModules();
+      await client.end();
+    }
+  });
 });

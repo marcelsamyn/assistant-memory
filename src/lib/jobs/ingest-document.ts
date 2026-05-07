@@ -1,4 +1,4 @@
-import { extractGraph } from "../extract-graph";
+import { runChunkedExtraction } from "../ingestion/chunked-extract";
 import { ensureSourceNode } from "../ingestion/ensure-source-node";
 import { ensureUser } from "../ingestion/ensure-user";
 import { sourceService } from "../sources";
@@ -127,15 +127,22 @@ export async function ingestDocument({
     nodeType: NodeTypeEnum.enum.Document,
   });
 
-  // Extract graph from the document content
-  await extractGraph({
+  // Extract graph from the document content. Long documents are chunked so
+  // each LLM call sees a focused passage instead of one wall of text;
+  // single-chunk inputs run as one call (no behavior change).
+  await runChunkedExtraction({
     userId,
     sourceType: "document",
     sourceId,
     statedAt: timestamp,
     linkedNodeId: documentNodeId,
     sourceRefs: [{ externalId: documentId, sourceId, statedAt: timestamp }],
-    content, // Pass the raw document content for graph extraction
+    content,
+    logLabel: title ?? documentId,
+    documentMetadata: {
+      ...(title !== undefined && { title }),
+      ...(author !== undefined && { author }),
+    },
   });
 
   console.log(

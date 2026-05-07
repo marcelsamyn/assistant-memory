@@ -38,6 +38,21 @@ const envSchema = z.object({
     .positive()
     .default(50 * 1024 * 1024)
     .describe("Maximum upload size accepted by POST /ingest/file."),
+  INGEST_CHUNK_MAX_CHARS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(6000)
+    .describe(
+      "Max characters per chunk when splitting converted file markdown for graph extraction. Files whose markdown exceeds this are processed in multiple sequential extractGraph calls so each call sees a focused passage.",
+    ),
+  INGEST_DEBUG_DIR: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "If set, ingest-file writes per-chunk LLM prompt and parsed response to this directory for offline inspection. Disabled when empty/unset.",
+    ),
   DEBUG_LOGS: z.coerce
     .boolean()
     .default(false)

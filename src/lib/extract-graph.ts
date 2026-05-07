@@ -90,6 +90,44 @@ interface ExtractGraphParams {
   sourceRefs?: SourceRef[];
   content: string;
   speakerMap?: ExtractGraphSpeakerMap;
+  /**
+   * When true (default), source-scoped claims are deleted at the top of the
+   * call so this run fully replaces prior facts from the same source. Pass
+   * `false` for chunk 2..N of a multi-chunk ingestion where chunk 1 already
+   * performed the replacement.
+   */
+  replaceClaimsForSources?: boolean;
+  /**
+   * Optional preamble injected verbatim above the `<sourceType>` block in the
+   * prompt. Used by chunked ingestion to tell the model "this is one section
+   * of a larger document."
+   */
+  contentNote?: string;
+  /**
+   * Debug hook fired exactly once after the LLM call returns, before
+   * dedup/identity-resolution runs. Receives the exact prompt sent and the
+   * parsed response. Errors thrown by the hook are logged and swallowed so
+   * debug instrumentation can never break ingestion.
+   */
+  onLlmIO?: (info: {
+    prompt: string;
+    response: unknown;
+  }) => Promise<void> | void;
+  /**
+   * Pre-computed "spine" concept nodes for the source. These represent the
+   * document's high-level themes (one tier above the specific entities the
+   * chunked extraction will surface) and are pre-created upstream so they
+   * have stable nodeIds before extraction runs. The prompt instructs the LLM
+   * to link extracted low-level entities to these spine concepts via
+   * RELATED_TO claims, which is how concrete details get wired back to the
+   * document's purpose instead of orphaned. Currently populated only for
+   * `sourceType === "document"` ingests.
+   */
+  documentSpine?: Array<{
+    nodeId: TypeId<"node">;
+    label: string;
+    description: string | null;
+  }>;
 }
 
 // --- Main extractGraph function ---
@@ -102,6 +140,10 @@ export async function extractGraph({
   sourceRefs = [],
   content,
   speakerMap,
+  replaceClaimsForSources = true,
+  contentNote,
+  onLlmIO,
+  documentSpine,
 }: ExtractGraphParams) {
   const db = await useDatabase();
   const resolvedSourceRefs =
@@ -173,11 +215,23 @@ export async function extractGraph({
   const { nodesForPromptFormatting, idMap, nodeLabels } =
     _prepareInitialNodeMappings(cappedNodes);
 
+  // Register spine nodes in idMap so the LLM can reference them by their
+  // existing nodeId in relationshipClaims (objectId = "node_xxx") and the
+  // resolution step finds them like any other existing node.
+  if (documentSpine && documentSpine.length > 0) {
+    for (const spine of documentSpine) {
+      idMap.set(spine.nodeId, spine.nodeId);
+      nodeLabels.set(spine.nodeId, spine.label);
+    }
+  }
+
   const openCommitmentsPromptSection = _formatOpenCommitmentsSection(
     cappedOpenCommitments,
   );
 
   const speakerMapPromptSection = _formatSpeakerMapSection(speakerMap);
+
+  const documentSpinePromptSection = _formatDocumentSpineSection(documentSpine);
 
   const { createCompletionClient } = await import("./ai");
   const client = await createCompletionClient(userId);
@@ -203,25 +257,36 @@ ${openCommitmentsPromptSection}
 
 ${speakerMapPromptSection}
 
+${documentSpinePromptSection}
+
 Extract the graph from the following ${sourceType}:
 
 Allowed source refs:
 ${sourceRefsForPrompt}
-
+${contentNote ? `\n${contentNote}\n` : ""}
 <${sourceType}>
 ${content}
 </${sourceType}>
 
 CRITICAL EXTRACTION RULES - READ CAREFULLY:
 
-When extracting from conversations:
+${
+  sourceType === "document"
+    ? `When extracting from documents:
+- The DOCUMENT (and its author) is the asserter, NOT the user reading it. Treat the user as an outside reader.
+- Phrases like "I tried X" or "we recommend Y" inside the document refer to the AUTHOR, not the user. Do not attribute the author's experiences, preferences, decisions, or recommendations to the user.
+- Phrase every claim's statement neutrally as the document or author asserting (e.g., "The book recommends KDP Select for Amazon distribution"; "The author considers Kindle Unlimited royalties dependent on pages read"). Avoid first-person framing about the user.
+- Do NOT emit MADE_DECISION, HAS_PREFERENCE, HAS_GOAL, HAS_PLAN, or similar self-attribution claims with the user as subject — those would assert facts about the user that this document does not establish.
+- Extract every concrete fact, claim, recommendation, decision, person, organization, place, concept, or numeric figure the text asserts.`
+    : `When extracting from conversations:
 - ONLY extract facts that the USER explicitly stated, confirmed, or provided
 - DO NOT extract speculative statements, suggestions, or assumptions made by the assistant
 - DO NOT treat assistant's questions as facts (e.g., "Are you working on X?" is NOT a fact that the user is working on X)
 - DO NOT extract assistant's interpretations unless the user confirmed them
 - If the assistant makes a statement and the user corrects it, ONLY extract the user's correction as fact
 - Prioritize user's own statements about themselves, their experiences, preferences, and circumstances
-- Be especially cautious with information only mentioned by the assistant - verify if the user confirmed it
+- Be especially cautious with information only mentioned by the assistant - verify if the user confirmed it`
+}
 
 EVERY claim (relationship and attribute) MUST include an "assertionKind" field. Use:
 ${
@@ -253,7 +318,19 @@ ${
 - Assistant: "It sounds like you might be a software engineer." User does not respond. → do NOT extract. If you must, assertionKind: "assistant_inferred".`
 }
 
-Extract, for example, the following elements:
+${
+  sourceType === "document"
+    ? `Extract, for example, the following elements:
+1. People mentioned in the text (real or fictional)
+2. Locations the text discusses or references
+3. Events the text describes or analyzes
+4. Objects, products, services, or items the text references
+5. Concepts, theories, frameworks, or ideas the text explores
+6. Other media the text cites (books, articles, studies, podcasts, etc.)
+7. Temporal references the text provides (dates, periods, deadlines)
+8. Recommendations, decisions, best practices, and warnings the text states
+9. Facts the text states about people, organizations, or other entities`
+    : `Extract, for example, the following elements:
 1. People mentioned by the user (real or fictional)
 2. Locations the user discussed or mentioned
 3. Events that the user stated occurred or experienced
@@ -263,7 +340,8 @@ Extract, for example, the following elements:
 7. Media the user mentioned (books, movies, articles, etc.)
 8. Temporal references the user provided (dates, times, periods)
 9. The user's preferences, goals, projects, and plans
-10. Facts the user stated about other people or entities
+10. Facts the user stated about other people or entities`
+}
 
 For each element, create a node with:
 - A unique temporary ID (format: "temp_[type]_[number]", e.g., "temp_person_1") if it's a NEW node.
@@ -275,7 +353,7 @@ For each element, create a node with:
 	- Claims represent sourced facts about nodes. For example, if you have a Person node and an Event node, create a claim from the Person node to the Event node with predicate PARTICIPATED_IN.
 	- Relationship claims use objectId and a relationship predicate.
 	- Attribute claims use objectValue and an attribute predicate, such as HAS_STATUS, HAS_PREFERENCE, HAS_GOAL, or MADE_DECISION.
-	- ONLY create claims for facts explicitly stated by the user, not assistant assumptions.
+	- ONLY create claims for facts explicitly stated by the ${sourceType === "document" ? "document text" : "user"}, not your own interpretations or assumptions.
 	- In the claim statement, write one concise sentence that can stand alone as the sourced assertion.
 	- Every claim must include a sourceRef copied exactly from the token after "sourceRef:" in the allowed source refs above. Do not include statedAt text.
 	- Emit aliases when the source uses a nickname, abbreviation, alternate spelling, or shorter name for a node.
@@ -301,7 +379,11 @@ Rules of the graph:
 
 	Then create relationshipClaims and attributeClaims to represent the facts using the appropriate predicates.
 
-Focus on extracting the most significant and meaningful information that the USER provided. Quality and accuracy are more important than quantity.`;
+${
+  sourceType === "document"
+    ? `For documents, exhaustively extract every concrete fact, claim, person, organization, place, concept, decision, and recommendation the text asserts. Do not summarize. Accuracy still matters — only extract what the text actually says — but completeness is the goal.`
+    : `Focus on extracting the most significant and meaningful information that the USER provided. Quality and accuracy are more important than quantity.`
+}`;
 
   const completion = await client.beta.chat.completions.parse({
     messages: [{ role: "user", content: prompt }],
@@ -312,6 +394,14 @@ Focus on extracting the most significant and meaningful information that the USE
   const parsedLlmOutput = completion.choices[0]?.message.parsed;
   if (!parsedLlmOutput) {
     throw new Error("Failed to parse LLM response");
+  }
+
+  if (onLlmIO) {
+    try {
+      await onLlmIO({ prompt, response: parsedLlmOutput });
+    } catch (hookError) {
+      console.error("extract-graph: onLlmIO hook threw", hookError);
+    }
   }
 
   const uniqueParsedLlmNodes = _deduplicateLlmNodes(parsedLlmOutput.nodes);
@@ -348,11 +438,13 @@ Focus on extracting the most significant and meaningful information that the USE
       .onConflictDoNothing();
   }
 
-  const deletedClaimRecords = await _deleteExistingClaimsForSources(
-    db,
-    userId,
-    resolvedSourceRefs.map((sourceRef) => sourceRef.sourceId),
-  );
+  const deletedClaimRecords = replaceClaimsForSources
+    ? await _deleteExistingClaimsForSources(
+        db,
+        userId,
+        resolvedSourceRefs.map((sourceRef) => sourceRef.sourceId),
+      )
+    : [];
 
   const insertedClaimRecords = await _processAndInsertLlmClaims(
     db,
@@ -1095,6 +1187,28 @@ function _formatSpeakerMapSection(
   });
   return `Speakers in this transcript:
 For each claim, set "assertedBySpeakerLabel" to the speaker who said it, using these labels exactly. Claims whose speaker label is missing or not in this list will be dropped.
+${lines.join("\n")}`;
+}
+
+function _formatDocumentSpineSection(
+  documentSpine:
+    | Array<{
+        nodeId: TypeId<"node">;
+        label: string;
+        description: string | null;
+      }>
+    | undefined,
+): string {
+  if (!documentSpine || documentSpine.length === 0) return "";
+  const lines = documentSpine.map((spine) => {
+    const desc = spine.description ? `; description: ${spine.description}` : "";
+    return `- existingNodeId: ${spine.nodeId}; label: "${spine.label}"${desc}`;
+  });
+  return `DOCUMENT SPINE CONCEPTS:
+This document is centrally about the following themes. They have already been created as Concept nodes for this document. RULES:
+- When you extract a low-level entity (named tool, program, person, recommendation, decision, etc.) that supports one of these themes, ALSO emit a relationshipClaim with predicate \`RELATED_TO\` from that entity (subjectId = its tempId or existingNodeId) to the spine concept (objectId = the existingNodeId below). This is how the document's specific parts get connected to its purpose.
+- Use the spine concept's \`existingNodeId\` directly as the objectId — do NOT create a new node for these themes.
+- It is normal for many extracted entities to link to the same spine concept. Don't be sparing.
 ${lines.join("\n")}`;
 }
 

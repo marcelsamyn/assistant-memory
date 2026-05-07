@@ -1,3 +1,4 @@
+import { documentSpineSchema } from "../src/lib/schemas/document-spine";
 import { llmExtractionSchema } from "../src/lib/schemas/llm-extraction";
 import {
   type StructuredOutputSchemaValidationInput,
@@ -9,6 +10,11 @@ const structuredOutputSchemas = [
   {
     name: "subgraph",
     schema: zodResponseFormat(llmExtractionSchema, "subgraph").json_schema
+      .schema,
+  },
+  {
+    name: "document_spine",
+    schema: zodResponseFormat(documentSpineSchema, "document_spine").json_schema
       .schema,
   },
 ] satisfies ReadonlyArray<StructuredOutputSchemaValidationInput>;
