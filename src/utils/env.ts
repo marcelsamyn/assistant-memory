@@ -28,9 +28,9 @@ const envSchema = z.object({
   MARKITDOWN_URL: z
     .string()
     .url()
-    .default("http://localhost:8081")
+    .default("http://markitdown:8080")
     .describe(
-      "Base URL of the markitdown sidecar (POST /convert). Defaults to the docker-compose host mapping.",
+      "Base URL of the markitdown sidecar (POST /convert). Defaults to the internal compose/Swarm hostname.",
     ),
   INGEST_FILE_MAX_BYTES: z.coerce
     .number()

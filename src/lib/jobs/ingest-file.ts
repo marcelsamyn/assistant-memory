@@ -12,7 +12,7 @@
  *  - extractor error           → propagate (source row stays `processing`
  *                                so a retry can resume cleanly)
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { DrizzleDB } from "~/db";
 import { sources } from "~/db/schema";
@@ -20,7 +20,7 @@ import { convertToMarkdown } from "~/lib/converters/markitdown";
 import { extractGraph } from "~/lib/extract-graph";
 import { ensureSourceNode } from "~/lib/ingestion/ensure-source-node";
 import { ensureUser } from "~/lib/ingestion/ensure-user";
-import { sourceMetadataSchema, sourceService } from "~/lib/sources";
+import { sourceService } from "~/lib/sources";
 import { NodeTypeEnum } from "~/types/graph";
 import { typeIdSchema, type TypeId } from "~/types/typeid";
 
@@ -50,7 +50,7 @@ export async function ingestFile({
   const [row] = await db
     .select({
       id: sources.id,
-      metadata: sources.metadata,
+      externalId: sources.externalId,
       scope: sources.scope,
     })
     .from(sources)
@@ -92,19 +92,22 @@ export async function ingestFile({
     throw error;
   }
 
-  // Persist the converted markdown alongside the original blob so later
-  // reads (e.g. fetchRaw, re-extraction) don't have to re-call the sidecar.
-  const existingMeta = sourceMetadataSchema.parse(row.metadata ?? {});
-  const updatedMeta = sourceMetadataSchema.parse({
-    ...existingMeta,
-    rawContent: converted.markdown,
-    ...(converted.title !== null &&
-      existingMeta.title === undefined && { title: converted.title }),
-  });
+  // Persist the converted markdown (and a converter-derived title when
+  // the route didn't already set one) alongside the original blob so
+  // later reads — fetchRaw, re-extraction — don't re-call the sidecar.
+  // The merge is computed entirely in SQL so it is atomic w.r.t. any
+  // concurrent metadata write on the same row, and the conditional CASE
+  // ensures a user-supplied title is never overwritten by the converter.
+  const titleClause =
+    converted.title !== null
+      ? sql`(CASE WHEN COALESCE(${sources.metadata}, '{}'::jsonb) ? 'title' THEN '{}'::jsonb ELSE jsonb_build_object('title', ${converted.title}::text) END)`
+      : sql`'{}'::jsonb`;
 
   await db
     .update(sources)
-    .set({ metadata: updatedMeta })
+    .set({
+      metadata: sql`COALESCE(${sources.metadata}, '{}'::jsonb) || jsonb_build_object('rawContent', ${converted.markdown}::text) || ${titleClause}`,
+    })
     .where(eq(sources.id, sourceId));
 
   const documentNodeId = await ensureSourceNode({
@@ -123,7 +126,7 @@ export async function ingestFile({
     linkedNodeId: documentNodeId,
     sourceRefs: [
       {
-        externalId: sourceId,
+        externalId: row.externalId,
         sourceId: sourceId as TypeId<"source">,
         statedAt: timestamp,
       },

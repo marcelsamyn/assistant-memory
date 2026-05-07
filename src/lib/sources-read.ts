@@ -55,7 +55,13 @@ function decodeCursor(raw: string): ListCursor | null {
 function deriveTitle(metadata: unknown): string | null {
   const parsed = sourceMetadataSchema.safeParse(metadata ?? {});
   if (!parsed.success) return null;
-  return parsed.data.title ?? null;
+  if (parsed.data.title) return parsed.data.title;
+  // For files ingested via `POST /ingest/file` the filename lives on
+  // `metadata.filename`; surface it as a display fallback so the picker
+  // never shows a nameless row when the user didn't supply a title.
+  const extras = parsed.data as Record<string, unknown>;
+  const filename = extras["filename"];
+  return typeof filename === "string" && filename.length > 0 ? filename : null;
 }
 
 interface ListParams {

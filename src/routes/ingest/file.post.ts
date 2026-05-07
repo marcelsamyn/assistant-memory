@@ -80,6 +80,18 @@ export default defineEventHandler(async (event) => {
   const externalId = `file:${uuid()}`;
   const timestamp = new Date();
 
+  // Only set `metadata.title` when the user explicitly supplied one.
+  // The filename is stored separately under `metadata.filename` so the
+  // worker can fill `title` from the converter's derived title (or the
+  // listing endpoint can fall back to the filename for display) without
+  // either path having to second-guess whether the existing title was
+  // explicit or a filename fallback.
+  const metadata: Record<string, string> = {
+    filename: parsed.filename,
+    mimeType: parsed.mimeType,
+  };
+  if (parsed.title !== undefined) metadata["title"] = parsed.title;
+
   const { successes, failures } = await sourceService.insertMany([
     {
       userId: parsed.userId,
@@ -89,11 +101,7 @@ export default defineEventHandler(async (event) => {
       timestamp,
       fileBuffer: filePart.data,
       contentType: parsed.mimeType,
-      metadata: {
-        title: parsed.title ?? parsed.filename,
-        filename: parsed.filename,
-        mimeType: parsed.mimeType,
-      },
+      metadata,
     },
   ]);
 
