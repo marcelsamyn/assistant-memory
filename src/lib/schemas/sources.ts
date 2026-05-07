@@ -9,9 +9,9 @@
  * The opaque `cursor` is intentionally unspecified at the contract level;
  * the server encodes whatever it needs to resume the scan.
  */
-import { z } from "zod";
 import { ScopeEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
+import { z } from "zod";
 
 export const sourceListableTypeEnum = z.enum([
   "document",

@@ -17,12 +17,12 @@ import {
 } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { claims, nodeMetadata, nodes, sourceLinks } from "~/db/schema";
+import type { GetNodeResponse } from "~/lib/schemas/node";
 import {
   DEFAULT_EXCLUDED_NODE_TYPES,
   type NodesBySourceResponse,
   type SourceNode,
 } from "~/lib/schemas/nodes-by-source";
-import type { GetNodeResponse } from "~/lib/schemas/node";
 import type { NodeType } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 
@@ -126,7 +126,11 @@ export async function fetchNodesBySource(
     .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
     .innerJoin(sourceLinks, eq(sourceLinks.nodeId, nodes.id))
     .where(
-      and(eq(nodes.userId, userId), inArray(nodes.id, pageIds), inArray(sourceLinks.sourceId, sourceIds)),
+      and(
+        eq(nodes.userId, userId),
+        inArray(nodes.id, pageIds),
+        inArray(sourceLinks.sourceId, sourceIds),
+      ),
     );
 
   const nodeById = new Map<string, SourceNode>();

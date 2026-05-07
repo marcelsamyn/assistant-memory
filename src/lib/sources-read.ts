@@ -3,15 +3,25 @@
  * `sources.ts` (which owns the SourceService write/blob path) so the
  * picker/listing endpoints don't drag in the MinIO client.
  */
-import { and, count, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  lt,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { sourceLinks, sources } from "~/db/schema";
-import { sourceMetadataSchema } from "~/lib/sources";
 import {
   type SourceListableType,
   sourceListableTypeEnum,
   type SourceSummary,
 } from "~/lib/schemas/sources";
+import { sourceMetadataSchema } from "~/lib/sources";
 import type { TypeId } from "~/types/typeid";
 
 const LISTABLE_TYPES: readonly SourceListableType[] =

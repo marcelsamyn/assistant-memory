@@ -10,9 +10,9 @@
  * worker (currently via the markitdown sidecar) so every client gets the
  * same parsing behavior.
  */
-import { z } from "zod";
 import { ScopeEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
+import { z } from "zod";
 
 /**
  * MIME types accepted at v1. The list intentionally favors the formats
