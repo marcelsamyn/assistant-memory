@@ -203,7 +203,9 @@ export function resolvePredicatePolicy(
 ): PredicatePolicy {
   const entry = PREDICATE_POLICIES[predicate];
   const override =
-    subjectType === null ? undefined : entry.subjectTypeOverrides?.[subjectType];
+    subjectType === null
+      ? undefined
+      : entry.subjectTypeOverrides?.[subjectType];
   if (override === undefined) {
     return {
       predicate: entry.predicate,

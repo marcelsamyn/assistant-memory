@@ -11,10 +11,7 @@ import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
-import {
-  getUserSelfAliases,
-  setUserSelfAliases,
-} from "~/lib/user-profile";
+import { getUserSelfAliases, setUserSelfAliases } from "~/lib/user-profile";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
 const TEST_DB_PORT = Number(process.env["TEST_PG_PORT"] ?? 5431);
@@ -104,10 +101,7 @@ describeIfServer("user-profile self-aliases helpers", () => {
     const userId = "user_create";
     await seedUser(userId);
 
-    const result = await setUserSelfAliases(database, userId, [
-      "Marcel",
-      "MS",
-    ]);
+    const result = await setUserSelfAliases(database, userId, ["Marcel", "MS"]);
     expect(result.aliases).toEqual(["Marcel", "MS"]);
 
     const rows = await rootClient.query<{
@@ -228,9 +222,7 @@ describeIfServer("migration 0013 (user_profiles.metadata) idempotence", () => {
           "created_at" timestamp with time zone DEFAULT now() NOT NULL
         );
       `);
-      await client.query(
-        `INSERT INTO "users" ("id") VALUES ('user_mig')`,
-      );
+      await client.query(`INSERT INTO "users" ("id") VALUES ('user_mig')`);
       await client.query(
         `INSERT INTO "user_profiles" ("id", "user_id", "content")
          VALUES ('user_profile_premig________', 'user_mig', 'existing content')`,
@@ -239,11 +231,7 @@ describeIfServer("migration 0013 (user_profiles.metadata) idempotence", () => {
       const fs = await import("node:fs/promises");
       const path = await import("node:path");
       const migrationSql = await fs.readFile(
-        path.join(
-          process.cwd(),
-          "drizzle",
-          "0013_user_profiles_metadata.sql",
-        ),
+        path.join(process.cwd(), "drizzle", "0013_user_profiles_metadata.sql"),
         "utf8",
       );
       const applyMigration = async () => {
@@ -285,9 +273,7 @@ describeIfServer("migration 0013 (user_profiles.metadata) idempotence", () => {
 
       const afterSecond = await client.query<{
         metadata: Record<string, unknown>;
-      }>(
-        `SELECT "metadata" FROM "user_profiles" WHERE "user_id" = 'user_mig'`,
-      );
+      }>(`SELECT "metadata" FROM "user_profiles" WHERE "user_id" = 'user_mig'`);
       expect(afterSecond.rows[0]?.metadata).toEqual({
         userSelfAliases: ["Marcel"],
       });

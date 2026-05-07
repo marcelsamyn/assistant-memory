@@ -13,12 +13,7 @@
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
-import {
-  aliases,
-  nodeMetadata,
-  nodes,
-  type NodeSelect,
-} from "~/db/schema";
+import { aliases, nodeMetadata, nodes, type NodeSelect } from "~/db/schema";
 import { createAlias, normalizeAliasText } from "~/lib/alias";
 import { normalizeLabel } from "~/lib/label";
 import { getEffectiveNodeScopes } from "~/lib/node-scope";
@@ -64,13 +59,16 @@ export async function resolveSpeakers({
   knownParticipants = [],
 }: ResolveSpeakersInput): Promise<SpeakerMap> {
   const map: SpeakerMap = new Map();
-  const uniqueLabels = [...new Set(speakerLabels.map((label) => label.trim()))]
-    .filter((label) => label.length > 0);
+  const uniqueLabels = [
+    ...new Set(speakerLabels.map((label) => label.trim())),
+  ].filter((label) => label.length > 0);
 
   if (uniqueLabels.length === 0) return map;
 
   const userSelfNormalized = new Set(
-    userSelfAliases.map((alias) => normalizeAliasText(alias)).filter((s) => s.length > 0),
+    userSelfAliases
+      .map((alias) => normalizeAliasText(alias))
+      .filter((s) => s.length > 0),
   );
 
   // Pre-validate known participants belong to this user.
@@ -81,7 +79,10 @@ export async function resolveSpeakers({
       .select({ id: nodes.id })
       .from(nodes)
       .where(
-        and(eq(nodes.userId, userId), inArray(nodes.id, knownParticipantNodeIds)),
+        and(
+          eq(nodes.userId, userId),
+          inArray(nodes.id, knownParticipantNodeIds),
+        ),
       );
     for (const row of rows) validKnownNodeIds.add(row.id);
   }

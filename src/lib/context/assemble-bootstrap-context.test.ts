@@ -10,7 +10,8 @@ const TEST_DB_USER = process.env["TEST_PG_USER"] ?? "postgres";
 const TEST_DB_PASSWORD = process.env["TEST_PG_PASSWORD"] ?? "postgres";
 const TEST_DB_ADMIN_DB = process.env["TEST_PG_ADMIN_DB"] ?? "postgres";
 
-process.env["DATABASE_URL"] ??= `postgres://${TEST_DB_USER}:${TEST_DB_PASSWORD}@${TEST_DB_HOST}:${TEST_DB_PORT}/${TEST_DB_ADMIN_DB}`;
+process.env["DATABASE_URL"] ??=
+  `postgres://${TEST_DB_USER}:${TEST_DB_PASSWORD}@${TEST_DB_HOST}:${TEST_DB_PORT}/${TEST_DB_ADMIN_DB}`;
 process.env["MEMORY_OPENAI_API_KEY"] ??= "test";
 process.env["MEMORY_OPENAI_API_BASE_URL"] ??= "http://localhost";
 process.env["MODEL_ID_GRAPH_EXTRACTION"] ??= "test";
@@ -109,12 +110,7 @@ async function createBundleTestTables(client: Client): Promise<void> {
 interface FakeRedis {
   store: Map<string, string>;
   get(key: string): Promise<string | null>;
-  set(
-    key: string,
-    value: string,
-    mode?: string,
-    ttl?: number,
-  ): Promise<"OK">;
+  set(key: string, value: string, mode?: string, ttl?: number): Promise<"OK">;
   del(key: string): Promise<number>;
 }
 
@@ -403,8 +399,12 @@ describeIfServer("getConversationBootstrapContext", () => {
 
         const prefs = bundle.sections[4];
         expect(prefs?.kind).toBe("preferences");
-        expect(prefs?.content).toContain("HAS_PREFERENCE=concise communication");
-        expect(prefs?.content).toContain("HAS_PREFERENCE=deep work in mornings");
+        expect(prefs?.content).toContain(
+          "HAS_PREFERENCE=concise communication",
+        );
+        expect(prefs?.content).toContain(
+          "HAS_PREFERENCE=deep work in mornings",
+        );
         expect(prefs?.content).toContain("HAS_GOAL=ship the claims layer");
         expect(prefs?.evidence?.length).toBe(3);
       } finally {

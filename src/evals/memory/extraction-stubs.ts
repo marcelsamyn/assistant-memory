@@ -6,15 +6,15 @@
  * Common aliases: extraction stub client, FIFO LLM stub, harness source
  * service, mock insertMany.
  */
+import type { ExtractionStubResponse } from "./types";
+import { type DrizzleDB } from "~/db";
 import { sources, type SourcesInsert } from "~/db/schema";
 import type { SourceCreateInput } from "~/lib/sources";
-import { type DrizzleDB } from "~/db";
+import { newTypeId, type TypeId } from "~/types/typeid";
 import type {
   StubCompletionClient,
   StubSourceService,
 } from "~/utils/test-overrides";
-import { newTypeId, type TypeId } from "~/types/typeid";
-import type { ExtractionStubResponse } from "./types";
 
 /**
  * Build a FIFO-consuming completion client. Each call to
@@ -80,9 +80,7 @@ export function createStubSourceService(db: DrizzleDB): StubSourceService {
         const id = newTypeId("source");
         const metadata = {
           ...(input.metadata ?? {}),
-          ...(input.content !== undefined
-            ? { rawContent: input.content }
-            : {}),
+          ...(input.content !== undefined ? { rawContent: input.content } : {}),
         };
         const values: SourcesInsert = {
           id,
@@ -108,4 +106,3 @@ export function createStubSourceService(db: DrizzleDB): StubSourceService {
     },
   };
 }
-

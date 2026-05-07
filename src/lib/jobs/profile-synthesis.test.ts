@@ -330,7 +330,9 @@ describeIfServer("runProfileSynthesis", () => {
       expect(lastSchemaName).toBe("ProfileSynthesisOutput");
 
       // Trusted claims must be in the prompt.
-      expect(lastPrompt).toContain("HAS_PREFERENCE=prefers concise communication");
+      expect(lastPrompt).toContain(
+        "HAS_PREFERENCE=prefers concise communication",
+      );
       expect(lastPrompt).toContain("HAS_GOAL=ship the claims layer in Q2");
       expect(lastPrompt).toContain("RELATED_TO -> Claims Layer");
       expect(lastPrompt).toContain('aliases: "Marc"');
@@ -509,7 +511,9 @@ describeIfServer("runProfileSynthesis", () => {
       expect(persisted.rows[0]?.description).toBe(
         "Roman emperor and stoic philosopher.",
       );
-      expect(persisted.rows[0]?.additional_data?.profileSynthesisHash).toBeUndefined();
+      expect(
+        persisted.rows[0]?.additional_data?.profileSynthesisHash,
+      ).toBeUndefined();
     } finally {
       vi.doUnmock("~/utils/db");
       vi.doUnmock("../ai");

@@ -16,12 +16,7 @@
  *
  * Common aliases: cleanup ops, applyCleanupOperations coverage, op kind matrix.
  */
-import {
-  ensureUser,
-  seedClaim,
-  seedNode,
-  seedSource,
-} from "../seed";
+import { ensureUser, seedClaim, seedNode, seedSource } from "../seed";
 import type { EvalFixture } from "../types";
 import { and, eq } from "drizzle-orm";
 import { aliases, claims, nodes } from "~/db/schema";
@@ -452,10 +447,7 @@ export const story16CleanupOpsSurface: EvalFixture = {
               and(
                 eq(aliases.userId, ctx.userId),
                 eq(aliases.canonicalNodeId, ctx.nodes.get("dupKeep")!),
-                eq(
-                  aliases.normalizedAliasText,
-                  normalizeAliasText("ML"),
-                ),
+                eq(aliases.normalizedAliasText, normalizeAliasText("ML")),
               ),
             );
           if (remaining.length !== 0) {
@@ -468,8 +460,7 @@ export const story16CleanupOpsSurface: EvalFixture = {
         },
       },
       {
-        description:
-          "delete_node removed the evidence-free doomed node",
+        description: "delete_node removed the evidence-free doomed node",
         run: async (ctx) => {
           const [row] = await ctx.db
             .select({ id: nodes.id })

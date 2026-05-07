@@ -18,10 +18,10 @@
  * `assertedByKind` / status SQL guards as the production embedding path; the
  * only change is the row-match predicate (substring vs. cosine).
  */
-import { searchMemory, searchReference } from "~/lib/context/search-cards";
-import { setSemanticSearchSubstringQuery } from "~/utils/test-overrides";
 import { seedClaim, seedNode, seedSource } from "../seed";
 import type { EvalFixture } from "../types";
+import { searchMemory, searchReference } from "~/lib/context/search-cards";
+import { setSemanticSearchSubstringQuery } from "~/utils/test-overrides";
 
 export const story09ReferenceScopeIsolation: EvalFixture = {
   name: "09-reference-scope-isolation",
@@ -116,9 +116,7 @@ export const story09ReferenceScopeIsolation: EvalFixture = {
             }
 
             const wikiTeaId = ctx.nodes.get("wikiTea");
-            const leakedCard = result.cards.find(
-              (c) => c.nodeId === wikiTeaId,
-            );
+            const leakedCard = result.cards.find((c) => c.nodeId === wikiTeaId);
             if (leakedCard) {
               return {
                 pass: false,
@@ -144,8 +142,7 @@ export const story09ReferenceScopeIsolation: EvalFixture = {
             if (!sawPersonalEvidence) {
               return {
                 pass: false,
-                message:
-                  "searchMemory.evidence missing the personal claim hit",
+                message: "searchMemory.evidence missing the personal claim hit",
               };
             }
             return { pass: true };

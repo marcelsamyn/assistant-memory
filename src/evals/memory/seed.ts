@@ -174,9 +174,7 @@ export async function seedAlias(
 ): Promise<void> {
   const canonicalNodeId = ctx.nodes.get(args.canonicalNodeName);
   if (!canonicalNodeId) {
-    throw new Error(
-      `seedAlias: unknown node '${args.canonicalNodeName}'`,
-    );
+    throw new Error(`seedAlias: unknown node '${args.canonicalNodeName}'`);
   }
   await ctx.db
     .insert(aliases)

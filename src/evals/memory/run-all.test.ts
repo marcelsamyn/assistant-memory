@@ -15,23 +15,18 @@ import { describe, expect, it } from "vitest";
 
 const SERVER_AVAILABLE = await isServerReachable();
 const ENABLED = process.env["RUN_EVALS"] !== "0";
-const describeIfEnabled = SERVER_AVAILABLE && ENABLED ? describe : describe.skip;
+const describeIfEnabled =
+  SERVER_AVAILABLE && ENABLED ? describe : describe.skip;
 
 describeIfEnabled("memory regression eval harness", () => {
   for (const fixture of ALL_STORIES) {
-    it(
-      `${fixture.name} — ${fixture.description}`,
-      async () => {
-        const result = await runIngestionEval(fixture);
-        if (!result.passed) {
-          const lines = result.failures.map((f) => `- ${f.message}`);
-          throw new Error(
-            `Story ${fixture.name} failed:\n${lines.join("\n")}`,
-          );
-        }
-        expect(result.passed).toBe(true);
-      },
-      30_000,
-    );
+    it(`${fixture.name} — ${fixture.description}`, async () => {
+      const result = await runIngestionEval(fixture);
+      if (!result.passed) {
+        const lines = result.failures.map((f) => `- ${f.message}`);
+        throw new Error(`Story ${fixture.name} failed:\n${lines.join("\n")}`);
+      }
+      expect(result.passed).toBe(true);
+    }, 30_000);
   }
 });

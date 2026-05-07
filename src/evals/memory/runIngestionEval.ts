@@ -39,11 +39,11 @@ import type {
 } from "./types";
 import type db from "~/db";
 import { applyClaimLifecycle } from "~/lib/claims/lifecycle";
+import type { GraphNode } from "~/lib/jobs/cleanup-graph";
 import {
   applyCleanupOperations,
   type CleanupOperation,
 } from "~/lib/jobs/cleanup-operations";
-import type { GraphNode } from "~/lib/jobs/cleanup-graph";
 import { TemporaryIdMapper } from "~/lib/temporary-id-mapper";
 import type { TypeId } from "~/types/typeid";
 import { setTestDatabase } from "~/utils/db";
@@ -175,11 +175,15 @@ async function runConversationIngest(
   step: ConversationIngestStep,
   ctx: EvalContext,
 ): Promise<void> {
-  const { client, remaining } = createExtractionStubClient(step.extractionStubs);
+  const { client, remaining } = createExtractionStubClient(
+    step.extractionStubs,
+  );
   setExtractionClientOverride(client);
 
   try {
-    const { ingestConversation } = await import("~/lib/jobs/ingest-conversation");
+    const { ingestConversation } = await import(
+      "~/lib/jobs/ingest-conversation"
+    );
     // Each message goes through its own ingestion call so the FIFO stub queue
     // drains in lockstep with extractGraph invocations. This mirrors
     // production: each /conversation/ingest request typically delivers one
@@ -215,7 +219,9 @@ async function runTranscriptIngest(
   step: TranscriptIngestStep,
   ctx: EvalContext,
 ): Promise<void> {
-  const { client, remaining } = createExtractionStubClient([step.extractionStub]);
+  const { client, remaining } = createExtractionStubClient([
+    step.extractionStub,
+  ]);
   setExtractionClientOverride(client);
 
   const knownParticipants = step.knownParticipants?.map((kp) => {

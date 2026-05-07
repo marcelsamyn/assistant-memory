@@ -1,5 +1,5 @@
-import "dotenv/config";
 import { runDedupSweep } from "./dedup-sweep";
+import "dotenv/config";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -143,7 +143,12 @@ describeIfServer("runDedupSweep", () => {
     await client.query(
       `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label")
        VALUES ($1, $2, $3, $4)`,
-      [newTypeId("node_metadata"), nodeId, label ?? canonicalLabel, canonicalLabel],
+      [
+        newTypeId("node_metadata"),
+        nodeId,
+        label ?? canonicalLabel,
+        canonicalLabel,
+      ],
     );
   }
 

@@ -1,5 +1,5 @@
-import { describe, expect, it, afterEach } from "vitest";
 import { logEvent, setLogSink, type LogEvent } from "./log";
+import { describe, expect, it, afterEach } from "vitest";
 
 describe("logEvent", () => {
   afterEach(() => {

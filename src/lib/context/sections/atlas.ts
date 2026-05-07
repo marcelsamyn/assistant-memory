@@ -8,11 +8,11 @@
  * The atlas refresh job owns synthesis and budgeting; this assembler is a
  * pure read of the materialised artifact.
  */
+import type { ContextSectionAtlas } from "../types";
 import { and, eq } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { nodeMetadata, nodes } from "~/db/schema";
 import { NodeTypeEnum } from "~/types/graph";
-import type { ContextSectionAtlas } from "../types";
 
 const USAGE =
   "Durable user portrait synthesised from trusted personal claims. Use as background; do not re-prompt facts already stated here.";

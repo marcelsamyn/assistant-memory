@@ -21,7 +21,15 @@
  * cleanup pipeline picks up later.
  */
 import { findSimilarNodes } from "./graph";
-import { aliases, claims, nodeMetadata, nodes, sourceLinks, sources } from "~/db/schema";
+import { and, eq, inArray, or } from "drizzle-orm";
+import {
+  aliases,
+  claims,
+  nodeMetadata,
+  nodes,
+  sourceLinks,
+  sources,
+} from "~/db/schema";
 import { logEvent } from "~/lib/observability/log";
 import {
   type AssertedByKind,
@@ -32,7 +40,6 @@ import {
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 import { env } from "~/utils/env";
-import { and, eq, inArray, or } from "drizzle-orm";
 
 /**
  * The set of scopes a node has any support in. A node may legitimately have
@@ -164,7 +171,14 @@ export async function resolveIdentity({
   if (canonicalTrace.signal === "canonical_label" && canonicalTrace.fired) {
     const winner = canonicalTrace.candidates[0];
     if (winner) {
-      return _resolved(winner.nodeId, "canonical_label", winner.score, trace, candidate, userId);
+      return _resolved(
+        winner.nodeId,
+        "canonical_label",
+        winner.score,
+        trace,
+        candidate,
+        userId,
+      );
     }
   }
 
@@ -177,7 +191,14 @@ export async function resolveIdentity({
   if (aliasTrace.signal === "alias" && aliasTrace.fired) {
     const winner = aliasTrace.candidates[0];
     if (winner) {
-      return _resolved(winner.nodeId, "alias", winner.score, trace, candidate, userId);
+      return _resolved(
+        winner.nodeId,
+        "alias",
+        winner.score,
+        trace,
+        candidate,
+        userId,
+      );
     }
   }
 
@@ -193,7 +214,9 @@ export async function resolveIdentity({
     await _signalProfileCompat(
       userId,
       candidate,
-      embeddingTrace.signal === "embedding_sim" ? embeddingTrace.candidates : [],
+      embeddingTrace.signal === "embedding_sim"
+        ? embeddingTrace.candidates
+        : [],
     ),
     excluded,
   );
@@ -202,7 +225,14 @@ export async function resolveIdentity({
   if (profileTrace.signal === "profile_compat" && profileTrace.fired) {
     const winner = profileTrace.candidates[0];
     if (winner) {
-      return _resolved(winner.nodeId, "profile_compat", winner.score, trace, candidate, userId);
+      return _resolved(
+        winner.nodeId,
+        "profile_compat",
+        winner.score,
+        trace,
+        candidate,
+        userId,
+      );
     }
   }
 
@@ -218,7 +248,12 @@ export async function resolveIdentity({
       (entry.signal === "canonical_label" || entry.signal === "alias") &&
       entry.crossScopeRefusal
     ) {
-      _logCrossScopeRefusal(userId, candidate, entry.signal, entry.crossScopeRefusal);
+      _logCrossScopeRefusal(
+        userId,
+        candidate,
+        entry.signal,
+        entry.crossScopeRefusal,
+      );
     }
   }
 
@@ -416,7 +451,10 @@ async function _signalProfileCompat(
   }
 
   const candidateNodeIds = embeddingCandidates.map((c) => c.nodeId);
-  const existingClaims = await _fetchTrustedProfileClaims(userId, candidateNodeIds);
+  const existingClaims = await _fetchTrustedProfileClaims(
+    userId,
+    candidateNodeIds,
+  );
 
   const claimsByNode = new Map<TypeId<"node">, ExistingClaimRow[]>();
   for (const id of candidateNodeIds) claimsByNode.set(id, []);
@@ -480,9 +518,7 @@ function _profileCompatibilityScore(
   return union === 0 ? 0 : overlap / union;
 }
 
-function _profileKey(
-  claim: IdentityCandidateClaim | ExistingClaimRow,
-): string {
+function _profileKey(claim: IdentityCandidateClaim | ExistingClaimRow): string {
   const objectValue =
     "objectValue" in claim ? (claim.objectValue ?? null) : null;
   const objectNodeId =
@@ -696,7 +732,12 @@ function _resolved(
       (entry.signal === "canonical_label" || entry.signal === "alias") &&
       entry.crossScopeRefusal
     ) {
-      _logCrossScopeRefusal(userId, candidate, entry.signal, entry.crossScopeRefusal);
+      _logCrossScopeRefusal(
+        userId,
+        candidate,
+        entry.signal,
+        entry.crossScopeRefusal,
+      );
     }
   }
 

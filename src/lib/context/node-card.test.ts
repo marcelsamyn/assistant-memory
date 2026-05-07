@@ -573,7 +573,9 @@ describeIfServer("getNodeCard", () => {
     // Multi_value OWNED_BY → not in currentFacts.
     expect(conceptCard.currentFacts).toEqual([]);
     // Both OWNED_BY claims appear in recentEvidence.
-    const conceptStatements = conceptCard.recentEvidence.map((e) => e.statement);
+    const conceptStatements = conceptCard.recentEvidence.map(
+      (e) => e.statement,
+    );
     expect(conceptStatements).toContain("Shared Initiative owned by Alice.");
     expect(conceptStatements).toContain("Shared Initiative owned by Bob.");
 

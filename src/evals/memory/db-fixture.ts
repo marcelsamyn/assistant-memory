@@ -142,7 +142,9 @@ let dbCounter = 0;
  * connected drizzle instance plus a cleanup callback. The cleanup callback
  * terminates lingering connections and drops the database.
  */
-export async function createEvalDatabase(prefix: string): Promise<EvalDatabase> {
+export async function createEvalDatabase(
+  prefix: string,
+): Promise<EvalDatabase> {
   dbCounter += 1;
   const dbName = `memory_eval_${prefix}_${Date.now()}_${process.pid}_${dbCounter}`;
 

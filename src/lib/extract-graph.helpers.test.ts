@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
 import { _collectAttributeAffectedSubjectNodeIds } from "./extract-graph";
+import { describe, expect, it } from "vitest";
 import type { claims } from "~/db/schema";
 import { newTypeId, type TypeId } from "~/types/typeid";
 
@@ -51,7 +51,9 @@ describe("_collectAttributeAffectedSubjectNodeIds", () => {
       }),
     ];
     const result = _collectAttributeAffectedSubjectNodeIds(inserted, deleted);
-    expect(new Set(result)).toEqual(new Set<TypeId<"node">>([subjectA, subjectB]));
+    expect(new Set(result)).toEqual(
+      new Set<TypeId<"node">>([subjectA, subjectB]),
+    );
   });
 
   it("excludes subjects whose only changed claim is a relationship predicate", () => {

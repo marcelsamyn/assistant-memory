@@ -21,6 +21,7 @@
 ## File Inventory
 
 **New files:**
+
 - `src/lib/metrics/constants.ts` — threshold constants.
 - `src/lib/metrics/definitions.ts` — definition resolver (slug → embedding → create) + review-Task wiring.
 - `src/lib/metrics/observations.ts` — `recordMetricObservations` writer, range guard.
@@ -44,6 +45,7 @@
 - `src/evals/memory/stories/metrics-extraction.ts` — eval story.
 
 **Modified files:**
+
 - `src/types/typeid.ts` — add `metric_definition`, `metric_observation`, `metric_definition_embedding` typeids.
 - `src/types/graph.ts` — add `metric_push` and `metric_manual` to `SourceType`.
 - `src/db/schema.ts` — three new tables + relations.
@@ -63,6 +65,7 @@
 ### Task 1.1: Add typeid prefixes
 
 **Files:**
+
 - Modify: `src/types/typeid.ts`
 
 - [ ] **Step 1: Add three new typeid names + prefixes**
@@ -103,6 +106,7 @@ Expected: PASS (the satisfies check enforces exhaustiveness).
 ### Task 1.2: Add metric source types
 
 **Files:**
+
 - Modify: `src/types/graph.ts`
 
 - [ ] **Step 1: Extend SourceType union**
@@ -130,6 +134,7 @@ Expected: PASS.
 ### Task 1.3: Add three Drizzle tables
 
 **Files:**
+
 - Modify: `src/db/schema.ts`
 
 - [ ] **Step 1: Add metric_definitions table**
@@ -156,10 +161,15 @@ export const metricDefinitions = pgTable(
     validRangeMin: text("valid_range_min"),
     validRangeMax: text("valid_range_max"),
     needsReview: boolean("needs_review").notNull().default(false),
-    reviewTaskNodeId: typeIdNoDefault("node", { name: "review_task_node_id" })
-      .references(() => nodes.id, { onDelete: "set null" }),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    reviewTaskNodeId: typeIdNoDefault("node", {
+      name: "review_task_node_id",
+    }).references(() => nodes.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [
     unique("metric_definitions_user_slug_unique").on(table.userId, table.slug),
@@ -202,7 +212,9 @@ export const metricObservations = pgTable(
     sourceId: typeId("source")
       .references(() => sources.id, { onDelete: "cascade" })
       .notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (table) => [
     index("metric_observations_user_def_occurred_idx").on(
@@ -255,7 +267,10 @@ export const metricDefinitionEmbeddings = pgTable(
 export const metricDefinitionsRelations = relations(
   metricDefinitions,
   ({ one, many }) => ({
-    user: one(users, { fields: [metricDefinitions.userId], references: [users.id] }),
+    user: one(users, {
+      fields: [metricDefinitions.userId],
+      references: [users.id],
+    }),
     embedding: one(metricDefinitionEmbeddings, {
       fields: [metricDefinitions.id],
       references: [metricDefinitionEmbeddings.metricDefinitionId],
@@ -271,7 +286,10 @@ export const metricDefinitionsRelations = relations(
 export const metricObservationsRelations = relations(
   metricObservations,
   ({ one }) => ({
-    user: one(users, { fields: [metricObservations.userId], references: [users.id] }),
+    user: one(users, {
+      fields: [metricObservations.userId],
+      references: [users.id],
+    }),
     definition: one(metricDefinitions, {
       fields: [metricObservations.metricDefinitionId],
       references: [metricDefinitions.id],
@@ -296,6 +314,7 @@ Expected: PASS.
 ### Task 1.4: Generate and inspect migration
 
 **Files:**
+
 - Create: `drizzle/0015_metrics_tables.sql`
 
 - [ ] **Step 1: Generate the migration**
@@ -316,6 +335,7 @@ Expected: migration applies; postgres logs no errors.
 ### Task 1.5: Migration smoke test
 
 **Files:**
+
 - Create: `src/db/migrations-metrics.test.ts`
 
 - [ ] **Step 1: Write the failing test**
@@ -323,8 +343,6 @@ Expected: migration applies; postgres logs no errors.
 Mirror `src/db/migrations-claims.test.ts`. Insert a user, a definition, an observation, an embedding; assert round-trip fidelity, FK cascade on definition delete, FK cascade on source delete.
 
 ```typescript
-import { describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
 import { getDb } from "./index";
 import {
   metricDefinitions,
@@ -333,6 +351,8 @@ import {
   sources,
   users,
 } from "./schema";
+import { eq } from "drizzle-orm";
+import { describe, expect, it } from "vitest";
 import { newTypeId } from "~/types/typeid";
 
 describe("metrics schema migration", () => {
@@ -421,6 +441,7 @@ git commit -m "✨ feat(metrics): schema foundation — definitions, observation
 ### Task 2.1: Threshold constants and proposed-definition schema
 
 **Files:**
+
 - Create: `src/lib/metrics/constants.ts`
 - Create: `src/lib/schemas/metric-definition.ts`
 
@@ -429,7 +450,7 @@ git commit -m "✨ feat(metrics): schema foundation — definitions, observation
 ```typescript
 /** Cosine similarity thresholds for metric definition dedup. */
 export const HIGH_SIMILARITY = 0.85;
-export const MID_SIMILARITY = 0.70;
+export const MID_SIMILARITY = 0.7;
 ```
 
 - [ ] **Step 2: Write the proposed-definition schema (single source of truth)**
@@ -443,7 +464,9 @@ import { z } from "zod";
 export const aggregationHintSchema = z.enum(["avg", "sum", "min", "max"]);
 
 export const proposedMetricDefinitionSchema = z.object({
-  slug: z.string().regex(/^[a-z0-9_]{1,80}$/, "lowercase slug, snake_case, max 80 chars"),
+  slug: z
+    .string()
+    .regex(/^[a-z0-9_]{1,80}$/, "lowercase slug, snake_case, max 80 chars"),
   label: z.string().min(1).max(200),
   description: z.string().min(1).max(2000),
   unit: z.string().min(1).max(40),
@@ -452,7 +475,9 @@ export const proposedMetricDefinitionSchema = z.object({
   validRangeMax: z.number().optional(),
 });
 
-export type ProposedMetricDefinition = z.infer<typeof proposedMetricDefinitionSchema>;
+export type ProposedMetricDefinition = z.infer<
+  typeof proposedMetricDefinitionSchema
+>;
 ```
 
 - [ ] **Step 3: Commit at end of phase, not now.**
@@ -460,34 +485,51 @@ export type ProposedMetricDefinition = z.infer<typeof proposedMetricDefinitionSc
 ### Task 2.2: Range guard utility
 
 **Files:**
+
 - Create: `src/lib/metrics/observations.ts` (initial — guard only; writer comes in Phase 3)
 - Create: `src/lib/metrics/observations.test.ts`
 
 - [ ] **Step 1: Write the failing test**
 
 ```typescript
-import { describe, expect, it } from "vitest";
 import { assertWithinRange, RangeViolationError } from "./observations";
+import { describe, expect, it } from "vitest";
 
 describe("assertWithinRange", () => {
   it("passes when no range is set", () => {
     expect(() =>
-      assertWithinRange({ value: 999, validRangeMin: null, validRangeMax: null }),
+      assertWithinRange({
+        value: 999,
+        validRangeMin: null,
+        validRangeMax: null,
+      }),
     ).not.toThrow();
   });
   it("rejects below min", () => {
     expect(() =>
-      assertWithinRange({ value: 1, validRangeMin: "30", validRangeMax: "200" }),
+      assertWithinRange({
+        value: 1,
+        validRangeMin: "30",
+        validRangeMax: "200",
+      }),
     ).toThrow(RangeViolationError);
   });
   it("rejects above max", () => {
     expect(() =>
-      assertWithinRange({ value: 500, validRangeMin: "30", validRangeMax: "200" }),
+      assertWithinRange({
+        value: 500,
+        validRangeMin: "30",
+        validRangeMax: "200",
+      }),
     ).toThrow(RangeViolationError);
   });
   it("accepts on the boundary", () => {
     expect(() =>
-      assertWithinRange({ value: 30, validRangeMin: "30", validRangeMax: "200" }),
+      assertWithinRange({
+        value: 30,
+        validRangeMin: "30",
+        validRangeMax: "200",
+      }),
     ).not.toThrow();
   });
 });
@@ -502,8 +544,14 @@ Expected: FAIL — module not found.
 
 ```typescript
 export class RangeViolationError extends Error {
-  constructor(public readonly value: number, public readonly min: number | null, public readonly max: number | null) {
-    super(`Value ${value} outside allowed range [${min ?? "-∞"}, ${max ?? "∞"}]`);
+  constructor(
+    public readonly value: number,
+    public readonly min: number | null,
+    public readonly max: number | null,
+  ) {
+    super(
+      `Value ${value} outside allowed range [${min ?? "-∞"}, ${max ?? "∞"}]`,
+    );
     this.name = "RangeViolationError";
   }
 }
@@ -515,8 +563,10 @@ export function assertWithinRange(input: {
 }): void {
   const min = input.validRangeMin === null ? null : Number(input.validRangeMin);
   const max = input.validRangeMax === null ? null : Number(input.validRangeMax);
-  if (min !== null && input.value < min) throw new RangeViolationError(input.value, min, max);
-  if (max !== null && input.value > max) throw new RangeViolationError(input.value, min, max);
+  if (min !== null && input.value < min)
+    throw new RangeViolationError(input.value, min, max);
+  if (max !== null && input.value > max)
+    throw new RangeViolationError(input.value, min, max);
 }
 ```
 
@@ -528,6 +578,7 @@ Expected: PASS.
 ### Task 2.3: Embedding helper for definitions
 
 **Files:**
+
 - Create: `src/lib/metrics/definitions.ts`
 
 - [ ] **Step 1: Locate the existing embedding service**
@@ -539,7 +590,8 @@ Identify the function used for `node_embeddings` / `claim_embeddings`. Reuse it.
 - [ ] **Step 2: Add `embedDefinition` thin wrapper to `definitions.ts`**
 
 ```typescript
-import { embedTexts } from "../embedding"; // adjust to the actual import path
+import { embedTexts } from "../embedding";
+// adjust to the actual import path
 import { db } from "~/db";
 import { metricDefinitionEmbeddings } from "~/db/schema";
 import type { TypeId } from "~/types/typeid";
@@ -576,16 +628,17 @@ If the codebase doesn't expose a re-usable `embedTexts`, refactor the existing c
 ### Task 2.4: Resolver — exact slug match
 
 **Files:**
+
 - Create: `src/lib/metrics/definitions.test.ts`
 - Modify: `src/lib/metrics/definitions.ts`
 
 - [ ] **Step 1: Write the failing test**
 
 ```typescript
+import { resolveDefinition } from "./definitions";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { db } from "~/db";
 import { metricDefinitions, users } from "~/db/schema";
-import { resolveDefinition } from "./definitions";
 
 describe("resolveDefinition — exact slug match", () => {
   const userId = `test-user-${crypto.randomUUID()}`;
@@ -863,24 +916,29 @@ git commit -m "✨ feat(metrics): definition resolver with embedding-based dedup
 ### Task 3.1: Source upsert helper
 
 **Files:**
+
 - Create: `src/lib/metrics/sources.ts`
 - Create: `src/lib/metrics/sources.test.ts`
 
 - [ ] **Step 1: Write the failing test**
 
 ```typescript
-import { describe, expect, it } from "vitest";
 import { ensureMetricSource } from "./sources";
+import { describe, expect, it } from "vitest";
 
 describe("ensureMetricSource", () => {
   it("returns existing source on second call with same externalId", async () => {
     const userId = `test-user-${crypto.randomUUID()}`;
     // ... insert user ...
     const a = await ensureMetricSource({
-      userId, type: "metric_push", externalId: "oura_2026-05-03",
+      userId,
+      type: "metric_push",
+      externalId: "oura_2026-05-03",
     });
     const b = await ensureMetricSource({
-      userId, type: "metric_push", externalId: "oura_2026-05-03",
+      userId,
+      type: "metric_push",
+      externalId: "oura_2026-05-03",
     });
     expect(a).toBe(b);
   });
@@ -940,23 +998,32 @@ Expected: PASS.
 ### Task 3.2: Event-node helper with deterministic id
 
 **Files:**
+
 - Create: `src/lib/metrics/event-nodes.ts`
 - Create: `src/lib/metrics/event-nodes.test.ts`
 
 - [ ] **Step 1: Write the failing test**
 
 ```typescript
-import { describe, expect, it } from "vitest";
 import { ensureEventNode } from "./event-nodes";
+import { describe, expect, it } from "vitest";
 
 describe("ensureEventNode", () => {
   it("is idempotent for the same (sourceId, eventKey)", async () => {
     // Seed user + source.
     const a = await ensureEventNode({
-      userId, sourceId, eventKey: "morning-run-1", label: "Morning run", occurredAt: new Date(),
+      userId,
+      sourceId,
+      eventKey: "morning-run-1",
+      label: "Morning run",
+      occurredAt: new Date(),
     });
     const b = await ensureEventNode({
-      userId, sourceId, eventKey: "morning-run-1", label: "Morning run", occurredAt: new Date(),
+      userId,
+      sourceId,
+      eventKey: "morning-run-1",
+      label: "Morning run",
+      occurredAt: new Date(),
     });
     expect(a).toBe(b);
   });
@@ -1001,11 +1068,16 @@ export async function ensureEventNode(input: {
 
   return await db.transaction(async (tx) => {
     const id = newTypeId("node");
-    await tx.insert(nodes).values({ id, userId: input.userId, nodeType: "Event" });
+    await tx
+      .insert(nodes)
+      .values({ id, userId: input.userId, nodeType: "Event" });
     await tx.insert(nodeMetadata).values({
       nodeId: id,
       label: input.label,
-      additionalData: { metricEventKey: fullKey, occurredAt: input.occurredAt.toISOString() },
+      additionalData: {
+        metricEventKey: fullKey,
+        occurredAt: input.occurredAt.toISOString(),
+      },
     });
     return id;
   });
@@ -1020,6 +1092,7 @@ Expected: PASS.
 ### Task 3.3: `recordMetricObservations` writer
 
 **Files:**
+
 - Modify: `src/lib/metrics/observations.ts`
 - Modify: `src/lib/metrics/observations.test.ts`
 
@@ -1101,7 +1174,11 @@ export interface EventInput {
 
 export interface RecordResult {
   inserted: number;
-  errors: { index: number; code: "RANGE_VIOLATION" | "RESOLVE_FAILED"; message: string }[];
+  errors: {
+    index: number;
+    code: "RANGE_VIOLATION" | "RESOLVE_FAILED";
+    message: string;
+  }[];
 }
 
 export async function recordMetricObservations(input: {
@@ -1148,6 +1225,7 @@ git commit -m "✨ feat(metrics): unified observation writer with event-node bri
 ### Task 4.1: Write request/response schemas
 
 **Files:**
+
 - Create: `src/lib/schemas/metric-write.ts`
 
 (`metric-definition.ts` already exists from Task 2.1.)
@@ -1156,8 +1234,8 @@ git commit -m "✨ feat(metrics): unified observation writer with event-node bri
 
 ```typescript
 // metric-write.ts
-import { z } from "zod";
 import { proposedMetricDefinitionSchema } from "./metric-definition";
+import { z } from "zod";
 
 export const singleWriteRequestSchema = z.object({
   userId: z.string().min(1),
@@ -1185,7 +1263,11 @@ export const writeResponseSchema = z.object({
   errors: z.array(
     z.object({
       index: z.number().int().nonnegative(),
-      code: z.enum(["RANGE_VIOLATION", "RESOLVE_FAILED", "DEFINITION_NOT_FOUND"]),
+      code: z.enum([
+        "RANGE_VIOLATION",
+        "RESOLVE_FAILED",
+        "DEFINITION_NOT_FOUND",
+      ]),
       message: z.string(),
     }),
   ),
@@ -1208,8 +1290,9 @@ Expected: PASS.
 ### Task 4.2: Single write route
 
 **Files:**
+
 - Create: `src/routes/metrics/observations.post.ts`
-- Create: `src/routes/metrics/observations.test.ts` *(NOTE: per `AGENTS.md`, route tests must NOT live under `src/routes/`. Place at `src/lib/metrics/routes-observations.test.ts` instead and import the route module.)*
+- Create: `src/routes/metrics/observations.test.ts` _(NOTE: per `AGENTS.md`, route tests must NOT live under `src/routes/`. Place at `src/lib/metrics/routes-observations.test.ts` instead and import the route module.)_
 
 - [ ] **Step 1: Write the failing integration test**
 
@@ -1217,24 +1300,34 @@ Drive the route as a normal Nitro handler test (look at `src/lib/extract-graph.t
 
 ```typescript
 // src/lib/metrics/routes-observations.test.ts
+// Minimal H3 event mock or your existing test helper:
+import { createTestEvent, readJson } from "../../../tests/h3-helpers";
 import { describe, expect, it } from "vitest";
 import handler from "~/routes/metrics/observations.post";
-// Minimal H3 event mock or your existing test helper:
-import { createTestEvent, readJson } from "../../../tests/h3-helpers"; // adjust to your helper
+
+// adjust to your helper
 
 describe("POST /metrics/observations", () => {
   it("creates a definition + observation on first call", async () => {
     const body = {
       userId: "test-user",
-      metric: { slug: "body_weight", label: "Weight", description: "kg",
-                unit: "kg", aggregationHint: "avg" },
+      metric: {
+        slug: "body_weight",
+        label: "Weight",
+        description: "kg",
+        unit: "kg",
+        aggregationHint: "avg",
+      },
       value: 78.2,
       occurredAt: new Date().toISOString(),
     };
     const event = createTestEvent({ method: "POST", body });
     const res = await handler(event);
     expect(res).toMatchObject({
-      inserted: 1, errors: [], definitionCreated: true, needsReview: false,
+      inserted: 1,
+      errors: [],
+      definitionCreated: true,
+      needsReview: false,
     });
   });
 });
@@ -1250,12 +1343,12 @@ Expected: FAIL.
 ```typescript
 // src/routes/metrics/observations.post.ts
 import { defineEventHandler, readValidatedBody } from "h3";
-import { singleWriteRequestSchema } from "~/lib/schemas/metric-write";
-import { recordMetricObservations } from "~/lib/metrics/observations";
-import { resolveDefinition } from "~/lib/metrics/definitions";
-import { ensureMetricSource } from "~/lib/metrics/sources";
-import { ensureUser } from "~/lib/ingestion/ensure-user";
 import { db } from "~/db";
+import { ensureUser } from "~/lib/ingestion/ensure-user";
+import { resolveDefinition } from "~/lib/metrics/definitions";
+import { recordMetricObservations } from "~/lib/metrics/observations";
+import { ensureMetricSource } from "~/lib/metrics/sources";
+import { singleWriteRequestSchema } from "~/lib/schemas/metric-write";
 
 export default defineEventHandler(async (event) => {
   const body = await readValidatedBody(event, (data) =>
@@ -1307,6 +1400,7 @@ Expected: PASS.
 ### Task 4.3: Bulk write route
 
 **Files:**
+
 - Create: `src/routes/metrics/observations/bulk.post.ts`
 - Create: `src/lib/metrics/routes-bulk.test.ts`
 
@@ -1319,10 +1413,19 @@ describe("POST /metrics/observations/bulk", () => {
     const event = createTestEvent({
       method: "POST",
       body: {
-        userId, sourceExternalId: "oura_2026-05-03",
+        userId,
+        sourceExternalId: "oura_2026-05-03",
         observations: [
-          { metricSlug: "oura_readiness", value: 87, occurredAt: "2026-05-03T07:14:00Z" },
-          { metricSlug: "unknown_slug",   value: 1,  occurredAt: "2026-05-03T07:14:00Z" },
+          {
+            metricSlug: "oura_readiness",
+            value: 87,
+            occurredAt: "2026-05-03T07:14:00Z",
+          },
+          {
+            metricSlug: "unknown_slug",
+            value: 1,
+            occurredAt: "2026-05-03T07:14:00Z",
+          },
         ],
       },
     });
@@ -1358,6 +1461,7 @@ Expected: PASS.
 ### Task 4.4: SDK client methods
 
 **Files:**
+
 - Modify: `src/sdk/memory-client.ts`
 - Modify: `src/sdk/index.ts`
 
@@ -1412,21 +1516,24 @@ git commit -m "✨ feat(metrics): single + bulk write APIs and SDK methods"
 ### Task 5.1: Read schemas
 
 **Files:**
+
 - Create: `src/lib/schemas/metric-read.ts`
 
 - [ ] **Step 1: Schemas**
 
 ```typescript
+import { aggregationHintSchema } from "./metric-definition";
 import { z } from "zod";
 import { typeIdSchema } from "~/types/typeid";
-import { aggregationHintSchema } from "./metric-definition";
 
 export const listMetricsRequestSchema = z.object({
   userId: z.string().min(1),
-  filter: z.object({
-    needsReview: z.boolean().optional(),
-    search: z.string().min(1).max(200).optional(),
-  }).optional(),
+  filter: z
+    .object({
+      needsReview: z.boolean().optional(),
+      search: z.string().min(1).max(200).optional(),
+    })
+    .optional(),
 });
 
 export const metricListItemSchema = z.object({
@@ -1435,7 +1542,10 @@ export const metricListItemSchema = z.object({
   label: z.string(),
   unit: z.string(),
   aggregationHint: aggregationHintSchema,
-  validRange: z.object({ min: z.number().nullable(), max: z.number().nullable() }),
+  validRange: z.object({
+    min: z.number().nullable(),
+    max: z.number().nullable(),
+  }),
   needsReview: z.boolean(),
   reviewTaskNodeId: typeIdSchema("node").nullable(),
   stats: z.object({
@@ -1465,11 +1575,13 @@ export const seriesPointSchema = z.object({
 });
 
 export const seriesResponseSchema = z.object({
-  series: z.array(z.object({
-    metricId: typeIdSchema("metric_definition"),
-    points: z.array(seriesPointSchema),
-    truncated: z.boolean().optional(),
-  })),
+  series: z.array(
+    z.object({
+      metricId: typeIdSchema("metric_definition"),
+      points: z.array(seriesPointSchema),
+      truncated: z.boolean().optional(),
+    }),
+  ),
 });
 
 export const summaryRequestSchema = z.object({
@@ -1479,11 +1591,34 @@ export const summaryRequestSchema = z.object({
 
 export const summaryResponseSchema = z.object({
   metricId: typeIdSchema("metric_definition"),
-  latest: z.object({ value: z.number(), occurredAt: z.string().datetime() }).nullable(),
+  latest: z
+    .object({ value: z.number(), occurredAt: z.string().datetime() })
+    .nullable(),
   windows: z.object({
-    "7d": z.object({ avg: z.number(), min: z.number(), max: z.number(), count: z.number().int() }).nullable(),
-    "30d": z.object({ avg: z.number(), min: z.number(), max: z.number(), count: z.number().int() }).nullable(),
-    "90d": z.object({ avg: z.number(), min: z.number(), max: z.number(), count: z.number().int() }).nullable(),
+    "7d": z
+      .object({
+        avg: z.number(),
+        min: z.number(),
+        max: z.number(),
+        count: z.number().int(),
+      })
+      .nullable(),
+    "30d": z
+      .object({
+        avg: z.number(),
+        min: z.number(),
+        max: z.number(),
+        count: z.number().int(),
+      })
+      .nullable(),
+    "90d": z
+      .object({
+        avg: z.number(),
+        min: z.number(),
+        max: z.number(),
+        count: z.number().int(),
+      })
+      .nullable(),
   }),
   trend: z.enum(["up", "down", "flat"]).nullable(),
 });
@@ -1492,6 +1627,7 @@ export const summaryResponseSchema = z.object({
 ### Task 5.2: List metrics implementation
 
 **Files:**
+
 - Create: `src/lib/metrics/list.ts`
 - Create: `src/lib/metrics/list.test.ts`
 
@@ -1510,6 +1646,7 @@ Expected: PASS.
 ### Task 5.3: Series implementation
 
 **Files:**
+
 - Create: `src/lib/metrics/series.ts`
 - Create: `src/lib/metrics/series.test.ts`
 
@@ -1527,12 +1664,18 @@ Use Drizzle raw SQL for bucketing:
 const bucketExpr = sql<string>`date_trunc(${input.bucket}, ${metricObservations.occurredAt})`;
 const aggExpr = (() => {
   switch (agg) {
-    case "avg": return sql<number>`AVG(${metricObservations.value}::numeric)`;
-    case "sum": return sql<number>`SUM(${metricObservations.value}::numeric)`;
-    case "min": return sql<number>`MIN(${metricObservations.value}::numeric)`;
-    case "max": return sql<number>`MAX(${metricObservations.value}::numeric)`;
-    case "p50": return sql<number>`percentile_cont(0.5) WITHIN GROUP (ORDER BY ${metricObservations.value}::numeric)`;
-    case "p90": return sql<number>`percentile_cont(0.9) WITHIN GROUP (ORDER BY ${metricObservations.value}::numeric)`;
+    case "avg":
+      return sql<number>`AVG(${metricObservations.value}::numeric)`;
+    case "sum":
+      return sql<number>`SUM(${metricObservations.value}::numeric)`;
+    case "min":
+      return sql<number>`MIN(${metricObservations.value}::numeric)`;
+    case "max":
+      return sql<number>`MAX(${metricObservations.value}::numeric)`;
+    case "p50":
+      return sql<number>`percentile_cont(0.5) WITHIN GROUP (ORDER BY ${metricObservations.value}::numeric)`;
+    case "p90":
+      return sql<number>`percentile_cont(0.9) WITHIN GROUP (ORDER BY ${metricObservations.value}::numeric)`;
   }
 })();
 ```
@@ -1546,6 +1689,7 @@ Expected: PASS.
 ### Task 5.4: Summary implementation
 
 **Files:**
+
 - Create: `src/lib/metrics/summary.ts`
 - Create: `src/lib/metrics/summary.test.ts`
 
@@ -1564,6 +1708,7 @@ Expected: PASS.
 ### Task 5.5: Routes + SDK methods
 
 **Files:**
+
 - Create: `src/routes/metrics/list.post.ts`, `series.post.ts`, `summary.post.ts`
 - Modify: `src/sdk/memory-client.ts`, `src/sdk/index.ts`
 
@@ -1604,6 +1749,7 @@ git commit -m "✨ feat(metrics): list, series, and summary read APIs"
 ### Task 6.1: Tool descriptions
 
 **Files:**
+
 - Modify: `src/lib/mcp/tool-descriptions.ts`
 - Modify: `src/lib/mcp/tool-descriptions.test.ts`
 
@@ -1613,16 +1759,16 @@ Append to `tool-descriptions.ts`:
 
 ```typescript
 export const RECORD_METRIC_DESCRIPTION =
-  "Records a single numeric reading the user is tracking (weight, distance, sleep duration, mood score). Provide a metric definition (slug, label, unit, aggregation hint) — the system reuses existing definitions for similar concepts and creates new ones automatically. Use for ad-hoc readings the user mentions in chat (\"log that I weighed 78kg\"). Do not use for retrospective bulk imports.";
+  'Records a single numeric reading the user is tracking (weight, distance, sleep duration, mood score). Provide a metric definition (slug, label, unit, aggregation hint) — the system reuses existing definitions for similar concepts and creates new ones automatically. Use for ad-hoc readings the user mentions in chat ("log that I weighed 78kg"). Do not use for retrospective bulk imports.';
 
 export const LIST_METRICS_DESCRIPTION =
   "Returns the user's tracked metric definitions with lightweight stats (count, latest value, first/latest timestamps). Call before answering questions about what's being tracked, or before get_metric_series so you have a definition id and the right unit. Optionally filter by needsReview to surface metrics that need user disambiguation.";
 
 export const GET_METRIC_SERIES_DESCRIPTION =
-  "Returns time-bucketed series for one or more metrics. Use for charts and for answering \"how has X changed over time\" questions. Pass metric ids from list_metrics, a from/to range, and a bucket size (none|hour|day|week|month). The aggregation defaults to each metric's stored hint (steps→sum, HR→avg) — only override agg if the question demands a different statistic.";
+  'Returns time-bucketed series for one or more metrics. Use for charts and for answering "how has X changed over time" questions. Pass metric ids from list_metrics, a from/to range, and a bucket size (none|hour|day|week|month). The aggregation defaults to each metric\'s stored hint (steps→sum, HR→avg) — only override agg if the question demands a different statistic.';
 
 export const GET_METRIC_SUMMARY_DESCRIPTION =
-  "Returns a quick summary for one metric: latest value, 7d/30d/90d window stats, and a coarse trend (up|down|flat). Use for \"what's my X been like lately\" questions where a full series is overkill. For comparisons across metrics or precise charts, use get_metric_series instead.";
+  'Returns a quick summary for one metric: latest value, 7d/30d/90d window stats, and a coarse trend (up|down|flat). Use for "what\'s my X been like lately" questions where a full series is overkill. For comparisons across metrics or precise charts, use get_metric_series instead.';
 ```
 
 - [ ] **Step 2: Add inline snapshots in `tool-descriptions.test.ts`**
@@ -1637,6 +1783,7 @@ Expected: PASS (snapshots write on first run; `-u` if needed).
 ### Task 6.2: Register tools in MCP server
 
 **Files:**
+
 - Modify: `src/lib/mcp/mcp-server.ts`
 
 - [ ] **Step 1: Import descriptions and request schemas**
@@ -1648,21 +1795,24 @@ import {
   GET_METRIC_SERIES_DESCRIPTION,
   GET_METRIC_SUMMARY_DESCRIPTION,
 } from "./tool-descriptions";
+import { resolveDefinition } from "~/lib/metrics/definitions";
+import { listMetrics } from "~/lib/metrics/list";
+import { recordMetricObservations } from "~/lib/metrics/observations";
+import { getMetricSeries } from "~/lib/metrics/series";
+import { ensureMetricSource } from "~/lib/metrics/sources";
+import { getMetricSummary } from "~/lib/metrics/summary";
+import {
+  listMetricsRequestSchema,
+  listMetricsResponseSchema,
+  seriesRequestSchema,
+  seriesResponseSchema,
+  summaryRequestSchema,
+  summaryResponseSchema,
+} from "~/lib/schemas/metric-read";
 import {
   singleWriteRequestSchema,
   writeResponseSchema,
 } from "~/lib/schemas/metric-write";
-import {
-  listMetricsRequestSchema, listMetricsResponseSchema,
-  seriesRequestSchema, seriesResponseSchema,
-  summaryRequestSchema, summaryResponseSchema,
-} from "~/lib/schemas/metric-read";
-import { listMetrics } from "~/lib/metrics/list";
-import { getMetricSeries } from "~/lib/metrics/series";
-import { getMetricSummary } from "~/lib/metrics/summary";
-import { resolveDefinition } from "~/lib/metrics/definitions";
-import { ensureMetricSource } from "~/lib/metrics/sources";
-import { recordMetricObservations } from "~/lib/metrics/observations";
 ```
 
 - [ ] **Step 2: Register the four tools**
@@ -1701,6 +1851,7 @@ git commit -m "✨ feat(metrics): MCP tools for record / list / series / summary
 ### Task 7.1: Extend extraction zod schema
 
 **Files:**
+
 - Modify: `src/lib/extract-graph.ts`
 
 - [ ] **Step 1: Read current extractor**
@@ -1785,16 +1936,25 @@ await recordMetricObservations({
     label: e.label,
     occurredAt: e.occurredAt,
     observations: e.observations.map((o) => ({
-      metric: { slug: o.slug, label: o.label, description: o.description,
-                unit: o.unit, aggregationHint: o.aggregationHint },
+      metric: {
+        slug: o.slug,
+        label: o.label,
+        description: o.description,
+        unit: o.unit,
+        aggregationHint: o.aggregationHint,
+      },
       value: o.value,
       note: o.note ?? null,
     })),
   })),
   standalone: extracted.metrics.standalone.map((s) => ({
-    metric: { slug: s.metric.slug, label: s.metric.label,
-              description: s.metric.description, unit: s.metric.unit,
-              aggregationHint: s.metric.aggregationHint },
+    metric: {
+      slug: s.metric.slug,
+      label: s.metric.label,
+      description: s.metric.description,
+      unit: s.metric.unit,
+      aggregationHint: s.metric.aggregationHint,
+    },
     value: s.metric.value,
     occurredAt: s.occurredAt,
     note: s.metric.note ?? null,
@@ -1810,6 +1970,7 @@ Expected: PASS (existing tests should be unaffected because `metrics` defaults t
 ### Task 7.2: Eval story
 
 **Files:**
+
 - Create: `src/evals/memory/stories/metrics-extraction.ts`
 - Modify: `src/evals/memory/run-all.ts` (or whichever file enumerates stories)
 
@@ -1820,6 +1981,7 @@ Mirror the existing eval-story shape (look at any file in `src/evals/memory/stor
 > "Did 5k this morning, pace 5:30/km, avg HR 158. Felt sluggish. Weighed 78.2 after."
 
 Assertions:
+
 - One Event node with label including "morning" or "run".
 - Three observations linked to that event (`distance_km`, `pace_min_per_km`, `avg_hr`).
 - One standalone observation (`body_weight`) with value 78.2.
@@ -1833,6 +1995,7 @@ Expected: the new story runs and passes.
 ### Task 7.3: Re-ingestion idempotency test
 
 **Files:**
+
 - Create: `src/lib/metrics/extraction-idempotency.test.ts`
 
 - [ ] **Step 1: Write the failing test**
@@ -1879,6 +2042,7 @@ git commit -m "✨ feat(metrics): extract observations during conversation/docum
 ### Task 8.1: README addendum
 
 **Files:**
+
 - Modify: `README.md`
 
 - [ ] **Step 1: Append a "Metrics" section**
@@ -1911,16 +2075,16 @@ git commit -m "📚 docs(metrics): document ingestion paths and read APIs in REA
 
 ## Acceptance Gates (per phase)
 
-| Phase | Gate |
-| --- | --- |
-| 1 | `migrations-metrics.test.ts` passes; full `pnpm run test` passes; migration applied locally. |
-| 2 | All four resolver bands have tests passing; mid-similarity creates a `Task` node visible in `list_open_commitments`. |
-| 3 | `recordMetricObservations` test green for both happy path and per-row range error path; event node dedup test green. |
-| 4 | `POST /metrics/observations` and `POST /metrics/observations/bulk` integration tests green; SDK build clean. |
-| 5 | `list_metrics` / `series` / `summary` tests green for all aggregation modes and bucket sizes. |
-| 6 | `tool-descriptions.test.ts` snapshots pinned for all four new tools; MCP tool calls smoke-tested. |
-| 7 | Extractor returns metrics for the eval story; re-ingestion test green. |
-| 8 | README updated; full check passes; SDK build verified. |
+| Phase | Gate                                                                                                                 |
+| ----- | -------------------------------------------------------------------------------------------------------------------- |
+| 1     | `migrations-metrics.test.ts` passes; full `pnpm run test` passes; migration applied locally.                         |
+| 2     | All four resolver bands have tests passing; mid-similarity creates a `Task` node visible in `list_open_commitments`. |
+| 3     | `recordMetricObservations` test green for both happy path and per-row range error path; event node dedup test green. |
+| 4     | `POST /metrics/observations` and `POST /metrics/observations/bulk` integration tests green; SDK build clean.         |
+| 5     | `list_metrics` / `series` / `summary` tests green for all aggregation modes and bucket sizes.                        |
+| 6     | `tool-descriptions.test.ts` snapshots pinned for all four new tools; MCP tool calls smoke-tested.                    |
+| 7     | Extractor returns metrics for the eval story; re-ingestion test green.                                               |
+| 8     | README updated; full check passes; SDK build verified.                                                               |
 
 ## Open Items Inherited from the Spec
 

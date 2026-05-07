@@ -4,10 +4,10 @@
  * Reads `userProfiles.content` (the manual override the user authored) and
  * renders it as the `pinned` section. Empty content → no section.
  */
+import type { ContextSectionPinned } from "../types";
 import { eq } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { userProfiles } from "~/db/schema";
-import type { ContextSectionPinned } from "../types";
 
 const USAGE =
   "User-pinned manual context. Treat as ground truth and authoritative.";

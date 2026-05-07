@@ -27,7 +27,10 @@ import type { AssertedByKind, Predicate } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 
 /** Trust filter for atlas inputs — matches design doc (`atlas` retrieval section). */
-const ATLAS_TRUSTED_KINDS = ["user", "user_confirmed"] as const satisfies readonly AssertedByKind[];
+const ATLAS_TRUSTED_KINDS = [
+  "user",
+  "user_confirmed",
+] as const satisfies readonly AssertedByKind[];
 
 /** Predicates whose active claims feed the atlas, per registry. */
 const FEEDS_ATLAS_PREDICATES: readonly Predicate[] = Object.values(
@@ -222,9 +225,7 @@ export function renderAtlasClaimsBlock(
 export function buildAtlasPrompt(inputs: AtlasInputs): string {
   const dateLine = inputs.asOf.toISOString().slice(0, 10);
   const claimsBlock = renderAtlasClaimsBlock(inputs.rankedClaims);
-  const pinnedBlock = inputs.pinned
-    ? inputs.pinned
-    : "(no pinned content)";
+  const pinnedBlock = inputs.pinned ? inputs.pinned : "(no pinned content)";
 
   return `You are synthesising the User Atlas — a compact, durable portrait of who the user is and what is currently true for them, to be loaded as context for every assistant interaction.
 
@@ -263,10 +264,7 @@ Return JSON matching the schema { atlas: string }.`;
  * empty. Format matches what `getAtlas` already returns to consumers — they
  * read a single `description` string and treat it as opaque prose.
  */
-export function composeAtlasContent(
-  pinned: string,
-  derived: string,
-): string {
+export function composeAtlasContent(pinned: string, derived: string): string {
   const trimmedPinned = pinned.trim();
   const trimmedDerived = derived.trim();
   const sections: string[] = [];
@@ -398,10 +396,7 @@ export async function processAtlasJob(
     .update(nodeMetadata)
     .set({
       description: content,
-      additionalData: mergeAtlasAdditionalData(
-        metaRow?.additionalData,
-        hash,
-      ),
+      additionalData: mergeAtlasAdditionalData(metaRow?.additionalData, hash),
     })
     .where(eq(nodeMetadata.nodeId, atlasNodeId));
 

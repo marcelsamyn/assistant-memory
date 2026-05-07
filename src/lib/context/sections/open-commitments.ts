@@ -10,9 +10,9 @@
  * — surfacing the source without the claim id would be lossy. Phase 3.6's
  * node-card synthesis is the right place to add task-level evidence.
  */
+import type { ContextSectionOpenCommitments } from "../types";
 import { getOpenCommitments } from "~/lib/query/open-commitments";
 import type { OpenCommitment } from "~/lib/schemas/open-commitments";
-import type { ContextSectionOpenCommitments } from "../types";
 
 const MAX_COMMITMENTS = 20;
 const USAGE =

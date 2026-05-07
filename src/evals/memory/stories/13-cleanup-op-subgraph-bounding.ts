@@ -22,11 +22,11 @@ import { seedClaim, seedNode, seedSource } from "../seed";
 import type { EvalContext, EvalFixture } from "../types";
 import { eq } from "drizzle-orm";
 import { claims } from "~/db/schema";
+import type { GraphNode } from "~/lib/jobs/cleanup-graph";
 import {
   applyCleanupOperations,
   type CleanupOperation,
 } from "~/lib/jobs/cleanup-operations";
-import type { GraphNode } from "~/lib/jobs/cleanup-graph";
 import { TemporaryIdMapper } from "~/lib/temporary-id-mapper";
 import type { TypeId } from "~/types/typeid";
 

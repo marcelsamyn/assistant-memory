@@ -62,9 +62,7 @@ export const story03PersonNickname: EvalFixture = {
               description: "Met today.",
             },
           ],
-          aliases: [
-            { subjectId: "temp_person_1", aliasText: "Jonathan" },
-          ],
+          aliases: [{ subjectId: "temp_person_1", aliasText: "Jonathan" }],
         },
         {
           // The extractor sees existing Person nodes via the prompt's
@@ -73,9 +71,7 @@ export const story03PersonNickname: EvalFixture = {
           // attaches the new "Jon" alias to that existing id rather than
           // minting a new node — this is the alias-write path the story
           // pins.
-          aliases: [
-            { subjectId: "existing_person_1", aliasText: "Jon" },
-          ],
+          aliases: [{ subjectId: "existing_person_1", aliasText: "Jon" }],
         },
       ],
     },
