@@ -16,20 +16,22 @@
  * Common aliases: NodeCard, getNodeCard, getNodeCards, get_entity, node card
  * synthesis, batch node card.
  */
+import type {
+  NodeCard,
+  NodeCardCurrentFact,
+  NodeCardPreferenceGoal,
+  NodeCardRecentEvidence,
+  NodeCardReference,
+} from "./node-card-types";
 import { and, desc, eq, exists, inArray, or, sql } from "drizzle-orm";
+import { z } from "zod";
+import { claims, nodeMetadata, nodes, sourceLinks, sources } from "~/db/schema";
 import { listAliasesForNodeIds } from "~/lib/alias";
 import {
   PREDICATE_POLICIES,
   resolvePredicatePolicy,
 } from "~/lib/claims/predicate-policies";
 import { getOpenCommitments } from "~/lib/query/open-commitments";
-import {
-  claims,
-  nodeMetadata,
-  nodes,
-  sourceLinks,
-  sources,
-} from "~/db/schema";
 import {
   AttributePredicateEnum,
   type AssertedByKind,
@@ -39,14 +41,6 @@ import {
 } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
-import { z } from "zod";
-import type {
-  NodeCard,
-  NodeCardCurrentFact,
-  NodeCardPreferenceGoal,
-  NodeCardRecentEvidence,
-  NodeCardReference,
-} from "./node-card-types";
 
 export interface GetNodeCardParams {
   userId: string;
@@ -76,12 +70,11 @@ const ATTRIBUTE_PREDICATE_SET: ReadonlySet<Predicate> = new Set(
 );
 
 /** Multi_value attribute predicates that feed the atlas (HAS_PREFERENCE, HAS_GOAL). */
-const PREFERENCE_GOAL_PREDICATES: readonly Predicate[] = AttributePredicateEnum.options.filter(
-  (predicate) => {
+const PREFERENCE_GOAL_PREDICATES: readonly Predicate[] =
+  AttributePredicateEnum.options.filter((predicate) => {
     const policy = PREDICATE_POLICIES[predicate];
     return policy.feedsAtlas && policy.cardinality === "multi_value";
-  },
-);
+  });
 
 /**
  * Source metadata schema for reference attribution. The `sources.metadata`
@@ -194,7 +187,10 @@ async function loadNodesBasicsMany(
     .from(nodes)
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
     .where(
-      and(eq(nodes.userId, userId), inArray(nodes.id, nodeIds as TypeId<"node">[])),
+      and(
+        eq(nodes.userId, userId),
+        inArray(nodes.id, nodeIds as TypeId<"node">[]),
+      ),
     );
 
   for (const row of rows) {
@@ -350,7 +346,11 @@ function isCurrentFactClaim(
   claim: ActiveClaimRow,
   subjectType: NodeType,
 ): boolean {
-  if (!TRUSTED_KINDS.includes(claim.assertedByKind as (typeof TRUSTED_KINDS)[number])) {
+  if (
+    !TRUSTED_KINDS.includes(
+      claim.assertedByKind as (typeof TRUSTED_KINDS)[number],
+    )
+  ) {
     return false;
   }
   const policy = resolvePredicatePolicy(claim.predicate, subjectType);
@@ -363,7 +363,9 @@ function isCurrentFactClaim(
 function isPreferenceGoalClaim(claim: ActiveClaimRow): boolean {
   if (!PREFERENCE_GOAL_PREDICATES.includes(claim.predicate)) return false;
   if (!ATTRIBUTE_PREDICATE_SET.has(claim.predicate)) return false;
-  return PREFERENCE_KINDS.includes(claim.assertedByKind as (typeof PREFERENCE_KINDS)[number]);
+  return PREFERENCE_KINDS.includes(
+    claim.assertedByKind as (typeof PREFERENCE_KINDS)[number],
+  );
 }
 
 function assembleCard(
@@ -375,7 +377,10 @@ function assembleCard(
   referenceMeta: NodeCardReference | undefined,
   openCommitments: NodeCard["openCommitments"] | undefined,
 ): NodeCard {
-  const scope = deriveScope(basics.hasPersonalSupport, basics.hasReferenceSupport);
+  const scope = deriveScope(
+    basics.hasPersonalSupport,
+    basics.hasReferenceSupport,
+  );
 
   const currentFacts: NodeCardCurrentFact[] = [];
   const preferencesGoals: NodeCardPreferenceGoal[] = [];
@@ -389,7 +394,7 @@ function assembleCard(
         objectLabel:
           claim.objectNodeId === null
             ? null
-            : labelByNodeId.get(claim.objectNodeId) ?? null,
+            : (labelByNodeId.get(claim.objectNodeId) ?? null),
         statement: claim.statement,
         statedAt: claim.statedAt,
         evidence: { claimId: claim.claimId, sourceId: claim.sourceId },

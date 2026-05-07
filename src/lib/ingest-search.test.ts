@@ -176,346 +176,341 @@ describeIfServer("ingest -> search end-to-end", () => {
     await admin.end();
   });
 
-  it(
-    "extracts claims from a conversation and surfaces them via searchMemory",
-    async () => {
-      const userId = "user_e2e";
-      const otherUserId = "user_other";
-      const projectLabel = "Memory Refactor";
-      const orgLabel = "Acme Corp";
-      const personLabel = "Marcel Samyn";
+  it("extracts claims from a conversation and surfaces them via searchMemory", async () => {
+    const userId = "user_e2e";
+    const otherUserId = "user_other";
+    const projectLabel = "Memory Refactor";
+    const orgLabel = "Acme Corp";
+    const personLabel = "Marcel Samyn";
 
-      const personNodeId = newTypeId("node");
-      const conversationNodeId = newTypeId("node");
-      const conversationSourceId = newTypeId("source");
-      const messageSourceId = newTypeId("source");
-      const otherUserSourceId = newTypeId("source");
-      const otherUserNodeId = newTypeId("node");
-      const otherUserConversationNodeId = newTypeId("node");
-      const otherUserClaimId = newTypeId("claim");
-      const statedAt = new Date("2026-04-26T10:00:00.000Z");
+    const personNodeId = newTypeId("node");
+    const conversationNodeId = newTypeId("node");
+    const conversationSourceId = newTypeId("source");
+    const messageSourceId = newTypeId("source");
+    const otherUserSourceId = newTypeId("source");
+    const otherUserNodeId = newTypeId("node");
+    const otherUserConversationNodeId = newTypeId("node");
+    const otherUserClaimId = newTypeId("claim");
+    const statedAt = new Date("2026-04-26T10:00:00.000Z");
 
-      const database = drizzle(client, { schema, casing: "snake_case" });
+    const database = drizzle(client, { schema, casing: "snake_case" });
 
-      vi.resetModules();
-      vi.doMock("~/utils/db", () => ({
-        useDatabase: async () => database,
-      }));
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
 
-      // Mock the LLM: deterministic extraction of one Project + one Object,
-      // both linked back to the existing Person, plus an attribute claim and
-      // an alias.
-      vi.doMock("./ai", () => ({
-        createCompletionClient: async () => ({
-          beta: {
-            chat: {
-              completions: {
-                parse: async () => ({
-                  choices: [
-                    {
-                      message: {
-                        parsed: {
-                          nodes: [
-                            {
-                              id: "project_1",
-                              type: "Concept",
-                              label: projectLabel,
-                              description:
-                                "Refactor of the assistant memory substrate from edges to claims.",
-                            },
-                            {
-                              id: "org_1",
-                              type: "Object",
-                              label: orgLabel,
-                              description: "Employer organization.",
-                            },
-                          ],
-                          relationshipClaims: [
-                            {
-                              subjectId: "existing_person_1",
-                              objectId: "project_1",
-                              predicate: "PARTICIPATED_IN",
-                              statement: `${personLabel} is working on the ${projectLabel} project.`,
-                              sourceRef: "msg_1",
-                              assertionKind: "user",
-                            },
-                            {
-                              subjectId: "project_1",
-                              objectId: "org_1",
-                              predicate: "RELATED_TO",
-                              statement: `${projectLabel} is a project at ${orgLabel}.`,
-                              sourceRef: "msg_1",
-                              assertionKind: "user",
-                            },
-                          ],
-                          attributeClaims: [
-                            {
-                              subjectId: "project_1",
-                              predicate: "HAS_STATUS",
-                              objectValue: "in_progress",
-                              statement: `${projectLabel} is currently in progress.`,
-                              sourceRef: "msg_1",
-                              assertionKind: "user",
-                            },
-                          ],
-                          aliases: [
-                            {
-                              subjectId: "project_1",
-                              aliasText: "the refactor",
-                            },
-                          ],
-                        },
+    // Mock the LLM: deterministic extraction of one Project + one Object,
+    // both linked back to the existing Person, plus an attribute claim and
+    // an alias.
+    vi.doMock("./ai", () => ({
+      createCompletionClient: async () => ({
+        beta: {
+          chat: {
+            completions: {
+              parse: async () => ({
+                choices: [
+                  {
+                    message: {
+                      parsed: {
+                        nodes: [
+                          {
+                            id: "project_1",
+                            type: "Concept",
+                            label: projectLabel,
+                            description:
+                              "Refactor of the assistant memory substrate from edges to claims.",
+                          },
+                          {
+                            id: "org_1",
+                            type: "Object",
+                            label: orgLabel,
+                            description: "Employer organization.",
+                          },
+                        ],
+                        relationshipClaims: [
+                          {
+                            subjectId: "existing_person_1",
+                            objectId: "project_1",
+                            predicate: "PARTICIPATED_IN",
+                            statement: `${personLabel} is working on the ${projectLabel} project.`,
+                            sourceRef: "msg_1",
+                            assertionKind: "user",
+                          },
+                          {
+                            subjectId: "project_1",
+                            objectId: "org_1",
+                            predicate: "RELATED_TO",
+                            statement: `${projectLabel} is a project at ${orgLabel}.`,
+                            sourceRef: "msg_1",
+                            assertionKind: "user",
+                          },
+                        ],
+                        attributeClaims: [
+                          {
+                            subjectId: "project_1",
+                            predicate: "HAS_STATUS",
+                            objectValue: "in_progress",
+                            statement: `${projectLabel} is currently in progress.`,
+                            sourceRef: "msg_1",
+                            assertionKind: "user",
+                          },
+                        ],
+                        aliases: [
+                          {
+                            subjectId: "project_1",
+                            aliasText: "the refactor",
+                          },
+                        ],
                       },
                     },
-                  ],
-                }),
-              },
+                  },
+                ],
+              }),
             },
           },
-        }),
-      }));
-
-      // Mock embeddings: deterministic token-overlap vectors. Same text -> same
-      // vector; overlapping tokens -> high cosine similarity. Real DB-side
-      // cosine search runs unmodified against these.
-      vi.doMock("./embeddings", () => ({
-        generateEmbeddings: async (params: { input: string[] }) => ({
-          data: params.input.map((text) => ({
-            embedding: deterministicEmbedding(text),
-          })),
-          usage: { total_tokens: 0 },
-        }),
-      }));
-
-      // Mock the reranker: pass-through preserving group/item, scoring by
-      // descending insertion order so assertions are stable.
-      vi.doMock("./rerank", () => ({
-        rerankMultiple: async <Groups extends Record<string, unknown>>(
-          _query: string,
-          groups: {
-            [K in keyof Groups]: {
-              items: Groups[K][];
-              toDocument: (item: Groups[K]) => string;
-            };
-          },
-        ) => {
-          const flat: Array<{
-            group: keyof Groups;
-            item: Groups[keyof Groups];
-            relevance_score: number;
-          }> = [];
-          for (const groupKey of Object.keys(groups) as Array<keyof Groups>) {
-            for (const item of groups[groupKey].items) {
-              flat.push({
-                group: groupKey,
-                item: item as Groups[keyof Groups],
-                relevance_score: 1,
-              });
-            }
-          }
-          return flat;
         },
-        rerank: async () => ({ results: [] }),
-      }));
+      }),
+    }));
 
-      try {
-        // --- Set up user, the canonical Person node, and a conversation
-        // source/node. This mirrors what the real ingestion job would have
-        // already created before calling extractGraph.
-        await database.insert(schema.users).values([
-          { id: userId },
-          { id: otherUserId },
-        ]);
-        await database.insert(schema.nodes).values([
-          { id: personNodeId, userId, nodeType: "Person" },
-          { id: conversationNodeId, userId, nodeType: "Conversation" },
-          {
-            id: otherUserNodeId,
-            userId: otherUserId,
-            nodeType: "Concept",
-          },
-          {
-            id: otherUserConversationNodeId,
-            userId: otherUserId,
-            nodeType: "Conversation",
-          },
-        ]);
-        await database.insert(schema.nodeMetadata).values([
-          {
-            nodeId: personNodeId,
-            label: personLabel,
-            canonicalLabel: personLabel.toLowerCase(),
-            description: "The user.",
-          },
-          {
-            nodeId: conversationNodeId,
-            label: "Conversation",
-            canonicalLabel: "conversation",
-          },
-          {
-            nodeId: otherUserNodeId,
-            label: projectLabel,
-            canonicalLabel: projectLabel.toLowerCase(),
-            description:
-              "Another user's project that should not leak across users.",
-          },
-          {
-            nodeId: otherUserConversationNodeId,
-            label: "Other Conversation",
-            canonicalLabel: "other conversation",
-          },
-        ]);
-        await database.insert(schema.sources).values([
-          {
-            id: conversationSourceId,
-            userId,
-            type: "conversation",
-            externalId: "conv_1",
-            status: "completed",
-          },
-          {
-            id: messageSourceId,
-            userId,
-            type: "conversation_message",
-            externalId: "msg_1",
-            status: "completed",
-          },
-          {
-            id: otherUserSourceId,
-            userId: otherUserId,
-            type: "conversation_message",
-            externalId: "other_msg_1",
-            status: "completed",
-          },
-        ]);
+    // Mock embeddings: deterministic token-overlap vectors. Same text -> same
+    // vector; overlapping tokens -> high cosine similarity. Real DB-side
+    // cosine search runs unmodified against these.
+    vi.doMock("./embeddings", () => ({
+      generateEmbeddings: async (params: { input: string[] }) => ({
+        data: params.input.map((text) => ({
+          embedding: deterministicEmbedding(text),
+        })),
+        usage: { total_tokens: 0 },
+      }),
+    }));
 
-        // Seed a claim + embedding for the OTHER user, mentioning the same
-        // project label, to verify the per-user filter doesn't leak.
-        await database.insert(schema.claims).values({
-          id: otherUserClaimId,
+    // Mock the reranker: pass-through preserving group/item, scoring by
+    // descending insertion order so assertions are stable.
+    vi.doMock("./rerank", () => ({
+      rerankMultiple: async <Groups extends Record<string, unknown>>(
+        _query: string,
+        groups: {
+          [K in keyof Groups]: {
+            items: Groups[K][];
+            toDocument: (item: Groups[K]) => string;
+          };
+        },
+      ) => {
+        const flat: Array<{
+          group: keyof Groups;
+          item: Groups[keyof Groups];
+          relevance_score: number;
+        }> = [];
+        for (const groupKey of Object.keys(groups) as Array<keyof Groups>) {
+          for (const item of groups[groupKey].items) {
+            flat.push({
+              group: groupKey,
+              item: item as Groups[keyof Groups],
+              relevance_score: 1,
+            });
+          }
+        }
+        return flat;
+      },
+      rerank: async () => ({ results: [] }),
+    }));
+
+    try {
+      // --- Set up user, the canonical Person node, and a conversation
+      // source/node. This mirrors what the real ingestion job would have
+      // already created before calling extractGraph.
+      await database
+        .insert(schema.users)
+        .values([{ id: userId }, { id: otherUserId }]);
+      await database.insert(schema.nodes).values([
+        { id: personNodeId, userId, nodeType: "Person" },
+        { id: conversationNodeId, userId, nodeType: "Conversation" },
+        {
+          id: otherUserNodeId,
           userId: otherUserId,
-          subjectNodeId: otherUserNodeId,
-          objectValue: "in_progress",
-          predicate: "HAS_STATUS",
-          statement: `Other user's ${projectLabel} project is in progress.`,
-          sourceId: otherUserSourceId,
-          assertedByKind: "user",
-          statedAt,
-          status: "active",
-        });
-        await database.insert(schema.nodeEmbeddings).values({
+          nodeType: "Concept",
+        },
+        {
+          id: otherUserConversationNodeId,
+          userId: otherUserId,
+          nodeType: "Conversation",
+        },
+      ]);
+      await database.insert(schema.nodeMetadata).values([
+        {
+          nodeId: personNodeId,
+          label: personLabel,
+          canonicalLabel: personLabel.toLowerCase(),
+          description: "The user.",
+        },
+        {
+          nodeId: conversationNodeId,
+          label: "Conversation",
+          canonicalLabel: "conversation",
+        },
+        {
           nodeId: otherUserNodeId,
-          embedding: deterministicEmbedding(
-            `${projectLabel}: Another user's project that should not leak across users.`,
-          ),
-          modelName: "jina-embeddings-v3",
-        });
-        await database.insert(schema.claimEmbeddings).values({
-          claimId: otherUserClaimId,
-          embedding: deterministicEmbedding(
-            `HAS_STATUS Other user's ${projectLabel} project is in progress. status=active statedAt=${statedAt.toISOString()}`,
-          ),
-          modelName: "jina-embeddings-v3",
-        });
-
-        // --- Run the real extraction pipeline.
-        const { extractGraph } = await import("./extract-graph");
-        const extractionResult = await extractGraph({
+          label: projectLabel,
+          canonicalLabel: projectLabel.toLowerCase(),
+          description:
+            "Another user's project that should not leak across users.",
+        },
+        {
+          nodeId: otherUserConversationNodeId,
+          label: "Other Conversation",
+          canonicalLabel: "other conversation",
+        },
+      ]);
+      await database.insert(schema.sources).values([
+        {
+          id: conversationSourceId,
           userId,
-          sourceType: "conversation",
-          sourceId: conversationSourceId,
-          statedAt,
-          linkedNodeId: conversationNodeId,
-          sourceRefs: [
-            {
-              externalId: "msg_1",
-              sourceId: messageSourceId,
-              statedAt,
-            },
-          ],
-          content: `<message id="msg_1" role="user">I'm working on the ${projectLabel} project at ${orgLabel}.</message>`,
-        });
-
-        expect(extractionResult).toEqual({
-          newNodesCreated: 2,
-          claimsCreated: 3,
-        });
-
-        // Sanity: the real DB now contains the project node, its embedding,
-        // and the three claims with their embeddings.
-        const projectNodeRows = await database
-          .select({
-            id: schema.nodes.id,
-            label: schema.nodeMetadata.label,
-            type: schema.nodes.nodeType,
-          })
-          .from(schema.nodes)
-          .innerJoin(
-            schema.nodeMetadata,
-            eq(schema.nodes.id, schema.nodeMetadata.nodeId),
-          )
-          .where(
-            and(
-              eq(schema.nodes.userId, userId),
-              eq(schema.nodeMetadata.label, projectLabel),
-            ),
-          );
-        expect(projectNodeRows).toHaveLength(1);
-        const projectNodeId = projectNodeRows[0]!.id as TypeId<"node">;
-        expect(projectNodeRows[0]!.type).toBe("Concept");
-
-        // --- Run search with the real searchMemory pipeline. The LLM is not
-        // involved here; only embeddings + DB cosine search + reranker mock.
-        const { searchMemory } = await import("./query/search");
-        const result = await searchMemory({
+          type: "conversation",
+          externalId: "conv_1",
+          status: "completed",
+        },
+        {
+          id: messageSourceId,
           userId,
-          query: `${projectLabel} project`,
-          limit: 10,
-          excludeNodeTypes: [],
-        });
+          type: "conversation_message",
+          externalId: "msg_1",
+          status: "completed",
+        },
+        {
+          id: otherUserSourceId,
+          userId: otherUserId,
+          type: "conversation_message",
+          externalId: "other_msg_1",
+          status: "completed",
+        },
+      ]);
 
-        expect(result.query).toBe(`${projectLabel} project`);
+      // Seed a claim + embedding for the OTHER user, mentioning the same
+      // project label, to verify the per-user filter doesn't leak.
+      await database.insert(schema.claims).values({
+        id: otherUserClaimId,
+        userId: otherUserId,
+        subjectNodeId: otherUserNodeId,
+        objectValue: "in_progress",
+        predicate: "HAS_STATUS",
+        statement: `Other user's ${projectLabel} project is in progress.`,
+        sourceId: otherUserSourceId,
+        assertedByKind: "user",
+        statedAt,
+        status: "active",
+      });
+      await database.insert(schema.nodeEmbeddings).values({
+        nodeId: otherUserNodeId,
+        embedding: deterministicEmbedding(
+          `${projectLabel}: Another user's project that should not leak across users.`,
+        ),
+        modelName: "jina-embeddings-v3",
+      });
+      await database.insert(schema.claimEmbeddings).values({
+        claimId: otherUserClaimId,
+        embedding: deterministicEmbedding(
+          `HAS_STATUS Other user's ${projectLabel} project is in progress. status=active statedAt=${statedAt.toISOString()}`,
+        ),
+        modelName: "jina-embeddings-v3",
+      });
 
-        const nodeMatches = result.searchResults.filter(
-          (item) => item.group === "similarNodes",
-        );
-        const claimMatches = result.searchResults.filter(
-          (item) => item.group === "similarClaims",
-        );
+      // --- Run the real extraction pipeline.
+      const { extractGraph } = await import("./extract-graph");
+      const extractionResult = await extractGraph({
+        userId,
+        sourceType: "conversation",
+        sourceId: conversationSourceId,
+        statedAt,
+        linkedNodeId: conversationNodeId,
+        sourceRefs: [
+          {
+            externalId: "msg_1",
+            sourceId: messageSourceId,
+            statedAt,
+          },
+        ],
+        content: `<message id="msg_1" role="user">I'm working on the ${projectLabel} project at ${orgLabel}.</message>`,
+      });
 
-        // The Project node we just ingested must appear in the search results.
-        const projectInResults = nodeMatches.find(
-          (item) => item.item.id === projectNodeId,
-        );
-        expect(projectInResults).toBeDefined();
-        expect(projectInResults!.item.label).toBe(projectLabel);
+      expect(extractionResult).toEqual({
+        newNodesCreated: 2,
+        claimsCreated: 3,
+      });
 
-        // At least one claim about the project must be retrievable.
-        const projectClaim = claimMatches.find(
-          (item) =>
-            item.item.subjectNodeId === projectNodeId ||
-            item.item.objectNodeId === projectNodeId,
+      // Sanity: the real DB now contains the project node, its embedding,
+      // and the three claims with their embeddings.
+      const projectNodeRows = await database
+        .select({
+          id: schema.nodes.id,
+          label: schema.nodeMetadata.label,
+          type: schema.nodes.nodeType,
+        })
+        .from(schema.nodes)
+        .innerJoin(
+          schema.nodeMetadata,
+          eq(schema.nodes.id, schema.nodeMetadata.nodeId),
+        )
+        .where(
+          and(
+            eq(schema.nodes.userId, userId),
+            eq(schema.nodeMetadata.label, projectLabel),
+          ),
         );
-        expect(projectClaim).toBeDefined();
+      expect(projectNodeRows).toHaveLength(1);
+      const projectNodeId = projectNodeRows[0]!.id as TypeId<"node">;
+      expect(projectNodeRows[0]!.type).toBe("Concept");
 
-        // userId scoping: the other user's identically-labeled project node
-        // and claim must NOT leak into this user's results.
-        const leakedNode = nodeMatches.find(
-          (item) => item.item.id === otherUserNodeId,
-        );
-        expect(leakedNode).toBeUndefined();
-        const leakedClaim = claimMatches.find(
-          (item) => item.item.id === otherUserClaimId,
-        );
-        expect(leakedClaim).toBeUndefined();
-      } finally {
-        vi.doUnmock("~/utils/db");
-        vi.doUnmock("./ai");
-        vi.doUnmock("./embeddings");
-        vi.doUnmock("./rerank");
-        vi.resetModules();
-      }
-    },
-    60_000,
-  );
+      // --- Run search with the real searchMemory pipeline. The LLM is not
+      // involved here; only embeddings + DB cosine search + reranker mock.
+      const { searchMemory } = await import("./query/search");
+      const result = await searchMemory({
+        userId,
+        query: `${projectLabel} project`,
+        limit: 10,
+        excludeNodeTypes: [],
+      });
+
+      expect(result.query).toBe(`${projectLabel} project`);
+
+      const nodeMatches = result.searchResults.filter(
+        (item) => item.group === "similarNodes",
+      );
+      const claimMatches = result.searchResults.filter(
+        (item) => item.group === "similarClaims",
+      );
+
+      // The Project node we just ingested must appear in the search results.
+      const projectInResults = nodeMatches.find(
+        (item) => item.item.id === projectNodeId,
+      );
+      expect(projectInResults).toBeDefined();
+      expect(projectInResults!.item.label).toBe(projectLabel);
+
+      // At least one claim about the project must be retrievable.
+      const projectClaim = claimMatches.find(
+        (item) =>
+          item.item.subjectNodeId === projectNodeId ||
+          item.item.objectNodeId === projectNodeId,
+      );
+      expect(projectClaim).toBeDefined();
+
+      // userId scoping: the other user's identically-labeled project node
+      // and claim must NOT leak into this user's results.
+      const leakedNode = nodeMatches.find(
+        (item) => item.item.id === otherUserNodeId,
+      );
+      expect(leakedNode).toBeUndefined();
+      const leakedClaim = claimMatches.find(
+        (item) => item.item.id === otherUserClaimId,
+      );
+      expect(leakedClaim).toBeUndefined();
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.doUnmock("./ai");
+      vi.doUnmock("./embeddings");
+      vi.doUnmock("./rerank");
+      vi.resetModules();
+    }
+  }, 60_000);
 });

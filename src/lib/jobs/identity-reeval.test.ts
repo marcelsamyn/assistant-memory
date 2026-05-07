@@ -209,11 +209,7 @@ describeIfServer("runIdentityReeval", () => {
     ...Array.from({ length: 1022 }, () => 0),
   ];
   // vecC is orthogonal to vecA — used for nodes that should NOT match.
-  const vecC = [
-    0,
-    1,
-    ...Array.from({ length: 1022 }, () => 0),
-  ];
+  const vecC = [0, 1, ...Array.from({ length: 1022 }, () => 0)];
 
   async function resetState(client: Client): Promise<void> {
     await client.query(`

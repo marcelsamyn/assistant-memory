@@ -188,7 +188,9 @@ export const story14BootstrapBundleShape: EvalFixture = {
           // open_commitments doesn't expose claim ids in evidence (by design;
           // see open-commitments assembler docstring), so spot-check the task
           // label appears in its rendered content.
-          const open = bundle.sections.find((s) => s.kind === "open_commitments");
+          const open = bundle.sections.find(
+            (s) => s.kind === "open_commitments",
+          );
           if (!open) {
             return { pass: false, message: "open_commitments section missing" };
           }
@@ -234,9 +236,7 @@ export const story14BootstrapBundleShape: EvalFixture = {
           const second = await getConversationBootstrapContext({
             userId: ctx.userId,
           });
-          if (
-            first.assembledAt.getTime() !== second.assembledAt.getTime()
-          ) {
+          if (first.assembledAt.getTime() !== second.assembledAt.getTime()) {
             return {
               pass: false,
               message: `cache miss: assembledAt diverged (${first.assembledAt.toISOString()} vs ${second.assembledAt.toISOString()})`,

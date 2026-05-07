@@ -23,8 +23,8 @@
 import { generateEmbeddings } from "../embeddings";
 import { findSimilarClaims, findSimilarNodes } from "../graph";
 import { getNodeCards } from "./node-card";
-import type { ClaimEvidence } from "./types";
 import type { NodeCard } from "./node-card-types";
+import type { ClaimEvidence } from "./types";
 import type { NodeType, Scope } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { getSemanticSearchSubstringQuery } from "~/utils/test-overrides";

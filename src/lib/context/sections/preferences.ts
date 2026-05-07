@@ -6,16 +6,13 @@
  * HAS_PREFERENCE, HAS_GOAL). Trusted authorship only — `user` and
  * `user_confirmed`. Capped at 20.
  */
-import { PREDICATE_POLICIES } from "~/lib/claims/predicate-policies";
+import type { ClaimEvidence, ContextSectionPreferences } from "../types";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { claims, nodeMetadata } from "~/db/schema";
+import { PREDICATE_POLICIES } from "~/lib/claims/predicate-policies";
 import type { AssertedByKind, Predicate } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
-import type {
-  ClaimEvidence,
-  ContextSectionPreferences,
-} from "../types";
 
 const MAX_ROWS = 20;
 const USAGE =
@@ -30,8 +27,7 @@ const PREFERENCE_PREDICATES: readonly Predicate[] = Object.values(
   PREDICATE_POLICIES,
 )
   .filter(
-    (policy) =>
-      policy.feedsAtlas && policy.retrievalSection === "preferences",
+    (policy) => policy.feedsAtlas && policy.retrievalSection === "preferences",
   )
   .map((policy) => policy.predicate);
 

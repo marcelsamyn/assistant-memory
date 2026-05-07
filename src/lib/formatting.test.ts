@@ -51,9 +51,9 @@ describe("formatLabelWithAliases", () => {
   });
 
   it("drops blank aliases and dedupes among aliases", () => {
-    expect(
-      formatLabelWithAliases("Marcel", [" ", "Mars", "MARS", "  "]),
-    ).toBe("Marcel (also: Mars)");
+    expect(formatLabelWithAliases("Marcel", [" ", "Mars", "MARS", "  "])).toBe(
+      "Marcel (also: Mars)",
+    );
   });
 
   it("falls back to the first alias when label is empty", () => {

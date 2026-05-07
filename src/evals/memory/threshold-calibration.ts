@@ -232,7 +232,8 @@ export function runThresholdSweep(
 }
 
 function toCsv(result: ThresholdSweepResult): string {
-  const header = "threshold,truePositive,falsePositive,trueNegative,falseNegative,precision,recall,f1";
+  const header =
+    "threshold,truePositive,falsePositive,trueNegative,falseNegative,precision,recall,f1";
   const lines = [header];
   for (const row of result.rows) {
     lines.push(
@@ -252,7 +253,8 @@ function toCsv(result: ThresholdSweepResult): string {
 }
 
 function toPairCsv(result: ThresholdSweepResult): string {
-  const header = "pairId,labelA,labelB,shouldMerge,similarity,threshold,predictedMerge,outcome";
+  const header =
+    "pairId,labelA,labelB,shouldMerge,similarity,threshold,predictedMerge,outcome";
   const lines = [header];
   const pairById = new Map(result.pairs.map((p) => [p.id, p]));
   for (const o of result.outcomes) {

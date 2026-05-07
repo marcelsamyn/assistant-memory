@@ -8,18 +8,15 @@
  * Common aliases: getConversationBootstrapContext, bootstrap_memory,
  * context bundle entry point.
  */
-import { logEvent } from "~/lib/observability/log";
-import { useDatabase } from "~/utils/db";
-import {
-  getCachedBundle,
-  setCachedBundle,
-} from "./cache";
+import { getCachedBundle, setCachedBundle } from "./cache";
 import { assembleAtlasSection } from "./sections/atlas";
 import { assembleOpenCommitmentsSection } from "./sections/open-commitments";
 import { assemblePinnedSection } from "./sections/pinned";
 import { assemblePreferencesSection } from "./sections/preferences";
 import { assembleRecentSupersessionsSection } from "./sections/recent-supersessions";
 import type { ContextBundle, ContextSection } from "./types";
+import { logEvent } from "~/lib/observability/log";
+import { useDatabase } from "~/utils/db";
 
 export interface BootstrapContextOptions {
   /** Skip cache lookup; always rebuild. Default: false. */

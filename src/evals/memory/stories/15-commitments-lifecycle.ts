@@ -21,10 +21,13 @@ import { eq } from "drizzle-orm";
 import { claims } from "~/db/schema";
 import type { TypeId } from "~/types/typeid";
 
-async function loadOpenCommitments(ctx: EvalContext, params: {
-  ownedBy?: TypeId<"node">;
-  dueBefore?: string;
-}) {
+async function loadOpenCommitments(
+  ctx: EvalContext,
+  params: {
+    ownedBy?: TypeId<"node">;
+    dueBefore?: string;
+  },
+) {
   const { getOpenCommitments } = await import("~/lib/query/open-commitments");
   return getOpenCommitments({
     userId: ctx.userId,

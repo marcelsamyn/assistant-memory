@@ -23,13 +23,7 @@ import {
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { DrizzleDB } from "~/db";
-import {
-  claims,
-  nodeMetadata,
-  nodes,
-  sourceLinks,
-  sources,
-} from "~/db/schema";
+import { claims, nodeMetadata, nodes, sourceLinks, sources } from "~/db/schema";
 import { logEvent } from "~/lib/observability/log";
 import {
   AttributePredicateEnum,
@@ -49,7 +43,11 @@ export const ProfileSynthesisJobInputSchema = z.object({
   nodeId: z.string().min(1),
 });
 
-const TRUSTED_PROFILE_KINDS = ["user", "user_confirmed", "system"] as const satisfies readonly AssertedByKind[];
+const TRUSTED_PROFILE_KINDS = [
+  "user",
+  "user_confirmed",
+  "system",
+] as const satisfies readonly AssertedByKind[];
 
 const ATTRIBUTE_PREDICATES: ReadonlySet<Predicate> = new Set(
   AttributePredicateEnum.options,
@@ -109,9 +107,7 @@ interface NodeProfileInputs {
 }
 
 /** Build the prompt that asks the LLM to rewrite the node description. */
-export function buildProfileSynthesisPrompt(
-  inputs: NodeProfileInputs,
-): string {
+export function buildProfileSynthesisPrompt(inputs: NodeProfileInputs): string {
   const aliasesLine =
     inputs.aliases.length === 0
       ? "(none)"
@@ -273,10 +269,7 @@ async function hasPersonalScopeSupport(
         eq(claims.userId, userId),
         eq(claims.scope, "personal"),
         eq(claims.status, "active"),
-        or(
-          eq(claims.subjectNodeId, nodeId),
-          eq(claims.objectNodeId, nodeId),
-        ),
+        or(eq(claims.subjectNodeId, nodeId), eq(claims.objectNodeId, nodeId)),
       ),
     );
 

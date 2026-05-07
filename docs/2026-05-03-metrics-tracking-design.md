@@ -9,7 +9,7 @@ This design introduces a metrics subsystem that:
 - Stores readings in a dedicated time-series shape, separate from `claims`.
 - Maintains a per-user **schema registry** (metric definitions) so the same concept doesn't get re-invented under different names across conversations.
 - Accepts data through three paths — bulk push (from upstream like n8n + Oura), explicit single writes (REST/MCP), and implicit extraction during normal conversation/document ingestion — sharing one writer.
-- Bridges into the existing graph: a metric reading can hang off an *event node* (a Run, a Sleep, etc.) so the existing search/atlas/timeline machinery surfaces metric-bearing moments naturally.
+- Bridges into the existing graph: a metric reading can hang off an _event node_ (a Run, a Sleep, etc.) so the existing search/atlas/timeline machinery surfaces metric-bearing moments naturally.
 - Surfaces uncertain new schema decisions as `Task` commitments so they appear in the next conversation's bootstrap bundle.
 - Exposes a small, focused read API for charts (Petals) and conversational queries (the agent via MCP).
 
@@ -29,20 +29,20 @@ Three new tables, all per-user, all keyed by typeid.
 
 The schema registry. One row per distinct trackable quantity for a user.
 
-| Column | Type | Notes |
-| --- | --- | --- |
-| `id` | `typeid('metric_def')` | PK. |
-| `userId` | `text` | FK → `users.id`. |
-| `slug` | `text` | Stable, immutable identifier (e.g. `running_pace_min_per_km`). Unique per `(userId, slug)`. |
-| `label` | `text` | Human display name. Mutable. |
-| `description` | `text` | Used both for embedding-based dedup and to help the extractor disambiguate. |
-| `unit` | `text` | Canonical unit string (e.g. `min/km`, `bpm`, `seconds`, `kg`). All observations are stored in this unit. |
-| `aggregationHint` | `varchar` | One of `avg | sum | min | max`. Default aggregation when callers don't override. Set at definition time (steps→sum, HR→avg). |
-| `validRangeMin` | `numeric` (nullable) | Optional sanity bound. Observations outside the range are rejected with a typed error. |
-| `validRangeMax` | `numeric` (nullable) | Same. |
-| `needsReview` | `boolean` | True when the definition was created in the medium-confidence dedup band (see below). Cleared when the linked Task is closed. |
-| `reviewTaskNodeId` | `typeid('node')` (nullable) | When `needsReview = true`, points at the open `Task` node so the API and Petals can surface and resolve it. Nullable; no FK in the reverse direction. |
-| `createdAt`, `updatedAt` | `timestamptz` | |
+| Column                   | Type                        | Notes                                                                                                                                                 |
+| ------------------------ | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | --- | --- | -------------------------------------------------------------------------------------------------- |
+| `id`                     | `typeid('metric_def')`      | PK.                                                                                                                                                   |
+| `userId`                 | `text`                      | FK → `users.id`.                                                                                                                                      |
+| `slug`                   | `text`                      | Stable, immutable identifier (e.g. `running_pace_min_per_km`). Unique per `(userId, slug)`.                                                           |
+| `label`                  | `text`                      | Human display name. Mutable.                                                                                                                          |
+| `description`            | `text`                      | Used both for embedding-based dedup and to help the extractor disambiguate.                                                                           |
+| `unit`                   | `text`                      | Canonical unit string (e.g. `min/km`, `bpm`, `seconds`, `kg`). All observations are stored in this unit.                                              |
+| `aggregationHint`        | `varchar`                   | One of `avg                                                                                                                                           | sum | min | max`. Default aggregation when callers don't override. Set at definition time (steps→sum, HR→avg). |
+| `validRangeMin`          | `numeric` (nullable)        | Optional sanity bound. Observations outside the range are rejected with a typed error.                                                                |
+| `validRangeMax`          | `numeric` (nullable)        | Same.                                                                                                                                                 |
+| `needsReview`            | `boolean`                   | True when the definition was created in the medium-confidence dedup band (see below). Cleared when the linked Task is closed.                         |
+| `reviewTaskNodeId`       | `typeid('node')` (nullable) | When `needsReview = true`, points at the open `Task` node so the API and Petals can surface and resolve it. Nullable; no FK in the reverse direction. |
+| `createdAt`, `updatedAt` | `timestamptz`               |                                                                                                                                                       |
 
 Indexes:
 
@@ -58,17 +58,17 @@ Embeddings:
 
 The fact rows. Append-only in normal operation.
 
-| Column | Type | Notes |
-| --- | --- | --- |
-| `id` | `typeid('metric_obs')` | PK. |
-| `userId` | `text` | FK → `users.id`. Denormalized for index efficiency. |
-| `metricDefinitionId` | `typeid('metric_def')` | FK, cascade delete. |
-| `value` | `numeric` | In the metric's canonical unit. For durations, canonical is seconds. |
-| `occurredAt` | `timestamptz` | The real-world time of the reading, not the ingest time. |
-| `note` | `text` (nullable) | Free-form text preserved alongside the reading (e.g. "felt sluggish"). No semantic meaning to the system. |
-| `eventNodeId` | `typeid('node')` (nullable) | Optional bridge to the graph: the event node this reading belongs to (a `Run`, `Sleep`, `Workout`, etc.). Set by the implicit extractor; null for bulk push and ad-hoc single writes. |
-| `sourceId` | `typeid('source')` | FK → `sources.id`. Same source-tracking model as claims; cascade delete with the source. |
-| `createdAt` | `timestamptz` | Ingest time. |
+| Column               | Type                        | Notes                                                                                                                                                                                 |
+| -------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                 | `typeid('metric_obs')`      | PK.                                                                                                                                                                                   |
+| `userId`             | `text`                      | FK → `users.id`. Denormalized for index efficiency.                                                                                                                                   |
+| `metricDefinitionId` | `typeid('metric_def')`      | FK, cascade delete.                                                                                                                                                                   |
+| `value`              | `numeric`                   | In the metric's canonical unit. For durations, canonical is seconds.                                                                                                                  |
+| `occurredAt`         | `timestamptz`               | The real-world time of the reading, not the ingest time.                                                                                                                              |
+| `note`               | `text` (nullable)           | Free-form text preserved alongside the reading (e.g. "felt sluggish"). No semantic meaning to the system.                                                                             |
+| `eventNodeId`        | `typeid('node')` (nullable) | Optional bridge to the graph: the event node this reading belongs to (a `Run`, `Sleep`, `Workout`, etc.). Set by the implicit extractor; null for bulk push and ad-hoc single writes. |
+| `sourceId`           | `typeid('source')`          | FK → `sources.id`. Same source-tracking model as claims; cascade delete with the source.                                                                                              |
+| `createdAt`          | `timestamptz`               | Ingest time.                                                                                                                                                                          |
 
 Indexes:
 
@@ -93,6 +93,7 @@ When the writer is asked to create or use a definition, it goes through this res
 
 1. **Exact slug match** on `(userId, slug)` → reuse.
 2. **Embedding similarity** against existing per-user definitions, using `{label}\n{description}` as the embedding text:
+
    - **Cosine ≥ 0.85** → return the existing definition. The proposal is silently merged.
    - **0.70 ≤ cosine < 0.85** → create the new definition with `needsReview = true`. Atomically:
      - Insert the new `metric_definitions` row.
@@ -120,8 +121,16 @@ All three paths funnel into one internal `recordMetricObservations` writer that 
   "userId": "user_123",
   "sourceExternalId": "oura_2026-05-03",
   "observations": [
-    { "metricSlug": "oura_readiness", "value": 87, "occurredAt": "2026-05-03T07:14:00Z" },
-    { "metricSlug": "resting_hr",     "value": 54, "occurredAt": "2026-05-03T07:14:00Z" }
+    {
+      "metricSlug": "oura_readiness",
+      "value": 87,
+      "occurredAt": "2026-05-03T07:14:00Z"
+    },
+    {
+      "metricSlug": "resting_hr",
+      "value": 54,
+      "occurredAt": "2026-05-03T07:14:00Z"
+    }
   ]
 }
 ```
@@ -137,8 +146,13 @@ All three paths funnel into one internal `recordMetricObservations` writer that 
 ```json
 {
   "userId": "user_123",
-  "metric": { "slug": "body_weight", "label": "Body weight", "unit": "kg",
-              "aggregationHint": "avg", "description": "Morning weight on bathroom scale" },
+  "metric": {
+    "slug": "body_weight",
+    "label": "Body weight",
+    "unit": "kg",
+    "aggregationHint": "avg",
+    "description": "Morning weight on bathroom scale"
+  },
   "value": 78.2,
   "occurredAt": "2026-05-03T07:30:00Z",
   "note": "post-run"
@@ -150,7 +164,7 @@ All three paths funnel into one internal `recordMetricObservations` writer that 
 
 ### 3. Implicit extraction (during conversation/document ingestion)
 
-The existing claim-extraction prompt in `lib/jobs/ingest-conversation.ts` and `lib/jobs/ingest-document.ts` gains an *optional* `metrics` array in its return schema. The extractor is told:
+The existing claim-extraction prompt in `lib/jobs/ingest-conversation.ts` and `lib/jobs/ingest-document.ts` gains an _optional_ `metrics` array in its return schema. The extractor is told:
 
 - Extract numeric quantities the user is tracking about themselves.
 - Group readings that belong to one event (a single run, a single sleep) — emit one event with multiple observations rather than free-floating readings.
@@ -233,9 +247,9 @@ Body:
   "userId": "user_123",
   "metricIds": ["metric_def_...", "metric_def_..."],
   "from": "2026-04-01T00:00:00Z",
-  "to":   "2026-05-03T23:59:59Z",
-  "bucket": "day",                         // "none" | "hour" | "day" | "week" | "month"
-  "agg": "avg"                              // "avg" | "sum" | "min" | "max" | "p50" | "p90"
+  "to": "2026-05-03T23:59:59Z",
+  "bucket": "day", // "none" | "hour" | "day" | "week" | "month"
+  "agg": "avg" // "avg" | "sum" | "min" | "max" | "p50" | "p90"
 }
 ```
 
@@ -258,11 +272,11 @@ Response:
   "metricId": "metric_def_...",
   "latest": { "value": 54, "occurredAt": "..." },
   "windows": {
-    "7d":  { "avg": 55.1, "min": 52, "max": 58, "count": 7 },
+    "7d": { "avg": 55.1, "min": 52, "max": 58, "count": 7 },
     "30d": { "avg": 56.0, "min": 50, "max": 61, "count": 28 },
     "90d": { "avg": 57.2, "min": 50, "max": 64, "count": 84 }
   },
-  "trend": "down"   // "up" | "down" | "flat" — derived from 30d vs 90d window comparison
+  "trend": "down" // "up" | "down" | "flat" — derived from 30d vs 90d window comparison
 }
 ```
 
@@ -275,7 +289,7 @@ Response:
 ## Source Linking and Lifecycle
 
 - Observations follow source cascade: deleting a source deletes its observations (mirrors claim behavior).
-- Definitions are *not* deleted by source operations. A definition outlives any single ingestion source.
+- Definitions are _not_ deleted by source operations. A definition outlives any single ingestion source.
 - An observation is never updated in place. Re-ingestion of the same conversation reuses the same `sourceId` (existing source-upsert behavior in `insert-new-sources.ts`); the writer first deletes existing observations for that source, then re-inserts. This matches how claims handle re-ingestion.
 
 ## SDK and MCP

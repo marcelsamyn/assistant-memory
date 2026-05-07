@@ -22,12 +22,7 @@ import { ensureUser } from "../seed";
 import type { EvalFixture } from "../types";
 import { format } from "date-fns";
 import { and, eq } from "drizzle-orm";
-import {
-  claims,
-  nodeMetadata,
-  nodes,
-  sources,
-} from "~/db/schema";
+import { claims, nodeMetadata, nodes, sources } from "~/db/schema";
 import { setSkipEmbeddingPersistence } from "~/utils/test-overrides";
 
 export const story18DayNodeAttachment: EvalFixture = {
@@ -90,7 +85,8 @@ export const story18DayNodeAttachment: EvalFixture = {
             if (!row.objectNodeId) {
               return {
                 pass: false,
-                message: "OCCURRED_ON.objectNodeId is null; expected a Temporal node",
+                message:
+                  "OCCURRED_ON.objectNodeId is null; expected a Temporal node",
               };
             }
 

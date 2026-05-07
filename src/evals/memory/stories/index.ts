@@ -3,6 +3,7 @@
  * artifact iterate this array in declared order so reviewers can scan the
  * report top-down without re-sorting.
  */
+import type { EvalFixture } from "../types";
 import { story01ProjectLifecycle } from "./01-project-lifecycle";
 import { story02ProjectRenameViaAlias } from "./02-project-rename-via-alias";
 import { story03PersonNickname } from "./03-person-nickname";
@@ -20,7 +21,6 @@ import { story15CommitmentsLifecycle } from "./15-commitments-lifecycle";
 import { story16CleanupOpsSurface } from "./16-cleanup-ops-surface";
 import { story17TrustHierarchyMatrix } from "./17-trust-hierarchy-matrix";
 import { story18DayNodeAttachment } from "./18-day-node-attachment";
-import type { EvalFixture } from "../types";
 
 export const ALL_STORIES: readonly EvalFixture[] = [
   story01ProjectLifecycle,

@@ -49,9 +49,7 @@ export const story10MultiPartyTranscript: EvalFixture = {
       userSelfAliases: ["Marcel"],
       knownParticipants: [{ label: "Bob", nodeName: "bob" }],
       extractionStub: {
-        nodes: [
-          { id: "temp_object_spec", type: "Object", label: "the spec" },
-        ],
+        nodes: [{ id: "temp_object_spec", type: "Object", label: "the spec" }],
         attributeClaims: [
           {
             subjectId: "temp_object_spec",
@@ -183,9 +181,10 @@ export const story10MultiPartyTranscript: EvalFixture = {
               message: `expected 1 Stranger placeholder Person, got ${placeholder.length}`,
             };
           }
-          const additional = placeholder[0]!.additional as
-            | Record<string, unknown>
-            | null;
+          const additional = placeholder[0]!.additional as Record<
+            string,
+            unknown
+          > | null;
           if (additional?.["unresolvedSpeaker"] !== true) {
             return {
               pass: false,

@@ -18,7 +18,10 @@
  * Common aliases: identity reevaluation, background merge proposal,
  * post-ingestion identity sweep, cleanup proposal.
  */
-import { resolveIdentity, type IdentityCandidateClaim } from "../identity-resolution";
+import {
+  resolveIdentity,
+  type IdentityCandidateClaim,
+} from "../identity-resolution";
 import { and, eq, exists, inArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DrizzleDB } from "~/db";
@@ -281,4 +284,3 @@ async function _fetchSupportingClaims(
     }),
   );
 }
-
