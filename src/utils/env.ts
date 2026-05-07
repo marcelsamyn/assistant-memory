@@ -25,6 +25,19 @@ const envSchema = z.object({
   MINIO_ACCESS_KEY: z.string().min(1),
   MINIO_SECRET_KEY: z.string().min(1),
   SOURCES_BUCKET: z.string().min(1),
+  MARKITDOWN_URL: z
+    .string()
+    .url()
+    .default("http://localhost:8081")
+    .describe(
+      "Base URL of the markitdown sidecar (POST /convert). Defaults to the docker-compose host mapping.",
+    ),
+  INGEST_FILE_MAX_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(50 * 1024 * 1024)
+    .describe("Maximum upload size accepted by POST /ingest/file."),
   DEBUG_LOGS: z.coerce
     .boolean()
     .default(false)

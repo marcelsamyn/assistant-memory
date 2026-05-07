@@ -27,6 +27,15 @@ services:
       - ./minio-data:/data
     command: server /data --console-address ":9001"
 
+  # File-conversion sidecar used by the ingest-file worker. Wraps
+  # Microsoft's MarkItDown (PDF/DOCX/XLSX/PPTX/HTML/RTF/EPUB/audio/images)
+  # behind a small FastAPI surface — see services/markitdown/server.py.
+  markitdown:
+    build:
+      context: ./services/markitdown
+    ports:
+      - "8081:8080"
+
 volumes:
   postgres_data:
   redis_data:

@@ -56,6 +56,11 @@ import {
   ingestDocumentResponseSchema,
 } from "../lib/schemas/ingest-document-request.js";
 import {
+  IngestFileRequest,
+  IngestFileResponse,
+  ingestFileResponseSchema,
+} from "../lib/schemas/ingest-file.js";
+import {
   IngestTranscriptRequest,
   IngestTranscriptResponse,
   ingestTranscriptResponseSchema,
@@ -176,6 +181,19 @@ import {
   summarizeResponseSchema,
 } from "../lib/schemas/summarize.js";
 import {
+  NodesBySourceRequest,
+  NodesBySourceResponse,
+  nodesBySourceResponseSchema,
+} from "../lib/schemas/nodes-by-source.js";
+import {
+  GetSourceRequest,
+  GetSourceResponse,
+  ListSourcesRequest,
+  ListSourcesResponse,
+  getSourceResponseSchema,
+  listSourcesResponseSchema,
+} from "../lib/schemas/sources.js";
+import {
   SetUserSelfAliasesRequest,
   SetUserSelfAliasesResponse,
   setUserSelfAliasesResponseSchema,
@@ -247,6 +265,53 @@ export class MemoryClient {
       ingestDocumentResponseSchema,
       payload,
     );
+  }
+
+  /**
+   * Stream a binary document (PDF, DOCX, TXT, MD, HTML, RTF, …) to the
+   * Memory service. Conversion to text/markdown happens server-side via
+   * the markitdown sidecar so every client gets the same parsing
+   * behavior. The returned `sourceId` is generated synchronously, so the
+   * caller can immediately render a "processing" placeholder; subscribe
+   * to the SSE stream (or poll `getSource`) to know when status flips
+   * to `completed`.
+   */
+  async ingestFile(payload: IngestFileRequest): Promise<IngestFileResponse> {
+    const form = new FormData();
+
+    const blob =
+      payload.file instanceof Blob
+        ? payload.file
+        : new Blob([payload.file as Uint8Array], { type: payload.mimeType });
+    form.append("file", blob, payload.filename);
+    form.append("userId", payload.userId);
+    form.append("filename", payload.filename);
+    form.append("mimeType", payload.mimeType);
+    if (payload.title) form.append("title", payload.title);
+    if (payload.scope) form.append("scope", payload.scope);
+
+    const headers: HeadersInit = {};
+    if (this.options.apiKey) {
+      headers["Authorization"] = `Bearer ${this.options.apiKey}`;
+    }
+
+    const response = await fetch(`${this.options.baseUrl}/ingest/file`, {
+      method: "POST",
+      headers,
+      body: form,
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => "");
+      throw new Error(
+        `API request failed: ${response.status} ${response.statusText}${
+          errorBody ? ` - ${errorBody}` : ""
+        }`,
+      );
+    }
+
+    const data = await response.json();
+    return ingestFileResponseSchema.parse(data);
   }
 
   async ingestConversation(
@@ -680,6 +745,51 @@ export class MemoryClient {
    * transcript ingestion to attribute claims to the user-self speaker.
    * Replaces the full list — there is no per-alias add/remove.
    */
+  /**
+   * Paginated source listing for source-picker UIs (e.g. attaching a
+   * source to a project). System sources (`manual`, `legacy_migration`,
+   * `metric_*`) are excluded; pass `type` to narrow further.
+   */
+  async listSources(payload: ListSourcesRequest): Promise<ListSourcesResponse> {
+    return this._fetch(
+      "POST",
+      "/sources/list",
+      listSourcesResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Single-source lookup. Returns the same shape as `listSources` items so
+   * the host can render an attached-source chip when only the `sourceId`
+   * is known.
+   */
+  async getSource(payload: GetSourceRequest): Promise<GetSourceResponse> {
+    return this._fetch(
+      "POST",
+      "/sources/get",
+      getSourceResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Bulk, deterministic retrieval of every node derived from one or more
+   * sources, plus the active claims attached to those nodes. Suited to
+   * "always-inject all attached sources" project loops; for top-K
+   * relevance per message, use `contextSearch` instead.
+   */
+  async getNodesBySource(
+    payload: NodesBySourceRequest,
+  ): Promise<NodesBySourceResponse> {
+    return this._fetch(
+      "POST",
+      "/sources/nodes",
+      nodesBySourceResponseSchema,
+      payload,
+    );
+  }
+
   async setUserSelfAliases(
     payload: SetUserSelfAliasesRequest,
   ): Promise<SetUserSelfAliasesResponse> {
