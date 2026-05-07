@@ -327,8 +327,12 @@ async function findSimilarNodesViaSubstring(
   opts: FindSimilarNodesOptions,
   query: string,
 ): Promise<NodeSearchResult[]> {
-  const { userId, limit = 10, excludeNodeTypes, includeReference = false } =
-    opts;
+  const {
+    userId,
+    limit = 10,
+    excludeNodeTypes,
+    includeReference = false,
+  } = opts;
   const db = await useDatabase();
 
   let where = and(
