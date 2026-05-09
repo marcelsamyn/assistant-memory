@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ScopeEnum } from "~/types/graph.js";
+import { typeIdSchema } from "~/types/typeid.js";
 
 export const ingestDocumentRequestSchema = z.object({
   userId: z.string(),
@@ -34,6 +35,14 @@ export const ingestDocumentRequestSchema = z.object({
 export const ingestDocumentResponseSchema = z.object({
   message: z.string(),
   jobId: z.string(),
+  /**
+   * Synchronously-generated source row id for the ingested document. The
+   * worker hasn't finished extraction yet at the time this is returned, so
+   * callers can use this id to render a "processing" placeholder, attach
+   * the source to a project, or poll `getSource()` until status flips to
+   * `completed`.
+   */
+  sourceId: typeIdSchema("source"),
 });
 
 export type IngestDocumentRequest = z.infer<typeof ingestDocumentRequestSchema>;

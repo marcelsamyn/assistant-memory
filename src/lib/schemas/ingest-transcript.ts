@@ -47,6 +47,13 @@ export const ingestTranscriptRequestSchema = z.object({
 export const ingestTranscriptResponseSchema = z.object({
   message: z.string(),
   jobId: z.string(),
+  /**
+   * Synchronously-created parent `meeting_transcript` source id. Utterance
+   * children are inserted by the worker, but the parent row exists from
+   * the moment this response is sent so callers can attach the transcript
+   * to a project (or render a placeholder) without polling.
+   */
+  sourceId: typeIdSchema("source"),
 });
 
 export type IngestTranscriptRequest = z.infer<
