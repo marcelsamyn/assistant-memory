@@ -67,6 +67,8 @@ export default defineEventHandler(async (event) => {
     filename,
     mimeType,
     title: fields["title"],
+    author: fields["author"],
+    timestamp: fields["timestamp"],
     scope: fields["scope"],
   });
 
@@ -78,7 +80,7 @@ export default defineEventHandler(async (event) => {
   }
 
   const externalId = `file:${uuid()}`;
-  const timestamp = new Date();
+  const timestamp = parsed.timestamp ?? new Date();
 
   // Only set `metadata.title` when the user explicitly supplied one.
   // The filename is stored separately under `metadata.filename` so the
@@ -91,6 +93,7 @@ export default defineEventHandler(async (event) => {
     mimeType: parsed.mimeType,
   };
   if (parsed.title !== undefined) metadata["title"] = parsed.title;
+  if (parsed.author !== undefined) metadata["author"] = parsed.author;
 
   const { successes, failures } = await sourceService.insertMany([
     {

@@ -17,11 +17,9 @@ import { z } from "zod";
 import { DrizzleDB } from "~/db";
 import { sources } from "~/db/schema";
 import { convertToMarkdown } from "~/lib/converters/markitdown";
-import { runChunkedExtraction } from "~/lib/ingestion/chunked-extract";
-import { ensureSourceNode } from "~/lib/ingestion/ensure-source-node";
+import { extractDocumentGraph } from "~/lib/ingestion/extract-document-graph";
 import { ensureUser } from "~/lib/ingestion/ensure-user";
-import { sourceService } from "~/lib/sources";
-import { NodeTypeEnum } from "~/types/graph";
+import { sourceMetadataSchema, sourceService } from "~/lib/sources";
 import { typeIdSchema, type TypeId } from "~/types/typeid";
 
 export const IngestFileJobInputSchema = z.object({
@@ -52,6 +50,7 @@ export async function ingestFile({
       id: sources.id,
       externalId: sources.externalId,
       scope: sources.scope,
+      metadata: sources.metadata,
     })
     .from(sources)
     .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)))
@@ -63,6 +62,14 @@ export async function ingestFile({
     );
     return;
   }
+
+  // Snapshot the explicit user-supplied bibliographic fields before the
+  // converter merge below — `author` is set only by the route, and `title`
+  // here represents the explicit user title (the converter writes its
+  // fallback into `title` only when this slot is empty, which we honor).
+  const existingMeta = sourceMetadataSchema.parse(row.metadata ?? {});
+  const explicitAuthor = existingMeta.author;
+  const explicitTitle = existingMeta.title;
 
   await db
     .update(sources)
@@ -110,36 +117,22 @@ export async function ingestFile({
     })
     .where(eq(sources.id, sourceId));
 
-  const documentNodeId = await ensureSourceNode({
-    db,
-    userId,
-    sourceId: sourceId as TypeId<"source">,
-    timestamp,
-    nodeType: NodeTypeEnum.enum.Document,
-  });
-
   // Surface the converter-derived title (or filename as fallback) so the LLM
   // knows the content was authored by an external party — without this hint
   // long documents like e-books frequently produce claims attributed to the
   // user (e.g., "the user chose KDP") instead of the document/author.
-  const documentTitle = converted.title ?? filename;
+  const documentTitle = explicitTitle ?? converted.title ?? filename;
 
-  await runChunkedExtraction({
+  await extractDocumentGraph({
+    db,
     userId,
-    sourceType: "document",
     sourceId: sourceId as TypeId<"source">,
-    statedAt: timestamp,
-    linkedNodeId: documentNodeId,
-    sourceRefs: [
-      {
-        externalId: row.externalId,
-        sourceId: sourceId as TypeId<"source">,
-        statedAt: timestamp,
-      },
-    ],
+    externalId: row.externalId,
     content: converted.markdown,
+    timestamp,
     logLabel: filename,
-    documentMetadata: { title: documentTitle },
+    title: documentTitle,
+    ...(explicitAuthor !== undefined && { author: explicitAuthor }),
   });
 
   await db

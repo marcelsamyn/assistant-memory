@@ -256,6 +256,13 @@ export class MemoryClient {
     return responseSchema.parse(responseData);
   }
 
+  /**
+   * Ingest a document supplied as inline text. `document.contentType`
+   * defaults to `"markdown"`; pass `"html"` to have the server strip
+   * scripts/styles via the markitdown sidecar before extraction. Optional
+   * `author`/`title`/`timestamp` are stored on `sources.metadata` and
+   * surfaced through `NodeCard.reference` for reference-scope sources.
+   */
   async ingestDocument(
     payload: IngestDocumentRequest,
   ): Promise<IngestDocumentResponse> {
@@ -271,10 +278,13 @@ export class MemoryClient {
    * Stream a binary document (PDF, DOCX, TXT, MD, HTML, RTF, …) to the
    * Memory service. Conversion to text/markdown happens server-side via
    * the markitdown sidecar so every client gets the same parsing
-   * behavior. The returned `sourceId` is generated synchronously, so the
-   * caller can immediately render a "processing" placeholder; subscribe
-   * to the SSE stream (or poll `getSource`) to know when status flips
-   * to `completed`.
+   * behavior. Optional `title`, `author`, and `timestamp` mirror the
+   * `/ingest/document` JSON path: they're persisted on `sources.metadata`
+   * and surfaced both to the LLM (as a document preamble) and through
+   * `NodeCard.reference` for reference-scope sources. The returned
+   * `sourceId` is generated synchronously, so the caller can immediately
+   * render a "processing" placeholder; subscribe to the SSE stream (or
+   * poll `getSource`) to know when status flips to `completed`.
    */
   async ingestFile(payload: IngestFileRequest): Promise<IngestFileResponse> {
     const form = new FormData();
@@ -288,6 +298,14 @@ export class MemoryClient {
     form.append("filename", payload.filename);
     form.append("mimeType", payload.mimeType);
     if (payload.title) form.append("title", payload.title);
+    if (payload.author) form.append("author", payload.author);
+    if (payload.timestamp) {
+      const iso =
+        payload.timestamp instanceof Date
+          ? payload.timestamp.toISOString()
+          : payload.timestamp;
+      form.append("timestamp", iso);
+    }
     if (payload.scope) form.append("scope", payload.scope);
 
     const headers: HeadersInit = {};

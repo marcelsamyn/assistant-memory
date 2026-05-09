@@ -7,6 +7,16 @@ export const ingestDocumentRequestSchema = z.object({
   document: z.object({
     id: z.string(),
     content: z.string(),
+    /**
+     * Format of `content`. `markdown` (default) and `text` are stored
+     * as-is; `html` is converted to markdown server-side via the
+     * markitdown sidecar so JavaScript/CSS/inline noise is stripped
+     * before extraction.
+     */
+    contentType: z
+      .enum(["markdown", "text", "html"])
+      .optional()
+      .default("markdown"),
     scope: ScopeEnum.optional().default("personal"),
     timestamp: z.string().datetime().pipe(z.coerce.date()).optional(), // Timestamp is optional
     /**

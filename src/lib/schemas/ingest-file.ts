@@ -40,6 +40,20 @@ export const ingestFileFieldsSchema = z.object({
   filename: z.string().min(1),
   mimeType: z.string().min(1),
   title: z.string().min(1).optional(),
+  /**
+   * Optional bibliographic author (parity with `/ingest/document`). Stored
+   * on `sources.metadata.author` and surfaced to the LLM via the document
+   * preamble, plus exposed through `NodeCard.reference` for reference-scope
+   * sources.
+   */
+  author: z.string().min(1).optional(),
+  /**
+   * Optional ISO-8601 timestamp the document was authored / observed at.
+   * Falls back to upload time when omitted (the common case for ad-hoc
+   * uploads). Coerced to a `Date` once parsed so downstream consumers can
+   * use it directly.
+   */
+  timestamp: z.string().datetime().pipe(z.coerce.date()).optional(),
   scope: ScopeEnum.optional().default("personal"),
 });
 export type IngestFileFields = z.infer<typeof ingestFileFieldsSchema>;
@@ -63,5 +77,8 @@ export interface IngestFileRequest {
   filename: string;
   mimeType: string;
   title?: string;
+  author?: string;
+  /** ISO-8601 string or `Date`; falls back to upload time when omitted. */
+  timestamp?: string | Date;
   scope?: "personal" | "reference";
 }

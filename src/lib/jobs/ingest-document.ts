@@ -1,17 +1,18 @@
-import { runChunkedExtraction } from "../ingestion/chunked-extract";
-import { ensureSourceNode } from "../ingestion/ensure-source-node";
+import { convertToMarkdown } from "../converters/markitdown";
+import { extractDocumentGraph } from "../ingestion/extract-document-graph";
 import { ensureUser } from "../ingestion/ensure-user";
 import { sourceService } from "../sources";
 import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { DrizzleDB } from "~/db";
 import { nodes, sourceLinks, sources } from "~/db/schema";
-import { NodeTypeEnum, ScopeEnum } from "~/types/graph";
+import { ScopeEnum } from "~/types/graph";
 
 export const IngestDocumentJobInputSchema = z.object({
   userId: z.string(),
   documentId: z.string(),
   content: z.string(),
+  contentType: z.enum(["markdown", "text", "html"]).optional().default("markdown"),
   timestamp: z.string().datetime().pipe(z.coerce.date()), // Handled by route, always a Date here
   scope: ScopeEnum.optional().default("personal"),
   updateExisting: z.boolean().optional().default(false),
@@ -32,6 +33,7 @@ export async function ingestDocument({
   userId,
   documentId,
   content,
+  contentType,
   timestamp,
   scope,
   updateExisting,
@@ -81,6 +83,24 @@ export async function ingestDocument({
       );
   }
 
+  // HTML inputs are converted to markdown via the same sidecar that file
+  // uploads use, so JavaScript/CSS/boilerplate is stripped before the LLM
+  // ever sees the content. Conversion failures bubble up so BullMQ retries.
+  let resolvedContent = content;
+  let resolvedTitle = title;
+  if (contentType === "html") {
+    const converted = await convertToMarkdown({
+      buffer: Buffer.from(content, "utf-8"),
+      filename: `${documentId}.html`,
+      mimeType: "text/html",
+    });
+    resolvedContent = converted.markdown;
+    // Promote converter-derived title only when caller didn't supply one.
+    if (resolvedTitle === undefined && converted.title !== null) {
+      resolvedTitle = converted.title;
+    }
+  }
+
   // Insert the document as a single source
   const { successes: insertedSourceInternalIds, failures } =
     await sourceService.insertMany([
@@ -90,10 +110,10 @@ export async function ingestDocument({
         externalId: documentId,
         scope,
         timestamp,
-        content, // Store content directly for documents
+        content: resolvedContent, // Store post-conversion text directly
         metadata: {
           ...(author !== undefined && { author }),
-          ...(title !== undefined && { title }),
+          ...(resolvedTitle !== undefined && { title: resolvedTitle }),
         },
       },
     ]);
@@ -118,31 +138,16 @@ export async function ingestDocument({
 
   const sourceId = insertedSourceInternalIds[0]!;
 
-  // Ensure a graph node exists for this document source
-  const documentNodeId = await ensureSourceNode({
+  await extractDocumentGraph({
     db,
     userId,
     sourceId,
+    externalId: documentId,
+    content: resolvedContent,
     timestamp,
-    nodeType: NodeTypeEnum.enum.Document,
-  });
-
-  // Extract graph from the document content. Long documents are chunked so
-  // each LLM call sees a focused passage instead of one wall of text;
-  // single-chunk inputs run as one call (no behavior change).
-  await runChunkedExtraction({
-    userId,
-    sourceType: "document",
-    sourceId,
-    statedAt: timestamp,
-    linkedNodeId: documentNodeId,
-    sourceRefs: [{ externalId: documentId, sourceId, statedAt: timestamp }],
-    content,
-    logLabel: title ?? documentId,
-    documentMetadata: {
-      ...(title !== undefined && { title }),
-      ...(author !== undefined && { author }),
-    },
+    logLabel: resolvedTitle ?? documentId,
+    ...(resolvedTitle !== undefined && { title: resolvedTitle }),
+    ...(author !== undefined && { author }),
   });
 
   console.log(

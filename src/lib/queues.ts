@@ -178,35 +178,22 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
           `Completed deep research for conversation ${conversationId} for user ${userId}.`,
         );
       } else if (job.name === "ingest-document") {
-        const {
-          userId,
-          documentId,
-          content,
-          scope,
-          timestamp,
-          updateExisting,
-        } = IngestDocumentJobInputSchema.parse(job.data);
+        const data = IngestDocumentJobInputSchema.parse(job.data);
         console.log(
-          `Starting ingest-document job for user ${userId}, document ${documentId}`,
+          `Starting ingest-document job for user ${data.userId}, document ${data.documentId}`,
         );
 
         const { ingestDocument } = await import("./jobs/ingest-document");
-        await ingestDocument({
-          db,
-          userId,
-          documentId,
-          content,
-          scope,
-          timestamp,
-          updateExisting,
-        });
-        console.log(`Ingested document ${documentId} for user ${userId}.`);
+        await ingestDocument({ db, ...data });
+        console.log(
+          `Ingested document ${data.documentId} for user ${data.userId}.`,
+        );
 
         // Run dedup sweep after ingestion
         const { runDedupSweep: runDocDedupSweep } = await import(
           "./jobs/dedup-sweep"
         );
-        await runDocDedupSweep(userId);
+        await runDocDedupSweep(data.userId);
       } else if (job.name === "ingest-file") {
         const data = IngestFileJobInputSchema.parse(job.data);
         console.log(

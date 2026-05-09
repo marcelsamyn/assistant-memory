@@ -44,4 +44,27 @@ describe("ingestDocumentRequestSchema", () => {
       }),
     ).toThrow();
   });
+
+  it("defaults contentType to markdown and accepts html", () => {
+    const md = ingestDocumentRequestSchema.parse({
+      userId: "u1",
+      document: { id: "d1", content: "text" },
+    });
+    expect(md.document.contentType).toBe("markdown");
+
+    const html = ingestDocumentRequestSchema.parse({
+      userId: "u1",
+      document: { id: "d2", content: "<p>hi</p>", contentType: "html" },
+    });
+    expect(html.document.contentType).toBe("html");
+  });
+
+  it("rejects unknown contentType values", () => {
+    expect(() =>
+      ingestDocumentRequestSchema.parse({
+        userId: "u1",
+        document: { id: "d1", content: "text", contentType: "xml" },
+      }),
+    ).toThrow();
+  });
 });
