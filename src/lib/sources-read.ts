@@ -64,6 +64,11 @@ function deriveTitle(metadata: unknown): string | null {
   return typeof filename === "string" && filename.length > 0 ? filename : null;
 }
 
+function deriveAuthor(metadata: unknown): string | null {
+  const parsed = sourceMetadataSchema.safeParse(metadata ?? {});
+  return parsed.success ? (parsed.data.author ?? null) : null;
+}
+
 interface ListParams {
   db: DrizzleDB;
   userId: string;
@@ -132,9 +137,11 @@ export async function listSourcesPage(params: ListParams): Promise<{
     sourceId: row.id,
     type: row.type as SourceListableType,
     title: deriveTitle(row.metadata),
+    author: deriveAuthor(row.metadata),
     status: row.status ?? "pending",
     scope: row.scope,
     ingestedAt: row.lastIngestedAt ?? row.createdAt,
+    receivedAt: row.createdAt,
     nodeCount: Number(row.nodeCount),
   }));
 
@@ -183,9 +190,11 @@ export async function getSourceSummary(
     sourceId: row.id,
     type: row.type as SourceListableType,
     title: deriveTitle(row.metadata),
+    author: deriveAuthor(row.metadata),
     status: row.status ?? "pending",
     scope: row.scope,
     ingestedAt: row.lastIngestedAt ?? row.createdAt,
+    receivedAt: row.createdAt,
     nodeCount: Number(row.nodeCount),
   };
 }

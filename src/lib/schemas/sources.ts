@@ -40,9 +40,27 @@ export const sourceSummarySchema = z.object({
    * until a derived title is available.
    */
   title: z.string().nullable(),
+  /**
+   * Optional bibliographic author (caller-supplied at ingest time via
+   * `ingestDocument` / `ingestFile`). Surface as "Author: …" on source
+   * cards. `null` when no author was provided.
+   */
+  author: z.string().nullable(),
   status: sourceStatusEnum,
   scope: ScopeEnum,
+  /**
+   * Effective document date — the caller-supplied `timestamp` at ingest,
+   * falling back to upload time when none was supplied. Use this to
+   * render "Originally dated …" on source cards. Equal to `receivedAt`
+   * when the caller didn't pass an explicit timestamp.
+   */
   ingestedAt: z.coerce.date(),
+  /**
+   * When memory wrote the source row. Distinct from `ingestedAt` for
+   * back-dated content (e.g. notes synced days after they were written).
+   * Use this for "Received {receivedAt}" labels and audit ordering.
+   */
+  receivedAt: z.coerce.date(),
   /** Count of nodes this source contributed to (via `source_links`). */
   nodeCount: z.number().int().nonnegative(),
 });
