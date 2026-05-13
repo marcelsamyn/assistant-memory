@@ -17,8 +17,8 @@ import { z } from "zod";
 import { DrizzleDB } from "~/db";
 import { sources } from "~/db/schema";
 import { convertToMarkdown } from "~/lib/converters/markitdown";
-import { extractDocumentGraph } from "~/lib/ingestion/extract-document-graph";
 import { ensureUser } from "~/lib/ingestion/ensure-user";
+import { extractDocumentGraph } from "~/lib/ingestion/extract-document-graph";
 import { sourceMetadataSchema, sourceService } from "~/lib/sources";
 import { typeIdSchema, type TypeId } from "~/types/typeid";
 

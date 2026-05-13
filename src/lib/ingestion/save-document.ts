@@ -10,13 +10,13 @@
  * cascaded away here too, so the worker only ever sees a freshly-inserted
  * row to extract from.
  */
-import { ensureUser } from "./ensure-user";
 import { batchQueue } from "../queues";
 import {
   IngestDocumentRequest,
   IngestDocumentResponse,
 } from "../schemas/ingest-document-request";
 import { sourceService } from "../sources";
+import { ensureUser } from "./ensure-user";
 import { and, eq, inArray } from "drizzle-orm";
 import { createError } from "h3";
 import db from "~/db";
