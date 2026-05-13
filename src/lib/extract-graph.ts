@@ -1060,14 +1060,22 @@ async function _processAndRecordLlmMetrics({
   });
 
   if (observations.length === 0 && events.length === 0) return;
-  await recordMetricObservations({
+  const result = await recordMetricObservations({
     userId,
     source: { sourceId },
-    createDefinitions: true,
+    createDefinitions: false,
     replaceSourceObservations: true,
     events,
     observations,
   });
+  const skippedUnknownDefinition = result.errors.filter(
+    (error) => error.code === "DEFINITION_NOT_FOUND",
+  );
+  if (skippedUnknownDefinition.length > 0) {
+    console.warn(
+      `Skipped ${skippedUnknownDefinition.length} metric observation(s) referencing unknown metric definitions during ingestion of source ${sourceId}`,
+    );
+  }
 }
 
 function _defaultAssertedByKind(sourceType: SourceType): AssertedByKind {

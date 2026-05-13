@@ -1,6 +1,7 @@
 import { typeIdSchema } from "../../types/typeid.js";
 import {
   metricAggregationHintSchema,
+  metricDefinitionSchema,
   proposedMetricDefinitionSchema,
 } from "./metric-definition.js";
 import { metricObservationErrorCodeSchema } from "./metric-observation.js";
@@ -72,4 +73,60 @@ export type BulkRecordMetricsRequest = z.infer<
 >;
 export type BulkRecordMetricsResponse = z.infer<
   typeof bulkRecordMetricsResponseSchema
+>;
+
+export const updateMetricDefinitionRequestSchema = z
+  .object({
+    userId: z.string().min(1),
+    metricDefinitionId: typeIdSchema("metric_definition"),
+    slug: z
+      .string()
+      .regex(/^[a-z0-9_]{1,80}$/, "lowercase snake_case slug, max 80 chars")
+      .optional(),
+    label: z.string().min(1).max(200).optional(),
+    description: z.string().min(1).max(2000).optional(),
+    unit: z.string().min(1).max(40).optional(),
+    aggregationHint: metricAggregationHintSchema.optional(),
+    validRangeMin: z.number().nullable().optional(),
+    validRangeMax: z.number().nullable().optional(),
+    needsReview: z.boolean().optional(),
+  })
+  .refine(
+    (value) =>
+      value.slug !== undefined ||
+      value.label !== undefined ||
+      value.description !== undefined ||
+      value.unit !== undefined ||
+      value.aggregationHint !== undefined ||
+      value.validRangeMin !== undefined ||
+      value.validRangeMax !== undefined ||
+      value.needsReview !== undefined,
+    { message: "At least one field must be provided" },
+  );
+
+export const updateMetricDefinitionResponseSchema = z.object({
+  definition: metricDefinitionSchema,
+});
+
+export const deleteMetricDefinitionRequestSchema = z.object({
+  userId: z.string().min(1),
+  metricDefinitionId: typeIdSchema("metric_definition"),
+});
+
+export const deleteMetricDefinitionResponseSchema = z.object({
+  deleted: z.literal(true),
+  deletedObservationCount: z.number().int().min(0),
+});
+
+export type UpdateMetricDefinitionRequest = z.infer<
+  typeof updateMetricDefinitionRequestSchema
+>;
+export type UpdateMetricDefinitionResponse = z.infer<
+  typeof updateMetricDefinitionResponseSchema
+>;
+export type DeleteMetricDefinitionRequest = z.infer<
+  typeof deleteMetricDefinitionRequestSchema
+>;
+export type DeleteMetricDefinitionResponse = z.infer<
+  typeof deleteMetricDefinitionResponseSchema
 >;

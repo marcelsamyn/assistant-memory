@@ -3,20 +3,19 @@ import {
   and,
   asc,
   count,
+  desc,
   eq,
   ilike,
   inArray,
   max,
   min,
   or,
-  sql,
 } from "drizzle-orm";
 import { metricDefinitions, metricObservations } from "~/db/schema";
 import {
   type ListMetricsRequest,
   type MetricDefinitionWithStats,
 } from "~/lib/schemas/metric-read";
-import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
 function numberOrNull(value: string | number | null): number | null {
@@ -69,8 +68,11 @@ export async function listMetrics({
     )
     .groupBy(metricObservations.metricDefinitionId);
 
+  // DISTINCT ON pulls one row per metric — the freshest — using the existing
+  // (user_id, metric_definition_id, occurred_at DESC) index, instead of
+  // scanning every observation and reducing in JS.
   const latestRows = await db
-    .select({
+    .selectDistinctOn([metricObservations.metricDefinitionId], {
       metricDefinitionId: metricObservations.metricDefinitionId,
       value: metricObservations.value,
       occurredAt: metricObservations.occurredAt,
@@ -84,21 +86,14 @@ export async function listMetrics({
     )
     .orderBy(
       metricObservations.metricDefinitionId,
-      sql`${metricObservations.occurredAt} DESC`,
+      desc(metricObservations.occurredAt),
     );
 
   const statsByDefinitionId = new Map(
     statsRows.map((row) => [row.metricDefinitionId, row]),
   );
-  const latestByDefinitionId = latestRows.reduce(
-    (latest, row) =>
-      latest.has(row.metricDefinitionId)
-        ? latest
-        : latest.set(row.metricDefinitionId, row),
-    new Map<
-      TypeId<"metric_definition">,
-      { value: string | number; occurredAt: Date }
-    >(),
+  const latestByDefinitionId = new Map(
+    latestRows.map((row) => [row.metricDefinitionId, row]),
   );
 
   return definitions

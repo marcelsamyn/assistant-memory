@@ -35,12 +35,14 @@ class FakeQuery {
 
 function fakeDatabase(results: QueryResult[]) {
   let index = 0;
+  const next = () => {
+    const result = results[index] ?? [];
+    index += 1;
+    return new FakeQuery(result);
+  };
   return {
-    select() {
-      const result = results[index] ?? [];
-      index += 1;
-      return new FakeQuery(result);
-    },
+    select: next,
+    selectDistinctOn: next,
   };
 }
 

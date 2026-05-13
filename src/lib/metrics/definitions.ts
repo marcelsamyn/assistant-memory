@@ -1,6 +1,10 @@
 import { and, cosineDistance, desc, eq, sql } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
-import { metricDefinitionEmbeddings, metricDefinitions } from "~/db/schema";
+import {
+  metricDefinitionEmbeddings,
+  metricDefinitions,
+  metricObservations,
+} from "~/db/schema";
 import { generateEmbeddings } from "~/lib/embeddings";
 import { HIGH_SIMILARITY, MID_SIMILARITY } from "~/lib/metrics/constants";
 import { createNode } from "~/lib/node";
@@ -11,6 +15,7 @@ import {
   proposedMetricDefinitionSchema,
 } from "~/lib/schemas/metric-definition";
 import type { TypeId } from "~/types/typeid";
+import { useDatabase } from "~/utils/db";
 import { shouldSkipEmbeddingPersistence } from "~/utils/test-overrides";
 
 type MetricDefinitionRow = typeof metricDefinitions.$inferSelect;
@@ -238,4 +243,182 @@ export async function getMetricDefinitionBySlug(
     .limit(1);
 
   return row ? parseDefinition(row) : null;
+}
+
+export interface UpdateMetricDefinitionPatch {
+  slug?: string | undefined;
+  label?: string | undefined;
+  description?: string | undefined;
+  unit?: string | undefined;
+  aggregationHint?: "avg" | "sum" | "min" | "max" | undefined;
+  validRangeMin?: number | null | undefined;
+  validRangeMax?: number | null | undefined;
+  needsReview?: boolean | undefined;
+}
+
+export class MetricDefinitionNotFoundError extends Error {
+  readonly metricDefinitionId: TypeId<"metric_definition">;
+  constructor(metricDefinitionId: TypeId<"metric_definition">) {
+    super(`Metric definition not found: ${metricDefinitionId}`);
+    this.name = "MetricDefinitionNotFoundError";
+    this.metricDefinitionId = metricDefinitionId;
+  }
+}
+
+export class MetricDefinitionSlugConflictError extends Error {
+  readonly slug: string;
+  constructor(slug: string) {
+    super(`Metric definition slug already in use: ${slug}`);
+    this.name = "MetricDefinitionSlugConflictError";
+    this.slug = slug;
+  }
+}
+
+/** Patch a metric definition. Regenerates the embedding when label/description change. */
+export async function updateMetricDefinition(
+  userId: string,
+  metricDefinitionId: TypeId<"metric_definition">,
+  patch: UpdateMetricDefinitionPatch,
+): Promise<MetricDefinition> {
+  const db = await useDatabase();
+
+  const [existing] = await db
+    .select()
+    .from(metricDefinitions)
+    .where(
+      and(
+        eq(metricDefinitions.userId, userId),
+        eq(metricDefinitions.id, metricDefinitionId),
+      ),
+    )
+    .limit(1);
+
+  if (!existing) throw new MetricDefinitionNotFoundError(metricDefinitionId);
+
+  if (patch.slug !== undefined && patch.slug !== existing.slug) {
+    const [conflict] = await db
+      .select({ id: metricDefinitions.id })
+      .from(metricDefinitions)
+      .where(
+        and(
+          eq(metricDefinitions.userId, userId),
+          eq(metricDefinitions.slug, patch.slug),
+        ),
+      )
+      .limit(1);
+    if (conflict) throw new MetricDefinitionSlugConflictError(patch.slug);
+  }
+
+  const nextLabel = patch.label ?? existing.label;
+  const nextDescription = patch.description ?? existing.description;
+  const nextValidRange = validateUpdatedRange(existing, patch);
+
+  const updateValues: Partial<typeof metricDefinitions.$inferInsert> = {
+    updatedAt: new Date(),
+  };
+  if (patch.slug !== undefined) updateValues.slug = patch.slug;
+  if (patch.label !== undefined) updateValues.label = patch.label;
+  if (patch.description !== undefined)
+    updateValues.description = patch.description;
+  if (patch.unit !== undefined) updateValues.unit = patch.unit;
+  if (patch.aggregationHint !== undefined)
+    updateValues.aggregationHint = patch.aggregationHint;
+  if (patch.validRangeMin !== undefined)
+    updateValues.validRangeMin = nextValidRange.min;
+  if (patch.validRangeMax !== undefined)
+    updateValues.validRangeMax = nextValidRange.max;
+  if (patch.needsReview !== undefined)
+    updateValues.needsReview = patch.needsReview;
+
+  const [updated] = await db
+    .update(metricDefinitions)
+    .set(updateValues)
+    .where(
+      and(
+        eq(metricDefinitions.userId, userId),
+        eq(metricDefinitions.id, metricDefinitionId),
+      ),
+    )
+    .returning();
+
+  if (!updated) throw new MetricDefinitionNotFoundError(metricDefinitionId);
+
+  const embeddingTextChanged =
+    nextLabel !== existing.label || nextDescription !== existing.description;
+  if (embeddingTextChanged) {
+    const embedding = await generateMetricDefinitionEmbedding({
+      slug: updated.slug,
+      label: nextLabel,
+      description: nextDescription,
+      unit: updated.unit,
+      aggregationHint: updated.aggregationHint,
+    });
+    if (embedding) {
+      await db
+        .delete(metricDefinitionEmbeddings)
+        .where(
+          eq(metricDefinitionEmbeddings.metricDefinitionId, metricDefinitionId),
+        );
+      await insertMetricDefinitionEmbedding(db, metricDefinitionId, embedding);
+    }
+  }
+
+  return parseDefinition(updated);
+}
+
+function validateUpdatedRange(
+  existing: MetricDefinitionRow,
+  patch: UpdateMetricDefinitionPatch,
+): { min: string | null; max: string | null } {
+  const min =
+    patch.validRangeMin === undefined
+      ? existing.validRangeMin
+      : patch.validRangeMin === null
+        ? null
+        : patch.validRangeMin.toString();
+  const max =
+    patch.validRangeMax === undefined
+      ? existing.validRangeMax
+      : patch.validRangeMax === null
+        ? null
+        : patch.validRangeMax.toString();
+  if (min !== null && max !== null && Number(min) > Number(max)) {
+    throw new Error("validRangeMin must be less than or equal to validRangeMax");
+  }
+  return { min, max };
+}
+
+/** Delete a metric definition (and its observations + embedding via FK cascade). */
+export async function deleteMetricDefinition(
+  userId: string,
+  metricDefinitionId: TypeId<"metric_definition">,
+): Promise<{ deletedObservationCount: number }> {
+  const db = await useDatabase();
+
+  const [observationCountRow] = await db
+    .select({ value: sql<number>`count(*)::int` })
+    .from(metricObservations)
+    .where(
+      and(
+        eq(metricObservations.userId, userId),
+        eq(metricObservations.metricDefinitionId, metricDefinitionId),
+      ),
+    );
+  const deletedObservationCount = observationCountRow?.value ?? 0;
+
+  const deletedRows = await db
+    .delete(metricDefinitions)
+    .where(
+      and(
+        eq(metricDefinitions.userId, userId),
+        eq(metricDefinitions.id, metricDefinitionId),
+      ),
+    )
+    .returning({ id: metricDefinitions.id });
+
+  if (deletedRows.length === 0) {
+    throw new MetricDefinitionNotFoundError(metricDefinitionId);
+  }
+
+  return { deletedObservationCount };
 }
