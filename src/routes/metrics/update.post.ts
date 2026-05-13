@@ -1,6 +1,7 @@
 import {
   MetricDefinitionNotFoundError,
   MetricDefinitionSlugConflictError,
+  MetricDefinitionValidationError,
   updateMetricDefinition,
 } from "~/lib/metrics/definitions";
 import {
@@ -24,6 +25,9 @@ export default defineEventHandler(async (event) => {
     }
     if (error instanceof MetricDefinitionSlugConflictError) {
       throw createError({ statusCode: 409, statusMessage: error.message });
+    }
+    if (error instanceof MetricDefinitionValidationError) {
+      throw createError({ statusCode: 400, statusMessage: error.message });
     }
     throw error;
   }

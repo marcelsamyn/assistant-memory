@@ -274,7 +274,19 @@ export class MetricDefinitionSlugConflictError extends Error {
   }
 }
 
-/** Patch a metric definition. Regenerates the embedding when label/description change. */
+export class MetricDefinitionValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MetricDefinitionValidationError";
+  }
+}
+
+/**
+ * Patch a metric definition. When label/description change, regenerates the
+ * embedding too — the new embedding is computed up-front, then the row update
+ * and embedding delete+insert run in a single transaction so we never persist
+ * an updated definition without a matching embedding.
+ */
 export async function updateMetricDefinition(
   userId: string,
   metricDefinitionId: TypeId<"metric_definition">,
@@ -295,23 +307,26 @@ export async function updateMetricDefinition(
 
   if (!existing) throw new MetricDefinitionNotFoundError(metricDefinitionId);
 
-  if (patch.slug !== undefined && patch.slug !== existing.slug) {
-    const [conflict] = await db
-      .select({ id: metricDefinitions.id })
-      .from(metricDefinitions)
-      .where(
-        and(
-          eq(metricDefinitions.userId, userId),
-          eq(metricDefinitions.slug, patch.slug),
-        ),
-      )
-      .limit(1);
-    if (conflict) throw new MetricDefinitionSlugConflictError(patch.slug);
-  }
-
   const nextLabel = patch.label ?? existing.label;
   const nextDescription = patch.description ?? existing.description;
+  const nextUnit = patch.unit ?? existing.unit;
+  const nextAggregationHint = patch.aggregationHint ?? existing.aggregationHint;
+  const nextSlug = patch.slug ?? existing.slug;
   const nextValidRange = validateUpdatedRange(existing, patch);
+
+  const embeddingTextChanged =
+    nextLabel !== existing.label || nextDescription !== existing.description;
+  // Compute the new embedding *before* the transaction so a failure in the
+  // embedding service can't leave the row updated with a stale vector.
+  const newEmbedding = embeddingTextChanged
+    ? await generateMetricDefinitionEmbedding({
+        slug: nextSlug,
+        label: nextLabel,
+        description: nextDescription,
+        unit: nextUnit,
+        aggregationHint: nextAggregationHint,
+      })
+    : null;
 
   const updateValues: Partial<typeof metricDefinitions.$inferInsert> = {
     updatedAt: new Date(),
@@ -330,38 +345,49 @@ export async function updateMetricDefinition(
   if (patch.needsReview !== undefined)
     updateValues.needsReview = patch.needsReview;
 
-  const [updated] = await db
-    .update(metricDefinitions)
-    .set(updateValues)
-    .where(
-      and(
-        eq(metricDefinitions.userId, userId),
-        eq(metricDefinitions.id, metricDefinitionId),
-      ),
-    )
-    .returning();
+  const updated = await db.transaction(async (tx) => {
+    if (patch.slug !== undefined && patch.slug !== existing.slug) {
+      const [conflict] = await tx
+        .select({ id: metricDefinitions.id })
+        .from(metricDefinitions)
+        .where(
+          and(
+            eq(metricDefinitions.userId, userId),
+            eq(metricDefinitions.slug, patch.slug),
+          ),
+        )
+        .limit(1);
+      if (conflict) throw new MetricDefinitionSlugConflictError(patch.slug);
+    }
 
-  if (!updated) throw new MetricDefinitionNotFoundError(metricDefinitionId);
+    const [row] = await tx
+      .update(metricDefinitions)
+      .set(updateValues)
+      .where(
+        and(
+          eq(metricDefinitions.userId, userId),
+          eq(metricDefinitions.id, metricDefinitionId),
+        ),
+      )
+      .returning();
 
-  const embeddingTextChanged =
-    nextLabel !== existing.label || nextDescription !== existing.description;
-  if (embeddingTextChanged) {
-    const embedding = await generateMetricDefinitionEmbedding({
-      slug: updated.slug,
-      label: nextLabel,
-      description: nextDescription,
-      unit: updated.unit,
-      aggregationHint: updated.aggregationHint,
-    });
-    if (embedding) {
-      await db
+    if (!row) throw new MetricDefinitionNotFoundError(metricDefinitionId);
+
+    if (embeddingTextChanged && newEmbedding) {
+      await tx
         .delete(metricDefinitionEmbeddings)
         .where(
           eq(metricDefinitionEmbeddings.metricDefinitionId, metricDefinitionId),
         );
-      await insertMetricDefinitionEmbedding(db, metricDefinitionId, embedding);
+      await insertMetricDefinitionEmbedding(
+        tx,
+        metricDefinitionId,
+        newEmbedding,
+      );
     }
-  }
+
+    return row;
+  });
 
   return parseDefinition(updated);
 }
@@ -383,7 +409,9 @@ function validateUpdatedRange(
         ? null
         : patch.validRangeMax.toString();
   if (min !== null && max !== null && Number(min) > Number(max)) {
-    throw new Error("validRangeMin must be less than or equal to validRangeMax");
+    throw new MetricDefinitionValidationError(
+      "validRangeMin must be less than or equal to validRangeMax",
+    );
   }
   return { min, max };
 }
