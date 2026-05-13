@@ -73,3 +73,123 @@ describe("metric observation range guard", () => {
     ).not.toThrow();
   });
 });
+
+describe("recordMetricObservations with createDefinitions: false", () => {
+  it("attaches LLM-proposed observations to existing metrics via slug lookup", async () => {
+    const existing = definition({ validRangeMin: null, validRangeMax: null });
+    const inserted: unknown[] = [];
+    const fakeDb = {
+      delete: () => ({ where: async () => undefined }),
+      insert: () => ({
+        values: (value: unknown) => ({
+          returning: async () => {
+            inserted.push(value);
+            return [
+              {
+                id: newTypeId("metric_observation"),
+                metricDefinitionId: existing.id,
+              },
+            ];
+          },
+        }),
+      }),
+    };
+
+    vi.resetModules();
+    vi.doMock("~/lib/metrics/definitions", () => ({
+      getMetricDefinitionBySlug: async () => existing,
+      resolveMetricDefinition: async () => {
+        throw new Error("must not be called when createDefinitions is false");
+      },
+    }));
+    vi.doMock("~/lib/metrics/sources", () => ({
+      upsertMetricManualSource: async () => newTypeId("source"),
+      upsertMetricPushSource: async () => newTypeId("source"),
+    }));
+    vi.doMock("~/lib/metrics/event-nodes", () => ({
+      ensureMetricEventNode: async () => newTypeId("node"),
+    }));
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => fakeDb }));
+
+    const { recordMetricObservations } = await import(
+      "~/lib/metrics/observations"
+    );
+    const result = await recordMetricObservations({
+      userId: "user_A",
+      source: { type: "metric_manual" },
+      createDefinitions: false,
+      observations: [
+        {
+          metric: {
+            slug: "resting_hr",
+            label: "Resting HR",
+            description: "Morning resting heart rate",
+            unit: "bpm",
+            aggregationHint: "avg",
+          },
+          value: 58,
+          occurredAt: new Date("2026-05-12T07:00:00.000Z"),
+        },
+      ],
+    });
+
+    expect(result.inserted).toBe(1);
+    expect(result.errors).toEqual([]);
+    expect(inserted).toHaveLength(1);
+  });
+
+  it("skips observations whose slug doesn't match any existing metric", async () => {
+    const fakeDb = {
+      delete: () => ({ where: async () => undefined }),
+      insert: () => ({
+        values: () => ({
+          returning: async () => {
+            throw new Error("insert must not be called when slug is unknown");
+          },
+        }),
+      }),
+    };
+
+    vi.resetModules();
+    vi.doMock("~/lib/metrics/definitions", () => ({
+      getMetricDefinitionBySlug: async () => null,
+      resolveMetricDefinition: async () => {
+        throw new Error("must not be called when createDefinitions is false");
+      },
+    }));
+    vi.doMock("~/lib/metrics/sources", () => ({
+      upsertMetricManualSource: async () => newTypeId("source"),
+      upsertMetricPushSource: async () => newTypeId("source"),
+    }));
+    vi.doMock("~/lib/metrics/event-nodes", () => ({
+      ensureMetricEventNode: async () => newTypeId("node"),
+    }));
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => fakeDb }));
+
+    const { recordMetricObservations } = await import(
+      "~/lib/metrics/observations"
+    );
+    const result = await recordMetricObservations({
+      userId: "user_A",
+      source: { type: "metric_manual" },
+      createDefinitions: false,
+      observations: [
+        {
+          metric: {
+            slug: "height_of_sam",
+            label: "Height of Sam",
+            description: "Sam's height mentioned in chat",
+            unit: "cm",
+            aggregationHint: "avg",
+          },
+          value: 182,
+          occurredAt: new Date("2026-05-12T07:00:00.000Z"),
+        },
+      ],
+    });
+
+    expect(result.inserted).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.code).toBe("DEFINITION_NOT_FOUND");
+  });
+});

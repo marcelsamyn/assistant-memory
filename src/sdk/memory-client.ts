@@ -79,10 +79,16 @@ import {
 import {
   BulkRecordMetricsRequest,
   BulkRecordMetricsResponse,
+  DeleteMetricDefinitionRequest,
+  DeleteMetricDefinitionResponse,
   RecordMetricRequest,
   RecordMetricResponse,
+  UpdateMetricDefinitionRequest,
+  UpdateMetricDefinitionResponse,
   bulkRecordMetricsResponseSchema,
+  deleteMetricDefinitionResponseSchema,
   recordMetricResponseSchema,
+  updateMetricDefinitionResponseSchema,
 } from "../lib/schemas/metric-write.js";
 import {
   BatchDeleteNodesRequest,
@@ -498,6 +504,28 @@ export class MemoryClient {
       "POST",
       "/metrics/summary",
       getMetricSummaryResponseSchema,
+      payload,
+    );
+  }
+
+  async updateMetricDefinition(
+    payload: UpdateMetricDefinitionRequest,
+  ): Promise<UpdateMetricDefinitionResponse> {
+    return this._fetch(
+      "POST",
+      "/metrics/update",
+      updateMetricDefinitionResponseSchema,
+      payload,
+    );
+  }
+
+  async deleteMetricDefinition(
+    payload: DeleteMetricDefinitionRequest,
+  ): Promise<DeleteMetricDefinitionResponse> {
+    return this._fetch(
+      "POST",
+      "/metrics/delete",
+      deleteMetricDefinitionResponseSchema,
       payload,
     );
   }

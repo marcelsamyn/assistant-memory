@@ -164,37 +164,38 @@ async function resolveObservationDefinition(
   observation: MetricObservationInput,
 ): Promise<MetricDefinitionResolution | MetricObservationRowError> {
   if (observation.metric !== undefined) {
-    if (!createDefinitions) {
-      return {
-        index: -1,
-        code: "INVALID_INPUT",
-        message: "Metric definitions cannot be created for this source",
-      };
+    if (createDefinitions) {
+      return resolveMetricDefinition(
+        db,
+        userId,
+        toProposedMetricDefinition(observation.metric),
+      );
     }
-    return resolveMetricDefinition(
-      db,
-      userId,
-      toProposedMetricDefinition(observation.metric),
-    );
+    // Caller may not mint new definitions (e.g. LLM ingestion). Fall through
+    // to slug lookup so observations still attach to user-curated metrics.
+    return resolveDefinitionBySlug(db, userId, observation.metric.slug);
   }
 
   if (observation.metricSlug === undefined) {
     return missingMetricError(-1);
   }
 
-  const definition = await getMetricDefinitionBySlug(
-    db,
-    userId,
-    observation.metricSlug,
-  );
+  return resolveDefinitionBySlug(db, userId, observation.metricSlug);
+}
+
+async function resolveDefinitionBySlug(
+  db: DrizzleDB,
+  userId: string,
+  slug: string,
+): Promise<MetricDefinitionResolution | MetricObservationRowError> {
+  const definition = await getMetricDefinitionBySlug(db, userId, slug);
   if (!definition) {
     return {
       index: -1,
       code: "DEFINITION_NOT_FOUND",
-      message: `Metric definition not found for slug '${observation.metricSlug}'`,
+      message: `Metric definition not found for slug '${slug}'`,
     };
   }
-
   return {
     definition,
     created: false,
