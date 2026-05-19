@@ -1,5 +1,9 @@
 import { defineEventHandler, createError } from "h3";
-import { createClaim, InvalidObjectValueError } from "~/lib/claim";
+import {
+  createClaim,
+  InvalidObjectValueError,
+  NodesNotFoundError,
+} from "~/lib/claim";
 import {
   createClaimRequestSchema,
   createClaimResponseSchema,
@@ -23,8 +27,16 @@ export default defineEventHandler(async (event) => {
         },
       });
     }
-    if (e instanceof Error && e.message.includes("not found")) {
-      throw createError({ statusCode: 404, statusMessage: e.message });
+    if (e instanceof NodesNotFoundError) {
+      throw createError({
+        statusCode: 422,
+        statusMessage: e.message,
+        data: {
+          name: e.name,
+          userId: e.userId,
+          missingNodeIds: e.missingNodeIds,
+        },
+      });
     }
     throw e;
   }
