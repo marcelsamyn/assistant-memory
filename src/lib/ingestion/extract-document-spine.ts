@@ -32,7 +32,9 @@ export async function extractDocumentSpine(params: {
   const { userId, content } = params;
   const condensed = condenseForSpine(content);
 
-  const { createCompletionClient } = await import("~/lib/ai");
+  const { createCompletionClient, parseStructuredCompletion } = await import(
+    "~/lib/ai"
+  );
   const client = await createCompletionClient(userId);
 
   const prompt = `You are reading a document to summarize its high-level shape for a graph extractor.
@@ -52,7 +54,7 @@ Guidance:
 ${condensed}
 </document>`;
 
-  const completion = await client.beta.chat.completions.parse({
+  const completion = await parseStructuredCompletion(client, {
     messages: [{ role: "user", content: prompt }],
     model: env.MODEL_ID_GRAPH_EXTRACTION,
     response_format: zodResponseFormat(documentSpineSchema, "document_spine"),
