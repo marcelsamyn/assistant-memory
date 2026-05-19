@@ -10,7 +10,7 @@
  * Common aliases: cleanup-graph, proposeGraphCleanup, buildCleanupPrompt,
  * cleanup pipeline, cleanup prompt builder.
  */
-import { createCompletionClient } from "../ai";
+import { createCompletionClient, parseStructuredCompletion } from "../ai";
 import { getConversationBootstrapContext } from "../context/assemble-bootstrap-context";
 import type { ContextBundle } from "../context/types";
 import { generateAndInsertNodeEmbeddings } from "../embeddings-util";
@@ -641,7 +641,7 @@ export async function proposeGraphCleanup(
 
   const prompt = buildCleanupPrompt(temp, bundle);
 
-  const completion = await client.beta.chat.completions.parse({
+  const completion = await parseStructuredCompletion(client, {
     messages: [{ role: "user", content: prompt }],
     model: modelId,
     response_format: zodResponseFormat(

@@ -1,3 +1,4 @@
+import { parseStructuredCompletion } from "./ai";
 import { createAlias, normalizeAliasText } from "./alias";
 import { applyClaimLifecycle, fetchClaimsByIds } from "./claims/lifecycle";
 import { debugGraph } from "./debug-utils";
@@ -385,7 +386,7 @@ ${
     : `Focus on extracting the most significant and meaningful information that the USER provided. Quality and accuracy are more important than quantity.`
 }`;
 
-  const completion = await client.beta.chat.completions.parse({
+  const completion = await parseStructuredCompletion(client, {
     messages: [{ role: "user", content: prompt }],
     model: env.MODEL_ID_GRAPH_EXTRACTION,
     response_format: zodResponseFormat(llmExtractionSchema, "subgraph"),

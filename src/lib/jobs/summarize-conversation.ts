@@ -54,7 +54,11 @@ export async function summarizeUserConversations(
   }
 
   let summarizedCount = 0;
-  const { createCompletionClient } = await import("../ai");
+  const {
+    createCompletionClient,
+    MalformedUpstreamCompletionError,
+    parseStructuredCompletion,
+  } = await import("../ai");
   const client = await createCompletionClient(userId);
 
   for (const { sourceId, conversationNodeId } of convsToSummarize) {
@@ -112,7 +116,7 @@ ${formatConversationAsXml(turns)}
 
     debug(`Summarize - prompt for source ${sourceId}:`, prompt);
     try {
-      const completion = await client.beta.chat.completions.parse({
+      const completion = await parseStructuredCompletion(client, {
         messages: [{ role: "user", content: prompt }],
         model: env.MODEL_ID_GRAPH_EXTRACTION,
         response_format: zodResponseFormat(
@@ -167,19 +171,10 @@ ${formatConversationAsXml(turns)}
 
       summarizedCount++;
     } catch (error) {
-      // The OpenAI SDK's parseChatCompletion crashes with
-      // `TypeError: Cannot read properties of undefined (reading 'map')`
-      // when the upstream API returns a response without a `choices` field
-      // (e.g. an error envelope from a custom baseURL provider, an empty
-      // body, or a rate-limit response wrapped as 200). Treat this as a
-      // transient upstream issue: leave the source untouched so the next
-      // batch retries it instead of permanently marking it failed.
-      if (
-        error instanceof TypeError &&
-        error.message.includes("reading 'map'") &&
-        typeof error.stack === "string" &&
-        error.stack.includes("parseChatCompletion")
-      ) {
+      // Transient upstream issue (provider returned a non-OpenAI envelope):
+      // leave the source untouched so the next batch retries it instead of
+      // permanently marking it failed.
+      if (error instanceof MalformedUpstreamCompletionError) {
         console.warn(
           `Summarize - upstream returned malformed completion for source ${sourceId}; leaving for retry on next batch`,
         );

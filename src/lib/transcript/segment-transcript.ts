@@ -11,7 +11,7 @@
  */
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
 import { z } from "zod";
-import { createCompletionClient } from "~/lib/ai";
+import { createCompletionClient, parseStructuredCompletion } from "~/lib/ai";
 import { env } from "~/utils/env";
 
 export const segmentedUtteranceSchema = z.object({
@@ -80,7 +80,7 @@ The transcript was recorded around ${occurredAt.toISOString()}. If individual ut
 ${rawContent}
 </transcript>`;
 
-    const completion = await client.beta.chat.completions.parse({
+    const completion = await parseStructuredCompletion(client, {
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: prompt },
