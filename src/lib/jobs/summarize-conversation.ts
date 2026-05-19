@@ -167,6 +167,24 @@ ${formatConversationAsXml(turns)}
 
       summarizedCount++;
     } catch (error) {
+      // The OpenAI SDK's parseChatCompletion crashes with
+      // `TypeError: Cannot read properties of undefined (reading 'map')`
+      // when the upstream API returns a response without a `choices` field
+      // (e.g. an error envelope from a custom baseURL provider, an empty
+      // body, or a rate-limit response wrapped as 200). Treat this as a
+      // transient upstream issue: leave the source untouched so the next
+      // batch retries it instead of permanently marking it failed.
+      if (
+        error instanceof TypeError &&
+        error.message.includes("reading 'map'") &&
+        typeof error.stack === "string" &&
+        error.stack.includes("parseChatCompletion")
+      ) {
+        console.warn(
+          `Summarize - upstream returned malformed completion for source ${sourceId}; leaving for retry on next batch`,
+        );
+        continue;
+      }
       console.error(`Error summarizing source ${sourceId}:`, error);
       await db
         .update(sources)
