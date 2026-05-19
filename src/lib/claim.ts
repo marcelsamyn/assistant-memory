@@ -45,6 +45,26 @@ export class InvalidObjectValueError extends Error {
   }
 }
 
+/**
+ * Thrown when a claim references node ids that either don't exist or aren't
+ * owned by the asserting `userId`. Carries the exact set of missing ids so
+ * route handlers can surface a structured response instead of a string-match
+ * over the message, and callers (including the assistant) can see which
+ * subject/object they got wrong rather than retrying blindly.
+ */
+export class NodesNotFoundError extends Error {
+  readonly userId: string;
+  readonly missingNodeIds: ReadonlyArray<TypeId<"node">>;
+  constructor(userId: string, missingNodeIds: ReadonlyArray<TypeId<"node">>) {
+    super(
+      `Nodes not found or not owned by user ${userId}: ${missingNodeIds.join(", ")}`,
+    );
+    this.name = "NodesNotFoundError";
+    this.userId = userId;
+    this.missingNodeIds = missingNodeIds;
+  }
+}
+
 export type CreatedClaim = ClaimSelect & {
   subjectLabel: string | null;
   objectLabel: string | null;
@@ -108,7 +128,9 @@ async function fetchOwnedNodeLabels(
     .where(and(eq(nodes.userId, userId), inArray(nodes.id, uniqueNodeIds)));
 
   if (found.length !== uniqueNodeIds.length) {
-    throw new Error("One or more nodes not found");
+    const foundIds = new Set(found.map((node) => node.id));
+    const missing = uniqueNodeIds.filter((id) => !foundIds.has(id));
+    throw new NodesNotFoundError(userId, missing);
   }
 
   return new Map(found.map((node) => [node.id, node.label ?? null]));

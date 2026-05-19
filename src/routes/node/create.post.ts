@@ -1,5 +1,5 @@
 import { defineEventHandler, createError } from "h3";
-import { InvalidObjectValueError } from "~/lib/claim";
+import { InvalidObjectValueError, NodesNotFoundError } from "~/lib/claim";
 import { createNode } from "~/lib/node";
 import {
   createNodeRequestSchema,
@@ -28,6 +28,17 @@ export default defineEventHandler(async (event) => {
           predicate: e.predicate,
           objectValue: e.objectValue,
           allowedValues: e.allowedValues,
+        },
+      });
+    }
+    if (e instanceof NodesNotFoundError) {
+      throw createError({
+        statusCode: 422,
+        statusMessage: e.message,
+        data: {
+          name: e.name,
+          userId: e.userId,
+          missingNodeIds: e.missingNodeIds,
         },
       });
     }
