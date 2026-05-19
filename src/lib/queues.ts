@@ -31,6 +31,18 @@ export const batchQueue = new Queue("batchProcessing", {
   connection: redisConnection,
 });
 
+/**
+ * Retry profile for the standalone summarize job. The worker reads
+ * `job.attemptsMade` against this `attempts` value to decide when to give
+ * up on a source that consistently trips the upstream parser bug (see
+ * `summarizeUserConversations`). Exponential backoff keeps repeated
+ * transient upstream failures from hammering the provider.
+ */
+export const SUMMARIZE_JOB_OPTIONS = {
+  attempts: 3,
+  backoff: { type: "exponential", delay: 1_000 },
+} as const;
+
 export const flowProducer = new FlowProducer({ connection: redisConnection });
 
 // Define Job Data Schemas (using Zod could be an option here too)
@@ -63,8 +75,17 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         const { userId } = job.data as SummarizeJobData;
         console.log(`Starting summarize job for user ${userId}`);
 
+        // Final attempt = last BullMQ retry. On the final attempt
+        // summarizeUserConversations marks malformed-upstream sources
+        // as failed instead of throwing, so a persistently broken
+        // source can't loop forever.
+        const maxAttempts = job.opts.attempts ?? 1;
+        const isFinalAttempt = job.attemptsMade + 1 >= maxAttempts;
+
         // 1. Summarize conversations
-        const summaryResult = await summarizeUserConversations(db, userId);
+        const summaryResult = await summarizeUserConversations(db, userId, {
+          isFinalAttempt,
+        });
         console.log(
           `Summarized ${summaryResult.summarizedCount} conversations for user ${userId}.`,
         );

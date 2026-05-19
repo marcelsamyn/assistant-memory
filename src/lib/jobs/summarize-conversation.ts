@@ -26,12 +26,30 @@ export interface SummarizeConversationJobResult {
 }
 
 /**
+ * Caller-supplied options that shape how the job handles transient
+ * upstream errors. The standalone "summarize" worker passes
+ * `isFinalAttempt: true` on the last BullMQ retry so a source that
+ * consistently trips the upstream parser bug eventually gets marked
+ * `failed` instead of looping forever; the dream worker leaves the
+ * default (`false`) because it isn't configured for retries.
+ */
+export interface SummarizeUserConversationsOptions {
+  /**
+   * When set, malformed upstream completions are marked as a hard
+   * failure on the source row instead of being left untouched for a
+   * subsequent batch. Used by the BullMQ worker on the final retry.
+   */
+  isFinalAttempt?: boolean;
+}
+
+/**
  * Summarizes conversations for a given user.
  * Fetches conversations needing summarization, calls OpenAI, and updates metadata.
  */
 export async function summarizeUserConversations(
   db: DrizzleDB,
   userId: string,
+  opts: SummarizeUserConversationsOptions = {},
 ): Promise<SummarizeConversationJobResult> {
   const convsToSummarize = await db
     .select({ sourceId: sources.id, conversationNodeId: sourceLinks.nodeId })
@@ -171,13 +189,23 @@ ${formatConversationAsXml(turns)}
 
       summarizedCount++;
     } catch (error) {
-      // Transient upstream issue (provider returned a non-OpenAI envelope):
-      // leave the source untouched so the next batch retries it instead of
-      // permanently marking it failed.
       if (error instanceof MalformedUpstreamCompletionError) {
-        console.warn(
-          `Summarize - upstream returned malformed completion for source ${sourceId}; leaving for retry on next batch`,
+        // On non-final attempts, rethrow so BullMQ retries the whole
+        // job. Sources successfully summarized earlier in this loop are
+        // already marked `summarized` and get filtered out next pass, so
+        // a retry resumes from the failing source. On the final attempt
+        // we give up on this source specifically: mark it failed so the
+        // job can finish processing the rest instead of looping forever.
+        if (!opts.isFinalAttempt) {
+          throw error;
+        }
+        console.error(
+          `Summarize - upstream returned malformed completion for source ${sourceId} on final attempt; marking failed`,
         );
+        await db
+          .update(sources)
+          .set({ status: "failed" })
+          .where(eq(sources.id, sourceId));
         continue;
       }
       console.error(`Error summarizing source ${sourceId}:`, error);
