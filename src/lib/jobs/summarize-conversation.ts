@@ -26,20 +26,26 @@ export interface SummarizeConversationJobResult {
 }
 
 /**
- * Caller-supplied options that shape how the job handles transient
- * upstream errors. The standalone "summarize" worker passes
- * `isFinalAttempt: true` on the last BullMQ retry so a source that
- * consistently trips the upstream parser bug eventually gets marked
- * `failed` instead of looping forever; the dream worker leaves the
- * default (`false`) because it isn't configured for retries.
+ * Strategy for handling a {@link MalformedUpstreamCompletionError} on an
+ * individual source. Different callers want different behavior because
+ * they're in different positions to recover:
+ *
+ * - `"retry-job"`: rethrow so a BullMQ worker can retry the whole job.
+ *   Used by the standalone summarize worker on non-final attempts so
+ *   `attempts: N` exponential backoff handles transient upstream blips.
+ * - `"mark-failed"`: flip the source to `status: "failed"` and continue
+ *   processing the rest. Used on the final summarize retry to break out
+ *   of the retry loop when a specific source consistently trips the
+ *   upstream parser bug.
+ * - `"skip"`: leave the source untouched and continue. Used by the dream
+ *   worker so one bad source doesn't halt the entire dream cycle; the
+ *   source is picked up by the next standalone summarize batch.
  */
+export type MalformedUpstreamStrategy = "retry-job" | "mark-failed" | "skip";
+
 export interface SummarizeUserConversationsOptions {
-  /**
-   * When set, malformed upstream completions are marked as a hard
-   * failure on the source row instead of being left untouched for a
-   * subsequent batch. Used by the BullMQ worker on the final retry.
-   */
-  isFinalAttempt?: boolean;
+  /** See {@link MalformedUpstreamStrategy}. Defaults to `"retry-job"`. */
+  onMalformedUpstream?: MalformedUpstreamStrategy;
 }
 
 /**
@@ -190,22 +196,27 @@ ${formatConversationAsXml(turns)}
       summarizedCount++;
     } catch (error) {
       if (error instanceof MalformedUpstreamCompletionError) {
-        // On non-final attempts, rethrow so BullMQ retries the whole
-        // job. Sources successfully summarized earlier in this loop are
-        // already marked `summarized` and get filtered out next pass, so
-        // a retry resumes from the failing source. On the final attempt
-        // we give up on this source specifically: mark it failed so the
-        // job can finish processing the rest instead of looping forever.
-        if (!opts.isFinalAttempt) {
+        const strategy = opts.onMalformedUpstream ?? "retry-job";
+        if (strategy === "retry-job") {
+          // Earlier sources in this loop are already marked
+          // `summarized` and get filtered out on the next pass, so a
+          // job retry resumes from the failing source.
           throw error;
         }
-        console.error(
-          `Summarize - upstream returned malformed completion for source ${sourceId} on final attempt; marking failed`,
+        if (strategy === "mark-failed") {
+          console.error(
+            `Summarize - upstream returned malformed completion for source ${sourceId} on final attempt; marking failed`,
+          );
+          await db
+            .update(sources)
+            .set({ status: "failed" })
+            .where(eq(sources.id, sourceId));
+          continue;
+        }
+        // "skip": leave the source untouched for the next batch.
+        console.warn(
+          `Summarize - upstream returned malformed completion for source ${sourceId}; skipping (will retry on next batch)`,
         );
-        await db
-          .update(sources)
-          .set({ status: "failed" })
-          .where(eq(sources.id, sourceId));
         continue;
       }
       console.error(`Error summarizing source ${sourceId}:`, error);
