@@ -68,11 +68,14 @@ import {
 import {
   GetMetricSeriesRequest,
   GetMetricSeriesResponse,
+  GetMetricSummariesRequest,
+  GetMetricSummariesResponse,
   GetMetricSummaryRequest,
   GetMetricSummaryResponse,
   ListMetricsRequest,
   ListMetricsResponse,
   getMetricSeriesResponseSchema,
+  getMetricSummariesResponseSchema,
   getMetricSummaryResponseSchema,
   listMetricsResponseSchema,
 } from "../lib/schemas/metric-read.js";
@@ -504,6 +507,27 @@ export class MemoryClient {
       "POST",
       "/metrics/summary",
       getMetricSummaryResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Batch `getMetricSummary`: latest value + 7d/30d/90d windows + coarse trend
+   * for many metrics in one round-trip, for "metric movers" digests and
+   * dashboards (no per-metric fan-out). Omit `metricIds` to summarize every
+   * metric (optionally narrowed by `filter.active`/`filter.needsReview`); pass
+   * `metricIds` to summarize exactly those, in request order, with a
+   * null-filled summary for any id the user doesn't own. When `metricIds` is
+   * provided, `filter` is ignored. The consumer derives direction from
+   * `latest` vs `windows["7d"].avg` (or the returned `trend`).
+   */
+  async getMetricSummaries(
+    payload: GetMetricSummariesRequest,
+  ): Promise<GetMetricSummariesResponse> {
+    return this._fetch(
+      "POST",
+      "/metrics/summaries",
+      getMetricSummariesResponseSchema,
       payload,
     );
   }
