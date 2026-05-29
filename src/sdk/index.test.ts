@@ -12,4 +12,12 @@ describe("SDK exports", () => {
     });
     expect(parsed.userSelfAliases).toEqual(["Marcel"]);
   });
+
+  it("re-exports the digest, metric-movers, and recent-changes schemas", async () => {
+    const sdk = await import("./index");
+    expect(sdk.getDigestRequestSchema).toBeDefined();
+    expect(sdk.getDigestResponseSchema).toBeDefined();
+    expect(sdk.metricMoverSchema).toBeDefined();
+    expect(sdk.queryRecentChangesResponseSchema).toBeDefined();
+  });
 });
