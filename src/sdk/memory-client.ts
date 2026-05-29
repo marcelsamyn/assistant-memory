@@ -163,6 +163,11 @@ import {
   queryNodeTypeResponseSchema,
 } from "../lib/schemas/query-node-type.js";
 import {
+  QueryRecentChangesRequest,
+  QueryRecentChangesResponse,
+  queryRecentChangesResponseSchema,
+} from "../lib/schemas/query-recent-changes.js";
+import {
   QuerySearchRequest,
   QuerySearchResponse,
   querySearchResponseSchema,
@@ -451,6 +456,30 @@ export class MemoryClient {
       "POST",
       "/query/timeline",
       queryTimelineResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Time-range "what's new in memory" feed for a daily digest or a Memory
+   * "Today" dashboard. Returns the personal, currently-active claims and the
+   * nodes added or updated within `[since, until]` (`until` defaults to now),
+   * each carrying labels and provenance so the consumer can render
+   * "N facts from <source>" without an N+1 `getNode`/`getSource` fan-out.
+   * `changeKind` separates freshly `added` items from existing ones `updated`
+   * in the window. Pass `nodeTypes` to narrow the node feed; otherwise
+   * structural `Temporal`/`Atlas`/`AssistantDream` nodes are omitted. `limit`
+   * caps the `claims` and `nodes` lists independently. Use this instead of
+   * `queryDay` when you have a `since` cursor and need labelled claims, not
+   * just a single day's nodes.
+   */
+  async queryRecentChanges(
+    payload: QueryRecentChangesRequest,
+  ): Promise<QueryRecentChangesResponse> {
+    return this._fetch(
+      "POST",
+      "/query/recent-changes",
+      queryRecentChangesResponseSchema,
       payload,
     );
   }

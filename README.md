@@ -256,6 +256,7 @@ The integration only works if these are true:
 - `POST /query/search` – vector search to retrieve relevant nodes.
 - `POST /commitments/open` – lifecycle-aware list of pending and in-progress tasks.
 - `POST /query/day` – get a quick summary of a particular day.
+- `POST /query/recent-changes` – "what's new in memory" feed over a time range: active claims and nodes added/updated since a `since` cursor, with labels and per-source provenance.
 - `GET /sse` and `POST /messages` – MCP over HTTP using Server‑Sent Events.
 
 ## Metrics
