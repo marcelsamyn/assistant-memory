@@ -17,6 +17,7 @@ export * from "../lib/schemas/query-search.js";
 export * from "../lib/schemas/query-atlas.js";
 export * from "../lib/schemas/query-day.js";
 export * from "../lib/schemas/query-node-type.js";
+export * from "../lib/schemas/query-recent-changes.js";
 export * from "../lib/schemas/query-graph.js";
 export * from "../lib/schemas/messages.js";
 export * from "../lib/schemas/summarize.js";
