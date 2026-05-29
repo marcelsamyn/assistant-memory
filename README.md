@@ -291,6 +291,7 @@ Read paths:
 - `POST /metrics/list` returns definitions with units, review state, and lightweight stats.
 - `POST /metrics/series` returns raw or bucketed points for one or more metric definitions.
 - `POST /metrics/summary` returns latest value, 7d/30d/90d stats, and a coarse trend.
+- `POST /metrics/summaries` returns that same per-metric shape for many metrics in one round-trip (omit `metricIds` for all, optionally filtered) — for "metric movers" digests/dashboards without an N+1 fan-out.
 
 New definitions are deduplicated by exact slug first, then definition embedding similarity. Near-duplicate definitions are created with `needsReview: true` and surfaced as normal open Task commitments.
 

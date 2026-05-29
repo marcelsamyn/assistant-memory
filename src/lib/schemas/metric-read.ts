@@ -104,6 +104,27 @@ export const getMetricSummaryResponseSchema = z.object({
   trend: z.enum(["up", "down", "flat"]).nullable(),
 });
 
+export const getMetricSummariesRequestSchema = z.object({
+  userId: z.string().min(1),
+  // Explicit selection. Omit to summarize every (optionally filtered) metric.
+  metricIds: z
+    .array(typeIdSchema("metric_definition"))
+    .min(1)
+    .max(200)
+    .optional(),
+  // Consulted only when `metricIds` is omitted; see `getMetricSummaries`.
+  filter: z
+    .object({
+      active: z.boolean().optional(),
+      needsReview: z.boolean().optional(),
+    })
+    .optional(),
+});
+
+export const getMetricSummariesResponseSchema = z.object({
+  summaries: z.array(getMetricSummaryResponseSchema),
+});
+
 export type MetricDefinition = z.infer<typeof metricDefinitionSchema>;
 export type MetricDefinitionWithStats = z.infer<
   typeof metricDefinitionWithStatsSchema
@@ -125,4 +146,10 @@ export type GetMetricSummaryRequest = z.infer<
 >;
 export type GetMetricSummaryResponse = z.infer<
   typeof getMetricSummaryResponseSchema
+>;
+export type GetMetricSummariesRequest = z.infer<
+  typeof getMetricSummariesRequestSchema
+>;
+export type GetMetricSummariesResponse = z.infer<
+  typeof getMetricSummariesResponseSchema
 >;
