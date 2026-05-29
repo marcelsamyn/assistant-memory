@@ -41,6 +41,11 @@ import {
   bootstrapMemoryRequestSchema,
 } from "../lib/schemas/context.js";
 import {
+  GetDigestRequest,
+  GetDigestResponse,
+  getDigestResponseSchema,
+} from "../lib/schemas/digest.js";
+import {
   DreamRequest,
   DreamResponse,
   dreamResponseSchema,
@@ -430,6 +435,19 @@ export class MemoryClient {
 
   async queryDay(payload: QueryDayRequest): Promise<QueryDayResponse> {
     return this._fetch("POST", "/query/day", queryDayResponseSchema, payload);
+  }
+
+  /**
+   * Consolidated daily-rollup for a "Today"/digest view. One call returns
+   * open commitments bucketed by due date in the caller's `timeZone`
+   * (`overdue` / `dueToday` / `upcoming`), the metrics that moved most
+   * recently, the claims/nodes/sources recorded since `since` (defaults to
+   * the start of `date` in `timeZone`), and — unless `includePinned` is
+   * false — the pinned/preferences subset of the bootstrap bundle. Returns
+   * structured data only; the caller renders any narrative prose itself.
+   */
+  async getDigest(payload: GetDigestRequest): Promise<GetDigestResponse> {
+    return this._fetch("POST", "/digest", getDigestResponseSchema, payload);
   }
 
   async queryNodeType(

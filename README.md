@@ -257,7 +257,32 @@ The integration only works if these are true:
 - `POST /commitments/open` – lifecycle-aware list of pending and in-progress tasks.
 - `POST /query/day` – get a quick summary of a particular day.
 - `POST /query/recent-changes` – "what's new in memory" feed over a time range: active claims and nodes added/updated since a `since` cursor, with labels and per-source provenance.
+- `POST /digest` – consolidated daily rollup for a "Today" view (see below).
 - `GET /sse` and `POST /messages` – MCP over HTTP using Server‑Sent Events.
+
+### Daily digest
+
+`POST /digest` bundles everything a "daily digest" / "Today" surface needs into a single call, so consumers don't fan out across `commitments/open`, `metrics/summaries`, `query/recent-changes`, and `context/bootstrap`:
+
+```json
+{
+  "userId": "user_123",
+  "date": "2026-05-29",
+  "timeZone": "America/New_York",
+  "since": "2026-05-28T00:00:00Z",
+  "upcomingWithinDays": 7,
+  "metricMoverLimit": 10,
+  "whatsNewLimit": 50,
+  "includePinned": true
+}
+```
+
+`date`, `timeZone`, and `userId` are required; everything else is optional. The response is **structured data only** — the consumer generates any narrative prose itself:
+
+- `commitments` – open tasks bucketed into `overdue` / `dueToday` / `upcoming` by their due date relative to `date` (undated tasks are omitted; `upcoming` spans the next `upcomingWithinDays`, default 7).
+- `metricMovers` – the metrics that moved most recently, each with `latestValue`, `delta`, `direction`, and the `window` the delta was measured against.
+- `whatsNew` – `claims`, `nodes`, and `sources` recorded since `since` (defaults to the start of `date` in `timeZone`), with labels and provenance so no follow-up `getNode` calls are needed.
+- `pinned` – the pinned/preferences subset of the bootstrap bundle, unless `includePinned` is `false`.
 
 ## Metrics
 
