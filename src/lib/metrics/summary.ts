@@ -238,6 +238,16 @@ export async function getMetricSummaries({
     };
   }
 
+  // When summarizing every metric (no explicit ids and no needsReview filter)
+  // the candidate set IS all of the user's definitions, so `userId` alone
+  // already scopes the observation reads — pass the (potentially large) id
+  // array to `inArray` only when it actually narrows, to avoid the planner
+  // overhead and bind-parameter limit of a redundant IN list.
+  const definitionScope =
+    metricIds !== undefined || filter?.needsReview !== undefined
+      ? inArray(metricObservations.metricDefinitionId, definitionIds)
+      : undefined;
+
   // DISTINCT ON pulls the freshest observation per metric in one pass, using
   // the (user_id, metric_definition_id, occurred_at DESC) index.
   const latestRows = await db
@@ -247,12 +257,7 @@ export async function getMetricSummaries({
       occurredAt: metricObservations.occurredAt,
     })
     .from(metricObservations)
-    .where(
-      and(
-        eq(metricObservations.userId, userId),
-        inArray(metricObservations.metricDefinitionId, definitionIds),
-      ),
-    )
+    .where(and(eq(metricObservations.userId, userId), definitionScope))
     .orderBy(
       metricObservations.metricDefinitionId,
       desc(metricObservations.occurredAt),
@@ -274,7 +279,7 @@ export async function getMetricSummaries({
       .where(
         and(
           eq(metricObservations.userId, userId),
-          inArray(metricObservations.metricDefinitionId, definitionIds),
+          definitionScope,
           sql`${metricObservations.occurredAt} >= ${since}`,
         ),
       )
