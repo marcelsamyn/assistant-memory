@@ -21,6 +21,7 @@ import {
 import type { OpenCommitment } from "~/lib/schemas/open-commitments";
 
 const DEFAULT_UPCOMING_WITHIN_DAYS = 7;
+const DEFAULT_WHATS_NEW_LIMIT = 50;
 const PINNED_SECTION_KINDS: readonly string[] = ["pinned", "preferences"];
 
 function shiftIsoDate(date: string, days: number): string {
@@ -83,8 +84,8 @@ export async function getDigest(
     }),
     queryRecentChanges({
       userId,
-      since,
-      ...(whatsNewLimit !== undefined && { limit: whatsNewLimit }),
+      since: since.toISOString(),
+      limit: whatsNewLimit ?? DEFAULT_WHATS_NEW_LIMIT,
     }),
     includePinned
       ? getConversationBootstrapContext({ userId })

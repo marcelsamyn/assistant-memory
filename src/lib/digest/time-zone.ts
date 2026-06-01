@@ -18,7 +18,7 @@ export function isValidTimeZone(timeZone: string): boolean {
 function zoneOffsetMs(instant: Date, timeZone: string): number {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
-    hour12: false,
+    hourCycle: "h23",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -34,7 +34,7 @@ function zoneOffsetMs(instant: Date, timeZone: string): number {
     Number(lookup.year),
     Number(lookup.month) - 1,
     Number(lookup.day),
-    lookup.hour === "24" ? 0 : Number(lookup.hour),
+    Number(lookup.hour),
     Number(lookup.minute),
     Number(lookup.second),
   );

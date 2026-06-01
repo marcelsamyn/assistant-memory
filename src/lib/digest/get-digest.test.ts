@@ -96,7 +96,8 @@ describe("getDigest", () => {
     expect(digest.since.toISOString()).toBe("2026-05-29T04:00:00.000Z");
     expect(mocks.queryRecentChanges).toHaveBeenCalledWith({
       userId: "user_digest",
-      since: new Date("2026-05-29T04:00:00.000Z"),
+      since: "2026-05-29T04:00:00.000Z",
+      limit: 50,
     });
     expect(digest.pinned?.sections.map((s) => s.kind)).toEqual([
       "pinned",
@@ -126,7 +127,7 @@ describe("getDigest", () => {
     });
     expect(mocks.queryRecentChanges).toHaveBeenCalledWith({
       userId: "user_digest",
-      since: new Date("2026-05-25T00:00:00.000Z"),
+      since: "2026-05-25T00:00:00.000Z",
       limit: 20,
     });
   });
