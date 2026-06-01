@@ -46,15 +46,22 @@ const STRUCTURAL_NODE_TYPES: readonly NodeType[] = [
  */
 const sourceTitleMetadataSchema = z
   .object({
-    title: z.string().min(1).optional(),
-    filename: z.string().min(1).optional(),
+    // Allow any string here and enforce non-empty in `deriveSourceTitle`: an
+    // empty `title` must not fail the whole parse and skip the `filename`
+    // fallback.
+    title: z.string().optional(),
+    filename: z.string().optional(),
   })
   .catchall(z.unknown());
 
 function deriveSourceTitle(metadata: unknown): string | null {
   const parsed = sourceTitleMetadataSchema.safeParse(metadata ?? {});
   if (!parsed.success) return null;
-  return parsed.data.title ?? parsed.data.filename ?? null;
+  const title = parsed.data.title?.trim();
+  if (title) return title;
+  const filename = parsed.data.filename?.trim();
+  if (filename) return filename;
+  return null;
 }
 
 function toTime(value: Date | string): number {
@@ -140,6 +147,10 @@ export async function queryRecentChanges(
       statedAt: claims.statedAt,
       createdAt: claims.createdAt,
       assertedByKind: claims.assertedByKind,
+      // Carried so updated-node candidates can be resolved in-memory below.
+      subjectNodeId: claims.subjectNodeId,
+      objectNodeId: claims.objectNodeId,
+      changedAt: claimChangedAt.as("changed_at"),
     })
     .from(claims)
     .innerJoin(nodes, eq(nodes.id, claims.subjectNodeId))
@@ -191,37 +202,44 @@ export async function queryRecentChanges(
     .limit(limit);
 
   // --- Existing nodes touched by a claim in the window (updated) ----------
-  const lastClaimChange = sql<Date>`MAX(GREATEST(${claims.createdAt}, ${claims.updatedAt}))`;
+  // The claims above are capped at `limit`, so the set of nodes they touch is
+  // small. Resolve candidate node ids and their most recent change time
+  // in-memory, then look them up by primary key — this avoids a
+  // `subjectNodeId = id OR objectNodeId = id` join, which can't use either
+  // claim index efficiently in Postgres.
+  const nodeChanges = new Map<TypeId<"node">, Date>();
+  for (const row of claimRows) {
+    const changedAt = new Date(row.changedAt);
+    for (const nodeId of [row.subjectNodeId, row.objectNodeId]) {
+      if (!nodeId) continue;
+      const current = nodeChanges.get(nodeId);
+      if (!current || changedAt > current) nodeChanges.set(nodeId, changedAt);
+    }
+  }
+  const candidateNodeIds = Array.from(nodeChanges.keys());
 
-  const updatedNodeRows = await db
-    .select({
-      id: nodes.id,
-      nodeType: nodes.nodeType,
-      label: nodeMetadata.label,
-      firstSeenAt: nodes.createdAt,
-      changedAt: lastClaimChange.as("changed_at"),
-    })
-    .from(nodes)
-    .innerJoin(
-      claims,
-      and(
-        or(
-          eq(claims.subjectNodeId, nodes.id),
-          eq(claims.objectNodeId, nodes.id),
-        ),
-        eq(claims.userId, userId),
-        eq(claims.status, "active"),
-        eq(claims.scope, "personal"),
-        claimChangedInWindow,
-      ),
-    )
-    .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-    .where(
-      and(eq(nodes.userId, userId), lt(nodes.createdAt, since), nodeTypeFilter),
-    )
-    .groupBy(nodes.id, nodes.nodeType, nodes.createdAt, nodeMetadata.label)
-    .orderBy(desc(lastClaimChange))
-    .limit(limit);
+  // Candidates created before the window are "updated"; those created inside it
+  // already surface as "added" above and are excluded here via `createdAt < since`.
+  const updatedNodeRows =
+    candidateNodeIds.length > 0
+      ? await db
+          .select({
+            id: nodes.id,
+            nodeType: nodes.nodeType,
+            label: nodeMetadata.label,
+            firstSeenAt: nodes.createdAt,
+          })
+          .from(nodes)
+          .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
+          .where(
+            and(
+              eq(nodes.userId, userId),
+              inArray(nodes.id, candidateNodeIds),
+              lt(nodes.createdAt, since),
+              nodeTypeFilter,
+            ),
+          )
+      : [];
 
   // Merge added + updated nodes, newest change first, capped at `limit`.
   // "Change time" is the createdAt for added nodes and the most recent
@@ -242,7 +260,7 @@ export async function queryRecentChanges(
       label: row.label,
       changeKind: "updated" as ChangeKind,
       firstSeenAt: row.firstSeenAt,
-      changedAt: row.changedAt,
+      changedAt: nodeChanges.get(row.id) ?? row.firstSeenAt,
     })),
   ];
 
