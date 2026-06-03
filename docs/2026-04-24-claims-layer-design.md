@@ -321,6 +321,15 @@ const PREDICATE_POLICIES: Record<Predicate, PredicatePolicy> = {
     retrievalSection: "evidence",
     forceRefreshOnSupersede: false,
   },
+  // Generic entity property (value in objectValue) — keeps scalar facts off
+  // standalone value-nodes.
+  HAS_ATTRIBUTE: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
   // Relationship predicates — all multi_value / no lifecycle / not in Atlas / surfaced as evidence:
   PARTICIPATED_IN: {
     cardinality: "multi_value",
@@ -392,6 +401,59 @@ const PREDICATE_POLICIES: Record<Predicate, PredicatePolicy> = {
     retrievalSection: "evidence",
     forceRefreshOnSupersede: false,
   },
+  // World-knowledge relationships (document / reference content). Same
+  // multi_value / none / evidence shape as the catch-all — they exist so the
+  // extractor has specific predicates instead of overloading RELATED_TO.
+  WORKS_AT: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  FOUNDED: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  CREATED: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  LOCATED_IN: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  PART_OF: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  USES: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  AFFILIATED_WITH: {
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  // Catch-all — last resort only, when no specific predicate fits.
   RELATED_TO: {
     cardinality: "multi_value",
     lifecycle: "none",
@@ -410,6 +472,8 @@ Consumers:
 - **Atlas refresh trigger** reads `forceRefreshOnSupersede` to decide whether a supersession on a given claim invalidates cached read-model artifacts immediately or waits for the next scheduled refresh.
 
 The registry lives in `src/lib/claims/predicate-policies.ts` (single source of truth, exported as a const). Adding a predicate is a PR against this file plus the enum in `src/types/graph.ts`. No subsystem changes are needed for predicates that fit existing cardinality/lifecycle slots.
+
+Naming/usage conventions: SCREAMING_SNAKE_CASE, subject→object direction (e.g. `Person WORKS_AT Organization`), and the extractor must pick the **most specific** predicate — `RELATED_TO` is a last resort only. The `WORKS_AT`/`FOUNDED`/`CREATED`/`LOCATED_IN`/`PART_OF`/`USES`/`AFFILIATED_WITH` relationships and the generic `HAS_ATTRIBUTE` attribute exist to keep document/reference facts off the `RELATED_TO` catch-all and off standalone value-nodes. The extractor is offered a restricted node-type set (`ExtractionNodeTypeEnum`) that omits structural/system types (`Document`, `Conversation`, `Atlas`, `AssistantDream`).
 
 ## Scope (Personal vs Reference)
 

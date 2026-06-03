@@ -1228,7 +1228,6 @@ describeIfServer("extractGraph claim-native insertion", () => {
       ]);
 
       const llmIoCalls: Array<{ prompt: string; response: unknown }> = [];
-      const spineNodeId = newTypeId("node");
 
       const { extractGraph } = await import("./extract-graph");
       await extractGraph({
@@ -1242,13 +1241,6 @@ describeIfServer("extractGraph claim-native insertion", () => {
         replaceClaimsForSources: false,
         contentNote:
           "This is section 2 of 5 of a longer document; extract every fact in this section.",
-        documentSpine: [
-          {
-            nodeId: spineNodeId,
-            label: "Self-Publishing on Amazon",
-            description: "Central theme spanning the document.",
-          },
-        ],
         onLlmIO: (info) => {
           llmIoCalls.push(info);
         },
@@ -1278,13 +1270,6 @@ describeIfServer("extractGraph claim-native insertion", () => {
       expect(capturedPrompt).not.toContain(
         "ONLY extract facts that the USER explicitly stated",
       );
-
-      // Document spine block must surface the pre-created spine concepts
-      // with their existingNodeIds so the LLM can link extracted entities
-      // back to the document's purpose via RELATED_TO claims.
-      expect(capturedPrompt).toContain("DOCUMENT SPINE CONCEPTS:");
-      expect(capturedPrompt).toContain(spineNodeId);
-      expect(capturedPrompt).toContain("Self-Publishing on Amazon");
 
       // onLlmIO must be invoked exactly once with the prompt and the parsed
       // response.

@@ -6,13 +6,13 @@ import { z } from "zod";
 import {
   AssertedByKindEnum,
   AttributePredicateEnum,
-  NodeTypeEnum,
+  ExtractionNodeTypeEnum,
   RelationshipPredicateEnum,
 } from "~/types/graph";
 
 const llmNodeSchema = z.object({
   id: z.string().describe("id to reference in claims"),
-  type: NodeTypeEnum.describe("one of the allowed node types"),
+  type: ExtractionNodeTypeEnum.describe("one of the allowed node types"),
   label: z.string().describe("human-readable name/title"),
   description: z.string().describe("longer text description").optional(),
 });
