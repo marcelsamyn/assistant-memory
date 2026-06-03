@@ -42,6 +42,7 @@
     "drizzle:migrate": "drizzle-kit migrate",
     "drizzle:studio": "drizzle-kit studio",
     "eval:memory": "tsx src/evals/memory/run-all.ts",
+    "eval:ingest": "tsx src/evals/memory/probe-ingestion.ts",
     "eval:identity-thresholds": "tsx src/evals/memory/threshold-calibration.ts"
   },
   "devDependencies": {

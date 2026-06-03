@@ -67,6 +67,10 @@ export const AttributePredicateEnum = z.enum([
   "HAS_PREFERENCE",
   "HAS_GOAL",
   "MADE_DECISION",
+  // Generic property of an entity, with the value in `objectValue`. Keeps
+  // scalar facts ("38 employees", "headquartered in Stockholm") from being
+  // reified into standalone value-nodes linked by RELATED_TO.
+  "HAS_ATTRIBUTE",
 ]);
 
 export type AttributePredicate = z.infer<typeof AttributePredicateEnum>;
@@ -82,6 +86,17 @@ export const RelationshipPredicateEnum = z.enum([
   "DUE_ON",
   "PRECEDES",
   "FOLLOWS",
+  // World-knowledge relationships for document / reference content. Without
+  // these, document facts (employment, founding, location, authorship, usage,
+  // composition) have no specific predicate and collapse onto RELATED_TO.
+  "WORKS_AT",
+  "FOUNDED",
+  "CREATED",
+  "LOCATED_IN",
+  "PART_OF",
+  "USES",
+  "AFFILIATED_WITH",
+  // Catch-all — last resort only, when no specific predicate fits.
   "RELATED_TO",
 ]);
 

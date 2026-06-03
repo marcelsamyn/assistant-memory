@@ -84,6 +84,17 @@ export const PREDICATE_POLICIES: PredicatePolicyMap = {
     retrievalSection: "evidence",
     forceRefreshOnSupersede: false,
   },
+  // Generic entity property. Multi-value / non-superseding: document facts
+  // accumulate rather than overwrite (the cleanup pass dedups later), and a
+  // reference-scope attribute shouldn't silently retract a prior one.
+  HAS_ATTRIBUTE: {
+    predicate: "HAS_ATTRIBUTE",
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
   PARTICIPATED_IN: {
     predicate: "PARTICIPATED_IN",
     cardinality: "multi_value",
@@ -182,6 +193,67 @@ export const PREDICATE_POLICIES: PredicatePolicyMap = {
   },
   RELATED_TO: {
     predicate: "RELATED_TO",
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  // World-knowledge relationships. All multi-value / non-superseding /
+  // evidence — they record durable facts about entities (mostly from
+  // documents) and shouldn't auto-retract one another. Behaviorally identical
+  // to RELATED_TO today; they exist to give the extractor a specific predicate
+  // so the graph carries real semantics instead of a generic edge.
+  WORKS_AT: {
+    predicate: "WORKS_AT",
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  FOUNDED: {
+    predicate: "FOUNDED",
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  CREATED: {
+    predicate: "CREATED",
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  LOCATED_IN: {
+    predicate: "LOCATED_IN",
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  PART_OF: {
+    predicate: "PART_OF",
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  USES: {
+    predicate: "USES",
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  AFFILIATED_WITH: {
+    predicate: "AFFILIATED_WITH",
     cardinality: "multi_value",
     lifecycle: "none",
     feedsAtlas: false,
