@@ -6,6 +6,7 @@ import type {
   ChatCompletionUserMessageParam,
 } from "openai/resources.mjs";
 import { z } from "zod";
+import { env } from "~/utils/env";
 import { getExtractionClientOverride } from "~/utils/test-overrides";
 
 /**

@@ -37,6 +37,7 @@ import {
 import { type TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 import { env } from "~/utils/env";
+import { shouldSkipJobEnqueue } from "~/utils/test-overrides";
 
 type SourceRef = {
   externalId: string;
@@ -278,7 +279,7 @@ ${
 - Phrases like "I tried X" or "we recommend Y" inside the document refer to the AUTHOR, not the user. Do not attribute the author's experiences, preferences, decisions, or recommendations to the user.
 - Phrase every claim's statement neutrally as the document or author asserting (e.g., "The book recommends KDP Select for Amazon distribution"; "The author considers Kindle Unlimited royalties dependent on pages read"). Avoid first-person framing about the user.
 - Do NOT emit MADE_DECISION, HAS_PREFERENCE, HAS_GOAL, HAS_PLAN, or similar self-attribution claims with the user as subject — those would assert facts about the user that this document does not establish.
-- Extract every concrete fact, claim, recommendation, decision, person, organization, place, concept, or numeric figure the text asserts.`
+- Extract every meaningful fact, claim, recommendation, decision, person, organization, place, and concept the text asserts. Do NOT manufacture a separate fact or node for every incidental number or statistic — capture a figure only as a HAS_ATTRIBUTE claim when it is a meaningful property of an entity.`
     : `When extracting from conversations:
 - ONLY extract facts that the USER explicitly stated, confirmed, or provided
 - DO NOT extract speculative statements, suggestions, or assumptions made by the assistant
@@ -309,7 +310,10 @@ ${
 Few-shot examples:
 ${
   sourceType === "document"
-    ? `- Document text: "The Eiffel Tower is located in Paris." → relationship claim with assertionKind: "document_author".`
+    ? `- "The Eiffel Tower is located in Paris." → (Eiffel Tower, LOCATED_IN, Paris), assertionKind "document_author".
+- "Maya is VP of Product at Orchard Labs, which she co-founded in 2019." → (Maya Lindqvist, WORKS_AT, Orchard Labs) and (Maya Lindqvist, FOUNDED, Orchard Labs). Do NOT create a node for "2019"; put the year in the claim statement.
+- "Orchard is based in Stockholm and uses a billing system built on the Stripe API." → (Orchard Labs, LOCATED_IN, Stockholm) and (Orchard Labs, USES, Stripe API).
+- "The Starter tier costs €49/month." → do NOT create a "€49" node; if the figure matters use (Starter tier, HAS_ATTRIBUTE, "€49/month"). Use RELATED_TO only when no specific predicate fits.`
     : speakerMap && speakerMap.size > 0
       ? `- Speaker "Alice" (user-self) says "I shipped the spec." → assertionKind: "user", assertedBySpeakerLabel: "Alice".
 - Speaker "Bob" (non user-self) says "I'll send the PR tomorrow." → assertionKind: "participant", assertedBySpeakerLabel: "Bob".
@@ -353,7 +357,9 @@ For each element, create a node with:
 	Then, link these nodes with relationship claims and scalar attribute claims.
 	- Claims represent sourced facts about nodes. For example, if you have a Person node and an Event node, create a claim from the Person node to the Event node with predicate PARTICIPATED_IN.
 	- Relationship claims use objectId and a relationship predicate.
-	- Attribute claims use objectValue and an attribute predicate, such as HAS_STATUS, HAS_PREFERENCE, HAS_GOAL, or MADE_DECISION.
+	- Attribute claims use objectValue and an attribute predicate, such as HAS_STATUS, HAS_PREFERENCE, HAS_GOAL, MADE_DECISION, or HAS_ATTRIBUTE (a generic property whose value goes in objectValue).
+	- Use the MOST SPECIFIC predicate that fits; RELATED_TO is a fallback ONLY when no other predicate applies. For world/document facts use, e.g., WORKS_AT (person→organization), FOUNDED (founder→organization), CREATED (creator→work or product), LOCATED_IN (entity→place), PART_OF (component→larger whole), USES (entity→tool/product/service), AFFILIATED_WITH (looser or former affiliation, e.g. a previous employer or investor), OWNED_BY, or PARTICIPATED_IN.
+	- For a notable scalar property of an entity, prefer a HAS_ATTRIBUTE attribute claim (value in objectValue) over creating a node for the value.
 	- ONLY create claims for facts explicitly stated by the ${sourceType === "document" ? "document text" : "user"}, not your own interpretations or assumptions.
 	- In the claim statement, write one concise sentence that can stand alone as the sourced assertion.
 	- Every claim must include a sourceRef copied exactly from the token after "sourceRef:" in the allowed source refs above. Do not include statedAt text.
@@ -376,6 +382,8 @@ Rules of the graph:
 - Omit unnecessary details in node names, eg. "John Doe" instead of "John Doe (person)"
 - Nodes are independent of context and represent a *single* thing. Bad example: "John - the person taking a walk". Good example: "John" (Person node, no description) linked to [PARTICIPATED_IN] "John's walk on 2025-05-18" (Event node), linked to [OCCURRED_ON] "2025-05-18" (Temporal node).
 - Don't create nodes for things that should be represented by edges.
+- NEVER create a node for a scalar value, quantity, duration, money amount, percentage, count, or date range (e.g. "47 days", "€49", "38 employees", "six months"). Put it in the claim statement, or in a HAS_ATTRIBUTE attribute claim's objectValue when the value is worth keeping. Nodes are only for entities you can refer to again: people, organizations, places, products/works, events, media, and genuine concepts.
+- Temporal nodes are ONLY for specific calendar points (a day or date the content anchors to), never durations or periods ("six months", "two weeks").
 - Avoid redundant or duplicate information - if a fact is already represented, don't create another node or edge for it
 
 	Then create relationshipClaims and attributeClaims to represent the facts using the appropriate predicates.
@@ -474,10 +482,15 @@ ${
     ...deletedClaimRecords,
     ...insertedClaimRecords,
   ]);
-  const { maybeEnqueueAtlasInvalidation } = await import(
-    "./jobs/atlas-invalidation"
-  );
-  await maybeEnqueueAtlasInvalidation(db, userId, lifecycleStartedAt);
+  // Guarded so a standalone extraction probe never loads `./queues` (which
+  // starts a BullMQ worker on import); the regression harness and production
+  // leave the seam off, preserving the enqueue.
+  if (!shouldSkipJobEnqueue()) {
+    const { maybeEnqueueAtlasInvalidation } = await import(
+      "./jobs/atlas-invalidation"
+    );
+    await maybeEnqueueAtlasInvalidation(db, userId, lifecycleStartedAt);
+  }
   const finalizedClaimRecords = await fetchClaimsByIds(
     db,
     insertedClaimRecords.map((claim) => claim.id),
@@ -578,7 +591,7 @@ async function enqueueProfileSynthesisJobs(
   userId: string,
   nodeIds: TypeId<"node">[],
 ): Promise<void> {
-  if (nodeIds.length === 0) return;
+  if (nodeIds.length === 0 || shouldSkipJobEnqueue()) return;
   const { batchQueue } = await import("./queues");
   await Promise.all(
     nodeIds.map((nodeId) =>
@@ -600,7 +613,7 @@ async function enqueueIdentityReevalJobs(
   userId: string,
   nodeIds: TypeId<"node">[],
 ): Promise<void> {
-  if (nodeIds.length === 0) return;
+  if (nodeIds.length === 0 || shouldSkipJobEnqueue()) return;
   const { batchQueue } = await import("./queues");
   await Promise.all(
     nodeIds.map((nodeId) =>

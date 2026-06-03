@@ -14,7 +14,8 @@
  * isn't loaded.
  *
  * Common aliases: harness seams, test overrides, eval extraction stub,
- * extraction LLM stub, no-op embeddings, mock source service.
+ * extraction LLM stub, no-op embeddings, mock source service, skip job
+ * enqueue, no worker, no redis.
  */
 import type OpenAI from "openai";
 import type { SourceCreateInput } from "~/lib/sources";
@@ -42,6 +43,7 @@ let extractionClientOverride: StubCompletionClient | null = null;
 let sourceServiceOverride: StubSourceService | null = null;
 let skipEmbeddingPersistence = false;
 let skipSemanticSearch = false;
+let skipJobEnqueue = false;
 let semanticSearchSubstringQuery: string | null = null;
 
 export function setExtractionClientOverride(
@@ -81,6 +83,24 @@ export function shouldSkipSemanticSearch(): boolean {
 }
 
 /**
+ * When set, `extractGraph` skips its post-extraction job enqueues
+ * (profile-synthesis, identity-reeval, atlas-invalidation). Because each
+ * enqueue path reaches BullMQ via a dynamic `import("./queues")`, skipping
+ * them means `queues.ts` — which starts a `Worker` and opens a Redis
+ * connection as an import side effect — never loads. That keeps standalone
+ * extraction probes (`pnpm run eval:ingest`) from spawning a competing
+ * worker that would steal jobs from a running dev server or hang the process
+ * open. Default-off, so production and the regression harness are unaffected.
+ */
+export function setSkipJobEnqueue(skip: boolean): void {
+  skipJobEnqueue = skip;
+}
+
+export function shouldSkipJobEnqueue(): boolean {
+  return skipJobEnqueue;
+}
+
+/**
  * When set, `findSimilarNodes` / `findSimilarClaims` substitute a substring
  * fallback for the embedding-based vector search. The fallback walks the
  * harness DB with the same scope / `assertedByKind` / status / validTo
@@ -108,5 +128,6 @@ export function resetTestOverrides(): void {
   sourceServiceOverride = null;
   skipEmbeddingPersistence = false;
   skipSemanticSearch = false;
+  skipJobEnqueue = false;
   semanticSearchSubstringQuery = null;
 }

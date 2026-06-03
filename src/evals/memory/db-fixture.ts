@@ -11,8 +11,15 @@
  * tables, regression DDL.
  */
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
-import { Client } from "pg";
+import pg from "pg";
 import * as schema from "~/db/schema";
+
+// `pg` is CommonJS; under raw Node ESM (the `tsx` eval CLIs) a named import
+// like `import { Client } from "pg"` isn't exposed, so destructure from the
+// default import — the same pattern `~/utils/db.ts` uses. (Vitest's loader
+// tolerates the named form, which is why the `.test.ts` files still use it.)
+const { Client } = pg;
+type PgClient = InstanceType<typeof Client>;
 
 export const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
 export const TEST_DB_PORT = Number(process.env["TEST_PG_PORT"] ?? 5431);
@@ -41,7 +48,7 @@ export async function isServerReachable(): Promise<boolean> {
 
 export interface EvalDatabase {
   dbName: string;
-  client: Client;
+  client: PgClient;
   db: NodePgDatabase<typeof schema>;
   cleanup: () => Promise<void>;
 }
@@ -131,6 +138,35 @@ const HARNESS_DDL = `
     "content" text NOT NULL DEFAULT '',
     "metadata" jsonb NOT NULL DEFAULT '{}',
     "last_updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+    "created_at" timestamp with time zone DEFAULT now() NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS "metric_definitions" (
+    "id" text PRIMARY KEY NOT NULL,
+    "user_id" text NOT NULL REFERENCES "users"("id"),
+    "slug" text NOT NULL,
+    "label" text NOT NULL,
+    "description" text NOT NULL,
+    "unit" text NOT NULL,
+    "aggregation_hint" varchar(8) NOT NULL,
+    "valid_range_min" text,
+    "valid_range_max" text,
+    "needs_review" boolean DEFAULT false NOT NULL,
+    "review_task_node_id" text REFERENCES "nodes"("id") ON DELETE SET NULL,
+    "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+    UNIQUE ("user_id", "slug"),
+    CONSTRAINT "metric_definitions_aggregation_hint_ck"
+      CHECK ("aggregation_hint" IN ('avg','sum','min','max'))
+  );
+  CREATE TABLE IF NOT EXISTS "metric_observations" (
+    "id" text PRIMARY KEY NOT NULL,
+    "user_id" text NOT NULL REFERENCES "users"("id"),
+    "metric_definition_id" text NOT NULL REFERENCES "metric_definitions"("id") ON DELETE CASCADE,
+    "value" text NOT NULL,
+    "occurred_at" timestamp with time zone NOT NULL,
+    "note" text,
+    "event_node_id" text REFERENCES "nodes"("id") ON DELETE SET NULL,
+    "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
     "created_at" timestamp with time zone DEFAULT now() NOT NULL
   );
 `;
