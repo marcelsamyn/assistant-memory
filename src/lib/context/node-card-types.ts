@@ -70,15 +70,21 @@ export type NodeCardRecentEvidence = z.infer<
 >;
 
 /**
- * Reference metadata for `scope === 'reference'` nodes. Pulled from the
- * source(s) backing the node via `sourceLinks`. Both fields are individually
- * optional because reference documents may carry one without the other.
+ * Provenance for a retrieved node: the source it most recently came from, for
+ * ANY scope. Lets the assistant cite where a fact is from ("…from the podcast
+ * <title>") and, via `sourceNodeId`, pull the source's hub node — a `Document`
+ * node whose summary is the thesis + key themes — to e.g. suggest a re-listen.
+ * Pulled from the source(s) backing the node via `sourceLinks`.
  */
-export const nodeCardReferenceSchema = z.object({
+export const nodeCardSourceSchema = z.object({
+  sourceId: typeIdSchema("source"),
+  /** The source's hub `Document` node (summary = thesis + themes), if one exists. */
+  sourceNodeId: typeIdSchema("node").nullable(),
+  type: z.string(),
   author: z.string().nullable(),
   title: z.string().nullable(),
 });
-export type NodeCardReference = z.infer<typeof nodeCardReferenceSchema>;
+export type NodeCardSource = z.infer<typeof nodeCardSourceSchema>;
 
 export const nodeCardSchema = z.object({
   nodeId: typeIdSchema("node"),
@@ -91,6 +97,6 @@ export const nodeCardSchema = z.object({
   preferencesGoals: z.array(nodeCardPreferenceGoalSchema),
   openCommitments: z.array(openCommitmentSchema).optional(),
   recentEvidence: z.array(nodeCardRecentEvidenceSchema),
-  reference: nodeCardReferenceSchema.optional(),
+  source: nodeCardSourceSchema.optional(),
 });
 export type NodeCard = z.infer<typeof nodeCardSchema>;
