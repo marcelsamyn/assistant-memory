@@ -21,7 +21,7 @@ import type {
   NodeCardCurrentFact,
   NodeCardPreferenceGoal,
   NodeCardRecentEvidence,
-  NodeCardReference,
+  NodeCardSource,
 } from "./node-card-types";
 import { and, desc, eq, exists, inArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -77,14 +77,17 @@ const PREFERENCE_GOAL_PREDICATES: readonly Predicate[] =
   });
 
 /**
- * Source metadata schema for reference attribution. The `sources.metadata`
+ * Source metadata schema for provenance attribution. The `sources.metadata`
  * jsonb is a flexible bag (see `src/lib/sources.ts`); we treat `author` and
- * `title` as optional string keys when scope is reference.
+ * `title` as optional string keys (a conversation source may carry neither).
  */
-const referenceMetadataSchema = z
+const sourceMetadataSchema = z
   .object({
-    author: z.string().min(1).optional(),
-    title: z.string().min(1).optional(),
+    // No `.min(1)` here: an empty string in one field must not fail the whole
+    // parse and discard a valid sibling. Trimming / non-empty is handled in the
+    // resolver below.
+    author: z.string().optional(),
+    title: z.string().optional(),
   })
   .passthrough();
 
@@ -302,21 +305,26 @@ function buildAliasListFromMap(
 }
 
 /**
- * Batch reference-metadata lookup. Returns the most-recent reference source
- * (largest `lastIngestedAt`, fallback `createdAt`) per node id, mirroring the
- * per-id behavior so re-ingested versions of the same book override stale
- * metadata.
+ * Batch source-provenance lookup, for any scope. Returns the most-recent
+ * backing source (largest `lastIngestedAt`, fallback `createdAt`) per node id,
+ * plus that source's hub `Document` node (whose summary is the thesis +
+ * themes) when one exists. Lets a retrieved node carry "where it came from" so
+ * the assistant can cite the source and offer to surface the original.
  */
-async function loadReferenceMetadataMany(
+async function loadSourceMetadataMany(
   userId: string,
   nodeIds: readonly TypeId<"node">[],
-): Promise<Map<TypeId<"node">, NodeCardReference>> {
-  const result = new Map<TypeId<"node">, NodeCardReference>();
+): Promise<Map<TypeId<"node">, NodeCardSource>> {
+  const result = new Map<TypeId<"node">, NodeCardSource>();
   if (nodeIds.length === 0) return result;
   const db = await useDatabase();
+
+  // Most-recent backing source per node (any scope).
   const rows = await db
     .select({
       nodeId: sourceLinks.nodeId,
+      sourceId: sources.id,
+      type: sources.type,
       metadata: sources.metadata,
     })
     .from(sourceLinks)
@@ -324,20 +332,75 @@ async function loadReferenceMetadataMany(
     .where(
       and(
         eq(sources.userId, userId),
-        eq(sources.scope, "reference"),
         inArray(sourceLinks.nodeId, nodeIds as TypeId<"node">[]),
       ),
     )
-    .orderBy(desc(sources.lastIngestedAt), desc(sources.createdAt));
+    // NULLS LAST: Postgres sorts NULLs first under DESC by default, which would
+    // let a source with no `lastIngestedAt` (manual/legacy) outrank a really-
+    // recent one. `createdAt` is NOT NULL so it needs no such guard.
+    .orderBy(
+      sql`${sources.lastIngestedAt} desc nulls last`,
+      desc(sources.createdAt),
+    );
 
+  const chosen = new Map<
+    TypeId<"node">,
+    {
+      sourceId: TypeId<"source">;
+      type: string;
+      author: string | null;
+      title: string | null;
+    }
+  >();
   for (const row of rows) {
-    if (result.has(row.nodeId)) continue; // first-wins per node
-    const parsed = referenceMetadataSchema.safeParse(row.metadata ?? {});
-    if (!parsed.success) continue;
-    const author = parsed.data.author ?? null;
-    const title = parsed.data.title ?? null;
-    if (author === null && title === null) continue;
-    result.set(row.nodeId, { author, title });
+    if (chosen.has(row.nodeId)) continue; // first-wins = most recent
+    const parsed = sourceMetadataSchema.safeParse(row.metadata ?? {});
+    const author =
+      parsed.success && parsed.data.author?.trim()
+        ? parsed.data.author.trim()
+        : null;
+    const title =
+      parsed.success && parsed.data.title?.trim()
+        ? parsed.data.title.trim()
+        : null;
+    chosen.set(row.nodeId, {
+      sourceId: row.sourceId,
+      type: row.type,
+      author,
+      title,
+    });
+  }
+  if (chosen.size === 0) return result;
+
+  // The hub `Document` node for each chosen source, if one was created.
+  const chosenSourceIds = [
+    ...new Set([...chosen.values()].map((c) => c.sourceId)),
+  ];
+  const docRows = await db
+    .select({ sourceId: sourceLinks.sourceId, nodeId: nodes.id })
+    .from(sourceLinks)
+    .innerJoin(nodes, eq(nodes.id, sourceLinks.nodeId))
+    .where(
+      and(
+        eq(nodes.userId, userId),
+        eq(nodes.nodeType, "Document"),
+        inArray(sourceLinks.sourceId, chosenSourceIds),
+      ),
+    );
+  const docBySource = new Map<TypeId<"source">, TypeId<"node">>();
+  for (const row of docRows) {
+    if (!docBySource.has(row.sourceId))
+      docBySource.set(row.sourceId, row.nodeId);
+  }
+
+  for (const [nodeId, c] of chosen) {
+    result.set(nodeId, {
+      sourceId: c.sourceId,
+      sourceNodeId: docBySource.get(c.sourceId) ?? null,
+      type: c.type,
+      author: c.author,
+      title: c.title,
+    });
   }
   return result;
 }
@@ -374,7 +437,7 @@ function assembleCard(
   activeClaims: ActiveClaimRow[],
   aliasList: string[],
   labelByNodeId: Map<TypeId<"node">, string | null>,
-  referenceMeta: NodeCardReference | undefined,
+  sourceMeta: NodeCardSource | undefined,
   openCommitments: NodeCard["openCommitments"] | undefined,
 ): NodeCard {
   const scope = deriveScope(
@@ -437,8 +500,8 @@ function assembleCard(
   if (openCommitments && openCommitments.length > 0) {
     card.openCommitments = openCommitments;
   }
-  if (scope === "reference" && referenceMeta) {
-    card.reference = referenceMeta;
+  if (sourceMeta) {
+    card.source = sourceMeta;
   }
   return card;
 }
@@ -467,10 +530,10 @@ export async function getNodeCards(
     listAliasesForNodeIds(db, userId, resolvedIds),
   ]);
 
-  // Collect all relationship object node ids and reference-scope ids in one
-  // pass so the next two batch queries are minimal.
+  // Collect all relationship object node ids and Person ids in one pass so the
+  // next two batch queries are minimal. Source provenance is loaded for every
+  // resolved node regardless of scope.
   const objectIdSet = new Set<TypeId<"node">>();
-  const referenceCandidates: TypeId<"node">[] = [];
   const personIds: TypeId<"node">[] = [];
   for (const id of resolvedIds) {
     const basics = basicsMap.get(id)!;
@@ -478,18 +541,13 @@ export async function getNodeCards(
     for (const claim of claimsForId) {
       if (claim.objectNodeId !== null) objectIdSet.add(claim.objectNodeId);
     }
-    const scope = deriveScope(
-      basics.hasPersonalSupport,
-      basics.hasReferenceSupport,
-    );
-    if (scope === "reference") referenceCandidates.push(id);
     if (basics.nodeType === "Person") personIds.push(id);
   }
 
-  const [labelByNodeId, referenceMetaByNodeId, openCommitmentsByPerson] =
+  const [labelByNodeId, sourceMetaByNodeId, openCommitmentsByPerson] =
     await Promise.all([
       batchResolveLabels(Array.from(objectIdSet)),
-      loadReferenceMetadataMany(userId, referenceCandidates),
+      loadSourceMetadataMany(userId, resolvedIds),
       loadOpenCommitmentsForPersons(userId, personIds),
     ]);
 
@@ -506,7 +564,7 @@ export async function getNodeCards(
       claimsBySubject.get(nodeId) ?? [],
       aliasList,
       labelByNodeId,
-      referenceMetaByNodeId.get(nodeId),
+      sourceMetaByNodeId.get(nodeId),
       openCommitmentsByPerson.get(nodeId),
     );
     result.set(nodeId, card);

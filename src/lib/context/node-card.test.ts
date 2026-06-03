@@ -398,7 +398,8 @@ describeIfServer("getNodeCard", () => {
       "Marcel",
     ]);
 
-    expect(card.reference).toBeUndefined();
+    // No sourceLink for this node → no provenance surfaced.
+    expect(card.source).toBeUndefined();
   });
 
   it("Reference node: scope=reference, reference metadata populated, no open commitments", async () => {
@@ -435,7 +436,10 @@ describeIfServer("getNodeCard", () => {
     expect(card).not.toBeNull();
     if (!card) throw new Error("expected card");
     expect(card.scope).toBe("reference");
-    expect(card.reference).toEqual({
+    expect(card.source).toEqual({
+      sourceId: refSourceId,
+      sourceNodeId: null,
+      type: "document",
       author: "Marcus Aurelius",
       title: "Meditations",
     });
