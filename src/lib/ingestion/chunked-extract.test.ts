@@ -53,9 +53,9 @@ describe("runChunkedExtraction", () => {
         throw new Error("spine disabled in test (default mock)");
       }),
     }));
-    vi.doMock("~/lib/ingestion/ensure-spine-nodes", () => ({
-      ensureSpineNodes: vi.fn(async () => []),
-      linkSpineToDocument: vi.fn(async () => undefined),
+    // Stub the source-node spine write so unit tests never touch the DB.
+    vi.doMock("~/lib/ingestion/apply-document-spine", () => ({
+      applyDocumentSpine: vi.fn(async () => undefined),
     }));
   });
 
@@ -64,7 +64,7 @@ describe("runChunkedExtraction", () => {
     vi.doUnmock("~/utils/env");
     vi.doUnmock("~/lib/extract-graph");
     vi.doUnmock("~/lib/ingestion/extract-document-spine");
-    vi.doUnmock("~/lib/ingestion/ensure-spine-nodes");
+    vi.doUnmock("~/lib/ingestion/apply-document-spine");
     vi.restoreAllMocks();
   });
 
@@ -256,45 +256,34 @@ describe("runChunkedExtraction", () => {
     expect(captured[0]?.contentNote).toBeUndefined();
   });
 
-  it("runs the spine pre-pass and threads spine nodes into every chunk's extractGraph call", async () => {
+  it("folds the spine into the source node and threads thesis + themes into every chunk's contentNote", async () => {
     vi.doMock("~/utils/env", () => ({
       env: { INGEST_CHUNK_MAX_CHARS: 80, INGEST_DEBUG_DIR: undefined },
     }));
 
-    const spineNode = {
-      nodeId: newTypeId("node"),
-      label: "Self-Publishing on Amazon",
-      description: "How authors get books onto Amazon and grow sales.",
-    };
     vi.doMock("~/lib/ingestion/extract-document-spine", () => ({
       extractDocumentSpine: vi.fn(async () => ({
         thesis:
           "Authors can self-publish on Amazon to reach bestseller status.",
         spineConcepts: [
-          { label: spineNode.label, description: spineNode.description },
+          {
+            label: "Self-Publishing on Amazon",
+            description: "How authors get books onto Amazon and grow sales.",
+          },
         ],
       })),
     }));
-    const linkSpineToDocument = vi.fn(async () => undefined);
-    vi.doMock("~/lib/ingestion/ensure-spine-nodes", () => ({
-      ensureSpineNodes: vi.fn(async () => [spineNode]),
-      linkSpineToDocument,
+    const applyDocumentSpine = vi.fn(async () => undefined);
+    vi.doMock("~/lib/ingestion/apply-document-spine", () => ({
+      applyDocumentSpine,
     }));
 
-    const captured: Array<{
-      documentSpine: unknown;
-      contentNote: string | undefined;
-    }> = [];
+    const captured: Array<{ contentNote: string | undefined }> = [];
     vi.doMock("~/lib/extract-graph", () => ({
-      extractGraph: vi.fn(
-        async (p: { documentSpine?: unknown; contentNote?: string }) => {
-          captured.push({
-            documentSpine: p.documentSpine,
-            contentNote: p.contentNote,
-          });
-          return { newNodesCreated: 0, claimsCreated: 0 };
-        },
-      ),
+      extractGraph: vi.fn(async (p: { contentNote?: string }) => {
+        captured.push({ contentNote: p.contentNote });
+        return { newNodesCreated: 0, claimsCreated: 0 };
+      }),
     }));
 
     const { runChunkedExtraction } = await import(
@@ -306,61 +295,19 @@ describe("runChunkedExtraction", () => {
 
     expect(captured).toHaveLength(3);
     for (const call of captured) {
-      expect(call.documentSpine).toEqual([spineNode]);
       expect(call.contentNote).toContain(
         "Document thesis: Authors can self-publish on Amazon",
       );
+      expect(call.contentNote).toContain(
+        "Document themes: Self-Publishing on Amazon",
+      );
     }
-    // After the chunk loop, spine→document link must run since at least one
-    // chunk succeeded.
-    expect(linkSpineToDocument).toHaveBeenCalledTimes(1);
-    expect(linkSpineToDocument).toHaveBeenCalledWith(
-      expect.objectContaining({
-        documentNodeId: base.linkedNodeId,
-        spineNodes: [spineNode],
-      }),
+    // The spine is folded into the single source node — once, before chunks —
+    // rather than materialized as separate concept nodes.
+    expect(applyDocumentSpine).toHaveBeenCalledTimes(1);
+    expect(applyDocumentSpine).toHaveBeenCalledWith(
+      expect.objectContaining({ documentNodeId: base.linkedNodeId }),
     );
-  });
-
-  it("skips spine→document linking when every chunk fails", async () => {
-    vi.doMock("~/utils/env", () => ({
-      env: { INGEST_CHUNK_MAX_CHARS: 80, INGEST_DEBUG_DIR: undefined },
-    }));
-
-    const spineNode = {
-      nodeId: newTypeId("node"),
-      label: "X",
-      description: null,
-    };
-    vi.doMock("~/lib/ingestion/extract-document-spine", () => ({
-      extractDocumentSpine: vi.fn(async () => ({
-        thesis: "t",
-        spineConcepts: [{ label: "X", description: "x" }],
-      })),
-    }));
-    const linkSpineToDocument = vi.fn(async () => undefined);
-    vi.doMock("~/lib/ingestion/ensure-spine-nodes", () => ({
-      ensureSpineNodes: vi.fn(async () => [spineNode]),
-      linkSpineToDocument,
-    }));
-    vi.doMock("~/lib/extract-graph", () => ({
-      extractGraph: vi.fn(async () => {
-        throw new Error("boom");
-      }),
-    }));
-
-    const { runChunkedExtraction } = await import(
-      "~/lib/ingestion/chunked-extract"
-    );
-
-    await expect(
-      runChunkedExtraction({
-        ...makeBaseParams(),
-        content: threeSectionContent,
-      }),
-    ).rejects.toThrow();
-
-    expect(linkSpineToDocument).not.toHaveBeenCalled();
   });
 
   it("continues without spine when extractDocumentSpine throws", async () => {
@@ -373,17 +320,15 @@ describe("runChunkedExtraction", () => {
         throw new Error("LLM down");
       }),
     }));
-    const ensureSpineNodes = vi.fn();
-    const linkSpineToDocument = vi.fn();
-    vi.doMock("~/lib/ingestion/ensure-spine-nodes", () => ({
-      ensureSpineNodes,
-      linkSpineToDocument,
+    const applyDocumentSpine = vi.fn(async () => undefined);
+    vi.doMock("~/lib/ingestion/apply-document-spine", () => ({
+      applyDocumentSpine,
     }));
 
-    const captured: Array<{ documentSpine: unknown }> = [];
+    const captured: Array<{ contentNote: string | undefined }> = [];
     vi.doMock("~/lib/extract-graph", () => ({
-      extractGraph: vi.fn(async (p: { documentSpine?: unknown }) => {
-        captured.push({ documentSpine: p.documentSpine });
+      extractGraph: vi.fn(async (p: { contentNote?: string }) => {
+        captured.push({ contentNote: p.contentNote });
         return { newNodesCreated: 0, claimsCreated: 0 };
       }),
     }));
@@ -398,10 +343,9 @@ describe("runChunkedExtraction", () => {
     });
 
     expect(captured).toHaveLength(1);
-    // Spine threw → extractGraph receives no documentSpine.
-    expect(captured[0]?.documentSpine).toBeUndefined();
-    expect(ensureSpineNodes).not.toHaveBeenCalled();
-    expect(linkSpineToDocument).not.toHaveBeenCalled();
+    // Spine threw → no thesis fed to the chunk and no source-node write.
+    expect(captured[0]?.contentNote).toBeUndefined();
+    expect(applyDocumentSpine).not.toHaveBeenCalled();
   });
 
   it("does not run spine pre-pass for non-document source types", async () => {
@@ -412,10 +356,6 @@ describe("runChunkedExtraction", () => {
     const extractDocumentSpine = vi.fn();
     vi.doMock("~/lib/ingestion/extract-document-spine", () => ({
       extractDocumentSpine,
-    }));
-    vi.doMock("~/lib/ingestion/ensure-spine-nodes", () => ({
-      ensureSpineNodes: vi.fn(),
-      linkSpineToDocument: vi.fn(),
     }));
     vi.doMock("~/lib/extract-graph", () => ({
       extractGraph: vi.fn(async () => ({

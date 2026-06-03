@@ -21,24 +21,21 @@
  * because the 7th had a bad response.
  *
  * For document ingests, a spine pre-pass runs first: one cheap LLM call
- * identifies the document's central thesis and 1-5 high-level "spine"
- * concepts, materializes them as Concept nodes (via the same identity
- * resolution path everything else uses), and exposes them to each chunk's
- * extractor as pre-existing nodes. The chunk prompt instructs the LLM to
- * emit RELATED_TO claims linking concrete entities (named tools, programs,
- * decisions) back to the spine concepts, so concrete details get connected
- * to the document's purpose instead of orphaned. Spine pre-pass failures
- * are best-effort: ingestion continues without spine if the call throws.
+ * identifies the document's central thesis and 1-5 high-level themes. These
+ * are folded into the source node itself — the `Document` node's label (title)
+ * and description (thesis + themes) via `applyDocumentSpine` — rather than
+ * materialized as separate Concept nodes. Every extracted entity is already
+ * sourceLinked to that same source node, so it acts as the document's hub for
+ * retrieval. The thesis and themes are also threaded into each chunk's prompt
+ * so the per-fragment extractor keeps the document-wide view. Spine pre-pass
+ * failures are best-effort: ingestion continues without spine if the call
+ * throws.
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { extractGraph } from "~/lib/extract-graph";
+import { applyDocumentSpine } from "~/lib/ingestion/apply-document-spine";
 import { chunkMarkdown } from "~/lib/ingestion/chunk-markdown";
-import {
-  ensureSpineNodes,
-  linkSpineToDocument,
-  type SpineNode,
-} from "~/lib/ingestion/ensure-spine-nodes";
 import { extractDocumentSpine } from "~/lib/ingestion/extract-document-spine";
 import { type SourceType } from "~/types/graph";
 import { type TypeId } from "~/types/typeid";
@@ -95,11 +92,14 @@ export async function runChunkedExtraction(
   // chunkMarkdown returns [] only for empty input; nothing to extract from.
   if (chunks.length === 0) return;
 
-  const { spineNodes, thesis } = await runSpinePrepass({
+  const { thesis, themes } = await runSpinePrepass({
     userId,
     sourceType,
     sourceId,
     content,
+    documentNodeId: linkedNodeId,
+    title: documentMetadata?.title,
+    logLabel,
   });
 
   const baseExtractParams = {
@@ -123,6 +123,7 @@ export async function runChunkedExtraction(
       sourceType,
       ...(documentMetadata && { documentMetadata }),
       ...(thesis && { thesis }),
+      ...(themes.length > 0 && { themes }),
     });
     try {
       const result = await extractGraph({
@@ -130,7 +131,6 @@ export async function runChunkedExtraction(
         content: chunk,
         replaceClaimsForSources: !didReplaceClaims,
         ...(contentNote && { contentNote }),
-        ...(spineNodes.length > 0 && { documentSpine: spineNodes }),
         ...(debugDir && {
           onLlmIO: makeDebugDumpHook(debugDir, sourceId, index),
         }),
@@ -160,62 +160,66 @@ export async function runChunkedExtraction(
       );
     }
   }
-
-  // Insert spine→document RELATED_TO claims after the chunk loop. Doing this
-  // before would have them wiped by chunk 0's source-scoped claim
-  // replacement; doing it after preserves them for graph traversal (a query
-  // against a low-level entity → spine concept → document).
-  if (succeeded > 0 && spineNodes.length > 0) {
-    try {
-      await linkSpineToDocument({
-        userId,
-        sourceId,
-        documentNodeId: linkedNodeId,
-        statedAt,
-        spineNodes,
-        documentLabel: documentMetadata?.title ?? logLabel,
-      });
-    } catch (err) {
-      console.warn(
-        `chunked-extract: src=${sourceId} failed to link spine to document:`,
-        err,
-      );
-    }
-  }
 }
 
 /**
  * Best-effort spine pre-pass for document ingestion: runs one structured LLM
- * call to identify the document's thesis and 1-5 high-level spine concepts,
- * then materializes those concepts as Concept nodes via the standard
- * identity resolution path. Failures (LLM error, validation error,
- * insertion error) are logged and swallowed so a missing spine never breaks
- * ingestion — chunked extraction simply runs without spine context.
+ * call to identify the document's thesis and 1-5 high-level themes, then folds
+ * them into the source node itself (label = title, description = thesis +
+ * themes) via `applyDocumentSpine` — no separate Concept nodes. The thesis and
+ * themes are also returned so each chunk's prompt keeps the document-wide view
+ * it can't see fragment-by-fragment.
+ *
+ * Failures (LLM error, validation error) are logged and swallowed so a missing
+ * spine never breaks ingestion — extraction simply runs without spine context.
+ * The node write is independently best-effort so a DB hiccup there can't drop
+ * the thesis we still feed to chunks.
  */
 async function runSpinePrepass(params: {
   userId: string;
   sourceType: SourceType;
   sourceId: TypeId<"source">;
   content: string;
-}): Promise<{ spineNodes: SpineNode[]; thesis: string | null }> {
-  const { userId, sourceType, sourceId, content } = params;
+  documentNodeId: TypeId<"node">;
+  title: string | undefined;
+  logLabel: string;
+}): Promise<{ thesis: string | null; themes: string[] }> {
+  const {
+    userId,
+    sourceType,
+    sourceId,
+    content,
+    documentNodeId,
+    title,
+    logLabel,
+  } = params;
   if (sourceType !== "document" || content.trim().length === 0) {
-    return { spineNodes: [], thesis: null };
+    return { thesis: null, themes: [] };
   }
 
   try {
     const spine = await extractDocumentSpine({ userId, content });
-    const spineNodes = await ensureSpineNodes({ userId, sourceId, spine });
+    const themes = spine.spineConcepts.map((concept) => concept.label);
+
+    try {
+      await applyDocumentSpine({ documentNodeId, title, logLabel, spine });
+    } catch (err) {
+      console.warn(
+        `chunked-extract: src=${sourceId} failed to write spine to source node:`,
+        err,
+      );
+    }
+
     console.log(
-      `chunked-extract: src=${sourceId} spine concepts=${spineNodes.length} thesis="${spine.thesis}"`,
+      `chunked-extract: src=${sourceId} spine themes=${themes.length} thesis="${spine.thesis}"`,
     );
-    return { spineNodes, thesis: spine.thesis };
+    return { thesis: spine.thesis, themes };
   } catch (err) {
     console.warn(
       `chunked-extract: src=${sourceId} spine pre-pass failed; continuing without spine:`,
       err,
     );
-    return { spineNodes: [], thesis: null };
+    return { thesis: null, themes: [] };
   }
 }
 
@@ -225,6 +229,7 @@ function buildContentNote(opts: {
   sourceType: SourceType;
   documentMetadata?: { title?: string; author?: string };
   thesis?: string;
+  themes?: string[];
 }): string | undefined {
   const lines: string[] = [];
 
@@ -243,6 +248,11 @@ function buildContentNote(opts: {
   if (thesis) {
     if (lines.length > 0) lines.push("");
     lines.push(`Document thesis: ${thesis}`);
+  }
+
+  if (opts.themes && opts.themes.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push(`Document themes: ${opts.themes.join("; ")}`);
   }
 
   if (opts.total > 1) {

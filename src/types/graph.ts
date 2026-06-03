@@ -24,6 +24,29 @@ export const NodeTypeEnum = z.enum([
 
 export type NodeType = z.infer<typeof NodeTypeEnum>;
 
+/**
+ * Node types the graph extractor is allowed to mint. A strict subset of
+ * `NodeTypeEnum` that omits structural / system-owned types — `Document` and
+ * `Conversation` are created by ingestion, `Atlas` and `AssistantDream` by the
+ * atlas/dream subsystems. Offering them to the LLM caused stray `Atlas` and
+ * `Document` nodes, so the extraction schema uses this narrower set.
+ */
+export const ExtractionNodeTypeEnum = z.enum([
+  "Person",
+  "Location",
+  "Event",
+  "Object",
+  "Emotion",
+  "Concept",
+  "Media",
+  "Temporal",
+  "Feedback",
+  "Idea",
+  "Task",
+]);
+
+export type ExtractionNodeType = z.infer<typeof ExtractionNodeTypeEnum>;
+
 // =============================================================
 // CLAIM PREDICATES & STATUS
 // =============================================================

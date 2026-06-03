@@ -115,21 +115,6 @@ interface ExtractGraphParams {
     prompt: string;
     response: unknown;
   }) => Promise<void> | void;
-  /**
-   * Pre-computed "spine" concept nodes for the source. These represent the
-   * document's high-level themes (one tier above the specific entities the
-   * chunked extraction will surface) and are pre-created upstream so they
-   * have stable nodeIds before extraction runs. The prompt instructs the LLM
-   * to link extracted low-level entities to these spine concepts via
-   * RELATED_TO claims, which is how concrete details get wired back to the
-   * document's purpose instead of orphaned. Currently populated only for
-   * `sourceType === "document"` ingests.
-   */
-  documentSpine?: Array<{
-    nodeId: TypeId<"node">;
-    label: string;
-    description: string | null;
-  }>;
 }
 
 // --- Main extractGraph function ---
@@ -145,7 +130,6 @@ export async function extractGraph({
   replaceClaimsForSources = true,
   contentNote,
   onLlmIO,
-  documentSpine,
 }: ExtractGraphParams) {
   const db = await useDatabase();
   const resolvedSourceRefs =
@@ -217,23 +201,11 @@ export async function extractGraph({
   const { nodesForPromptFormatting, idMap, nodeLabels } =
     _prepareInitialNodeMappings(cappedNodes);
 
-  // Register spine nodes in idMap so the LLM can reference them by their
-  // existing nodeId in relationshipClaims (objectId = "node_xxx") and the
-  // resolution step finds them like any other existing node.
-  if (documentSpine && documentSpine.length > 0) {
-    for (const spine of documentSpine) {
-      idMap.set(spine.nodeId, spine.nodeId);
-      nodeLabels.set(spine.nodeId, spine.label);
-    }
-  }
-
   const openCommitmentsPromptSection = _formatOpenCommitmentsSection(
     cappedOpenCommitments,
   );
 
   const speakerMapPromptSection = _formatSpeakerMapSection(speakerMap);
-
-  const documentSpinePromptSection = _formatDocumentSpineSection(documentSpine);
 
   const { createCompletionClient } = await import("./ai");
   const client = await createCompletionClient(userId);
@@ -258,8 +230,6 @@ ${formatNodesForPrompt(nodesForPromptFormatting)}
 ${openCommitmentsPromptSection}
 
 ${speakerMapPromptSection}
-
-${documentSpinePromptSection}
 
 Extract the graph from the following ${sourceType}:
 
@@ -1209,28 +1179,6 @@ function _formatSpeakerMapSection(
   });
   return `Speakers in this transcript:
 For each claim, set "assertedBySpeakerLabel" to the speaker who said it, using these labels exactly. Claims whose speaker label is missing or not in this list will be dropped.
-${lines.join("\n")}`;
-}
-
-function _formatDocumentSpineSection(
-  documentSpine:
-    | Array<{
-        nodeId: TypeId<"node">;
-        label: string;
-        description: string | null;
-      }>
-    | undefined,
-): string {
-  if (!documentSpine || documentSpine.length === 0) return "";
-  const lines = documentSpine.map((spine) => {
-    const desc = spine.description ? `; description: ${spine.description}` : "";
-    return `- existingNodeId: ${spine.nodeId}; label: "${spine.label}"${desc}`;
-  });
-  return `DOCUMENT SPINE CONCEPTS:
-This document is centrally about the following themes. They have already been created as Concept nodes for this document. RULES:
-- When you extract a low-level entity (named tool, program, person, recommendation, decision, etc.) that supports one of these themes, ALSO emit a relationshipClaim with predicate \`RELATED_TO\` from that entity (subjectId = its tempId or existingNodeId) to the spine concept (objectId = the existingNodeId below). This is how the document's specific parts get connected to its purpose.
-- Use the spine concept's \`existingNodeId\` directly as the objectId — do NOT create a new node for these themes.
-- It is normal for many extracted entities to link to the same spine concept. Don't be sparing.
 ${lines.join("\n")}`;
 }
 
