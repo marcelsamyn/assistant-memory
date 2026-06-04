@@ -203,7 +203,8 @@ describeIfServer("ingest -> search end-to-end", () => {
     // Mock the LLM: deterministic extraction of one Project + one Object,
     // both linked back to the existing Person, plus an attribute claim and
     // an alias.
-    vi.doMock("./ai", () => ({
+    vi.doMock("./ai", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./ai")>()),
       createCompletionClient: async () => ({
         beta: {
           chat: {
