@@ -40,6 +40,8 @@ export * from "../lib/schemas/user-self-aliases.js";
 export * from "../lib/schemas/user-profile-metadata.js";
 export * from "../lib/schemas/enums.js";
 export * from "../lib/schemas/set-commitment-due.js";
+export * from "../lib/schemas/create-commitment.js";
+export * from "../lib/schemas/commitment-action.js";
 export * from "../lib/schemas/sources.js";
 export * from "../lib/schemas/nodes-by-source.js";
 export * from "../lib/schemas/ingest-file.js";

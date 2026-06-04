@@ -1,7 +1,10 @@
 import { SSEServerTransport } from "./sse";
 import {
   BOOTSTRAP_MEMORY_DESCRIPTION,
+  CONFIRM_COMMITMENT_DESCRIPTION,
   CREATE_CLAIM_DESCRIPTION,
+  CREATE_COMMITMENT_DESCRIPTION,
+  DISMISS_COMMITMENT_DESCRIPTION,
   GET_METRIC_SERIES_DESCRIPTION,
   GET_METRIC_SUMMARY_DESCRIPTION,
   GET_ENTITY_DESCRIPTION,
@@ -16,7 +19,13 @@ import {
   ResourceTemplate,
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { createClaim } from "~/lib/claim";
+import { createClaim, NodesNotFoundError } from "~/lib/claim";
+import {
+  confirmCommitment,
+  createCommitment,
+  dismissCommitment,
+  TaskNotFoundError,
+} from "~/lib/commitments";
 import { getConversationBootstrapContext } from "~/lib/context/assemble-bootstrap-context";
 import { getNodeCard } from "~/lib/context/node-card";
 import { nodeCardSchema } from "~/lib/context/node-card-types";
@@ -41,6 +50,11 @@ import {
   createClaimResponseSchema,
 } from "~/lib/schemas/claim";
 import {
+  commitmentActionRequestSchema,
+  confirmCommitmentResponseSchema,
+  dismissCommitmentResponseSchema,
+} from "~/lib/schemas/commitment-action";
+import {
   bootstrapMemoryRequestSchema,
   getEntityRequestSchema,
 } from "~/lib/schemas/context";
@@ -48,6 +62,10 @@ import {
   cardSearchToolInputSchema,
   contextSearchResponseSchema,
 } from "~/lib/schemas/context-search";
+import {
+  createCommitmentRequestSchema,
+  createCommitmentResponseSchema,
+} from "~/lib/schemas/create-commitment";
 import { ingestDocumentRequestSchema } from "~/lib/schemas/ingest-document-request";
 import {
   getMetricSeriesRequestSchema,
@@ -250,6 +268,96 @@ server.tool(
         },
       ],
     };
+  },
+);
+
+server.tool(
+  "create_commitment",
+  CREATE_COMMITMENT_DESCRIPTION,
+  createCommitmentRequestSchema.shape,
+  async (params) => {
+    try {
+      const input = createCommitmentRequestSchema.parse(params);
+      const result = await createCommitment(input);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              createCommitmentResponseSchema.parse(result),
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    } catch (e) {
+      if (e instanceof NodesNotFoundError) {
+        return {
+          content: [{ type: "text", text: e.message }],
+          isError: true,
+        };
+      }
+      throw e;
+    }
+  },
+);
+
+server.tool(
+  "confirm_commitment",
+  CONFIRM_COMMITMENT_DESCRIPTION,
+  commitmentActionRequestSchema.shape,
+  async (params) => {
+    try {
+      const input = commitmentActionRequestSchema.parse(params);
+      const result = await confirmCommitment(input);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              confirmCommitmentResponseSchema.parse(result),
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    } catch (e) {
+      if (e instanceof TaskNotFoundError) {
+        return { content: [{ type: "text", text: e.message }], isError: true };
+      }
+      throw e;
+    }
+  },
+);
+
+server.tool(
+  "dismiss_commitment",
+  DISMISS_COMMITMENT_DESCRIPTION,
+  commitmentActionRequestSchema.shape,
+  async (params) => {
+    try {
+      const input = commitmentActionRequestSchema.parse(params);
+      const result = await dismissCommitment(input);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              dismissCommitmentResponseSchema.parse(result),
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    } catch (e) {
+      if (e instanceof TaskNotFoundError) {
+        return { content: [{ type: "text", text: e.message }], isError: true };
+      }
+      throw e;
+    }
   },
 );
 

@@ -10,6 +10,7 @@
  */
 import { getCachedBundle, setCachedBundle } from "./cache";
 import { assembleAtlasSection } from "./sections/atlas";
+import { assembleCandidateCommitmentsSection } from "./sections/candidate-commitments";
 import { assembleOpenCommitmentsSection } from "./sections/open-commitments";
 import { assemblePinnedSection } from "./sections/pinned";
 import { assemblePreferencesSection } from "./sections/preferences";
@@ -46,19 +47,27 @@ export async function getConversationBootstrapContext(
 
   // Run independent reads in parallel; each assembler returns null when its
   // section is empty, so the order below is purely the render order.
-  const [pinned, atlas, openCommitments, recent, preferences] =
-    await Promise.all([
-      assemblePinnedSection(db, userId),
-      assembleAtlasSection(db, userId),
-      assembleOpenCommitmentsSection(userId),
-      assembleRecentSupersessionsSection(db, userId, asOf),
-      assemblePreferencesSection(db, userId),
-    ]);
+  const [
+    pinned,
+    atlas,
+    openCommitments,
+    candidateCommitments,
+    recent,
+    preferences,
+  ] = await Promise.all([
+    assemblePinnedSection(db, userId),
+    assembleAtlasSection(db, userId),
+    assembleOpenCommitmentsSection(userId),
+    assembleCandidateCommitmentsSection(userId),
+    assembleRecentSupersessionsSection(db, userId, asOf),
+    assemblePreferencesSection(db, userId),
+  ]);
 
   const sections: ContextSection[] = [
     pinned,
     atlas,
     openCommitments,
+    candidateCommitments,
     recent,
     preferences,
   ].filter((section): section is ContextSection => section !== null);

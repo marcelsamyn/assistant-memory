@@ -32,6 +32,13 @@ import {
   dedupSweepResponseSchema,
 } from "../lib/schemas/cleanup.js";
 import {
+  CommitmentActionRequest,
+  ConfirmCommitmentResponse,
+  DismissCommitmentResponse,
+  confirmCommitmentResponseSchema,
+  dismissCommitmentResponseSchema,
+} from "../lib/schemas/commitment-action.js";
+import {
   ContextSearchRequest,
   ContextSearchResponse,
   contextSearchResponseSchema,
@@ -40,6 +47,11 @@ import {
   BootstrapMemoryRequest,
   bootstrapMemoryRequestSchema,
 } from "../lib/schemas/context.js";
+import {
+  CreateCommitmentRequest,
+  CreateCommitmentResponse,
+  createCommitmentResponseSchema,
+} from "../lib/schemas/create-commitment.js";
 import {
   GetDigestRequest,
   GetDigestResponse,
@@ -690,6 +702,54 @@ export class MemoryClient {
       "POST",
       "/commitments/due",
       setCommitmentDueResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Open a new commitment as a Task: creates the node and bootstraps it with a
+   * `HAS_TASK_STATUS` claim (pending or in_progress), plus an optional `DUE_ON`
+   * (server resolves the Temporal node) and `OWNED_BY` claim. Always creates a
+   * new Task — use `createClaim`/`setCommitmentDue` to advance an existing one.
+   */
+  async createCommitment(
+    payload: CreateCommitmentRequest,
+  ): Promise<CreateCommitmentResponse> {
+    return this._fetch(
+      "POST",
+      "/commitments/create",
+      createCommitmentResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Confirm a candidate (inferred) commitment, promoting its `HAS_TASK_STATUS`
+   * to `user_confirmed` so it graduates from the candidate view into
+   * `getOpenCommitments`. The status value is preserved.
+   */
+  async confirmCommitment(
+    payload: CommitmentActionRequest,
+  ): Promise<ConfirmCommitmentResponse> {
+    return this._fetch(
+      "POST",
+      "/commitments/confirm",
+      confirmCommitmentResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Dismiss a commitment by retracting its active `HAS_TASK_STATUS`, removing
+   * it from both the open and candidate views. Records no sticky rejection.
+   */
+  async dismissCommitment(
+    payload: CommitmentActionRequest,
+  ): Promise<DismissCommitmentResponse> {
+    return this._fetch(
+      "POST",
+      "/commitments/dismiss",
+      dismissCommitmentResponseSchema,
       payload,
     );
   }
