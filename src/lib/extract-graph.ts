@@ -11,7 +11,10 @@ import { findSimilarNodes, findOneHopNodes, findNodesByType } from "./graph";
 import { resolveIdentity } from "./identity-resolution";
 import { normalizeLabel } from "./label";
 import { recordMetricObservations } from "./metrics/observations";
-import { getOpenCommitments } from "./query/open-commitments";
+import {
+  getCandidateCommitments,
+  getOpenCommitments,
+} from "./query/open-commitments";
 import { safeToISOString } from "./safe-date";
 import {
   llmExtractionSchema,
@@ -146,20 +149,27 @@ export async function extractGraph({
     )
     .join("\n");
 
-  const [embeddingSimilar, oneHopNeighbors, allPersonNodes, openCommitments] =
-    await Promise.all([
-      findSimilarNodes({
-        userId,
-        text: content,
-        limit: 50,
-        minimumSimilarity: 0.3,
-      }),
-      findOneHopNodes(db, userId, [linkedNodeId]),
-      findNodesByType(userId, "Person"),
-      getOpenCommitments({ userId }),
-    ]);
+  const [
+    embeddingSimilar,
+    oneHopNeighbors,
+    allPersonNodes,
+    openCommitments,
+    candidateCommitments,
+  ] = await Promise.all([
+    findSimilarNodes({
+      userId,
+      text: content,
+      limit: 50,
+      minimumSimilarity: 0.3,
+    }),
+    findOneHopNodes(db, userId, [linkedNodeId]),
+    findNodesByType(userId, "Person"),
+    getOpenCommitments({ userId }),
+    getCandidateCommitments({ userId }),
+  ]);
 
   const cappedOpenCommitments = openCommitments.slice(0, 20);
+  const cappedCandidateCommitments = candidateCommitments.slice(0, 20);
 
   // Deduplicate by node ID: open commitments first (so the LLM sees them),
   // then person nodes (most duplicated type), then embedding results, then
@@ -167,7 +177,10 @@ export async function extractGraph({
   const seenIds = new Set<TypeId<"node">>();
   const similarNodesForProcessing: SimilarNodeForPrompt[] = [];
 
-  for (const commitment of cappedOpenCommitments) {
+  for (const commitment of [
+    ...cappedOpenCommitments,
+    ...cappedCandidateCommitments,
+  ]) {
     if (seenIds.has(commitment.taskId)) continue;
     seenIds.add(commitment.taskId);
     similarNodesForProcessing.push({
@@ -205,6 +218,10 @@ export async function extractGraph({
     cappedOpenCommitments,
   );
 
+  const candidateCommitmentsPromptSection = _formatCandidateCommitmentsSection(
+    cappedCandidateCommitments,
+  );
+
   const speakerMapPromptSection = _formatSpeakerMapSection(speakerMap);
 
   const { createCompletionClient } = await import("./ai");
@@ -228,6 +245,8 @@ ${formatNodesForPrompt(nodesForPromptFormatting)}
 }
 
 ${openCommitmentsPromptSection}
+
+${candidateCommitmentsPromptSection}
 
 ${speakerMapPromptSection}
 
@@ -676,6 +695,39 @@ These are the user's currently open Task nodes. Each line lists the task's exist
   }
 
   const lines = openCommitments.map((commitment) => {
+    const label = commitment.label ?? "(unlabeled task)";
+    const ownerPart = commitment.owner?.label
+      ? `; owner: ${commitment.owner.label}`
+      : commitment.owner
+        ? `; ownerNodeId: ${commitment.owner.nodeId}`
+        : "";
+    const duePart = commitment.dueOn ? `; dueOn: ${commitment.dueOn}` : "";
+    return `- existingNodeId: ${commitment.taskId}; label: ${label}; status: ${commitment.status}${ownerPart}${duePart}`;
+  });
+
+  return `${header}
+${lines.join("\n")}`;
+}
+
+/**
+ * Render the unconfirmed candidate tasks (inferred status) so the extractor
+ * can reuse their nodes instead of minting duplicates, and can *promote* one
+ * when the source corroborates it. Distinct from open tasks: these are
+ * tentative until the user confirms. Empty list → section omitted entirely.
+ */
+function _formatCandidateCommitmentsSection(
+  candidateCommitments: OpenCommitment[],
+): string {
+  if (candidateCommitments.length === 0) return "";
+
+  const header = `CANDIDATE TASKS (UNCONFIRMED):
+These are tasks the assistant previously *inferred* but the user has not confirmed. Each line lists the candidate's existing nodeId, label, status, owner, and due date. RULES:
+- If THIS source shows the user explicitly stating, acting on, or agreeing to one of these, emit a \`HAS_TASK_STATUS\` attribute claim with assertionKind "user" whose subjectId is the candidate's existingNodeId below. This confirms it — DO NOT create a new Task node.
+- If the source completes or abandons one, emit the matching \`HAS_TASK_STATUS\` (assertionKind "user") against its existingNodeId.
+- If the source neither corroborates nor changes a candidate, do NOT re-emit it.
+- NEVER create a new Task node for something already listed here.`;
+
+  const lines = candidateCommitments.map((commitment) => {
     const label = commitment.label ?? "(unlabeled task)";
     const ownerPart = commitment.owner?.label
       ? `; owner: ${commitment.owner.label}`

@@ -530,6 +530,7 @@ describeIfServer("getConversationBootstrapContext", () => {
           openCommitmentsCalls += 1;
           return realModule.getOpenCommitments(...args);
         },
+        getCandidateCommitments: realModule.getCandidateCommitments,
       }));
 
       try {

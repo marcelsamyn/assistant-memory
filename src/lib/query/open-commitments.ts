@@ -35,9 +35,69 @@ function isOpenTaskStatus(
   return status === "pending" || status === "in_progress";
 }
 
+/**
+ * Which provenance band of Task statuses to return:
+ * - `"trusted"` — every kind EXCEPT `assistant_inferred` (the open-commitments
+ *   view the assistant and user act on).
+ * - `"candidate"` — ONLY `assistant_inferred` (unconfirmed tasks awaiting
+ *   confirmation; hidden from the trusted view).
+ */
+type CommitmentProvenance = "trusted" | "candidate";
+
+/**
+ * Provenance predicate for the *defining* `HAS_TASK_STATUS` claim — this is
+ * what splits the two bands: candidate = inferred status, trusted = everything
+ * else.
+ */
+function provenanceFilter(
+  column: typeof claims.assertedByKind,
+  provenance: CommitmentProvenance,
+) {
+  return provenance === "candidate"
+    ? eq(column, "assistant_inferred")
+    : ne(column, "assistant_inferred");
+}
+
+/**
+ * Provenance predicate for the OWNED_BY / DUE_ON metadata sub-joins, which is
+ * NOT symmetric with the status filter. The trusted view shows only trusted
+ * metadata (excludes inferred). The candidate view applies NO provenance
+ * constraint, so a *trusted* owner/due set on a not-yet-confirmed candidate
+ * (e.g. via `setCommitmentDue`) still surfaces rather than being hidden behind
+ * an `assistant_inferred`-only match.
+ */
+function subJoinProvenanceFilter(
+  column: typeof claims.assertedByKind,
+  provenance: CommitmentProvenance,
+) {
+  return provenance === "trusted"
+    ? ne(column, "assistant_inferred")
+    : undefined;
+}
+
 /** List lifecycle-current open Task nodes. Common aliases: open tasks, commitments, todos. */
 export async function getOpenCommitments(
   params: OpenCommitmentsRequest,
+): Promise<OpenCommitment[]> {
+  return queryCommitments(params, "trusted");
+}
+
+/**
+ * List lifecycle-current *candidate* Task nodes — open tasks whose latest
+ * trusted-band status is `assistant_inferred`, i.e. the extractor proposed
+ * them but the user hasn't confirmed. Surfaced for proactive confirmation;
+ * deliberately excluded from {@link getOpenCommitments}. Common aliases:
+ * candidate commitments, inferred tasks, unconfirmed tasks, tasks to confirm.
+ */
+export async function getCandidateCommitments(
+  params: OpenCommitmentsRequest,
+): Promise<OpenCommitment[]> {
+  return queryCommitments(params, "candidate");
+}
+
+async function queryCommitments(
+  params: OpenCommitmentsRequest,
+  provenance: CommitmentProvenance,
 ): Promise<OpenCommitment[]> {
   const { userId, ownedBy, dueBefore } = params;
   const db = await useDatabase();
@@ -75,7 +135,7 @@ export async function getOpenCommitments(
         eq(ownerClaim.predicate, "OWNED_BY"),
         eq(ownerClaim.status, "active"),
         eq(ownerClaim.scope, "personal"),
-        ne(ownerClaim.assertedByKind, "assistant_inferred"),
+        subJoinProvenanceFilter(ownerClaim.assertedByKind, provenance),
         isNotNull(ownerClaim.objectNodeId),
       ),
     )
@@ -88,7 +148,7 @@ export async function getOpenCommitments(
         eq(dueClaim.predicate, "DUE_ON"),
         eq(dueClaim.status, "active"),
         eq(dueClaim.scope, "personal"),
-        ne(dueClaim.assertedByKind, "assistant_inferred"),
+        subJoinProvenanceFilter(dueClaim.assertedByKind, provenance),
         isNotNull(dueClaim.objectNodeId),
       ),
     )
@@ -99,7 +159,7 @@ export async function getOpenCommitments(
         eq(claims.predicate, "HAS_TASK_STATUS"),
         eq(claims.status, "active"),
         eq(claims.scope, "personal"),
-        ne(claims.assertedByKind, "assistant_inferred"),
+        provenanceFilter(claims.assertedByKind, provenance),
         ownedBy === undefined
           ? undefined
           : eq(ownerClaim.objectNodeId, ownedBy),

@@ -45,6 +45,14 @@ export type ContextSectionOpenCommitments = z.infer<
   typeof contextSectionOpenCommitmentsSchema
 >;
 
+export const contextSectionCandidateCommitmentsSchema = z.object({
+  kind: z.literal("candidate_commitments"),
+  ...baseSectionFields,
+});
+export type ContextSectionCandidateCommitments = z.infer<
+  typeof contextSectionCandidateCommitmentsSchema
+>;
+
 export const contextSectionRecentSupersessionsSchema = z.object({
   kind: z.literal("recent_supersessions"),
   ...baseSectionFields,
@@ -65,6 +73,7 @@ export const contextSectionSchema = z.discriminatedUnion("kind", [
   contextSectionPinnedSchema,
   contextSectionAtlasSchema,
   contextSectionOpenCommitmentsSchema,
+  contextSectionCandidateCommitmentsSchema,
   contextSectionRecentSupersessionsSchema,
   contextSectionPreferencesSchema,
 ]);

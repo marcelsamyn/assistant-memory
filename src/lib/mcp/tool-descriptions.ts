@@ -31,6 +31,15 @@ export const GET_ENTITY_DESCRIPTION =
 export const CREATE_CLAIM_DESCRIPTION =
   "Creates a claim between an existing subject node and either an existing object node or a scalar object value. Returns the created claim plus subjectLabel and objectLabel so callers can immediately reflect the new relationship in the UI.";
 
+export const CREATE_COMMITMENT_DESCRIPTION =
+  'Opens a new task/commitment for the user as a Task with status pending or in_progress, plus an optional due date (YYYY-MM-DD) and owner node id. Call the moment the user commits to doing something, asks you to track a to-do, or says to remind them. To propose a tentative commitment you are not sure about, pass assertedByKind "assistant_inferred" so it lands as a candidate for the user to confirm rather than a confirmed task. Always creates a new commitment — to advance, complete, or re-date an existing task use create_claim with HAS_TASK_STATUS instead of creating a duplicate.';
+
+export const CONFIRM_COMMITMENT_DESCRIPTION =
+  "Confirms a candidate (inferred, unconfirmed) commitment the user agrees is real, promoting it so it appears in their open commitments. Call when the user affirms a task you surfaced from the candidates-to-confirm list ('yes, track that'). Pass the task's node id. Use dismiss_commitment instead when the user says it is not a real commitment.";
+
+export const DISMISS_COMMITMENT_DESCRIPTION =
+  "Dismisses a commitment by retracting its current status, removing it from both the open and candidate lists. Call when the user rejects a candidate you surfaced ('no, that is not a commitment') or wants to drop a tracked task without marking it done. Pass the task's node id.";
+
 export const RECORD_METRIC_DESCRIPTION =
   'Records a single numeric reading the user is tracking (weight, distance, sleep duration, mood score). Provide a metric definition (slug, label, unit, aggregation hint) — the system reuses existing definitions for similar concepts and creates new ones automatically. Use for ad-hoc readings the user mentions in chat ("log that I weighed 78kg"). Do not use for retrospective bulk imports.';
 

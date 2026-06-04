@@ -1,6 +1,9 @@
 import {
   BOOTSTRAP_MEMORY_DESCRIPTION,
+  CONFIRM_COMMITMENT_DESCRIPTION,
   CREATE_CLAIM_DESCRIPTION,
+  CREATE_COMMITMENT_DESCRIPTION,
+  DISMISS_COMMITMENT_DESCRIPTION,
   GET_METRIC_SERIES_DESCRIPTION,
   GET_METRIC_SUMMARY_DESCRIPTION,
   GET_ENTITY_DESCRIPTION,
@@ -54,6 +57,24 @@ describe("MCP tool descriptions", () => {
   it("pins create_claim description", () => {
     expect(CREATE_CLAIM_DESCRIPTION).toMatchInlineSnapshot(
       `"Creates a claim between an existing subject node and either an existing object node or a scalar object value. Returns the created claim plus subjectLabel and objectLabel so callers can immediately reflect the new relationship in the UI."`,
+    );
+  });
+
+  it("pins create_commitment description", () => {
+    expect(CREATE_COMMITMENT_DESCRIPTION).toMatchInlineSnapshot(
+      `"Opens a new task/commitment for the user as a Task with status pending or in_progress, plus an optional due date (YYYY-MM-DD) and owner node id. Call the moment the user commits to doing something, asks you to track a to-do, or says to remind them. To propose a tentative commitment you are not sure about, pass assertedByKind "assistant_inferred" so it lands as a candidate for the user to confirm rather than a confirmed task. Always creates a new commitment — to advance, complete, or re-date an existing task use create_claim with HAS_TASK_STATUS instead of creating a duplicate."`,
+    );
+  });
+
+  it("pins confirm_commitment description", () => {
+    expect(CONFIRM_COMMITMENT_DESCRIPTION).toMatchInlineSnapshot(
+      `"Confirms a candidate (inferred, unconfirmed) commitment the user agrees is real, promoting it so it appears in their open commitments. Call when the user affirms a task you surfaced from the candidates-to-confirm list ('yes, track that'). Pass the task's node id. Use dismiss_commitment instead when the user says it is not a real commitment."`,
+    );
+  });
+
+  it("pins dismiss_commitment description", () => {
+    expect(DISMISS_COMMITMENT_DESCRIPTION).toMatchInlineSnapshot(
+      `"Dismisses a commitment by retracting its current status, removing it from both the open and candidate lists. Call when the user rejects a candidate you surfaced ('no, that is not a commitment') or wants to drop a tracked task without marking it done. Pass the task's node id."`,
     );
   });
 
