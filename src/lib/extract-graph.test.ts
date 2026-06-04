@@ -184,7 +184,8 @@ describeIfServer("extractGraph claim-native insertion", () => {
     vi.doMock("./debug-utils", () => ({
       debugGraph: () => undefined,
     }));
-    vi.doMock("./ai", () => ({
+    vi.doMock("./ai", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./ai")>()),
       createCompletionClient: async () => ({
         beta: {
           chat: {
@@ -460,7 +461,8 @@ describeIfServer("extractGraph claim-native insertion", () => {
     vi.doMock("./debug-utils", () => ({
       debugGraph: () => undefined,
     }));
-    vi.doMock("./ai", () => ({
+    vi.doMock("./ai", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./ai")>()),
       createCompletionClient: async () => ({
         beta: {
           chat: {
@@ -646,7 +648,8 @@ describeIfServer("extractGraph claim-native insertion", () => {
     vi.doMock("./debug-utils", () => ({
       debugGraph: () => undefined,
     }));
-    vi.doMock("./ai", () => ({
+    vi.doMock("./ai", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./ai")>()),
       createCompletionClient: async () => ({
         beta: {
           chat: {
@@ -773,7 +776,8 @@ describeIfServer("extractGraph claim-native insertion", () => {
     vi.doMock("./debug-utils", () => ({
       debugGraph: () => undefined,
     }));
-    vi.doMock("./ai", () => ({
+    vi.doMock("./ai", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./ai")>()),
       createCompletionClient: async () => ({
         beta: {
           chat: {
@@ -985,7 +989,8 @@ describeIfServer("extractGraph claim-native insertion", () => {
         // the spy's signature without forging a fake Job.
         return undefined as never;
       });
-    vi.doMock("./ai", () => ({
+    vi.doMock("./ai", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./ai")>()),
       createCompletionClient: async () => ({
         beta: {
           chat: {
@@ -1157,7 +1162,8 @@ describeIfServer("extractGraph claim-native insertion", () => {
     vi.doMock("./debug-utils", () => ({
       debugGraph: () => undefined,
     }));
-    vi.doMock("./ai", () => ({
+    vi.doMock("./ai", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./ai")>()),
       createCompletionClient: async () => ({
         beta: {
           chat: {

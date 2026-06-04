@@ -312,7 +312,8 @@ describeIfServer("ingestTranscript", () => {
     const database = drizzle(client, { schema, casing: "snake_case" });
 
     applyCommonMocks(database);
-    vi.doMock("../ai", () => ({
+    vi.doMock("../ai", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../ai")>()),
       createCompletionClient: async () => ({
         beta: {
           chat: {
@@ -628,7 +629,8 @@ describeIfServer("ingestTranscript", () => {
     const database = drizzle(client, { schema, casing: "snake_case" });
 
     applyCommonMocks(database);
-    vi.doMock("../ai", () => ({
+    vi.doMock("../ai", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../ai")>()),
       createCompletionClient: async () => ({
         beta: {
           chat: {
@@ -705,7 +707,8 @@ describeIfServer("ingestTranscript", () => {
     const database = drizzle(client, { schema, casing: "snake_case" });
 
     applyCommonMocks(database);
-    vi.doMock("../ai", () => ({
+    vi.doMock("../ai", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../ai")>()),
       createCompletionClient: async () => ({
         beta: {
           chat: {
