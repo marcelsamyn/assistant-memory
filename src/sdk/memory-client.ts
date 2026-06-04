@@ -690,6 +690,23 @@ export class MemoryClient {
   }
 
   /**
+   * Candidate commitments view: open Task nodes whose latest trusted personal
+   * `HAS_TASK_STATUS` is `assistant_inferred` — extractor-proposed work the user
+   * hasn't confirmed. Deliberately excluded from `getOpenCommitments`; surface
+   * these for proactive confirmation via `confirmCommitment` / `dismissCommitment`.
+   */
+  async getCandidateCommitments(
+    payload: OpenCommitmentsRequest,
+  ): Promise<OpenCommitmentsResponse> {
+    return this._fetch(
+      "POST",
+      "/commitments/candidates",
+      openCommitmentsResponseSchema,
+      payload,
+    );
+  }
+
+  /**
    * Set or clear a Task's due date. Pass `dueOn: "YYYY-MM-DD"` to assert a
    * new `DUE_ON` claim (the predicate lifecycle supersedes any prior date),
    * or `dueOn: null` to retract every active `DUE_ON` claim on the task.
