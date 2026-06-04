@@ -187,79 +187,75 @@ describeIfServer("extractGraph claim-native insertion", () => {
     vi.doMock("./ai", async (importOriginal) => ({
       ...(await importOriginal<typeof import("./ai")>()),
       createCompletionClient: async () => ({
-        beta: {
-          chat: {
-            completions: {
-              parse: async (input: {
-                messages: Array<{ content: string }>;
-              }) => {
-                prompt = input.messages[0]?.content ?? "";
-                return {
-                  choices: [
-                    {
-                      message: {
-                        parsed: {
-                          nodes: [
-                            {
-                              id: "project_1",
-                              type: "Object",
-                              label: "Project Falcon",
-                              description: "A project Alice discussed.",
-                            },
-                          ],
-                          relationshipClaims: [
-                            {
-                              subjectId: "existing_person_1",
-                              objectId: "project_1",
-                              predicate: "TAGGED_WITH",
-                              statement: "Alice discussed Project Falcon.",
-                              sourceRef: "msg_1",
-                              assertionKind: "user",
-                            },
-                            {
-                              subjectId: "existing_person_1",
-                              objectId: "project_1",
-                              predicate: "RELATED_TO",
-                              statement: "This claim has a bad source.",
-                              sourceRef: "missing_msg",
-                              assertionKind: "user",
-                            },
-                          ],
-                          attributeClaims: [
-                            {
-                              subjectId: "existing_person_1",
-                              predicate: "HAS_STATUS",
-                              objectValue: "completed",
-                              statement: "Alice completed Project Falcon.",
-                              sourceRef: "msg_1",
-                              statedAt: statedAt.toISOString(),
-                              assertionKind: "user",
-                            },
-                            {
-                              subjectId: "existing_person_1",
-                              predicate: "HAS_GOAL",
-                              objectValue: "bad decorated source ref",
-                              statement: "This claim copied the timestamp too.",
-                              sourceRef: "msg_1 (2026-04-25T10:00:00.000Z)",
-                              assertionKind: "user",
-                            },
-                          ],
-                          aliases: [
-                            {
-                              subjectId: "existing_person_1",
-                              aliasText: "Ally",
-                            },
-                            {
-                              subjectId: "existing_person_1",
-                              aliasText: " ",
-                            },
-                          ],
-                        },
+        chat: {
+          completions: {
+            parse: async (input: { messages: Array<{ content: string }> }) => {
+              prompt = input.messages[0]?.content ?? "";
+              return {
+                choices: [
+                  {
+                    message: {
+                      parsed: {
+                        nodes: [
+                          {
+                            id: "project_1",
+                            type: "Object",
+                            label: "Project Falcon",
+                            description: "A project Alice discussed.",
+                          },
+                        ],
+                        relationshipClaims: [
+                          {
+                            subjectId: "existing_person_1",
+                            objectId: "project_1",
+                            predicate: "TAGGED_WITH",
+                            statement: "Alice discussed Project Falcon.",
+                            sourceRef: "msg_1",
+                            assertionKind: "user",
+                          },
+                          {
+                            subjectId: "existing_person_1",
+                            objectId: "project_1",
+                            predicate: "RELATED_TO",
+                            statement: "This claim has a bad source.",
+                            sourceRef: "missing_msg",
+                            assertionKind: "user",
+                          },
+                        ],
+                        attributeClaims: [
+                          {
+                            subjectId: "existing_person_1",
+                            predicate: "HAS_STATUS",
+                            objectValue: "completed",
+                            statement: "Alice completed Project Falcon.",
+                            sourceRef: "msg_1",
+                            statedAt: statedAt.toISOString(),
+                            assertionKind: "user",
+                          },
+                          {
+                            subjectId: "existing_person_1",
+                            predicate: "HAS_GOAL",
+                            objectValue: "bad decorated source ref",
+                            statement: "This claim copied the timestamp too.",
+                            sourceRef: "msg_1 (2026-04-25T10:00:00.000Z)",
+                            assertionKind: "user",
+                          },
+                        ],
+                        aliases: [
+                          {
+                            subjectId: "existing_person_1",
+                            aliasText: "Ally",
+                          },
+                          {
+                            subjectId: "existing_person_1",
+                            aliasText: " ",
+                          },
+                        ],
                       },
                     },
-                  ],
-                };
-              },
+                  },
+                ],
+              };
             },
           },
         },
@@ -464,38 +460,34 @@ describeIfServer("extractGraph claim-native insertion", () => {
     vi.doMock("./ai", async (importOriginal) => ({
       ...(await importOriginal<typeof import("./ai")>()),
       createCompletionClient: async () => ({
-        beta: {
-          chat: {
-            completions: {
-              parse: async (input: {
-                messages: Array<{ content: string }>;
-              }) => {
-                prompt = input.messages[0]?.content ?? "";
-                return {
-                  choices: [
-                    {
-                      message: {
-                        parsed: {
-                          nodes: [],
-                          relationshipClaims: [],
-                          attributeClaims: [
-                            {
-                              subjectId: taskNodeId,
-                              predicate: "HAS_TASK_STATUS",
-                              objectValue: "done",
-                              statement: "User completed the spec write-up.",
-                              sourceRef: "msg_task_done",
-                              statedAt: replacementStatusAt.toISOString(),
-                              assertionKind: "user",
-                            },
-                          ],
-                          aliases: [],
-                        },
+        chat: {
+          completions: {
+            parse: async (input: { messages: Array<{ content: string }> }) => {
+              prompt = input.messages[0]?.content ?? "";
+              return {
+                choices: [
+                  {
+                    message: {
+                      parsed: {
+                        nodes: [],
+                        relationshipClaims: [],
+                        attributeClaims: [
+                          {
+                            subjectId: taskNodeId,
+                            predicate: "HAS_TASK_STATUS",
+                            objectValue: "done",
+                            statement: "User completed the spec write-up.",
+                            sourceRef: "msg_task_done",
+                            statedAt: replacementStatusAt.toISOString(),
+                            assertionKind: "user",
+                          },
+                        ],
+                        aliases: [],
                       },
                     },
-                  ],
-                };
-              },
+                  },
+                ],
+              };
             },
           },
         },
@@ -651,28 +643,24 @@ describeIfServer("extractGraph claim-native insertion", () => {
     vi.doMock("./ai", async (importOriginal) => ({
       ...(await importOriginal<typeof import("./ai")>()),
       createCompletionClient: async () => ({
-        beta: {
-          chat: {
-            completions: {
-              parse: async (input: {
-                messages: Array<{ content: string }>;
-              }) => {
-                prompt = input.messages[0]?.content ?? "";
-                return {
-                  choices: [
-                    {
-                      message: {
-                        parsed: {
-                          nodes: [],
-                          relationshipClaims: [],
-                          attributeClaims: [],
-                          aliases: [],
-                        },
+        chat: {
+          completions: {
+            parse: async (input: { messages: Array<{ content: string }> }) => {
+              prompt = input.messages[0]?.content ?? "";
+              return {
+                choices: [
+                  {
+                    message: {
+                      parsed: {
+                        nodes: [],
+                        relationshipClaims: [],
+                        attributeClaims: [],
+                        aliases: [],
                       },
                     },
-                  ],
-                };
-              },
+                  },
+                ],
+              };
             },
           },
         },
@@ -779,24 +767,22 @@ describeIfServer("extractGraph claim-native insertion", () => {
     vi.doMock("./ai", async (importOriginal) => ({
       ...(await importOriginal<typeof import("./ai")>()),
       createCompletionClient: async () => ({
-        beta: {
-          chat: {
-            completions: {
-              parse: async () => ({
-                choices: [
-                  {
-                    message: {
-                      parsed: {
-                        nodes: [],
-                        relationshipClaims: [],
-                        attributeClaims: [],
-                        aliases: [],
-                      },
+        chat: {
+          completions: {
+            parse: async () => ({
+              choices: [
+                {
+                  message: {
+                    parsed: {
+                      nodes: [],
+                      relationshipClaims: [],
+                      attributeClaims: [],
+                      aliases: [],
                     },
                   },
-                ],
-              }),
-            },
+                },
+              ],
+            }),
           },
         },
       }),
@@ -992,46 +978,44 @@ describeIfServer("extractGraph claim-native insertion", () => {
     vi.doMock("./ai", async (importOriginal) => ({
       ...(await importOriginal<typeof import("./ai")>()),
       createCompletionClient: async () => ({
-        beta: {
-          chat: {
-            completions: {
-              parse: async () => ({
-                choices: [
-                  {
-                    message: {
-                      parsed: {
-                        nodes: [],
-                        // Only a relationship claim for projectNodeId — must
-                        // NOT trigger profile-synthesis for the project.
-                        relationshipClaims: [
-                          {
-                            subjectId: "existing_object_2",
-                            objectId: "existing_person_1",
-                            predicate: "RELATED_TO",
-                            statement: "Project Falcon is related to Alice.",
-                            sourceRef: "msg_e",
-                            assertionKind: "user",
-                          },
-                        ],
-                        // An attribute claim for aliceNodeId — MUST trigger
-                        // profile-synthesis for Alice.
-                        attributeClaims: [
-                          {
-                            subjectId: "existing_person_1",
-                            predicate: "HAS_PREFERENCE",
-                            objectValue: "concise communication",
-                            statement: "Alice prefers concise communication.",
-                            sourceRef: "msg_e",
-                            assertionKind: "user",
-                          },
-                        ],
-                        aliases: [],
-                      },
+        chat: {
+          completions: {
+            parse: async () => ({
+              choices: [
+                {
+                  message: {
+                    parsed: {
+                      nodes: [],
+                      // Only a relationship claim for projectNodeId — must
+                      // NOT trigger profile-synthesis for the project.
+                      relationshipClaims: [
+                        {
+                          subjectId: "existing_object_2",
+                          objectId: "existing_person_1",
+                          predicate: "RELATED_TO",
+                          statement: "Project Falcon is related to Alice.",
+                          sourceRef: "msg_e",
+                          assertionKind: "user",
+                        },
+                      ],
+                      // An attribute claim for aliceNodeId — MUST trigger
+                      // profile-synthesis for Alice.
+                      attributeClaims: [
+                        {
+                          subjectId: "existing_person_1",
+                          predicate: "HAS_PREFERENCE",
+                          objectValue: "concise communication",
+                          statement: "Alice prefers concise communication.",
+                          sourceRef: "msg_e",
+                          assertionKind: "user",
+                        },
+                      ],
+                      aliases: [],
                     },
                   },
-                ],
-              }),
-            },
+                },
+              ],
+            }),
           },
         },
       }),
@@ -1165,17 +1149,13 @@ describeIfServer("extractGraph claim-native insertion", () => {
     vi.doMock("./ai", async (importOriginal) => ({
       ...(await importOriginal<typeof import("./ai")>()),
       createCompletionClient: async () => ({
-        beta: {
-          chat: {
-            completions: {
-              parse: async (input: {
-                messages: Array<{ content: string }>;
-              }) => {
-                capturedPrompt = input.messages[0]?.content ?? "";
-                return {
-                  choices: [{ message: { parsed: llmResponse } }],
-                };
-              },
+        chat: {
+          completions: {
+            parse: async (input: { messages: Array<{ content: string }> }) => {
+              capturedPrompt = input.messages[0]?.content ?? "";
+              return {
+                choices: [{ message: { parsed: llmResponse } }],
+              };
             },
           },
         },

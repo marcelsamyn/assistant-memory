@@ -879,7 +879,7 @@ async function _processAndInsertNewNodes(
     detailsOfNewlyCreatedNodes.push({
       id: insertedNodeRecord.id,
       label: llmNode.label,
-      description: llmNode.description,
+      description: llmNode.description ?? undefined,
       nodeType: llmNode.type,
     });
   }
@@ -1047,7 +1047,7 @@ async function _processAndRecordLlmMetrics({
 }: {
   userId: string;
   sourceId: TypeId<"source">;
-  metrics: LlmOutputMetrics | undefined;
+  metrics: LlmOutputMetrics | null | undefined;
   idMap: Map<string, TypeId<"node">>;
 }): Promise<void> {
   const observations = (metrics?.standalone ?? []).map((observation) => ({
@@ -1059,10 +1059,8 @@ async function _processAndRecordLlmMetrics({
 
   const events = (metrics?.events ?? []).flatMap((event) => {
     const eventNodeId =
-      event.eventNodeId === undefined
-        ? undefined
-        : idMap.get(event.eventNodeId);
-    if (event.eventNodeId !== undefined && eventNodeId === undefined) {
+      event.eventNodeId == null ? undefined : idMap.get(event.eventNodeId);
+    if (event.eventNodeId != null && eventNodeId === undefined) {
       console.warn(
         `Metric event will create its own node because the referenced node was not found: ${event.eventNodeId}`,
       );
@@ -1147,7 +1145,7 @@ interface ResolvedProvenance {
 function _resolveAssertedByKind(
   llmClaim: {
     assertionKind?: AssertedByKind | undefined;
-    assertedBySpeakerLabel?: string | undefined;
+    assertedBySpeakerLabel?: string | null | undefined;
     sourceRef: string;
   },
   sourceType: SourceType,
@@ -1178,7 +1176,7 @@ function _resolveAssertedByKind(
 function _resolveTranscriptProvenance(
   llmClaim: {
     assertionKind?: AssertedByKind | undefined;
-    assertedBySpeakerLabel?: string | undefined;
+    assertedBySpeakerLabel?: string | null | undefined;
     sourceRef: string;
   },
   speakerMap: ExtractGraphSpeakerMap,
@@ -1266,7 +1264,7 @@ async function _processAndInsertLlmAliases(
 
 function _resolveClaimSource(
   sourceRef: string,
-  statedAt: string | undefined,
+  statedAt: string | null | undefined,
   defaultStatedAt: Date,
   sourceRefMap: Map<string, SourceRef>,
 ): { sourceId: TypeId<"source">; statedAt: Date } | null {
@@ -1280,6 +1278,8 @@ function _resolveClaimSource(
   };
 }
 
-function _parseOptionalDate(value: string | undefined): Date | undefined {
-  return value === undefined ? undefined : new Date(value);
+function _parseOptionalDate(
+  value: string | null | undefined,
+): Date | undefined {
+  return value == null ? undefined : new Date(value);
 }

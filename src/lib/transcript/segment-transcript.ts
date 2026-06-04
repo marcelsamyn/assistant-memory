@@ -23,7 +23,7 @@ export const segmentedUtteranceSchema = z.object({
   timestamp: z
     .string()
     .datetime()
-    .optional()
+    .nullish()
     .describe("Optional ISO timestamp for the utterance, if known."),
 });
 

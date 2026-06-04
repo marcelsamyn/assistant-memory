@@ -71,16 +71,19 @@ const contradictClaimOpSchema = z.object({
   reason: z.string().min(1),
 });
 
-// Discriminated union members must be plain `z.object`s (no `.refine`/`ZodEffects`).
-// The objectTempId/objectValue xor is enforced at the dispatcher boundary.
+// Union members are plain `z.object`s (no `.refine`/`ZodEffects`). Optional
+// fields use `.nullable()` rather than `.optional()`: OpenAI structured-output
+// strict mode requires every property to appear in `required`, modelling
+// "absent" as an explicit null. The objectTempId/objectValue xor is enforced at
+// the dispatcher boundary.
 const addClaimOpSchema = z.object({
   kind: z.literal("add_claim"),
   subjectTempId: z.string(),
-  objectTempId: z.string().optional(),
-  objectValue: z.string().min(1).optional(),
+  objectTempId: z.string().nullable(),
+  objectValue: z.string().min(1).nullable(),
   predicate: AnyPredicateEnum,
   statement: z.string().min(1),
-  sourceClaimId: claimIdSchema.optional(),
+  sourceClaimId: claimIdSchema.nullable(),
 });
 
 const addAliasOpSchema = z.object({
@@ -106,11 +109,15 @@ const createNodeOpSchema = z.object({
   kind: z.literal("create_node"),
   tempId: z.string(),
   label: z.string().min(1),
-  description: z.string().optional(),
+  description: z.string().nullable(),
   type: NodeTypeEnum,
 });
 
-export const CleanupOperationSchema = z.discriminatedUnion("kind", [
+// `z.union`, not `z.discriminatedUnion`: under Zod 4, discriminated unions emit
+// `oneOf` in the generated JSON Schema, which OpenAI structured-output strict
+// mode rejects. A plain union emits `anyOf` (accepted), and the `kind` literals
+// still make exactly one member match on parse. Inferred type is identical.
+export const CleanupOperationSchema = z.union([
   mergeNodesOpSchema,
   deleteNodeOpSchema,
   retractClaimOpSchema,
@@ -361,9 +368,9 @@ export async function contradictClaim(
 async function resolveAddClaimScope(
   database: DbOrTx,
   userId: string,
-  sourceClaimId: TypeId<"claim"> | undefined,
+  sourceClaimId: TypeId<"claim"> | null,
 ): Promise<{ scope: "personal" | "reference"; sourceId?: TypeId<"source"> }> {
-  if (sourceClaimId === undefined) return { scope: "personal" };
+  if (sourceClaimId === null) return { scope: "personal" };
 
   const [row] = await database
     .select({ sourceId: claims.sourceId, scope: sources.scope })
@@ -402,7 +409,7 @@ export async function addClaim(
   }
 
   let objectNodeId: TypeId<"node"> | undefined;
-  if (op.objectTempId !== undefined) {
+  if (op.objectTempId !== null) {
     objectNodeId = resolveTempId(op.objectTempId);
     if (!objectNodeId) {
       console.warn(
@@ -427,7 +434,7 @@ export async function addClaim(
     statement: op.statement,
     description: op.statement,
     objectNodeId,
-    objectValue: op.objectValue,
+    objectValue: op.objectValue ?? undefined,
     sourceId,
     scope,
     assertedByKind: "system",
@@ -843,8 +850,9 @@ async function runOne(
       return updated !== null;
     }
     case "add_claim": {
-      // Re-validate the inner refine that the discriminated-union skipped.
-      if ((op.objectTempId === undefined) === (op.objectValue === undefined)) {
+      // Re-validate the objectTempId/objectValue xor the union can't express:
+      // exactly one must be non-null.
+      if ((op.objectTempId === null) === (op.objectValue === null)) {
         throw new Error(
           "add_claim: exactly one of objectTempId or objectValue is required",
         );
