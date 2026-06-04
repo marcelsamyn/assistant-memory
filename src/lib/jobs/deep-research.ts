@@ -196,7 +196,10 @@ async function runIterativeSearch(
 interface RefinementResult {
   dropIds: string[];
   done: boolean;
-  nextQuery?: string;
+  // `string | null | undefined` (not just `| null`): the schema's `.nullish()`
+  // makes the parsed value explicitly include `undefined` under
+  // exactOptionalPropertyTypes.
+  nextQuery?: string | null | undefined;
 }
 
 /**
@@ -212,7 +215,7 @@ async function refineSearchResults(
     .object({
       dropIds: z.array(z.string()).default([]),
       done: z.boolean(),
-      nextQuery: z.string().optional(),
+      nextQuery: z.string().nullish(),
     })
     .describe("DeepResearchRefinement");
 
@@ -225,7 +228,7 @@ async function refineSearchResults(
   const resultsXml = formatSearchResultsWithIds(results);
 
   try {
-    return (await performStructuredAnalysis({
+    return await performStructuredAnalysis({
       userId,
       systemPrompt: "You refine background search results.",
       prompt: `<conversation>
@@ -244,7 +247,7 @@ ${resultsXml}
 Remove irrelevant results by listing their ids in dropIds. If more searching is needed, set done=false and provide nextQuery. If satisfied, set done=true.
 </system:instruction>`,
       schema,
-    })) as RefinementResult;
+    });
   } catch (error) {
     console.error("Failed to refine deep search results:", error);
     return { dropIds: [], done: true };

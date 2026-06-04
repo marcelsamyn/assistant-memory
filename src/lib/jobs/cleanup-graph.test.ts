@@ -7,8 +7,11 @@
  * review without spinning up Postgres or stubbing the LLM client.
  */
 import { buildCleanupPrompt, type TempSubgraph } from "./cleanup-graph";
+import { CleanupOperationsSchema } from "./cleanup-operations";
+import { zodResponseFormat } from "openai/helpers/zod.mjs";
 import { describe, expect, it } from "vitest";
 import type { ContextBundle } from "~/lib/context/types";
+import { validateStructuredOutputJsonSchema } from "~/lib/schemas/structured-output-validation";
 import { newTypeId } from "~/types/typeid";
 
 function makeBundle(): ContextBundle {
@@ -164,6 +167,22 @@ describe("buildCleanupPrompt", () => {
     expect(prompt).toContain("Return at most 10 operations");
     expect(prompt).toContain("Absence from the bundle is NEVER sufficient");
     expect(prompt).toContain("ACTIVE, same-scope, source-backed claim");
+  });
+
+  it("emits provider-compatible JSON Schema for the cleanup operations", () => {
+    // Regression guard for the Zod 4 / openai 6 upgrade. `zodResponseFormat`
+    // throws if any union member uses `.optional()` without `.nullable()`, and
+    // the validator rejects `oneOf` (which `z.discriminatedUnion` would emit).
+    const responseFormat = zodResponseFormat(
+      CleanupOperationsSchema,
+      "CleanupOperations",
+    );
+    expect(() =>
+      validateStructuredOutputJsonSchema({
+        name: "CleanupOperations",
+        schema: responseFormat.json_schema.schema,
+      }),
+    ).not.toThrow();
   });
 
   it("renders the subgraph nodes and claims inside <subgraph>", () => {

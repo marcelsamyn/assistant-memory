@@ -243,16 +243,12 @@ export class MemoryClient {
     this.options = options;
   }
 
-  private async _fetch<
-    TRequest,
-    S extends z.ZodTypeAny,
-    TResponse = z.infer<S>,
-  >(
+  private async _fetch<S extends z.ZodType>(
     method: "GET" | "POST" | "PUT" | "DELETE",
     path: string,
     responseSchema: S,
-    body?: TRequest,
-  ): Promise<TResponse> {
+    body?: unknown,
+  ): Promise<z.output<S>> {
     const headers: HeadersInit = {
       "Content-Type": "application/json",
     };

@@ -18,7 +18,7 @@ import type {
 
 /**
  * Build a FIFO-consuming completion client. Each call to
- * `beta.chat.completions.parse` returns the next queued response. Throws on
+ * `chat.completions.parse` returns the next queued response. Throws on
  * underflow so a story that wires fewer responses than its message count
  * fails loudly.
  */
@@ -28,33 +28,31 @@ export function createExtractionStubClient(
   const queue: ExtractionStubResponse[] = [...responses];
 
   const client: StubCompletionClient = {
-    beta: {
-      // The production caller only reads `choices[0].message.parsed`. We
-      // satisfy that surface and ignore everything else.
-      chat: {
-        completions: {
-          parse: async () => {
-            const next = queue.shift();
-            if (!next) {
-              throw new Error(
-                "Extraction stub queue exhausted: production code requested more LLM responses than were queued.",
-              );
-            }
-            return {
-              choices: [
-                {
-                  message: {
-                    parsed: {
-                      nodes: next.nodes ?? [],
-                      relationshipClaims: next.relationshipClaims ?? [],
-                      attributeClaims: next.attributeClaims ?? [],
-                      aliases: next.aliases ?? [],
-                    },
+    // The production caller only reads `choices[0].message.parsed`. We
+    // satisfy that surface and ignore everything else.
+    chat: {
+      completions: {
+        parse: async () => {
+          const next = queue.shift();
+          if (!next) {
+            throw new Error(
+              "Extraction stub queue exhausted: production code requested more LLM responses than were queued.",
+            );
+          }
+          return {
+            choices: [
+              {
+                message: {
+                  parsed: {
+                    nodes: next.nodes ?? [],
+                    relationshipClaims: next.relationshipClaims ?? [],
+                    attributeClaims: next.attributeClaims ?? [],
+                    aliases: next.aliases ?? [],
                   },
                 },
-              ],
-            };
-          },
+              },
+            ],
+          };
         },
       },
     },

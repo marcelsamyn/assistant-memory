@@ -14,7 +14,7 @@ const llmNodeSchema = z.object({
   id: z.string().describe("id to reference in claims"),
   type: ExtractionNodeTypeEnum.describe("one of the allowed node types"),
   label: z.string().describe("human-readable name/title"),
-  description: z.string().describe("longer text description").optional(),
+  description: z.string().describe("longer text description").nullish(),
 });
 
 const llmRelationshipClaimSchema = z.object({
@@ -31,10 +31,10 @@ const llmRelationshipClaimSchema = z.object({
   assertionKind: AssertedByKindEnum.describe(
     "who asserted this claim (see CRITICAL EXTRACTION RULES)",
   ),
-  assertedBySpeakerLabel: z.string().optional(),
-  statedAt: z.string().datetime().optional(),
-  validFrom: z.string().datetime().optional(),
-  validTo: z.string().datetime().optional(),
+  assertedBySpeakerLabel: z.string().nullish(),
+  statedAt: z.string().datetime().nullish(),
+  validFrom: z.string().datetime().nullish(),
+  validTo: z.string().datetime().nullish(),
 });
 
 const llmAttributeClaimSchema = z.object({
@@ -49,10 +49,10 @@ const llmAttributeClaimSchema = z.object({
   assertionKind: AssertedByKindEnum.describe(
     "who asserted this claim (see CRITICAL EXTRACTION RULES)",
   ),
-  assertedBySpeakerLabel: z.string().optional(),
-  statedAt: z.string().datetime().optional(),
-  validFrom: z.string().datetime().optional(),
-  validTo: z.string().datetime().optional(),
+  assertedBySpeakerLabel: z.string().nullish(),
+  statedAt: z.string().datetime().nullish(),
+  validFrom: z.string().datetime().nullish(),
+  validTo: z.string().datetime().nullish(),
 });
 
 const llmAliasSchema = z.object({
@@ -63,36 +63,32 @@ const llmAliasSchema = z.object({
     .describe("alternate name or spelling for the node"),
 });
 
-function createLlmMetricDefinitionSchema(): z.ZodObject<{
-  slug: z.ZodString;
-  label: z.ZodString;
-  description: z.ZodString;
-  unit: z.ZodString;
-  aggregationHint: z.ZodEnum<["avg", "sum", "min", "max"]>;
-  validRangeMin: z.ZodOptional<z.ZodNumber>;
-  validRangeMax: z.ZodOptional<z.ZodNumber>;
-}> {
+// Factory (not a shared const) so each call site inlines a fresh copy in the
+// generated JSON Schema rather than sharing a `$ref`. The return type is left
+// to inference: hand-writing the `z.ZodObject<{…}>` shape couples this to Zod's
+// internal generic representation, which changes across major versions.
+function createLlmMetricDefinitionSchema() {
   return z.object({
     slug: z.string().describe("lowercase snake_case stable identifier"),
     label: z.string().describe("human display name"),
     description: z.string().describe("one-line meaning used for deduplication"),
     unit: z.string().describe("canonical unit"),
     aggregationHint: z.enum(["avg", "sum", "min", "max"]),
-    validRangeMin: z.number().optional(),
-    validRangeMax: z.number().optional(),
+    validRangeMin: z.number().nullish(),
+    validRangeMax: z.number().nullish(),
   });
 }
 
 const llmMetricEventObservationSchema = z.object({
   metric: createLlmMetricDefinitionSchema(),
   value: z.number(),
-  note: z.string().optional(),
+  note: z.string().nullish(),
 });
 
 const llmMetricStandaloneObservationSchema = z.object({
   metric: createLlmMetricDefinitionSchema(),
   value: z.number(),
-  note: z.string().optional(),
+  note: z.string().nullish(),
   occurredAt: z.string().datetime(),
 });
 
@@ -105,7 +101,7 @@ const llmMetricEventSchema = z.object({
   eventNodeId: z
     .string()
     .min(1)
-    .optional()
+    .nullish()
     .describe(
       "optional temporary or existing Event node id when claims also reference it",
     ),
@@ -113,8 +109,8 @@ const llmMetricEventSchema = z.object({
 });
 
 export const llmMetricsSchema = z.object({
-  events: z.array(llmMetricEventSchema).optional(),
-  standalone: z.array(llmMetricStandaloneObservationSchema).optional(),
+  events: z.array(llmMetricEventSchema).nullish(),
+  standalone: z.array(llmMetricStandaloneObservationSchema).nullish(),
 });
 
 export const llmExtractionSchema = z.object({
@@ -122,7 +118,7 @@ export const llmExtractionSchema = z.object({
   relationshipClaims: z.array(llmRelationshipClaimSchema),
   attributeClaims: z.array(llmAttributeClaimSchema),
   aliases: z.array(llmAliasSchema),
-  metrics: llmMetricsSchema.optional(),
+  metrics: llmMetricsSchema.nullish(),
 });
 
 export type LlmOutputNode = z.infer<typeof llmNodeSchema>;

@@ -37,7 +37,7 @@ function isMalformedUpstreamCompletion(err: unknown): boolean {
 }
 
 /**
- * Wrapper around `client.beta.chat.completions.parse` that normalizes the
+ * Wrapper around `client.chat.completions.parse` that normalizes the
  * SDK's malformed-response `TypeError` into {@link MalformedUpstreamCompletionError}.
  * Signature mirrors the SDK so call sites preserve full type inference on
  * the parsed payload.
@@ -46,7 +46,7 @@ export async function parseStructuredCompletion<
   Body extends ChatCompletionCreateParamsNonStreaming,
 >(client: OpenAI, body: Body) {
   try {
-    return await client.beta.chat.completions.parse(body);
+    return await client.chat.completions.parse(body);
   } catch (err) {
     if (isMalformedUpstreamCompletion(err)) {
       throw new MalformedUpstreamCompletionError({ cause: err });
@@ -106,7 +106,9 @@ export async function crateTextCompletion({
   return completion.choices[0]?.message.content ?? "";
 }
 
-export async function performStructuredAnalysis({
+export async function performStructuredAnalysis<
+  S extends z.ZodObject<z.ZodRawShape>,
+>({
   userId,
   prompt,
   systemPrompt,
@@ -115,8 +117,8 @@ export async function performStructuredAnalysis({
   userId: string;
   prompt: string;
   systemPrompt?: string;
-  schema: z.ZodObject<z.ZodRawShape>;
-}): Promise<z.infer<typeof schema>> {
+  schema: S;
+}): Promise<z.infer<S>> {
   if (!schema.description) throw new Error("Schema must have a description");
 
   const client = await createCompletionClient(userId);

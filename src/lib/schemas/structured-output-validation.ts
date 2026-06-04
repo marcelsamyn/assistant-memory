@@ -9,6 +9,10 @@ const FORBIDDEN_PROVIDER_KEYWORDS = new Set([
   "$defs",
   "definitions",
   "nullable",
+  // OpenAI strict mode rejects `oneOf`. Zod 4 emits it for
+  // `z.discriminatedUnion` — use `z.union` (which emits `anyOf`) for any schema
+  // sent to a structured-output endpoint.
+  "oneOf",
 ]);
 
 export interface StructuredOutputSchemaValidationInput {

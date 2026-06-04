@@ -48,7 +48,7 @@ export type EvalSetupFn = (ctx: EvalContext) => Promise<void>;
 
 /**
  * Canned LLM extraction response. Mirrors the structured-output shape that
- * `extractGraph` parses from `client.beta.chat.completions.parse`. Stub
+ * `extractGraph` parses from `client.chat.completions.parse`. Stub
  * fixtures can omit any unused arrays — they default to empty.
  */
 export interface ExtractionStubResponse {

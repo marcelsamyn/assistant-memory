@@ -206,69 +206,67 @@ describeIfServer("ingest -> search end-to-end", () => {
     vi.doMock("./ai", async (importOriginal) => ({
       ...(await importOriginal<typeof import("./ai")>()),
       createCompletionClient: async () => ({
-        beta: {
-          chat: {
-            completions: {
-              parse: async () => ({
-                choices: [
-                  {
-                    message: {
-                      parsed: {
-                        nodes: [
-                          {
-                            id: "project_1",
-                            type: "Concept",
-                            label: projectLabel,
-                            description:
-                              "Refactor of the assistant memory substrate from edges to claims.",
-                          },
-                          {
-                            id: "org_1",
-                            type: "Object",
-                            label: orgLabel,
-                            description: "Employer organization.",
-                          },
-                        ],
-                        relationshipClaims: [
-                          {
-                            subjectId: "existing_person_1",
-                            objectId: "project_1",
-                            predicate: "PARTICIPATED_IN",
-                            statement: `${personLabel} is working on the ${projectLabel} project.`,
-                            sourceRef: "msg_1",
-                            assertionKind: "user",
-                          },
-                          {
-                            subjectId: "project_1",
-                            objectId: "org_1",
-                            predicate: "RELATED_TO",
-                            statement: `${projectLabel} is a project at ${orgLabel}.`,
-                            sourceRef: "msg_1",
-                            assertionKind: "user",
-                          },
-                        ],
-                        attributeClaims: [
-                          {
-                            subjectId: "project_1",
-                            predicate: "HAS_STATUS",
-                            objectValue: "in_progress",
-                            statement: `${projectLabel} is currently in progress.`,
-                            sourceRef: "msg_1",
-                            assertionKind: "user",
-                          },
-                        ],
-                        aliases: [
-                          {
-                            subjectId: "project_1",
-                            aliasText: "the refactor",
-                          },
-                        ],
-                      },
+        chat: {
+          completions: {
+            parse: async () => ({
+              choices: [
+                {
+                  message: {
+                    parsed: {
+                      nodes: [
+                        {
+                          id: "project_1",
+                          type: "Concept",
+                          label: projectLabel,
+                          description:
+                            "Refactor of the assistant memory substrate from edges to claims.",
+                        },
+                        {
+                          id: "org_1",
+                          type: "Object",
+                          label: orgLabel,
+                          description: "Employer organization.",
+                        },
+                      ],
+                      relationshipClaims: [
+                        {
+                          subjectId: "existing_person_1",
+                          objectId: "project_1",
+                          predicate: "PARTICIPATED_IN",
+                          statement: `${personLabel} is working on the ${projectLabel} project.`,
+                          sourceRef: "msg_1",
+                          assertionKind: "user",
+                        },
+                        {
+                          subjectId: "project_1",
+                          objectId: "org_1",
+                          predicate: "RELATED_TO",
+                          statement: `${projectLabel} is a project at ${orgLabel}.`,
+                          sourceRef: "msg_1",
+                          assertionKind: "user",
+                        },
+                      ],
+                      attributeClaims: [
+                        {
+                          subjectId: "project_1",
+                          predicate: "HAS_STATUS",
+                          objectValue: "in_progress",
+                          statement: `${projectLabel} is currently in progress.`,
+                          sourceRef: "msg_1",
+                          assertionKind: "user",
+                        },
+                      ],
+                      aliases: [
+                        {
+                          subjectId: "project_1",
+                          aliasText: "the refactor",
+                        },
+                      ],
                     },
                   },
-                ],
-              }),
-            },
+                },
+              ],
+            }),
           },
         },
       }),

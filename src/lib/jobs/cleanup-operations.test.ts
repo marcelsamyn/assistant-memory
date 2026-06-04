@@ -827,6 +827,7 @@ describeIfServer("cleanup operation helpers", () => {
             kind: "add_claim",
             subjectTempId: "temp_node_1",
             objectTempId: "temp_node_2",
+            objectValue: null,
             predicate: "RELATED_TO",
             statement: "Carol relates to physics.",
             sourceClaimId: refClaimId,

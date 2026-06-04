@@ -315,59 +315,57 @@ describeIfServer("ingestTranscript", () => {
     vi.doMock("../ai", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../ai")>()),
       createCompletionClient: async () => ({
-        beta: {
-          chat: {
-            completions: {
-              parse: async () => ({
-                choices: [
-                  {
-                    message: {
-                      parsed: {
-                        nodes: [
-                          {
-                            id: "spec_1",
-                            type: "Object",
-                            label: "the spec",
-                            description: "Spec doc discussed in meeting",
-                          },
-                        ],
-                        relationshipClaims: [],
-                        attributeClaims: [
-                          {
-                            subjectId: "spec_1",
-                            predicate: "HAS_STATUS",
-                            objectValue: "completed",
-                            statement: "Marcel completed the spec.",
-                            sourceRef: `${transcriptId}:0`,
-                            assertionKind: "user",
-                            assertedBySpeakerLabel: "Marcel",
-                          },
-                          {
-                            subjectId: "spec_1",
-                            predicate: "HAS_PREFERENCE",
-                            objectValue: "tighter spec",
-                            statement: "Bob prefers a tighter spec.",
-                            sourceRef: `${transcriptId}:1`,
-                            assertionKind: "participant",
-                            assertedBySpeakerLabel: "Bob",
-                          },
-                          {
-                            subjectId: "spec_1",
-                            predicate: "HAS_GOAL",
-                            objectValue: "ship by friday",
-                            statement: "Stranger wants to ship by Friday.",
-                            sourceRef: `${transcriptId}:2`,
-                            assertionKind: "participant",
-                            assertedBySpeakerLabel: "Stranger",
-                          },
-                        ],
-                        aliases: [],
-                      },
+        chat: {
+          completions: {
+            parse: async () => ({
+              choices: [
+                {
+                  message: {
+                    parsed: {
+                      nodes: [
+                        {
+                          id: "spec_1",
+                          type: "Object",
+                          label: "the spec",
+                          description: "Spec doc discussed in meeting",
+                        },
+                      ],
+                      relationshipClaims: [],
+                      attributeClaims: [
+                        {
+                          subjectId: "spec_1",
+                          predicate: "HAS_STATUS",
+                          objectValue: "completed",
+                          statement: "Marcel completed the spec.",
+                          sourceRef: `${transcriptId}:0`,
+                          assertionKind: "user",
+                          assertedBySpeakerLabel: "Marcel",
+                        },
+                        {
+                          subjectId: "spec_1",
+                          predicate: "HAS_PREFERENCE",
+                          objectValue: "tighter spec",
+                          statement: "Bob prefers a tighter spec.",
+                          sourceRef: `${transcriptId}:1`,
+                          assertionKind: "participant",
+                          assertedBySpeakerLabel: "Bob",
+                        },
+                        {
+                          subjectId: "spec_1",
+                          predicate: "HAS_GOAL",
+                          objectValue: "ship by friday",
+                          statement: "Stranger wants to ship by Friday.",
+                          sourceRef: `${transcriptId}:2`,
+                          assertionKind: "participant",
+                          assertedBySpeakerLabel: "Stranger",
+                        },
+                      ],
+                      aliases: [],
                     },
                   },
-                ],
-              }),
-            },
+                },
+              ],
+            }),
           },
         },
       }),
@@ -632,24 +630,22 @@ describeIfServer("ingestTranscript", () => {
     vi.doMock("../ai", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../ai")>()),
       createCompletionClient: async () => ({
-        beta: {
-          chat: {
-            completions: {
-              parse: async () => ({
-                choices: [
-                  {
-                    message: {
-                      parsed: {
-                        nodes: [],
-                        relationshipClaims: [],
-                        attributeClaims: [],
-                        aliases: [],
-                      },
+        chat: {
+          completions: {
+            parse: async () => ({
+              choices: [
+                {
+                  message: {
+                    parsed: {
+                      nodes: [],
+                      relationshipClaims: [],
+                      attributeClaims: [],
+                      aliases: [],
                     },
                   },
-                ],
-              }),
-            },
+                },
+              ],
+            }),
           },
         },
       }),
@@ -710,40 +706,38 @@ describeIfServer("ingestTranscript", () => {
     vi.doMock("../ai", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../ai")>()),
       createCompletionClient: async () => ({
-        beta: {
-          chat: {
-            completions: {
-              parse: async () => ({
-                choices: [
-                  {
-                    message: {
-                      parsed: {
-                        nodes: [
-                          {
-                            id: "topic_1",
-                            type: "Concept",
-                            label: "Override topic",
-                          },
-                        ],
-                        relationshipClaims: [],
-                        attributeClaims: [
-                          {
-                            subjectId: "topic_1",
-                            predicate: "HAS_PREFERENCE",
-                            objectValue: "override works",
-                            statement: "MS prefers the override path.",
-                            sourceRef: `${transcriptId}:0`,
-                            assertionKind: "user",
-                            assertedBySpeakerLabel: "MS",
-                          },
-                        ],
-                        aliases: [],
-                      },
+        chat: {
+          completions: {
+            parse: async () => ({
+              choices: [
+                {
+                  message: {
+                    parsed: {
+                      nodes: [
+                        {
+                          id: "topic_1",
+                          type: "Concept",
+                          label: "Override topic",
+                        },
+                      ],
+                      relationshipClaims: [],
+                      attributeClaims: [
+                        {
+                          subjectId: "topic_1",
+                          predicate: "HAS_PREFERENCE",
+                          objectValue: "override works",
+                          statement: "MS prefers the override path.",
+                          sourceRef: `${transcriptId}:0`,
+                          assertionKind: "user",
+                          assertedBySpeakerLabel: "MS",
+                        },
+                      ],
+                      aliases: [],
                     },
                   },
-                ],
-              }),
-            },
+                },
+              ],
+            }),
           },
         },
       }),

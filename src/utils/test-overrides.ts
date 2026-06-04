@@ -24,9 +24,9 @@ import type { TypeId } from "~/types/typeid";
 /**
  * Minimal subset of the OpenAI client surface that `extractGraph` and
  * `defaultSegmentTranscriptClient` exercise. Stubs only need to implement
- * `beta.chat.completions.parse` returning the structured-response shape.
+ * `chat.completions.parse` returning the structured-response shape.
  */
-export type StubCompletionClient = Pick<OpenAI, "beta">;
+export type StubCompletionClient = Pick<OpenAI, "chat">;
 
 export interface StubSourceServiceInsertResult {
   successes: TypeId<"source">[];

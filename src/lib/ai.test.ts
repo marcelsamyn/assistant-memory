@@ -7,11 +7,9 @@ import { describe, expect, it } from "vitest";
 
 function buildClient(parseImpl: () => Promise<unknown>): OpenAI {
   return {
-    beta: {
-      chat: {
-        completions: {
-          parse: parseImpl,
-        },
+    chat: {
+      completions: {
+        parse: parseImpl,
       },
     },
   } as unknown as OpenAI;
