@@ -1,6 +1,7 @@
 import { parseStructuredCompletion } from "./ai";
 import { createAlias, normalizeAliasText } from "./alias";
 import { applyClaimLifecycle, fetchClaimsByIds } from "./claims/lifecycle";
+import { coerceTaskStatus } from "./claims/task-status";
 import { debugGraph } from "./debug-utils";
 import {
   generateAndInsertNodeEmbeddings,
@@ -991,10 +992,29 @@ async function _processAndInsertLlmClaims(
     const provenance = _resolveAssertedByKind(llmClaim, sourceType, speakerMap);
     if (provenance === null) continue;
 
+    // HAS_TASK_STATUS carries the canonical TaskStatusEnum vocabulary the
+    // open-commitments read model parses. The LLM is *instructed* to emit one
+    // of the four values but doesn't always comply, and this bulk insert
+    // bypasses `createClaim`'s validation — so coerce here and drop anything
+    // we can't confidently map rather than poisoning the store.
+    let objectValue = llmClaim.objectValue;
+    if (llmClaim.predicate === "HAS_TASK_STATUS") {
+      const coerced = coerceTaskStatus(objectValue);
+      if (coerced === null) {
+        console.warn(
+          `Skipping HAS_TASK_STATUS claim with off-vocabulary objectValue: ${JSON.stringify(
+            llmClaim.objectValue,
+          )}`,
+        );
+        continue;
+      }
+      objectValue = coerced;
+    }
+
     claimInserts.push({
       userId,
       subjectNodeId,
-      objectValue: llmClaim.objectValue,
+      objectValue,
       predicate: llmClaim.predicate,
       statement: llmClaim.statement,
       description: llmClaim.statement,

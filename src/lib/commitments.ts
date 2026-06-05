@@ -3,6 +3,7 @@ import { format, parseISO } from "date-fns";
 import { and, desc, eq } from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
 import { createClaim, updateClaim, NodesNotFoundError } from "~/lib/claim";
+import { coerceTaskStatus } from "~/lib/claims/task-status";
 import { createNode } from "~/lib/node";
 import type {
   CommitmentActionRequest,
@@ -16,7 +17,6 @@ import type {
 import type { CreateNodeInitialClaim } from "~/lib/schemas/node";
 import type { SetCommitmentDueRequest } from "~/lib/schemas/set-commitment-due";
 import { ensureDayNode } from "~/lib/temporal";
-import { TaskStatusEnum } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -26,6 +26,22 @@ export class TaskNotFoundError extends Error {
     super(`Task not found: ${taskId}`);
     this.name = "TaskNotFoundError";
     this.taskId = taskId;
+  }
+}
+
+/**
+ * The Task's active `HAS_TASK_STATUS` carries an objectValue outside the
+ * canonical vocabulary and couldn't be coerced — corrupt state that predates
+ * the write-time guard (and should have been swept by migration 0016).
+ */
+export class InvalidTaskStatusError extends Error {
+  readonly taskId: TypeId<"node">;
+  readonly objectValue: string;
+  constructor(taskId: TypeId<"node">, objectValue: string) {
+    super(`Task ${taskId} has an unrecognized status: ${objectValue}`);
+    this.name = "InvalidTaskStatusError";
+    this.taskId = taskId;
+    this.objectValue = objectValue;
   }
 }
 
@@ -257,7 +273,10 @@ export async function confirmCommitment(
     throw new TaskNotFoundError(taskId);
   }
 
-  const status = TaskStatusEnum.parse(statusRow.objectValue);
+  const status = coerceTaskStatus(statusRow.objectValue);
+  if (status === null) {
+    throw new InvalidTaskStatusError(taskId, statusRow.objectValue);
+  }
 
   const created = await createClaim({
     userId,
