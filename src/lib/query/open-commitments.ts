@@ -10,11 +10,12 @@ import {
   sql,
 } from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
+import { coerceTaskStatus } from "~/lib/claims/task-status";
 import {
   type OpenCommitment,
   type OpenCommitmentsRequest,
 } from "~/lib/schemas/open-commitments";
-import { TaskStatusEnum, type TaskStatus } from "~/types/graph";
+import { type TaskStatus } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -208,7 +209,19 @@ async function queryCommitments(
     if (seenTaskIds.has(row.taskId)) continue;
     seenTaskIds.add(row.taskId);
 
-    const status = TaskStatusEnum.parse(row.status);
+    // Off-vocabulary status values can reach the store via the extraction
+    // path (the LLM doesn't always honor the enum), so coerce known synonyms
+    // and skip anything genuinely unmappable. A single bad row must not 500
+    // the whole read — see `coerceTaskStatus`.
+    const status = coerceTaskStatus(row.status);
+    if (status === null) {
+      console.warn(
+        `Skipping Task ${row.taskId} with off-vocabulary HAS_TASK_STATUS: ${JSON.stringify(
+          row.status,
+        )}`,
+      );
+      continue;
+    }
     if (!isOpenTaskStatus(status)) continue;
     if (!matchesDueBefore(row.dueOn, dueBefore)) continue;
 
