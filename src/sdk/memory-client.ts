@@ -63,6 +63,11 @@ import {
   dreamResponseSchema,
 } from "../lib/schemas/dream.js";
 import {
+  GetCommitmentRequest,
+  GetCommitmentResponse,
+  getCommitmentResponseSchema,
+} from "../lib/schemas/get-commitment.js";
+import {
   IngestConversationRequest,
   IngestConversationResponse,
   ingestConversationResponseSchema,
@@ -82,6 +87,11 @@ import {
   IngestTranscriptResponse,
   ingestTranscriptResponseSchema,
 } from "../lib/schemas/ingest-transcript.js";
+import {
+  ListCommitmentsRequest,
+  ListCommitmentsResponse,
+  listCommitmentsResponseSchema,
+} from "../lib/schemas/list-commitments.js";
 import {
   GetMetricSeriesRequest,
   GetMetricSeriesResponse,
@@ -212,6 +222,16 @@ import {
   setCommitmentDueResponseSchema,
 } from "../lib/schemas/set-commitment-due.js";
 import {
+  SetCommitmentOwnerRequest,
+  SetCommitmentOwnerResponse,
+  setCommitmentOwnerResponseSchema,
+} from "../lib/schemas/set-commitment-owner.js";
+import {
+  SetCommitmentStatusRequest,
+  SetCommitmentStatusResponse,
+  setCommitmentStatusResponseSchema,
+} from "../lib/schemas/set-commitment-status.js";
+import {
   GetSourceRequest,
   GetSourceResponse,
   ListSourcesRequest,
@@ -224,6 +244,11 @@ import {
   SummarizeResponse,
   summarizeResponseSchema,
 } from "../lib/schemas/summarize.js";
+import {
+  UpdateCommitmentRequest,
+  UpdateCommitmentResponse,
+  updateCommitmentResponseSchema,
+} from "../lib/schemas/update-commitment.js";
 import {
   SetUserSelfAliasesRequest,
   SetUserSelfAliasesResponse,
@@ -763,6 +788,95 @@ export class MemoryClient {
       "POST",
       "/commitments/dismiss",
       dismissCommitmentResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Advance a Task's lifecycle status. Asserts a new `HAS_TASK_STATUS` claim
+   * with the requested value; the predicate lifecycle engine supersedes the
+   * prior active status claim automatically. All four statuses (`pending`,
+   * `in_progress`, `done`, `abandoned`) are reachable here — `done` and
+   * `abandoned` are only reachable through this superseding path. The
+   * `previous*` fields echo the superseded status for optimistic UI updates.
+   */
+  async setCommitmentStatus(
+    payload: SetCommitmentStatusRequest,
+  ): Promise<SetCommitmentStatusResponse> {
+    return this._fetch(
+      "POST",
+      "/commitments/status",
+      setCommitmentStatusResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Assign, reassign, or clear a Task's owner. Pass a node id to assert a new
+   * `OWNED_BY` claim (superseding any prior active one automatically), or
+   * `ownedBy: null` to retract every active `OWNED_BY` claim without asserting
+   * a new one. Throws if the owner node id is missing or cross-user.
+   */
+  async setCommitmentOwner(
+    payload: SetCommitmentOwnerRequest,
+  ): Promise<SetCommitmentOwnerResponse> {
+    return this._fetch(
+      "POST",
+      "/commitments/owner",
+      setCommitmentOwnerResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Rename a Task and/or edit its description. This is the only path that edits
+   * a Task node's `label` and `description` metadata directly (unlike knowledge
+   * nodes, which derive their description from sourced claims). At least one of
+   * `label` or `description` must be provided; passing `description: ""` clears
+   * it. The node is re-embedded when either field changes.
+   */
+  async updateCommitment(
+    payload: UpdateCommitmentRequest,
+  ): Promise<UpdateCommitmentResponse> {
+    return this._fetch(
+      "POST",
+      "/commitments/update",
+      updateCommitmentResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Paginated, sortable, filterable list over the full commitment lifecycle
+   * (open + done + abandoned). Keyset-paginated via `cursor`/`nextCursor`;
+   * filter by `statuses`, `provenance`, `ownedBy`, `unowned`, due-date bounds,
+   * or a label `search` substring. `provenance` defaults to `"trusted"` (excludes
+   * `assistant_inferred` candidates); pass `"candidate"` or `"all"` to widen.
+   */
+  async listCommitments(
+    payload: ListCommitmentsRequest,
+  ): Promise<ListCommitmentsResponse> {
+    return this._fetch(
+      "POST",
+      "/commitments/list",
+      listCommitmentsResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Detail read model for a single commitment: current status, active owner and
+   * due date, evidence source ids, and — when `includeHistory` is true — the
+   * full lifecycle history of `HAS_TASK_STATUS`, `OWNED_BY`, and `DUE_ON` claims
+   * sorted newest-first. Suited to detail views and undo flows.
+   */
+  async getCommitment(
+    payload: GetCommitmentRequest,
+  ): Promise<GetCommitmentResponse> {
+    return this._fetch(
+      "POST",
+      "/commitments/get",
+      getCommitmentResponseSchema,
       payload,
     );
   }
