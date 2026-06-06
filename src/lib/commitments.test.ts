@@ -974,6 +974,64 @@ describeIfServer("updateCommitment", () => {
     }
   });
 
+  it("clears the description to null when given an empty string", async () => {
+    const userId = "user_update_desc_clear";
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await provisionSchema(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { createCommitment, updateCommitment } = await import(
+          "./commitments"
+        );
+
+        const created = await createCommitment(
+          createCommitmentRequestSchema.parse({
+            userId,
+            label: "Task to clear",
+            description: "Initial description",
+          }),
+        );
+
+        const cleared = await updateCommitment(
+          updateCommitmentRequestSchema.parse({
+            userId,
+            taskId: created.taskId,
+            description: "",
+          }),
+        );
+
+        // An empty string clears to null, not a stored "".
+        expect(cleared.description).toBeNull();
+
+        const persisted = await client.query(
+          `SELECT description FROM node_metadata WHERE node_id = $1`,
+          [created.taskId],
+        );
+        expect(persisted.rows[0].description).toBeNull();
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
   it("updates both label and description", async () => {
     const userId = "user_update_both";
 

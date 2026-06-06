@@ -269,7 +269,12 @@ export async function updateNode(
 
   const effectiveNodeType = updates.nodeType ?? row.nodeType;
   const newLabel = updates.label ?? row.label;
-  const newDescription = updates.description ?? row.description;
+  // An explicit empty string clears the description: store NULL (the nullable
+  // column's absence value) so reads don't return "" for a cleared field.
+  const clearedDescription =
+    updates.description === "" ? null : updates.description;
+  const newDescription =
+    updates.description === undefined ? row.description : clearedDescription;
 
   if (updates.label !== undefined || updates.description !== undefined) {
     await db
@@ -282,7 +287,7 @@ export async function updateNode(
             }
           : {}),
         ...(updates.description !== undefined
-          ? { description: updates.description }
+          ? { description: clearedDescription }
           : {}),
       })
       .where(eq(nodeMetadata.id, row.metaId));
