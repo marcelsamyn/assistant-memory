@@ -20,6 +20,7 @@ import {
   type SQL,
 } from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
+import { coerceTaskStatus } from "~/lib/claims/task-status";
 import type {
   CommitmentListItem,
   CommitmentProvenance,
@@ -27,7 +28,6 @@ import type {
   ListCommitmentsRequest,
   ListCommitmentsResponse,
 } from "~/lib/schemas/list-commitments";
-import { TaskStatusEnum } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -238,20 +238,37 @@ export async function listCommitments(
   const hasMore = rows.length > limit;
   const page = hasMore ? rows.slice(0, limit) : rows;
 
-  const commitments: CommitmentListItem[] = page.map((row) => ({
-    taskId: row.taskId,
-    label: row.label,
-    status: TaskStatusEnum.parse(row.status),
-    owner:
-      row.ownerNodeId === null
-        ? null
-        : { nodeId: row.ownerNodeId, label: row.ownerLabel },
-    dueOn: row.dueOn,
-    statusChangedAt: row.statusChangedAt,
-    createdAt: row.createdAt,
-    sourceId: row.sourceId,
-  }));
+  const commitments: CommitmentListItem[] = [];
+  for (const row of page) {
+    // Off-vocabulary status values can reach the store via the extraction path;
+    // coerce known synonyms and skip anything unmappable rather than 500 the
+    // whole list (mirrors the open-commitments read model).
+    const status = coerceTaskStatus(row.status);
+    if (status === null) {
+      console.warn(
+        `Skipping Task ${row.taskId} with off-vocabulary HAS_TASK_STATUS: ${JSON.stringify(
+          row.status,
+        )}`,
+      );
+      continue;
+    }
+    commitments.push({
+      taskId: row.taskId,
+      label: row.label,
+      status,
+      owner:
+        row.ownerNodeId === null
+          ? null
+          : { nodeId: row.ownerNodeId, label: row.ownerLabel },
+      dueOn: row.dueOn,
+      statusChangedAt: row.statusChangedAt,
+      createdAt: row.createdAt,
+      sourceId: row.sourceId,
+    });
+  }
 
+  // nextCursor is derived from the last RAW page row (not the filtered list) so
+  // keyset continuity holds even when a coerce-null row was skipped above.
   let nextCursor: string | null = null;
   if (hasMore) {
     const last = page[page.length - 1]!;

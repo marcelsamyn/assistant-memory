@@ -1,6 +1,7 @@
 /** Detail read model for a single commitment (current state + history + sources). */
 import { and, eq, inArray } from "drizzle-orm";
 import { sources } from "~/db/schema";
+import { coerceTaskStatus } from "~/lib/claims/task-status";
 import { TaskNotFoundError } from "~/lib/commitments";
 import { getNodeById } from "~/lib/node";
 import type {
@@ -10,11 +11,7 @@ import type {
   TaskLifecycleEntry,
 } from "~/lib/schemas/get-commitment";
 import { sourceMetadataSchema } from "~/lib/sources";
-import {
-  TaskStatusEnum,
-  type ClaimStatus,
-  type Predicate,
-} from "~/types/graph";
+import { type ClaimStatus, type Predicate } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -86,10 +83,11 @@ export async function getCommitment(
     (claim) => claim.predicate === "DUE_ON" && isActive(claim.status),
   );
 
-  const status =
-    activeStatus && activeStatus.objectValue !== null
-      ? TaskStatusEnum.parse(activeStatus.objectValue)
-      : null;
+  // Coerce rather than strict-parse: an off-vocabulary active status yields
+  // null (the field is nullable) instead of 500-ing the detail read.
+  const status = activeStatus
+    ? coerceTaskStatus(activeStatus.objectValue)
+    : null;
 
   const owner =
     activeOwner && activeOwner.objectNodeId !== null

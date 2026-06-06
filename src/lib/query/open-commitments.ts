@@ -1,14 +1,30 @@
-import { and, desc, eq, isNotNull, ne, aliasedTable } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  lte,
+  ne,
+  aliasedTable,
+  sql,
+} from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
+import { coerceTaskStatus } from "~/lib/claims/task-status";
 import {
   type OpenCommitment,
   type OpenCommitmentsRequest,
 } from "~/lib/schemas/open-commitments";
-import { TaskStatusEnum, type TaskStatus } from "~/types/graph";
+import { type TaskStatus } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
 const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const DATE_ONLY_SQL_PATTERN = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$";
+const OPEN_TASK_STATUSES: OpenCommitment["status"][] = [
+  "pending",
+  "in_progress",
+];
 
 interface OpenCommitmentRow {
   taskId: TypeId<"node">;
@@ -160,9 +176,17 @@ async function queryCommitments(
         eq(claims.status, "active"),
         eq(claims.scope, "personal"),
         provenanceFilter(claims.assertedByKind, provenance),
+        inArray(claims.objectValue, OPEN_TASK_STATUSES),
         ownedBy === undefined
           ? undefined
           : eq(ownerClaim.objectNodeId, ownedBy),
+        dueBefore === undefined
+          ? undefined
+          : and(
+              isNotNull(dueMetadata.label),
+              sql`${dueMetadata.label} ~ ${DATE_ONLY_SQL_PATTERN}`,
+              lte(dueMetadata.label, dueBefore),
+            ),
       ),
     )
     // Belt-and-suspenders newest-wins dedupe across (taskId): supersession
@@ -185,7 +209,19 @@ async function queryCommitments(
     if (seenTaskIds.has(row.taskId)) continue;
     seenTaskIds.add(row.taskId);
 
-    const status = TaskStatusEnum.parse(row.status);
+    // Off-vocabulary status values can reach the store via the extraction
+    // path (the LLM doesn't always honor the enum), so coerce known synonyms
+    // and skip anything genuinely unmappable. A single bad row must not 500
+    // the whole read — see `coerceTaskStatus`.
+    const status = coerceTaskStatus(row.status);
+    if (status === null) {
+      console.warn(
+        `Skipping Task ${row.taskId} with off-vocabulary HAS_TASK_STATUS: ${JSON.stringify(
+          row.status,
+        )}`,
+      );
+      continue;
+    }
     if (!isOpenTaskStatus(status)) continue;
     if (!matchesDueBefore(row.dueOn, dueBefore)) continue;
 

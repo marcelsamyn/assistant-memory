@@ -3,6 +3,7 @@ import { format, parseISO } from "date-fns";
 import { and, desc, eq } from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
 import { createClaim, updateClaim, NodesNotFoundError } from "~/lib/claim";
+import { coerceTaskStatus } from "~/lib/claims/task-status";
 import { createNode, updateNode } from "~/lib/node";
 import type {
   CommitmentActionRequest,
@@ -28,7 +29,6 @@ import type {
   UpdateCommitmentResponse,
 } from "~/lib/schemas/update-commitment";
 import { ensureDayNode } from "~/lib/temporal";
-import { TaskStatusEnum } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -38,6 +38,22 @@ export class TaskNotFoundError extends Error {
     super(`Task not found: ${taskId}`);
     this.name = "TaskNotFoundError";
     this.taskId = taskId;
+  }
+}
+
+/**
+ * The Task's active `HAS_TASK_STATUS` carries an objectValue outside the
+ * canonical vocabulary and couldn't be coerced — corrupt state that predates
+ * the write-time guard (and should have been swept by migration 0016).
+ */
+export class InvalidTaskStatusError extends Error {
+  readonly taskId: TypeId<"node">;
+  readonly objectValue: string;
+  constructor(taskId: TypeId<"node">, objectValue: string) {
+    super(`Task ${taskId} has an unrecognized status: ${objectValue}`);
+    this.name = "InvalidTaskStatusError";
+    this.taskId = taskId;
+    this.objectValue = objectValue;
   }
 }
 
@@ -269,7 +285,10 @@ export async function confirmCommitment(
     throw new TaskNotFoundError(taskId);
   }
 
-  const status = TaskStatusEnum.parse(statusRow.objectValue);
+  const status = coerceTaskStatus(statusRow.objectValue);
+  if (status === null) {
+    throw new InvalidTaskStatusError(taskId, statusRow.objectValue);
+  }
 
   const created = await createClaim({
     userId,
@@ -359,10 +378,11 @@ export async function setCommitmentStatus(
     .orderBy(desc(claims.statedAt), desc(claims.createdAt))
     .limit(1);
 
-  const previousStatus =
-    previous && previous.objectValue !== null
-      ? TaskStatusEnum.parse(previous.objectValue)
-      : null;
+  // Coerce (rather than strict-parse) the prior status so a legacy/off-vocabulary
+  // value doesn't crash the status change — it just can't be echoed back.
+  const previousStatus = previous
+    ? coerceTaskStatus(previous.objectValue)
+    : null;
   const previousClaimId = previous ? previous.id : null;
 
   const created = await createClaim({

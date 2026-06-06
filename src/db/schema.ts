@@ -174,6 +174,36 @@ export const claims = pgTable(
     index("claims_user_id_object_status_idx")
       .on(table.userId, table.objectNodeId, table.status)
       .where(sql`${table.objectNodeId} IS NOT NULL`),
+    index("claims_trusted_open_task_status_idx")
+      .on(
+        table.userId,
+        table.statedAt.desc(),
+        table.createdAt.desc(),
+        table.subjectNodeId,
+      )
+      .where(
+        sql`${table.predicate} = 'HAS_TASK_STATUS' AND ${table.status} = 'active' AND ${table.scope} = 'personal' AND ${table.assertedByKind} <> 'assistant_inferred' AND ${table.objectValue} IN ('pending', 'in_progress')`,
+      ),
+    index("claims_candidate_open_task_status_idx")
+      .on(
+        table.userId,
+        table.statedAt.desc(),
+        table.createdAt.desc(),
+        table.subjectNodeId,
+      )
+      .where(
+        sql`${table.predicate} = 'HAS_TASK_STATUS' AND ${table.status} = 'active' AND ${table.scope} = 'personal' AND ${table.assertedByKind} = 'assistant_inferred' AND ${table.objectValue} IN ('pending', 'in_progress')`,
+      ),
+    index("claims_task_metadata_lookup_idx")
+      .on(
+        table.userId,
+        table.subjectNodeId,
+        table.predicate,
+        table.statedAt.desc(),
+      )
+      .where(
+        sql`${table.status} = 'active' AND ${table.scope} = 'personal' AND ${table.predicate} IN ('OWNED_BY', 'DUE_ON') AND ${table.objectNodeId} IS NOT NULL`,
+      ),
     index("claims_source_id_idx").on(table.sourceId),
     check(
       "claims_object_shape_xor_ck",
