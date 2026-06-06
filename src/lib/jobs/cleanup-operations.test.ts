@@ -36,6 +36,17 @@ const adminDsn = () =>
 const dsnFor = (dbName: string) =>
   `postgres://${TEST_DB_USER}:${TEST_DB_PASSWORD}@${TEST_DB_HOST}:${TEST_DB_PORT}/${dbName}`;
 
+process.env["DATABASE_URL"] ??= adminDsn();
+process.env["JINA_API_KEY"] ??= "test";
+process.env["MEMORY_OPENAI_API_KEY"] ??= "test";
+process.env["MEMORY_OPENAI_API_BASE_URL"] ??= "https://api.openai.com/v1";
+process.env["MODEL_ID_GRAPH_EXTRACTION"] ??= "test-model";
+process.env["REDIS_URL"] ??= "redis://localhost:6380";
+process.env["MINIO_ENDPOINT"] ??= "localhost";
+process.env["MINIO_ACCESS_KEY"] ??= "test";
+process.env["MINIO_SECRET_KEY"] ??= "test";
+process.env["SOURCES_BUCKET"] ??= "test";
+
 async function isServerReachable(): Promise<boolean> {
   const client = new Client({ connectionString: adminDsn() });
   try {
