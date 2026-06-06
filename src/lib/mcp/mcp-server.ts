@@ -5,14 +5,19 @@ import {
   CREATE_CLAIM_DESCRIPTION,
   CREATE_COMMITMENT_DESCRIPTION,
   DISMISS_COMMITMENT_DESCRIPTION,
+  GET_COMMITMENT_DESCRIPTION,
   GET_METRIC_SERIES_DESCRIPTION,
   GET_METRIC_SUMMARY_DESCRIPTION,
   GET_ENTITY_DESCRIPTION,
+  LIST_COMMITMENTS_DESCRIPTION,
   LIST_OPEN_COMMITMENTS_DESCRIPTION,
   LIST_METRICS_DESCRIPTION,
   RECORD_METRIC_DESCRIPTION,
   SEARCH_MEMORY_DESCRIPTION,
   SEARCH_REFERENCE_DESCRIPTION,
+  SET_COMMITMENT_OWNER_DESCRIPTION,
+  SET_COMMITMENT_STATUS_DESCRIPTION,
+  UPDATE_COMMITMENT_DESCRIPTION,
 } from "./tool-descriptions";
 import {
   McpServer,
@@ -24,7 +29,10 @@ import {
   confirmCommitment,
   createCommitment,
   dismissCommitment,
+  setCommitmentOwner,
+  setCommitmentStatus,
   TaskNotFoundError,
+  updateCommitment,
 } from "~/lib/commitments";
 import { getConversationBootstrapContext } from "~/lib/context/assemble-bootstrap-context";
 import { getNodeCard } from "~/lib/context/node-card";
@@ -42,6 +50,8 @@ import {
   updateNode,
   deleteNode,
 } from "~/lib/node";
+import { getCommitment } from "~/lib/query/commitment-detail";
+import { listCommitments } from "~/lib/query/commitments-list";
 import { queryDayMemories } from "~/lib/query/day";
 import { getOpenCommitments } from "~/lib/query/open-commitments";
 import {
@@ -66,7 +76,15 @@ import {
   createCommitmentRequestSchema,
   createCommitmentResponseSchema,
 } from "~/lib/schemas/create-commitment";
+import {
+  getCommitmentRequestSchema,
+  getCommitmentResponseSchema,
+} from "~/lib/schemas/get-commitment";
 import { ingestDocumentRequestSchema } from "~/lib/schemas/ingest-document-request";
+import {
+  listCommitmentsRequestSchema,
+  listCommitmentsResponseSchema,
+} from "~/lib/schemas/list-commitments";
 import {
   getMetricSeriesRequestSchema,
   getMetricSeriesResponseSchema,
@@ -95,6 +113,18 @@ import {
   scratchpadWriteRequestSchema,
   scratchpadEditRequestSchema,
 } from "~/lib/schemas/scratchpad";
+import {
+  setCommitmentOwnerRequestSchema,
+  setCommitmentOwnerResponseSchema,
+} from "~/lib/schemas/set-commitment-owner";
+import {
+  setCommitmentStatusRequestSchema,
+  setCommitmentStatusResponseSchema,
+} from "~/lib/schemas/set-commitment-status";
+import {
+  updateCommitmentRequestSchema,
+  updateCommitmentResponseSchema,
+} from "~/lib/schemas/update-commitment";
 import {
   readScratchpad,
   writeScratchpad,
@@ -346,6 +376,147 @@ server.tool(
             type: "text",
             text: JSON.stringify(
               dismissCommitmentResponseSchema.parse(result),
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    } catch (e) {
+      if (e instanceof TaskNotFoundError) {
+        return { content: [{ type: "text", text: e.message }], isError: true };
+      }
+      throw e;
+    }
+  },
+);
+
+server.tool(
+  "set_commitment_status",
+  SET_COMMITMENT_STATUS_DESCRIPTION,
+  setCommitmentStatusRequestSchema.shape,
+  async (params) => {
+    try {
+      const input = setCommitmentStatusRequestSchema.parse(params);
+      const result = await setCommitmentStatus(input);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              setCommitmentStatusResponseSchema.parse(result),
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    } catch (e) {
+      if (e instanceof TaskNotFoundError) {
+        return { content: [{ type: "text", text: e.message }], isError: true };
+      }
+      throw e;
+    }
+  },
+);
+
+server.tool(
+  "set_commitment_owner",
+  SET_COMMITMENT_OWNER_DESCRIPTION,
+  setCommitmentOwnerRequestSchema.shape,
+  async (params) => {
+    try {
+      const input = setCommitmentOwnerRequestSchema.parse(params);
+      const result = await setCommitmentOwner(input);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              setCommitmentOwnerResponseSchema.parse(result),
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    } catch (e) {
+      if (e instanceof TaskNotFoundError) {
+        return { content: [{ type: "text", text: e.message }], isError: true };
+      }
+      if (e instanceof NodesNotFoundError) {
+        return { content: [{ type: "text", text: e.message }], isError: true };
+      }
+      throw e;
+    }
+  },
+);
+
+server.tool(
+  "update_commitment",
+  UPDATE_COMMITMENT_DESCRIPTION,
+  updateCommitmentRequestSchema.shape,
+  async (params) => {
+    try {
+      const input = updateCommitmentRequestSchema.parse(params);
+      const result = await updateCommitment(input);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              updateCommitmentResponseSchema.parse(result),
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    } catch (e) {
+      if (e instanceof TaskNotFoundError) {
+        return { content: [{ type: "text", text: e.message }], isError: true };
+      }
+      throw e;
+    }
+  },
+);
+
+server.tool(
+  "list_commitments",
+  LIST_COMMITMENTS_DESCRIPTION,
+  listCommitmentsRequestSchema.shape,
+  async (params) => {
+    const input = listCommitmentsRequestSchema.parse(params);
+    const result = await listCommitments(input);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            listCommitmentsResponseSchema.parse(result),
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  "get_commitment",
+  GET_COMMITMENT_DESCRIPTION,
+  getCommitmentRequestSchema.shape,
+  async (params) => {
+    try {
+      const input = getCommitmentRequestSchema.parse(params);
+      const result = await getCommitment(input);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              getCommitmentResponseSchema.parse(result),
               null,
               2,
             ),

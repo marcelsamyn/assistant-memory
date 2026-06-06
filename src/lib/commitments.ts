@@ -3,7 +3,7 @@ import { format, parseISO } from "date-fns";
 import { and, desc, eq } from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
 import { createClaim, updateClaim, NodesNotFoundError } from "~/lib/claim";
-import { createNode } from "~/lib/node";
+import { createNode, updateNode } from "~/lib/node";
 import type {
   CommitmentActionRequest,
   ConfirmCommitmentResponse,
@@ -15,6 +15,18 @@ import type {
 } from "~/lib/schemas/create-commitment";
 import type { CreateNodeInitialClaim } from "~/lib/schemas/node";
 import type { SetCommitmentDueRequest } from "~/lib/schemas/set-commitment-due";
+import type {
+  SetCommitmentOwnerRequest,
+  SetCommitmentOwnerResponse,
+} from "~/lib/schemas/set-commitment-owner";
+import type {
+  SetCommitmentStatusRequest,
+  SetCommitmentStatusResponse,
+} from "~/lib/schemas/set-commitment-status";
+import type {
+  UpdateCommitmentRequest,
+  UpdateCommitmentResponse,
+} from "~/lib/schemas/update-commitment";
 import { ensureDayNode } from "~/lib/temporal";
 import { TaskStatusEnum } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
@@ -311,4 +323,163 @@ export async function dismissCommitment(
   }
 
   return { taskId, retractedClaimIds };
+}
+
+/**
+ * Advance a Task's lifecycle status by asserting a new `HAS_TASK_STATUS`
+ * claim. The lifecycle engine supersedes the prior active status; all four
+ * statuses are reachable here (unlike {@link createCommitment}, which can only
+ * open `pending`/`in_progress`). Re-asserting the same status is allowed and
+ * records a fresh claim — we do not special-case "already in that status".
+ *
+ * Reads the current active status first so the response can echo
+ * `previousStatus`/`previousClaimId` (both `null` when none was active), giving
+ * callers a clean optimistic-update / one-click-undo signal. Throws
+ * {@link TaskNotFoundError} if the subject isn't a Task owned by the user.
+ */
+export async function setCommitmentStatus(
+  input: SetCommitmentStatusRequest,
+): Promise<SetCommitmentStatusResponse> {
+  const { userId, taskId, status, note, assertedByKind } = input;
+  const db = await useDatabase();
+
+  await requireOwnedTask(db, userId, taskId);
+
+  const [previous] = await db
+    .select({ id: claims.id, objectValue: claims.objectValue })
+    .from(claims)
+    .where(
+      and(
+        eq(claims.userId, userId),
+        eq(claims.subjectNodeId, taskId),
+        eq(claims.predicate, "HAS_TASK_STATUS"),
+        eq(claims.status, "active"),
+      ),
+    )
+    .orderBy(desc(claims.statedAt), desc(claims.createdAt))
+    .limit(1);
+
+  const previousStatus =
+    previous && previous.objectValue !== null
+      ? TaskStatusEnum.parse(previous.objectValue)
+      : null;
+  const previousClaimId = previous ? previous.id : null;
+
+  const created = await createClaim({
+    userId,
+    subjectNodeId: taskId,
+    predicate: "HAS_TASK_STATUS",
+    statement: `Task marked ${status}.`,
+    objectValue: status,
+    description: note,
+    assertedByKind,
+    statedAt: new Date(),
+  });
+
+  return {
+    taskId,
+    status,
+    claimId: created.id,
+    previousStatus,
+    previousClaimId,
+  };
+}
+
+/**
+ * Assign, reassign, or clear a Task's owner. A structural twin of
+ * {@link setCommitmentDue}:
+ *
+ * - `ownedBy: TypeId<"node">` → resolve the owner node's label (throwing
+ *   {@link NodesNotFoundError} if missing/cross-user) and assert a new
+ *   `OWNED_BY` claim. The predicate-policy override for `Task` subjects
+ *   supersedes any prior active `OWNED_BY` claim automatically.
+ * - `ownedBy: null` → retract every active `OWNED_BY` claim on the task. No new
+ *   claim is asserted.
+ *
+ * Throws {@link TaskNotFoundError} if the subject isn't a Task owned by the
+ * user.
+ */
+export async function setCommitmentOwner(
+  input: SetCommitmentOwnerRequest,
+): Promise<SetCommitmentOwnerResponse> {
+  const { userId, taskId, ownedBy, note, assertedByKind } = input;
+  const db = await useDatabase();
+
+  await requireOwnedTask(db, userId, taskId);
+
+  if (ownedBy === null) {
+    const activeOwnerClaims = await db
+      .select({ id: claims.id })
+      .from(claims)
+      .where(
+        and(
+          eq(claims.userId, userId),
+          eq(claims.subjectNodeId, taskId),
+          eq(claims.predicate, "OWNED_BY"),
+          eq(claims.status, "active"),
+        ),
+      );
+
+    const retractedClaimIds: TypeId<"claim">[] = [];
+    for (const claim of activeOwnerClaims) {
+      const updated = await updateClaim(userId, claim.id, {
+        status: "retracted",
+      });
+      if (updated) retractedClaimIds.push(updated.id);
+    }
+
+    return { taskId, owner: null, claimId: null, retractedClaimIds };
+  }
+
+  // Resolve the owner up-front: it yields a natural-language statement and lets
+  // the response echo the same `{ nodeId, label }` shape as the read models.
+  const [ownerRow] = await db
+    .select({ label: nodeMetadata.label })
+    .from(nodes)
+    .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
+    .where(and(eq(nodes.id, ownedBy), eq(nodes.userId, userId)))
+    .limit(1);
+  if (!ownerRow) throw new NodesNotFoundError(userId, [ownedBy]);
+  const ownerLabel = ownerRow.label ?? null;
+
+  const created = await createClaim({
+    userId,
+    subjectNodeId: taskId,
+    predicate: "OWNED_BY",
+    statement: ownerLabel
+      ? `Task is owned by ${ownerLabel}.`
+      : `Task is owned by a referenced entity.`,
+    objectNodeId: ownedBy,
+    description: note,
+    assertedByKind,
+    statedAt: new Date(),
+  });
+
+  return {
+    taskId,
+    owner: { nodeId: ownedBy, label: ownerLabel },
+    claimId: created.id,
+    retractedClaimIds: [],
+  };
+}
+
+/**
+ * Rename a Task and/or edit its description. Delegates to the Task-scoped
+ * {@link updateNode} capability (which re-embeds on label/description change),
+ * after verifying the subject is a Task owned by the user. The generic
+ * `/node/update` route still 405s on `description`; only this path may write a
+ * Task's user-authored description. Throws {@link TaskNotFoundError} otherwise.
+ */
+export async function updateCommitment(
+  input: UpdateCommitmentRequest,
+): Promise<UpdateCommitmentResponse> {
+  const { userId, taskId, label, description } = input;
+  const db = await useDatabase();
+
+  await requireOwnedTask(db, userId, taskId);
+
+  const result = await updateNode(userId, taskId, { label, description });
+  if (!result) throw new TaskNotFoundError(taskId);
+
+  return { taskId, label: result.label, description: result.description };
 }

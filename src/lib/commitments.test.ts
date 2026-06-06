@@ -3,6 +3,9 @@ import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
 import { createCommitmentRequestSchema } from "~/lib/schemas/create-commitment";
+import { setCommitmentOwnerRequestSchema } from "~/lib/schemas/set-commitment-owner";
+import { setCommitmentStatusRequestSchema } from "~/lib/schemas/set-commitment-status";
+import { updateCommitmentRequestSchema } from "~/lib/schemas/update-commitment";
 import { newTypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -117,6 +120,15 @@ async function provisionSchema(client: Client): Promise<void> {
       "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
       CONSTRAINT "claims_object_shape_xor_ck"
         CHECK (num_nonnulls("object_node_id", "object_value") = 1)
+    );
+    CREATE TABLE IF NOT EXISTS "aliases" (
+      "id" text PRIMARY KEY NOT NULL,
+      "user_id" text NOT NULL REFERENCES "users"("id"),
+      "alias_text" text NOT NULL,
+      "normalized_alias_text" text NOT NULL,
+      "canonical_node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+      "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+      CONSTRAINT "aliases_user_normalized_canonical_unique" UNIQUE ("user_id", "normalized_alias_text", "canonical_node_id")
     );
   `);
 }
@@ -266,6 +278,841 @@ describeIfServer("createCommitment", () => {
           owner: { nodeId: ownerNodeId, label: "Marcel" },
           dueOn: "2026-07-15",
         });
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+});
+
+describeIfServer("setCommitmentStatus", () => {
+  const dbName = `memory_set_status_test_${Date.now()}_${Math.floor(
+    Math.random() * 1e6,
+  )}`;
+
+  beforeAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE "${dbName}"`);
+    await admin.end();
+  });
+
+  afterAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(
+      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+       WHERE datname = $1 AND pid <> pg_backend_pid()`,
+      [dbName],
+    );
+    await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+    await admin.end();
+  });
+
+  it("marks a pending task done: supersedes prior claim, echoes previous status", async () => {
+    const userId = "user_set_status_done";
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await provisionSchema(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { createCommitment, setCommitmentStatus } = await import(
+          "./commitments"
+        );
+
+        const created = await createCommitment(
+          createCommitmentRequestSchema.parse({
+            userId,
+            label: "Task to mark done",
+          }),
+        );
+        const priorClaimId = created.statusClaimId;
+
+        const result = await setCommitmentStatus(
+          setCommitmentStatusRequestSchema.parse({
+            userId,
+            taskId: created.taskId,
+            status: "done",
+          }),
+        );
+
+        expect(result.taskId).toBe(created.taskId);
+        expect(result.status).toBe("done");
+        expect(result.claimId).toBeTruthy();
+        expect(result.claimId).not.toBe(priorClaimId);
+        expect(result.previousStatus).toBe("pending");
+        expect(result.previousClaimId).toBe(priorClaimId);
+
+        // The old claim must now be superseded
+        const { rows } = await client.query(
+          `SELECT status FROM claims WHERE id = $1`,
+          [priorClaimId],
+        );
+        expect(rows[0]?.status).toBe("superseded");
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("returns null previousStatus/previousClaimId when no prior active status exists", async () => {
+    const userId = "user_set_status_noprev";
+    const taskNodeId = newTypeId("node");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await provisionSchema(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      // Insert a bare Task node with no claims
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Task')`,
+        [taskNodeId, userId],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label") VALUES ($1, $2, 'No-prior task', 'no-prior task')`,
+        [newTypeId("node_metadata"), taskNodeId],
+      );
+      // We need a source for the claim to be created
+      const sourceId = newTypeId("source");
+      await client.query(
+        `INSERT INTO "sources" ("id", "user_id", "type", "external_id") VALUES ($1, $2, 'manual', $3)`,
+        [sourceId, userId, `manual:${userId}`],
+      );
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { setCommitmentStatus } = await import("./commitments");
+
+        const result = await setCommitmentStatus(
+          setCommitmentStatusRequestSchema.parse({
+            userId,
+            taskId: taskNodeId,
+            status: "in_progress",
+          }),
+        );
+
+        expect(result.previousStatus).toBeNull();
+        expect(result.previousClaimId).toBeNull();
+        expect(result.status).toBe("in_progress");
+        expect(result.claimId).toBeTruthy();
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("accepts all four status values", async () => {
+    const userId = "user_set_status_all4";
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await provisionSchema(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { createCommitment, setCommitmentStatus } = await import(
+          "./commitments"
+        );
+
+        const statuses = [
+          "pending",
+          "in_progress",
+          "done",
+          "abandoned",
+        ] as const;
+        for (const status of statuses) {
+          const created = await createCommitment(
+            createCommitmentRequestSchema.parse({
+              userId,
+              label: `Task for ${status}`,
+            }),
+          );
+          const result = await setCommitmentStatus(
+            setCommitmentStatusRequestSchema.parse({
+              userId,
+              taskId: created.taskId,
+              status,
+            }),
+          );
+          expect(result.status).toBe(status);
+        }
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("throws TaskNotFoundError for a non-Task node", async () => {
+    const userId = "user_set_status_nontask";
+    const personNodeId = newTypeId("node");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await provisionSchema(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Person')`,
+        [personNodeId, userId],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label") VALUES ($1, $2, 'Some person', 'some person')`,
+        [newTypeId("node_metadata"), personNodeId],
+      );
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { setCommitmentStatus, TaskNotFoundError } = await import(
+          "./commitments"
+        );
+
+        await expect(
+          setCommitmentStatus(
+            setCommitmentStatusRequestSchema.parse({
+              userId,
+              taskId: personNodeId,
+              status: "done",
+            }),
+          ),
+        ).rejects.toBeInstanceOf(TaskNotFoundError);
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+});
+
+describeIfServer("setCommitmentOwner", () => {
+  const dbName = `memory_set_owner_test_${Date.now()}_${Math.floor(
+    Math.random() * 1e6,
+  )}`;
+
+  beforeAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE "${dbName}"`);
+    await admin.end();
+  });
+
+  afterAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(
+      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+       WHERE datname = $1 AND pid <> pg_backend_pid()`,
+      [dbName],
+    );
+    await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+    await admin.end();
+  });
+
+  it("assigns an owner and then reassigns, superseding the prior OWNED_BY", async () => {
+    const userId = "user_set_owner_reassign";
+    const ownerANodeId = newTypeId("node");
+    const ownerBNodeId = newTypeId("node");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await provisionSchema(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Person'), ($3, $2, 'Person')`,
+        [ownerANodeId, userId, ownerBNodeId],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label")
+         VALUES ($1, $3, 'Alice', 'alice'), ($2, $4, 'Bob', 'bob')`,
+        [
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          ownerANodeId,
+          ownerBNodeId,
+        ],
+      );
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { createCommitment, setCommitmentOwner } = await import(
+          "./commitments"
+        );
+
+        const created = await createCommitment(
+          createCommitmentRequestSchema.parse({
+            userId,
+            label: "Task with owner",
+          }),
+        );
+
+        // Assign owner A
+        const assignResult = await setCommitmentOwner(
+          setCommitmentOwnerRequestSchema.parse({
+            userId,
+            taskId: created.taskId,
+            ownedBy: ownerANodeId,
+          }),
+        );
+        expect(assignResult.owner).toMatchObject({
+          nodeId: ownerANodeId,
+          label: "Alice",
+        });
+        expect(assignResult.claimId).toBeTruthy();
+        const firstOwnerClaimId = assignResult.claimId!;
+
+        // Reassign to owner B — should supersede the previous OWNED_BY
+        const reassignResult = await setCommitmentOwner(
+          setCommitmentOwnerRequestSchema.parse({
+            userId,
+            taskId: created.taskId,
+            ownedBy: ownerBNodeId,
+          }),
+        );
+        expect(reassignResult.owner).toMatchObject({
+          nodeId: ownerBNodeId,
+          label: "Bob",
+        });
+        expect(reassignResult.claimId).toBeTruthy();
+        expect(reassignResult.claimId).not.toBe(firstOwnerClaimId);
+
+        // Prior OWNED_BY claim must be superseded
+        const { rows } = await client.query(
+          `SELECT status FROM claims WHERE id = $1`,
+          [firstOwnerClaimId],
+        );
+        expect(rows[0]?.status).toBe("superseded");
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("clears an owner (ownedBy: null) retracts active OWNED_BY and returns retractedClaimIds", async () => {
+    const userId = "user_set_owner_clear";
+    const ownerNodeId = newTypeId("node");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await provisionSchema(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Person')`,
+        [ownerNodeId, userId],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label") VALUES ($1, $2, 'Charlie', 'charlie')`,
+        [newTypeId("node_metadata"), ownerNodeId],
+      );
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { createCommitment, setCommitmentOwner } = await import(
+          "./commitments"
+        );
+
+        const created = await createCommitment(
+          createCommitmentRequestSchema.parse({
+            userId,
+            label: "Task to unown",
+            ownedBy: ownerNodeId,
+          }),
+        );
+        const ownerClaimId = created.ownerClaimId!;
+        expect(ownerClaimId).toBeTruthy();
+
+        // Clear owner
+        const clearResult = await setCommitmentOwner(
+          setCommitmentOwnerRequestSchema.parse({
+            userId,
+            taskId: created.taskId,
+            ownedBy: null,
+          }),
+        );
+
+        expect(clearResult.owner).toBeNull();
+        expect(clearResult.claimId).toBeNull();
+        expect(clearResult.retractedClaimIds).toContain(ownerClaimId);
+
+        // The OWNED_BY claim must now be retracted
+        const { rows } = await client.query(
+          `SELECT status FROM claims WHERE id = $1`,
+          [ownerClaimId],
+        );
+        expect(rows[0]?.status).toBe("retracted");
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("throws NodesNotFoundError when ownedBy refers to an unknown node", async () => {
+    const userId = "user_set_owner_badowner";
+    const unknownNodeId = newTypeId("node");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await provisionSchema(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { createCommitment, setCommitmentOwner } = await import(
+          "./commitments"
+        );
+        const { NodesNotFoundError } = await import("~/lib/claim");
+
+        const created = await createCommitment(
+          createCommitmentRequestSchema.parse({
+            userId,
+            label: "Task bad owner",
+          }),
+        );
+
+        await expect(
+          setCommitmentOwner(
+            setCommitmentOwnerRequestSchema.parse({
+              userId,
+              taskId: created.taskId,
+              ownedBy: unknownNodeId,
+            }),
+          ),
+        ).rejects.toBeInstanceOf(NodesNotFoundError);
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("throws TaskNotFoundError for a non-Task subject", async () => {
+    const userId = "user_set_owner_nontask";
+    const personNodeId = newTypeId("node");
+    const ownerNodeId = newTypeId("node");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await provisionSchema(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Person'), ($3, $2, 'Person')`,
+        [personNodeId, userId, ownerNodeId],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label")
+         VALUES ($1, $3, 'Not a task', 'not a task'), ($2, $4, 'Owner', 'owner')`,
+        [
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          personNodeId,
+          ownerNodeId,
+        ],
+      );
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { setCommitmentOwner, TaskNotFoundError } = await import(
+          "./commitments"
+        );
+
+        await expect(
+          setCommitmentOwner(
+            setCommitmentOwnerRequestSchema.parse({
+              userId,
+              taskId: personNodeId,
+              ownedBy: ownerNodeId,
+            }),
+          ),
+        ).rejects.toBeInstanceOf(TaskNotFoundError);
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+});
+
+describeIfServer("updateCommitment", () => {
+  const dbName = `memory_update_commitment_test_${Date.now()}_${Math.floor(
+    Math.random() * 1e6,
+  )}`;
+
+  beforeAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE "${dbName}"`);
+    await admin.end();
+  });
+
+  afterAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(
+      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+       WHERE datname = $1 AND pid <> pg_backend_pid()`,
+      [dbName],
+    );
+    await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+    await admin.end();
+  });
+
+  it("updates label only", async () => {
+    const userId = "user_update_label_only";
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await provisionSchema(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { createCommitment, updateCommitment } = await import(
+          "./commitments"
+        );
+
+        const created = await createCommitment(
+          createCommitmentRequestSchema.parse({
+            userId,
+            label: "Original label",
+          }),
+        );
+
+        const updated = await updateCommitment(
+          updateCommitmentRequestSchema.parse({
+            userId,
+            taskId: created.taskId,
+            label: "New label",
+          }),
+        );
+
+        expect(updated.taskId).toBe(created.taskId);
+        expect(updated.label).toBe("New label");
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("updates description only", async () => {
+    const userId = "user_update_desc_only";
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await provisionSchema(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { createCommitment, updateCommitment } = await import(
+          "./commitments"
+        );
+
+        const created = await createCommitment(
+          createCommitmentRequestSchema.parse({
+            userId,
+            label: "Task with description",
+          }),
+        );
+
+        const updated = await updateCommitment(
+          updateCommitmentRequestSchema.parse({
+            userId,
+            taskId: created.taskId,
+            description: "My description",
+          }),
+        );
+
+        expect(updated.taskId).toBe(created.taskId);
+        expect(updated.description).toBe("My description");
+        // label unchanged
+        expect(updated.label).toBe("Task with description");
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("updates both label and description", async () => {
+    const userId = "user_update_both";
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await provisionSchema(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { createCommitment, updateCommitment } = await import(
+          "./commitments"
+        );
+
+        const created = await createCommitment(
+          createCommitmentRequestSchema.parse({
+            userId,
+            label: "Label before",
+            description: "Desc before",
+          }),
+        );
+
+        const updated = await updateCommitment(
+          updateCommitmentRequestSchema.parse({
+            userId,
+            taskId: created.taskId,
+            label: "Label after",
+            description: "Desc after",
+          }),
+        );
+
+        expect(updated.label).toBe("Label after");
+        expect(updated.description).toBe("Desc after");
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("throws TaskNotFoundError for a non-Task subject", async () => {
+    const userId = "user_update_nontask";
+    const personNodeId = newTypeId("node");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await provisionSchema(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Person')`,
+        [personNodeId, userId],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label") VALUES ($1, $2, 'Not a task', 'not a task')`,
+        [newTypeId("node_metadata"), personNodeId],
+      );
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { updateCommitment, TaskNotFoundError } = await import(
+          "./commitments"
+        );
+
+        await expect(
+          updateCommitment(
+            updateCommitmentRequestSchema.parse({
+              userId,
+              taskId: personNodeId,
+              label: "Should fail",
+            }),
+          ),
+        ).rejects.toBeInstanceOf(TaskNotFoundError);
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("throws TaskNotFoundError for an unknown taskId", async () => {
+    const userId = "user_update_unknown";
+    const unknownTaskId = newTypeId("node");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await provisionSchema(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { updateCommitment, TaskNotFoundError } = await import(
+          "./commitments"
+        );
+
+        await expect(
+          updateCommitment(
+            updateCommitmentRequestSchema.parse({
+              userId,
+              taskId: unknownTaskId,
+              label: "Should fail",
+            }),
+          ),
+        ).rejects.toBeInstanceOf(TaskNotFoundError);
       } finally {
         resetTestOverrides();
       }

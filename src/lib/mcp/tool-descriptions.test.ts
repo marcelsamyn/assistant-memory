@@ -4,14 +4,19 @@ import {
   CREATE_CLAIM_DESCRIPTION,
   CREATE_COMMITMENT_DESCRIPTION,
   DISMISS_COMMITMENT_DESCRIPTION,
+  GET_COMMITMENT_DESCRIPTION,
   GET_METRIC_SERIES_DESCRIPTION,
   GET_METRIC_SUMMARY_DESCRIPTION,
   GET_ENTITY_DESCRIPTION,
+  LIST_COMMITMENTS_DESCRIPTION,
   LIST_OPEN_COMMITMENTS_DESCRIPTION,
   LIST_METRICS_DESCRIPTION,
   RECORD_METRIC_DESCRIPTION,
   SEARCH_MEMORY_DESCRIPTION,
   SEARCH_REFERENCE_DESCRIPTION,
+  SET_COMMITMENT_OWNER_DESCRIPTION,
+  SET_COMMITMENT_STATUS_DESCRIPTION,
+  UPDATE_COMMITMENT_DESCRIPTION,
 } from "./tool-descriptions";
 import { describe, expect, it } from "vitest";
 
@@ -99,6 +104,36 @@ describe("MCP tool descriptions", () => {
   it("pins get_metric_summary description", () => {
     expect(GET_METRIC_SUMMARY_DESCRIPTION).toMatchInlineSnapshot(
       `"Returns a quick summary for one metric: latest value, 7d/30d/90d window stats, and a coarse trend (up|down|flat). Use for "what's my X been like lately" questions where a full series is overkill. For comparisons across metrics or precise charts, use get_metric_series instead."`,
+    );
+  });
+
+  it("pins set_commitment_status description", () => {
+    expect(SET_COMMITMENT_STATUS_DESCRIPTION).toMatchInlineSnapshot(
+      `"Marks a task done, abandoned, pending, or in_progress, superseding its prior status. Call when the user reports completing a task, wants to abandon one, or needs to reopen/reactivate a commitment. Returns the new claim id and the superseded status so callers can offer one-click undo without a second read."`,
+    );
+  });
+
+  it("pins set_commitment_owner description", () => {
+    expect(SET_COMMITMENT_OWNER_DESCRIPTION).toMatchInlineSnapshot(
+      `"Assigns or reassigns a task's owner to an existing person node, or clears the owner by passing ownedBy: null. Call when the user delegates a task to someone, changes who is responsible, or removes ownership. Throws if the task or owner node does not belong to the user."`,
+    );
+  });
+
+  it("pins update_commitment description", () => {
+    expect(UPDATE_COMMITMENT_DESCRIPTION).toMatchInlineSnapshot(
+      `"Renames a task (label) and/or edits its description. Call when the user wants to reword, clarify, or add detail to an existing commitment. At least one of label or description must be supplied; passing description as an empty string clears it."`,
+    );
+  });
+
+  it("pins list_commitments description", () => {
+    expect(LIST_COMMITMENTS_DESCRIPTION).toMatchInlineSnapshot(
+      `"Returns a paginated, sortable, searchable list of tasks across all statuses — including done and abandoned — with optional filters for status, owner, and due date. Use when the user wants to browse or search their full task history, not just open items. Prefer list_open_commitments when only active work is needed."`,
+    );
+  });
+
+  it("pins get_commitment description", () => {
+    expect(GET_COMMITMENT_DESCRIPTION).toMatchInlineSnapshot(
+      `"Returns full detail for a single task: current status, owner, and due date with their claim ids, evidence sources, and the complete lifecycle history of status/owner/due changes. Use when the user asks about the history of a specific commitment or when you need claim ids to perform a follow-up action like undo."`,
     );
   });
 });

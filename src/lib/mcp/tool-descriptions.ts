@@ -51,3 +51,18 @@ export const GET_METRIC_SERIES_DESCRIPTION =
 
 export const GET_METRIC_SUMMARY_DESCRIPTION =
   'Returns a quick summary for one metric: latest value, 7d/30d/90d window stats, and a coarse trend (up|down|flat). Use for "what\'s my X been like lately" questions where a full series is overkill. For comparisons across metrics or precise charts, use get_metric_series instead.';
+
+export const SET_COMMITMENT_STATUS_DESCRIPTION =
+  "Marks a task done, abandoned, pending, or in_progress, superseding its prior status. Call when the user reports completing a task, wants to abandon one, or needs to reopen/reactivate a commitment. Returns the new claim id and the superseded status so callers can offer one-click undo without a second read.";
+
+export const SET_COMMITMENT_OWNER_DESCRIPTION =
+  "Assigns or reassigns a task's owner to an existing person node, or clears the owner by passing ownedBy: null. Call when the user delegates a task to someone, changes who is responsible, or removes ownership. Throws if the task or owner node does not belong to the user.";
+
+export const UPDATE_COMMITMENT_DESCRIPTION =
+  "Renames a task (label) and/or edits its description. Call when the user wants to reword, clarify, or add detail to an existing commitment. At least one of label or description must be supplied; passing description as an empty string clears it.";
+
+export const LIST_COMMITMENTS_DESCRIPTION =
+  "Returns a paginated, sortable, searchable list of tasks across all statuses — including done and abandoned — with optional filters for status, owner, and due date. Use when the user wants to browse or search their full task history, not just open items. Prefer list_open_commitments when only active work is needed.";
+
+export const GET_COMMITMENT_DESCRIPTION =
+  "Returns full detail for a single task: current status, owner, and due date with their claim ids, evidence sources, and the complete lifecycle history of status/owner/due changes. Use when the user asks about the history of a specific commitment or when you need claim ids to perform a follow-up action like undo.";

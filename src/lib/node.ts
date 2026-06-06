@@ -219,11 +219,23 @@ export async function getNodeSources(
   };
 }
 
-/** Update a node's label and/or nodeType. Re-generates embedding on label changes. */
+/**
+ * Update a node's label, nodeType, and/or description. Re-generates the
+ * embedding when the label or description changes.
+ *
+ * `description` is a Task-scoped capability: the `/node/update` route still
+ * 405s on it for knowledge nodes (whose descriptions are derived from sourced
+ * claims), but Task descriptions are user-authored, so `updateCommitment`
+ * routes through here to edit them. Passing `description: ""` clears it.
+ */
 export async function updateNode(
   userId: string,
   nodeId: TypeId<"node">,
-  updates: { label?: string; nodeType?: NodeType },
+  updates: {
+    label?: string | undefined;
+    nodeType?: NodeType | undefined;
+    description?: string | undefined;
+  },
 ): Promise<{
   id: TypeId<"node">;
   nodeType: string;
@@ -257,24 +269,32 @@ export async function updateNode(
 
   const effectiveNodeType = updates.nodeType ?? row.nodeType;
   const newLabel = updates.label ?? row.label;
+  const newDescription = updates.description ?? row.description;
 
-  if (updates.label !== undefined) {
+  if (updates.label !== undefined || updates.description !== undefined) {
     await db
       .update(nodeMetadata)
       .set({
-        label: updates.label,
-        canonicalLabel: normalizeLabel(updates.label),
+        ...(updates.label !== undefined
+          ? {
+              label: updates.label,
+              canonicalLabel: normalizeLabel(updates.label),
+            }
+          : {}),
+        ...(updates.description !== undefined
+          ? { description: updates.description }
+          : {}),
       })
       .where(eq(nodeMetadata.id, row.metaId));
   }
 
-  // Re-generate embedding if label changed
+  // Re-generate embedding if label or description changed
   if (
     newLabel &&
-    updates.label !== undefined &&
+    (updates.label !== undefined || updates.description !== undefined) &&
     !shouldSkipEmbeddingPersistence()
   ) {
-    const embText = `${newLabel}: ${row.description ?? ""}`;
+    const embText = `${newLabel}: ${newDescription ?? ""}`;
     const embResponse = await generateEmbeddings({
       model: "jina-embeddings-v3",
       task: "retrieval.passage",
@@ -297,7 +317,7 @@ export async function updateNode(
     id: row.id,
     nodeType: effectiveNodeType,
     label: newLabel ?? null,
-    description: row.description ?? null,
+    description: newDescription ?? null,
   };
 }
 

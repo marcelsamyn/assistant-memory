@@ -45,3 +45,8 @@ export * from "../lib/schemas/commitment-action.js";
 export * from "../lib/schemas/sources.js";
 export * from "../lib/schemas/nodes-by-source.js";
 export * from "../lib/schemas/ingest-file.js";
+export * from "../lib/schemas/set-commitment-status.js";
+export * from "../lib/schemas/set-commitment-owner.js";
+export * from "../lib/schemas/update-commitment.js";
+export * from "../lib/schemas/list-commitments.js";
+export * from "../lib/schemas/get-commitment.js";
