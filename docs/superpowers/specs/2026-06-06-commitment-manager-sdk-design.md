@@ -9,8 +9,8 @@
 Make the Memory SDK/API a complete backend for **Petals as a full task/commitment
 manager**. Today a host can open commitments (`createCommitment`), set due dates
 (`setCommitmentDue`), confirm/dismiss candidates, and read the open/candidate
-views — but the moment the user wants to *change status*, *reassign an owner*,
-*rename a task*, *see finished work*, or *browse/search/paginate* tasks, the host
+views — but the moment the user wants to _change status_, _reassign an owner_,
+_rename a task_, _see finished work_, or _browse/search/paginate_ tasks, the host
 has to hand-roll generic `createClaim`/`updateNode`/`createClaim` calls and learn
 the predicate/lifecycle internals. This design closes those gaps with five
 first-class operations that wrap the existing claim-lifecycle engine.
@@ -65,9 +65,9 @@ Routes are file-based Nitro handlers under `src/routes/commitments/`.
 setCommitmentStatusRequestSchema = z.object({
   userId: z.string(),
   taskId: typeIdSchema("node"),
-  status: TaskStatusEnum,                 // all four values allowed
-  note: z.string().min(1).optional(),     // stored on the claim.description
-  assertedByKind: AssertedByKindEnum.optional(),  // defaults to "user"
+  status: TaskStatusEnum, // all four values allowed
+  note: z.string().min(1).optional(), // stored on the claim.description
+  assertedByKind: AssertedByKindEnum.optional(), // defaults to "user"
 });
 
 setCommitmentStatusResponseSchema = z.object({
@@ -104,14 +104,16 @@ A structural twin of `setCommitmentDue`.
 setCommitmentOwnerRequestSchema = z.object({
   userId: z.string(),
   taskId: typeIdSchema("node"),
-  ownedBy: typeIdSchema("node").nullable(),  // null clears
+  ownedBy: typeIdSchema("node").nullable(), // null clears
   note: z.string().min(1).optional(),
   assertedByKind: AssertedByKindEnum.optional(),
 });
 
 setCommitmentOwnerResponseSchema = z.object({
   taskId: typeIdSchema("node"),
-  owner: z.object({ nodeId: typeIdSchema("node"), label: z.string().nullable() }).nullable(),
+  owner: z
+    .object({ nodeId: typeIdSchema("node"), label: z.string().nullable() })
+    .nullable(),
   claimId: typeIdSchema("claim").nullable(),
   retractedClaimIds: z.array(typeIdSchema("claim")),
 });
@@ -130,13 +132,16 @@ resolve the owner node's label (throw `NodesNotFoundError` if missing/cross-user
 - **Schema:** `src/lib/schemas/update-commitment.ts`
 
 ```ts
-updateCommitmentRequestSchema = z.object({
-  userId: z.string(),
-  taskId: typeIdSchema("node"),
-  label: z.string().min(1).optional(),
-  description: z.string().optional(),       // "" clears the description
-}).refine(v => v.label !== undefined || v.description !== undefined,
-  { message: "Provide at least one of label or description" });
+updateCommitmentRequestSchema = z
+  .object({
+    userId: z.string(),
+    taskId: typeIdSchema("node"),
+    label: z.string().min(1).optional(),
+    description: z.string().optional(), // "" clears the description
+  })
+  .refine((v) => v.label !== undefined || v.description !== undefined, {
+    message: "Provide at least one of label or description",
+  });
 
 updateCommitmentResponseSchema = z.object({
   taskId: typeIdSchema("node"),
@@ -149,7 +154,7 @@ updateCommitmentResponseSchema = z.object({
 
 The generic `POST /node/update` route deliberately **405s on `description`**
 ("descriptions are generated from sourced claims") — that guard stays untouched
-for knowledge nodes. But a Task's description is *user-authored* (passed straight
+for knowledge nodes. But a Task's description is _user-authored_ (passed straight
 to `nodeMetadata.description` by `createCommitment`), so editing it is correct and
 safe **for Tasks**.
 
@@ -157,7 +162,7 @@ Implementation: extend the existing `updateNode` lib (`src/lib/node.ts`) to acce
 an optional `description`, and re-generate the node embedding when **label or
 description** changes (the embed text is already `${label}: ${description}`).
 `updateCommitment` calls `requireOwnedTask` then `updateNode(userId, taskId,
-{ label, description })`. The 405 stays enforced at the `/node/update` *route*
+{ label, description })`. The 405 stays enforced at the `/node/update` _route_
 (`hasNodeDescriptionUpdate` guard), so only this Task-scoped path can write a
 description.
 
@@ -178,30 +183,35 @@ dueAfter, status filters, no-due-date".
 commitmentSortEnum = z.enum(["statusChangedAt", "dueOn", "createdAt", "label"]);
 commitmentProvenanceEnum = z.enum(["trusted", "candidate", "all"]);
 
-listCommitmentsRequestSchema = z.object({
-  userId: z.string(),
-  statuses: z.array(TaskStatusEnum).optional(),    // omit = all four
-  provenance: commitmentProvenanceEnum.default("trusted"),
-  ownedBy: typeIdSchema("node").optional(),        // tasks owned by this node
-  unowned: z.boolean().optional(),                 // tasks with no active OWNED_BY
-  dueBefore: dateOnly.optional(),                  // YYYY-MM-DD, inclusive
-  dueAfter: dateOnly.optional(),                   // YYYY-MM-DD, inclusive
-  hasDueDate: z.boolean().optional(),              // false = "no due date" only
-  search: z.string().min(1).optional(),            // case-insensitive label substring
-  sort: commitmentSortEnum.default("statusChangedAt"),
-  order: z.enum(["asc", "desc"]).default("desc"),
-  limit: z.number().int().min(1).max(200).default(50),
-  cursor: z.string().optional(),
-}).refine(v => !(v.ownedBy !== undefined && v.unowned === true),
-  { message: "ownedBy and unowned are mutually exclusive" });
+listCommitmentsRequestSchema = z
+  .object({
+    userId: z.string(),
+    statuses: z.array(TaskStatusEnum).optional(), // omit = all four
+    provenance: commitmentProvenanceEnum.default("trusted"),
+    ownedBy: typeIdSchema("node").optional(), // tasks owned by this node
+    unowned: z.boolean().optional(), // tasks with no active OWNED_BY
+    dueBefore: dateOnly.optional(), // YYYY-MM-DD, inclusive
+    dueAfter: dateOnly.optional(), // YYYY-MM-DD, inclusive
+    hasDueDate: z.boolean().optional(), // false = "no due date" only
+    search: z.string().min(1).optional(), // case-insensitive label substring
+    sort: commitmentSortEnum.default("statusChangedAt"),
+    order: z.enum(["asc", "desc"]).default("desc"),
+    limit: z.number().int().min(1).max(200).default(50),
+    cursor: z.string().optional(),
+  })
+  .refine((v) => !(v.ownedBy !== undefined && v.unowned === true), {
+    message: "ownedBy and unowned are mutually exclusive",
+  });
 
 commitmentListItemSchema = z.object({
   taskId: typeIdSchema("node"),
   label: z.string().nullable(),
-  status: TaskStatusEnum,                           // all four (not just open)
-  owner: z.object({ nodeId: typeIdSchema("node"), label: z.string().nullable() }).nullable(),
+  status: TaskStatusEnum, // all four (not just open)
+  owner: z
+    .object({ nodeId: typeIdSchema("node"), label: z.string().nullable() })
+    .nullable(),
   dueOn: z.string().nullable(),
-  statusChangedAt: z.coerce.date(),                 // statedAt of the active status claim
+  statusChangedAt: z.coerce.date(), // statedAt of the active status claim
   createdAt: z.coerce.date(),
   sourceId: typeIdSchema("source"),
 });
@@ -213,6 +223,7 @@ listCommitmentsResponseSchema = z.object({
 ```
 
 **Query & speed:**
+
 - One round-trip, same join shape as `open-commitments.ts`: drive off the active
   `HAS_TASK_STATUS` claim (`scope = "personal"`, status `active`), inner-join the
   `Task` node + label metadata, left-join `OWNED_BY`/`DUE_ON` claims + their
@@ -228,7 +239,7 @@ listCommitmentsResponseSchema = z.object({
   `ILIKE '%term%'` on the label (escape `%`/`_`).
 - **Keyset pagination:** opaque base64url cursor `{ v: sortValue, i: taskId }`,
   exactly like `src/lib/sources-read.ts`. `ORDER BY <sortKey> <order>, taskId
-  <order>`, `LIMIT limit + 1`, derive `nextCursor` from the last row when overflow.
+<order>`, `LIMIT limit + 1`, derive `nextCursor` from the last row when overflow.
   Sort keys: `statusChangedAt` → `claims.statedAt`; `createdAt` → `nodes.createdAt`;
   `label` → `nodeMetadata.label`; `dueOn` → `dueMetadata.label`.
 - **Null handling for `dueOn` sort:** undated tasks always sort **last** regardless
@@ -257,9 +268,9 @@ getCommitmentRequestSchema = z.object({
 taskLifecycleEntrySchema = z.object({
   claimId: typeIdSchema("claim"),
   predicate: z.enum(["HAS_TASK_STATUS", "OWNED_BY", "DUE_ON"]),
-  value: z.string().nullable(),            // objectValue (status) or objectLabel (owner/due)
+  value: z.string().nullable(), // objectValue (status) or objectLabel (owner/due)
   objectNodeId: typeIdSchema("node").nullable(),
-  status: ClaimStatusEnum,                 // active | superseded | retracted | contradicted
+  status: ClaimStatusEnum, // active | superseded | retracted | contradicted
   assertedByKind: AssertedByKindEnum,
   sourceId: typeIdSchema("source"),
   statedAt: z.coerce.date(),
@@ -277,7 +288,7 @@ commitmentSourceSchema = z.object({
   type: z.string(),
   title: z.string().nullable(),
   scope: ScopeEnum,
-  ingestedAt: z.coerce.date(),             // lastIngestedAt ?? createdAt
+  ingestedAt: z.coerce.date(), // lastIngestedAt ?? createdAt
 });
 
 getCommitmentResponseSchema = z.object({
@@ -285,19 +296,21 @@ getCommitmentResponseSchema = z.object({
   label: z.string().nullable(),
   description: z.string().nullable(),
   createdAt: z.coerce.date(),
-  status: TaskStatusEnum.nullable(),       // null if no active status (e.g. dismissed)
+  status: TaskStatusEnum.nullable(), // null if no active status (e.g. dismissed)
   statusClaimId: typeIdSchema("claim").nullable(),
   statusStatedAt: z.coerce.date().nullable(),
   statusAssertedByKind: AssertedByKindEnum.nullable(),
-  owner: z.object({
-    nodeId: typeIdSchema("node"),
-    label: z.string().nullable(),
-    claimId: typeIdSchema("claim"),
-  }).nullable(),
+  owner: z
+    .object({
+      nodeId: typeIdSchema("node"),
+      label: z.string().nullable(),
+      claimId: typeIdSchema("claim"),
+    })
+    .nullable(),
   dueOn: z.string().nullable(),
   dueClaimId: typeIdSchema("claim").nullable(),
-  sources: z.array(commitmentSourceSchema),   // evidence; empty when includeSources=false
-  history: z.array(taskLifecycleEntrySchema),  // empty when includeHistory=false
+  sources: z.array(commitmentSourceSchema), // evidence; empty when includeSources=false
+  history: z.array(taskLifecycleEntrySchema), // empty when includeHistory=false
 });
 ```
 
@@ -321,7 +334,7 @@ Non-Task or cross-user `taskId` → `TaskNotFoundError` → 404.
   `set_commitment_owner`, `update_commitment`, `list_commitments`,
   `get_commitment`. Each registers `schema.shape`, delegates to the same lib
   function as the route, returns `{ content: [{ type: "text", text:
-  JSON.stringify(responseSchema.parse(result), null, 2) }] }`, and maps known
+JSON.stringify(responseSchema.parse(result), null, 2) }] }`, and maps known
   errors to `{ isError: true }`. Each gets a description constant in
   `src/lib/mcp/tool-descriptions.ts` (pinned by `tool-descriptions.test.ts`).
 - **SDK:** five `MemoryClient` methods (thin `_fetch` wrappers, with TSDoc), and
@@ -364,6 +377,6 @@ services mocked):
 ## Build/verify gates
 
 `pnpm run build:check` (tsc + structured-output schema check), `pnpm run test`,
-`pnpm run lint`, `pnpm run format`. New response schemas that are *not* used as
+`pnpm run lint`, `pnpm run format`. New response schemas that are _not_ used as
 OpenAI structured outputs are unaffected by the structured-output checker, but we
 run it to be safe.
