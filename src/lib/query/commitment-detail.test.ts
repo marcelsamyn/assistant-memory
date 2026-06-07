@@ -480,16 +480,52 @@ describeIfServer("getCommitment detail query", () => {
 async function seedTimedTask(
   client: import("pg").Client,
   userId: string,
-  opts: { label: string; dueOn: string; dueTime: string; timeZone: string; dueAt: string },
+  opts: {
+    label: string;
+    dueOn: string;
+    dueTime: string;
+    timeZone: string;
+    dueAt: string;
+  },
 ): Promise<TypeId<"node">> {
   const taskId = newTypeId("node");
   const dayId = newTypeId("node");
   const sourceId = newTypeId("source");
-  await client.query(`INSERT INTO "sources" ("id","user_id","type","external_id") VALUES ($1,$2,'manual',$3)`, [sourceId, userId, `manual:${taskId}`]);
-  await client.query(`INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Task'),($3,$2,'Temporal')`, [taskId, userId, dayId]);
-  await client.query(`INSERT INTO "node_metadata" ("id","node_id","label","canonical_label") VALUES ($1,$3,$5,$5),($2,$4,$6,$6)`, [newTypeId("node_metadata"), newTypeId("node_metadata"), taskId, dayId, opts.label, opts.dueOn]);
-  await client.query(`INSERT INTO "claims" ("id","user_id","subject_node_id","object_value","predicate","statement","source_id","asserted_by_kind","stated_at","status") VALUES ($1,$2,$3,'pending','HAS_TASK_STATUS','status',$4,'user',now(),'active')`, [newTypeId("claim"), userId, taskId, sourceId]);
-  await client.query(`INSERT INTO "claims" ("id","user_id","subject_node_id","object_node_id","predicate","statement","source_id","asserted_by_kind","stated_at","status","metadata","object_instant") VALUES ($1,$2,$3,$4,'DUE_ON','due',$5,'user',now(),'active',$6::jsonb,$7)`, [newTypeId("claim"), userId, taskId, dayId, sourceId, JSON.stringify({ dueTime: opts.dueTime, timeZone: opts.timeZone }), opts.dueAt]);
+  await client.query(
+    `INSERT INTO "sources" ("id","user_id","type","external_id") VALUES ($1,$2,'manual',$3)`,
+    [sourceId, userId, `manual:${taskId}`],
+  );
+  await client.query(
+    `INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Task'),($3,$2,'Temporal')`,
+    [taskId, userId, dayId],
+  );
+  await client.query(
+    `INSERT INTO "node_metadata" ("id","node_id","label","canonical_label") VALUES ($1,$3,$5,$5),($2,$4,$6,$6)`,
+    [
+      newTypeId("node_metadata"),
+      newTypeId("node_metadata"),
+      taskId,
+      dayId,
+      opts.label,
+      opts.dueOn,
+    ],
+  );
+  await client.query(
+    `INSERT INTO "claims" ("id","user_id","subject_node_id","object_value","predicate","statement","source_id","asserted_by_kind","stated_at","status") VALUES ($1,$2,$3,'pending','HAS_TASK_STATUS','status',$4,'user',now(),'active')`,
+    [newTypeId("claim"), userId, taskId, sourceId],
+  );
+  await client.query(
+    `INSERT INTO "claims" ("id","user_id","subject_node_id","object_node_id","predicate","statement","source_id","asserted_by_kind","stated_at","status","metadata","object_instant") VALUES ($1,$2,$3,$4,'DUE_ON','due',$5,'user',now(),'active',$6::jsonb,$7)`,
+    [
+      newTypeId("claim"),
+      userId,
+      taskId,
+      dayId,
+      sourceId,
+      JSON.stringify({ dueTime: opts.dueTime, timeZone: opts.timeZone }),
+      opts.dueAt,
+    ],
+  );
   return taskId;
 }
 
@@ -592,7 +628,12 @@ describeIfServer("getCommitment detail — timed due date", () => {
       });
 
       const { getCommitment } = await import("./commitment-detail");
-      const detail = await getCommitment({ userId, taskId, includeHistory: false, includeSources: false });
+      const detail = await getCommitment({
+        userId,
+        taskId,
+        includeHistory: false,
+        includeSources: false,
+      });
 
       expect(detail.dueOn).toBe("2026-06-10");
       expect(detail.dueTime).toBe("17:00");

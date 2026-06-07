@@ -1,8 +1,8 @@
 import { bucketCommitments, getDigest } from "./get-digest";
 import { describe, expect, it, vi } from "vitest";
 import type { ContextBundle } from "~/lib/context/types";
-import { newTypeId } from "~/types/typeid";
 import type { OpenCommitment } from "~/lib/schemas/open-commitments";
+import { newTypeId } from "~/types/typeid";
 
 const mocks = vi.hoisted(() => ({
   getOpenCommitments: vi.fn(),
@@ -137,7 +137,9 @@ describe("getDigest", () => {
   });
 });
 
-function timedCommitment(partial: Partial<OpenCommitment> & { label: string }): OpenCommitment {
+function timedCommitment(
+  partial: Partial<OpenCommitment> & { label: string },
+): OpenCommitment {
   return {
     taskId: "node_x" as OpenCommitment["taskId"],
     status: "pending",
@@ -157,13 +159,31 @@ describe("bucketCommitments (instant-aware)", () => {
   const tz = "America/New_York";
 
   it("moves a timed task to overdue once its instant passes now", () => {
-    const due9am = timedCommitment({ label: "9am", dueOn: "2026-06-10", dueTime: "09:00", timeZone: tz, dueAt: new Date("2026-06-10T13:00:00Z") });
+    const due9am = timedCommitment({
+      label: "9am",
+      dueOn: "2026-06-10",
+      dueTime: "09:00",
+      timeZone: tz,
+      dueAt: new Date("2026-06-10T13:00:00Z"),
+    });
     // now = 10:00 ET = 14:00Z → 9am task is overdue
-    const after = bucketCommitments([due9am], date, tz, 7, new Date("2026-06-10T14:00:00Z"));
+    const after = bucketCommitments(
+      [due9am],
+      date,
+      tz,
+      7,
+      new Date("2026-06-10T14:00:00Z"),
+    );
     expect(after.overdue.map((c) => c.label)).toEqual(["9am"]);
     expect(after.dueToday).toEqual([]);
     // now = 08:00 ET = 12:00Z → still due today
-    const before = bucketCommitments([due9am], date, tz, 7, new Date("2026-06-10T12:00:00Z"));
+    const before = bucketCommitments(
+      [due9am],
+      date,
+      tz,
+      7,
+      new Date("2026-06-10T12:00:00Z"),
+    );
     expect(before.dueToday.map((c) => c.label)).toEqual(["9am"]);
     expect(before.overdue).toEqual([]);
   });
@@ -172,15 +192,33 @@ describe("bucketCommitments (instant-aware)", () => {
     const today = timedCommitment({ label: "today", dueOn: "2026-06-10" });
     const yesterday = timedCommitment({ label: "yest", dueOn: "2026-06-09" });
     const soon = timedCommitment({ label: "soon", dueOn: "2026-06-12" });
-    const res = bucketCommitments([today, yesterday, soon], date, tz, 7, new Date("2026-06-10T14:00:00Z"));
+    const res = bucketCommitments(
+      [today, yesterday, soon],
+      date,
+      tz,
+      7,
+      new Date("2026-06-10T14:00:00Z"),
+    );
     expect(res.dueToday.map((c) => c.label)).toEqual(["today"]);
     expect(res.overdue.map((c) => c.label)).toEqual(["yest"]);
     expect(res.upcoming.map((c) => c.label)).toEqual(["soon"]);
   });
 
   it("buckets a future timed task as upcoming", () => {
-    const tomorrow = timedCommitment({ label: "tom", dueOn: "2026-06-11", dueTime: "09:00", timeZone: tz, dueAt: new Date("2026-06-11T13:00:00Z") });
-    const res = bucketCommitments([tomorrow], date, tz, 7, new Date("2026-06-10T14:00:00Z"));
+    const tomorrow = timedCommitment({
+      label: "tom",
+      dueOn: "2026-06-11",
+      dueTime: "09:00",
+      timeZone: tz,
+      dueAt: new Date("2026-06-11T13:00:00Z"),
+    });
+    const res = bucketCommitments(
+      [tomorrow],
+      date,
+      tz,
+      7,
+      new Date("2026-06-10T14:00:00Z"),
+    );
     expect(res.upcoming.map((c) => c.label)).toEqual(["tom"]);
   });
 });

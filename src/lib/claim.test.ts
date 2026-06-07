@@ -249,7 +249,10 @@ describeIfServer("claim operations", () => {
         );
       `);
 
-      await client.query(`INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`, [userId]);
+      await client.query(
+        `INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`,
+        [userId],
+      );
       await client.query(
         `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
            VALUES ($1, $2, 'manual', 'manual:user_meta', 'completed')`,
@@ -289,8 +292,13 @@ describeIfServer("claim operations", () => {
         `SELECT metadata, object_instant FROM claims WHERE id = $1`,
         [created.id],
       );
-      expect(rows[0].metadata).toEqual({ dueTime: "17:00", timeZone: "America/New_York" });
-      expect(new Date(rows[0].object_instant).toISOString()).toBe("2026-06-10T21:00:00.000Z");
+      expect(rows[0].metadata).toEqual({
+        dueTime: "17:00",
+        timeZone: "America/New_York",
+      });
+      expect(new Date(rows[0].object_instant).toISOString()).toBe(
+        "2026-06-10T21:00:00.000Z",
+      );
     } finally {
       vi.doUnmock("~/utils/db");
       vi.resetModules();

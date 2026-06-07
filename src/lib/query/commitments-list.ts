@@ -4,6 +4,7 @@
  * but selecting every status (not just open) and adding keyset pagination.
  * Common aliases: list tasks, list commitments, completed tasks, task history.
  */
+import { readDueQualifier } from "./due-qualifier";
 import {
   and,
   aliasedTable,
@@ -21,7 +22,6 @@ import {
 } from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
 import { coerceTaskStatus } from "~/lib/claims/task-status";
-import { readDueQualifier } from "./due-qualifier";
 import type {
   CommitmentListItem,
   CommitmentProvenance,

@@ -1,7 +1,7 @@
 import { AssertedByKindEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
-import { z } from "zod";
 import { DUE_TIME_PATTERN } from "./due-claim-metadata.js";
+import { z } from "zod";
 import { isValidTimeZone } from "~/lib/time-zone.js";
 
 /**
@@ -55,10 +55,16 @@ export const setCommitmentDueRequestSchema = z
     const hasTime = v.dueTime != null;
     const hasZone = v.timeZone != null;
     if (hasTime !== hasZone) {
-      ctx.addIssue({ code: "custom", message: "dueTime and timeZone must be set together" });
+      ctx.addIssue({
+        code: "custom",
+        message: "dueTime and timeZone must be set together",
+      });
     }
     if (v.dueOn === null && (hasTime || hasZone)) {
-      ctx.addIssue({ code: "custom", message: "dueTime/timeZone require a dueOn date" });
+      ctx.addIssue({
+        code: "custom",
+        message: "dueTime/timeZone require a dueOn date",
+      });
     }
   });
 

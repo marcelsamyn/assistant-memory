@@ -29,6 +29,7 @@
 ## Task 1: Add `object_instant` column + partial index (schema & migration)
 
 **Files:**
+
 - Modify: `src/db/schema.ts` (claims table, ~`src/db/schema.ts:107-146` and the index block `:147-221`)
 - Create: `drizzle/0018_*.sql` (generated) + `drizzle/meta/*` (generated)
 
@@ -86,6 +87,7 @@ git commit -m "✨ feat(claims): add object_instant column + partial index for d
 ## Task 2: Promote the timezone helper and add `instantFromLocalTime`
 
 **Files:**
+
 - Create: `src/lib/time-zone.ts` (moved from `src/lib/digest/time-zone.ts`)
 - Delete: `src/lib/digest/time-zone.ts`
 - Modify: `src/lib/digest/get-digest.ts:10` (import path), `src/lib/schemas/digest.ts:11` (import path)
@@ -96,34 +98,54 @@ git commit -m "✨ feat(claims): add object_instant column + partial index for d
 Create `src/lib/time-zone.test.ts`:
 
 ```ts
+import {
+  instantFromLocalTime,
+  startOfDayInTimeZone,
+  isValidTimeZone,
+} from "./time-zone";
 import { describe, expect, it } from "vitest";
-import { instantFromLocalTime, startOfDayInTimeZone, isValidTimeZone } from "./time-zone";
 
 describe("instantFromLocalTime", () => {
   it("resolves a winter (standard-offset) wall-clock time", () => {
     // America/New_York is UTC-5 (EST) in January.
-    expect(instantFromLocalTime("2026-01-15", "09:00", "America/New_York").toISOString())
-      .toBe("2026-01-15T14:00:00.000Z");
+    expect(
+      instantFromLocalTime(
+        "2026-01-15",
+        "09:00",
+        "America/New_York",
+      ).toISOString(),
+    ).toBe("2026-01-15T14:00:00.000Z");
   });
 
   it("resolves a summer (DST-offset) wall-clock time", () => {
     // America/New_York is UTC-4 (EDT) in July.
-    expect(instantFromLocalTime("2026-07-15", "09:00", "America/New_York").toISOString())
-      .toBe("2026-07-15T13:00:00.000Z");
+    expect(
+      instantFromLocalTime(
+        "2026-07-15",
+        "09:00",
+        "America/New_York",
+      ).toISOString(),
+    ).toBe("2026-07-15T13:00:00.000Z");
   });
 
   it("resolves a half-hour offset zone", () => {
     // Asia/Kolkata is UTC+5:30 year-round.
-    expect(instantFromLocalTime("2026-03-01", "09:00", "Asia/Kolkata").toISOString())
-      .toBe("2026-03-01T03:30:00.000Z");
+    expect(
+      instantFromLocalTime("2026-03-01", "09:00", "Asia/Kolkata").toISOString(),
+    ).toBe("2026-03-01T03:30:00.000Z");
   });
 
   it("round-trips: formatting the instant back in the zone reproduces the input", () => {
     const tz = "Europe/Paris";
     const instant = instantFromLocalTime("2026-06-10", "17:30", tz);
     const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit",
-      day: "2-digit", hour: "2-digit", minute: "2-digit",
+      timeZone: tz,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
     }).formatToParts(instant);
     const get = (t: string) => parts.find((p) => p.type === t)!.value;
     expect(`${get("year")}-${get("month")}-${get("day")}`).toBe("2026-06-10");
@@ -139,8 +161,15 @@ describe("instantFromLocalTime", () => {
   });
 
   it("startOfDayInTimeZone equals instantFromLocalTime at 00:00", () => {
-    expect(startOfDayInTimeZone("2026-07-15", "America/New_York").toISOString())
-      .toBe(instantFromLocalTime("2026-07-15", "00:00", "America/New_York").toISOString());
+    expect(
+      startOfDayInTimeZone("2026-07-15", "America/New_York").toISOString(),
+    ).toBe(
+      instantFromLocalTime(
+        "2026-07-15",
+        "00:00",
+        "America/New_York",
+      ).toISOString(),
+    );
   });
 
   it("validates IANA zones", () => {
@@ -213,6 +242,7 @@ git commit -m "♻️ refactor(time-zone): promote helper to lib + add instantFr
 ## Task 3: Shared `DUE_ON` metadata schema
 
 **Files:**
+
 - Create: `src/lib/schemas/due-claim-metadata.ts`
 - Create: `src/lib/schemas/due-claim-metadata.test.ts`
 
@@ -221,22 +251,36 @@ git commit -m "♻️ refactor(time-zone): promote helper to lib + add instantFr
 Create `src/lib/schemas/due-claim-metadata.test.ts`:
 
 ```ts
-import { describe, expect, it } from "vitest";
 import { dueClaimMetadataSchema, DUE_TIME_PATTERN } from "./due-claim-metadata";
+import { describe, expect, it } from "vitest";
 
 describe("dueClaimMetadataSchema", () => {
   it("accepts a valid HH:mm + IANA zone", () => {
-    const parsed = dueClaimMetadataSchema.parse({ dueTime: "17:00", timeZone: "America/New_York" });
+    const parsed = dueClaimMetadataSchema.parse({
+      dueTime: "17:00",
+      timeZone: "America/New_York",
+    });
     expect(parsed).toEqual({ dueTime: "17:00", timeZone: "America/New_York" });
   });
 
   it("rejects a bad time", () => {
-    expect(dueClaimMetadataSchema.safeParse({ dueTime: "25:00", timeZone: "UTC" }).success).toBe(false);
-    expect(dueClaimMetadataSchema.safeParse({ dueTime: "9:5", timeZone: "UTC" }).success).toBe(false);
+    expect(
+      dueClaimMetadataSchema.safeParse({ dueTime: "25:00", timeZone: "UTC" })
+        .success,
+    ).toBe(false);
+    expect(
+      dueClaimMetadataSchema.safeParse({ dueTime: "9:5", timeZone: "UTC" })
+        .success,
+    ).toBe(false);
   });
 
   it("rejects a bad zone", () => {
-    expect(dueClaimMetadataSchema.safeParse({ dueTime: "09:00", timeZone: "Not/AZone" }).success).toBe(false);
+    expect(
+      dueClaimMetadataSchema.safeParse({
+        dueTime: "09:00",
+        timeZone: "Not/AZone",
+      }).success,
+    ).toBe(false);
   });
 
   it("DUE_TIME_PATTERN matches 24h HH:mm only", () => {
@@ -257,8 +301,8 @@ Expected: FAIL — module not found.
 Create `src/lib/schemas/due-claim-metadata.ts`:
 
 ```ts
-import { isValidTimeZone } from "~/lib/time-zone.js";
 import { z } from "zod";
+import { isValidTimeZone } from "~/lib/time-zone.js";
 
 /** 24-hour wall-clock time, `HH:mm`. Common aliases: due time, time of day. */
 export const DUE_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -294,6 +338,7 @@ git commit -m "✨ feat(commitments): add DUE_ON claim metadata schema (dueTime 
 ## Task 4: Thread `metadata` + `objectInstant` through `createClaim` and `createNode`
 
 **Files:**
+
 - Modify: `src/lib/claim.ts` (`CreateClaimInput` `:73-104`, insert `:201-220`)
 - Modify: `src/lib/node.ts` (`CreateNodeInitialClaimInput` `:401-409`, initial-claims loop `:490-503`)
 - Modify: `src/lib/claim.test.ts` (provisioning + new test)
@@ -332,8 +377,13 @@ it("persists metadata and objectInstant when provided", async () => {
     `SELECT metadata, object_instant FROM claims WHERE id = $1`,
     [created.id],
   );
-  expect(rows[0].metadata).toEqual({ dueTime: "17:00", timeZone: "America/New_York" });
-  expect(new Date(rows[0].object_instant).toISOString()).toBe("2026-06-10T21:00:00.000Z");
+  expect(rows[0].metadata).toEqual({
+    dueTime: "17:00",
+    timeZone: "America/New_York",
+  });
+  expect(new Date(rows[0].object_instant).toISOString()).toBe(
+    "2026-06-10T21:00:00.000Z",
+  );
 });
 ```
 
@@ -409,6 +459,7 @@ git commit -m "✨ feat(claim): persist claim metadata + objectInstant via creat
 ## Task 5: Write path — `dueTime` + `timeZone` on `setCommitmentDue` and `createCommitment`
 
 **Files:**
+
 - Modify: `src/lib/schemas/set-commitment-due.ts`
 - Modify: `src/lib/schemas/create-commitment.ts`
 - Modify: `src/lib/commitments.ts` (`setCommitmentDue` `:89-149`, `createCommitment` `:165-250`, imports)
@@ -419,12 +470,14 @@ git commit -m "✨ feat(claim): persist claim metadata + objectInstant via creat
 In `src/lib/schemas/set-commitment-due.ts`:
 
 Add imports at top:
+
 ```ts
 import { DUE_TIME_PATTERN } from "./due-claim-metadata.js";
 import { isValidTimeZone } from "~/lib/time-zone.js";
 ```
 
 Add to `setCommitmentDueRequestSchema` (after `dueOn`):
+
 ```ts
   /** Optional wall-clock time `HH:mm` to qualify the date. Requires `timeZone`. */
   dueTime: z
@@ -439,6 +492,7 @@ Add to `setCommitmentDueRequestSchema` (after `dueOn`):
 ```
 
 Wrap the object with a refinement (replace `export const setCommitmentDueRequestSchema = z.object({ ... });` so the `.superRefine` is chained after the closing `})`):
+
 ```ts
   .superRefine((v, ctx) => {
     const hasTime = v.dueTime != null;
@@ -453,6 +507,7 @@ Wrap the object with a refinement (replace `export const setCommitmentDueRequest
 ```
 
 Add to `setCommitmentDueResponseSchema` (after `dueOn`):
+
 ```ts
   dueTime: z.string().nullable(),
   timeZone: z.string().nullable(),
@@ -460,6 +515,7 @@ Add to `setCommitmentDueResponseSchema` (after `dueOn`):
 ```
 
 In `src/lib/schemas/create-commitment.ts`, the same imports, and add to `createCommitmentRequestSchema` (after `dueOn`):
+
 ```ts
   dueTime: z
     .string()
@@ -470,7 +526,9 @@ In `src/lib/schemas/create-commitment.ts`, the same imports, and add to `createC
     .refine(isValidTimeZone, "Invalid IANA time zone")
     .nullish(),
 ```
+
 Chain after the object close:
+
 ```ts
   .superRefine((v, ctx) => {
     const hasTime = v.dueTime != null;
@@ -483,7 +541,9 @@ Chain after the object close:
     }
   });
 ```
+
 Add to `createCommitmentResponseSchema` (after `dueOn`):
+
 ```ts
   dueTime: z.string().nullable(),
   timeZone: z.string().nullable(),
@@ -522,12 +582,19 @@ it("createCommitment stores dueTime + timeZone + object_instant and echoes them"
     `SELECT metadata, object_instant FROM claims WHERE id = $1`,
     [created.dueClaimId],
   );
-  expect(rows[0].metadata).toEqual({ dueTime: "17:00", timeZone: "America/New_York" });
-  expect(new Date(rows[0].object_instant).toISOString()).toBe("2026-06-10T21:00:00.000Z");
+  expect(rows[0].metadata).toEqual({
+    dueTime: "17:00",
+    timeZone: "America/New_York",
+  });
+  expect(new Date(rows[0].object_instant).toISOString()).toBe(
+    "2026-06-10T21:00:00.000Z",
+  );
 
   const open = await getOpenCommitments({ userId });
   expect(open[0]).toMatchObject({
-    dueOn: "2026-06-10", dueTime: "17:00", timeZone: "America/New_York",
+    dueOn: "2026-06-10",
+    dueTime: "17:00",
+    timeZone: "America/New_York",
   });
   expect(open[0]!.dueAt?.toISOString()).toBe("2026-06-10T21:00:00.000Z");
 });
@@ -535,15 +602,24 @@ it("createCommitment stores dueTime + timeZone + object_instant and echoes them"
 it("setCommitmentDue sets a time, then a date-only call clears it", async () => {
   // ... setup, create a date-only commitment first ...
   const { createCommitment, setCommitmentDue } = await import("./commitments");
-  const { setCommitmentDueRequestSchema } = await import("./schemas/set-commitment-due");
+  const { setCommitmentDueRequestSchema } = await import(
+    "./schemas/set-commitment-due"
+  );
   const created = await createCommitment(
-    createCommitmentRequestSchema.parse({ userId, label: "Ship it", dueOn: "2026-06-10" }),
+    createCommitmentRequestSchema.parse({
+      userId,
+      label: "Ship it",
+      dueOn: "2026-06-10",
+    }),
   );
 
   const timed = await setCommitmentDue(
     setCommitmentDueRequestSchema.parse({
-      userId, taskId: created.taskId, dueOn: "2026-06-10",
-      dueTime: "09:30", timeZone: "Europe/Paris",
+      userId,
+      taskId: created.taskId,
+      dueOn: "2026-06-10",
+      dueTime: "09:30",
+      timeZone: "Europe/Paris",
     }),
   );
   expect(timed.dueTime).toBe("09:30");
@@ -551,7 +627,11 @@ it("setCommitmentDue sets a time, then a date-only call clears it", async () => 
   expect(timed.dueAt?.toISOString()).toBe("2026-06-10T07:30:00.000Z"); // 09:30 CEST = 07:30Z
 
   const cleared = await setCommitmentDue(
-    setCommitmentDueRequestSchema.parse({ userId, taskId: created.taskId, dueOn: "2026-06-10" }),
+    setCommitmentDueRequestSchema.parse({
+      userId,
+      taskId: created.taskId,
+      dueOn: "2026-06-10",
+    }),
   );
   expect(cleared.dueTime).toBeNull();
   expect(cleared.timeZone).toBeNull();
@@ -568,7 +648,10 @@ it("setCommitmentDue sets a time, then a date-only call clears it", async () => 
 it("rejects dueTime without timeZone at the schema boundary", () => {
   expect(
     setCommitmentDueRequestSchema.safeParse({
-      userId: "u", taskId: newTypeId("node"), dueOn: "2026-06-10", dueTime: "09:00",
+      userId: "u",
+      taskId: newTypeId("node"),
+      dueOn: "2026-06-10",
+      dueTime: "09:00",
     }).success,
   ).toBe(false);
 });
@@ -586,13 +669,16 @@ Expected: FAIL — `createCommitment`/`setCommitmentDue` don't accept or persist
 In `src/lib/commitments.ts`:
 
 Add imports:
+
 ```ts
-import { instantFromLocalTime } from "~/lib/time-zone";
 import type { CreateNodeInitialClaimInput } from "~/lib/node";
+import { instantFromLocalTime } from "~/lib/time-zone";
 ```
+
 Change `import { createNode, updateNode } from "~/lib/node";` to also import the type if not already, and **remove** the now-unused `import type { CreateNodeInitialClaim } from "~/lib/schemas/node";` (replaced by `CreateNodeInitialClaimInput`).
 
 Add a private helper near the top (after `requireOwnedTask`):
+
 ```ts
 /**
  * Resolve a date + optional time/zone into the claim qualifiers. Returns the
@@ -616,11 +702,13 @@ function resolveDueQualifier(
 In `setCommitmentDue`, destructure the new fields: `const { userId, taskId, dueOn, dueTime, timeZone, note, assertedByKind } = input;`
 
 In the `dueOn === null` clear branch, change the return to:
+
 ```ts
     return { taskId, dueOn: null, dueTime: null, timeZone: null, dueAt: null, claimId: null, retractedClaimIds };
 ```
 
 In the assert branch (after `ensureDayNode`):
+
 ```ts
   const { metadata, objectInstant } = resolveDueQualifier(dueOn, dueTime, timeZone);
   const created = await createClaim({
@@ -656,27 +744,30 @@ In `createCommitment`, destructure new fields: `const { userId, label, descripti
 Change `const initialClaims: CreateNodeInitialClaim[] = [` to `const initialClaims: CreateNodeInitialClaimInput[] = [`.
 
 In the `if (dueOn !== undefined)` block, build the claim with qualifiers:
+
 ```ts
-  let dueIndex: number | null = null;
-  let dueQualifier: { metadata?: Record<string, unknown>; objectInstant?: Date } = {};
-  if (dueOn !== undefined) {
-    const dueNodeId = await ensureDayNode(db, userId, parseISO(dueOn));
-    dueQualifier = resolveDueQualifier(dueOn, dueTime, timeZone);
-    dueIndex =
-      initialClaims.push({
-        predicate: "DUE_ON",
-        statement: dueQualifier.objectInstant
-          ? `${label} is due on ${dueOn} at ${dueTime} (${timeZone}).`
-          : `${label} is due on ${dueOn}.`,
-        objectNodeId: dueNodeId,
-        assertedByKind,
-        metadata: dueQualifier.metadata,
-        objectInstant: dueQualifier.objectInstant,
-      }) - 1;
-  }
+let dueIndex: number | null = null;
+let dueQualifier: { metadata?: Record<string, unknown>; objectInstant?: Date } =
+  {};
+if (dueOn !== undefined) {
+  const dueNodeId = await ensureDayNode(db, userId, parseISO(dueOn));
+  dueQualifier = resolveDueQualifier(dueOn, dueTime, timeZone);
+  dueIndex =
+    initialClaims.push({
+      predicate: "DUE_ON",
+      statement: dueQualifier.objectInstant
+        ? `${label} is due on ${dueOn} at ${dueTime} (${timeZone}).`
+        : `${label} is due on ${dueOn}.`,
+      objectNodeId: dueNodeId,
+      assertedByKind,
+      metadata: dueQualifier.metadata,
+      objectInstant: dueQualifier.objectInstant,
+    }) - 1;
+}
 ```
 
 In the response object add after `dueOn: dueOn ?? null,`:
+
 ```ts
     dueTime: dueTime ?? null,
     timeZone: timeZone ?? null,
@@ -705,6 +796,7 @@ git commit -m "✨ feat(commitments): accept dueTime + timeZone on create/setDue
 ## Task 6: Read — open/candidate commitments expose `dueTime`/`timeZone`/`dueAt`
 
 **Files:**
+
 - Modify: `src/lib/schemas/open-commitments.ts` (item schema)
 - Modify: `src/lib/query/open-commitments.ts` (row type, select, mapping)
 - Create: `src/lib/query/due-qualifier.ts` (shared read mapper)
@@ -737,17 +829,24 @@ export function readDueQualifier(
   const parsed = dueClaimMetadataSchema.safeParse(metadata ?? undefined);
   if (!parsed.success) {
     if (metadata != null) {
-      console.warn(`Ignoring malformed DUE_ON metadata: ${JSON.stringify(metadata)}`);
+      console.warn(
+        `Ignoring malformed DUE_ON metadata: ${JSON.stringify(metadata)}`,
+      );
     }
     return { dueTime: null, timeZone: null, dueAt: objectInstant ?? null };
   }
-  return { dueTime: parsed.data.dueTime, timeZone: parsed.data.timeZone, dueAt: objectInstant ?? null };
+  return {
+    dueTime: parsed.data.dueTime,
+    timeZone: parsed.data.timeZone,
+    dueAt: objectInstant ?? null,
+  };
 }
 ```
 
 - [ ] **Step 2: Add fields to the open-commitments item schema**
 
 In `src/lib/schemas/open-commitments.ts`, add to `openCommitmentSchema` (after `dueOn`):
+
 ```ts
   dueTime: z.string().nullable(),
   timeZone: z.string().nullable(),
@@ -771,7 +870,13 @@ Add this module-level helper near the top of the test file (after the imports �
 async function seedTask(
   client: import("pg").Client,
   userId: string,
-  opts: { label: string; dueOn?: string; dueTime?: string; timeZone?: string; dueAt?: string },
+  opts: {
+    label: string;
+    dueOn?: string;
+    dueTime?: string;
+    timeZone?: string;
+    dueAt?: string;
+  },
 ): Promise<string> {
   const taskId = newTypeId("node");
   const sourceId = newTypeId("source");
@@ -779,7 +884,10 @@ async function seedTask(
     `INSERT INTO "sources" ("id","user_id","type","external_id") VALUES ($1,$2,'manual',$3)`,
     [sourceId, userId, `manual:${taskId}`],
   );
-  await client.query(`INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Task')`, [taskId, userId]);
+  await client.query(
+    `INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Task')`,
+    [taskId, userId],
+  );
   await client.query(
     `INSERT INTO "node_metadata" ("id","node_id","label","canonical_label") VALUES ($1,$2,$3,$3)`,
     [newTypeId("node_metadata"), taskId, opts.label],
@@ -791,16 +899,30 @@ async function seedTask(
   );
   if (opts.dueOn) {
     const dayId = newTypeId("node");
-    await client.query(`INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Temporal')`, [dayId, userId]);
+    await client.query(
+      `INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Temporal')`,
+      [dayId, userId],
+    );
     await client.query(
       `INSERT INTO "node_metadata" ("id","node_id","label","canonical_label") VALUES ($1,$2,$3,$3)`,
       [newTypeId("node_metadata"), dayId, opts.dueOn],
     );
-    const metadata = opts.dueTime && opts.timeZone ? JSON.stringify({ dueTime: opts.dueTime, timeZone: opts.timeZone }) : null;
+    const metadata =
+      opts.dueTime && opts.timeZone
+        ? JSON.stringify({ dueTime: opts.dueTime, timeZone: opts.timeZone })
+        : null;
     await client.query(
       `INSERT INTO "claims" ("id","user_id","subject_node_id","object_node_id","predicate","statement","source_id","asserted_by_kind","stated_at","status","metadata","object_instant")
        VALUES ($1,$2,$3,$4,'DUE_ON','due',$5,'user',now(),'active',$6::jsonb,$7)`,
-      [newTypeId("claim"), userId, taskId, dayId, sourceId, metadata, opts.dueAt ?? null],
+      [
+        newTypeId("claim"),
+        userId,
+        taskId,
+        dayId,
+        sourceId,
+        metadata,
+        opts.dueAt ?? null,
+      ],
     );
   }
   return taskId;
@@ -813,13 +935,20 @@ Then add two tests (reuse the file's per-test client/drizzle/`vi.doMock("~/utils
 it("returns dueTime, timeZone, and dueAt for a timed commitment", async () => {
   // ... per-test client + drizzle + vi.doMock + run the CREATE TABLE block + insert user ...
   await seedTask(client, userId, {
-    label: "Timed task", dueOn: "2026-06-10",
-    dueTime: "17:00", timeZone: "America/New_York", dueAt: "2026-06-10T21:00:00Z",
+    label: "Timed task",
+    dueOn: "2026-06-10",
+    dueTime: "17:00",
+    timeZone: "America/New_York",
+    dueAt: "2026-06-10T21:00:00Z",
   });
   const { getOpenCommitments } = await import("./open-commitments");
   const open = await getOpenCommitments({ userId });
   expect(open).toHaveLength(1);
-  expect(open[0]).toMatchObject({ dueOn: "2026-06-10", dueTime: "17:00", timeZone: "America/New_York" });
+  expect(open[0]).toMatchObject({
+    dueOn: "2026-06-10",
+    dueTime: "17:00",
+    timeZone: "America/New_York",
+  });
   expect(open[0]!.dueAt?.toISOString()).toBe("2026-06-10T21:00:00.000Z");
 });
 
@@ -828,7 +957,12 @@ it("returns null due fields for a date-only commitment", async () => {
   await seedTask(client, userId, { label: "Date only", dueOn: "2026-06-10" });
   const { getOpenCommitments } = await import("./open-commitments");
   const open = await getOpenCommitments({ userId });
-  expect(open[0]).toMatchObject({ dueOn: "2026-06-10", dueTime: null, timeZone: null, dueAt: null });
+  expect(open[0]).toMatchObject({
+    dueOn: "2026-06-10",
+    dueTime: null,
+    timeZone: null,
+    dueAt: null,
+  });
 });
 ```
 
@@ -844,35 +978,38 @@ In `src/lib/query/open-commitments.ts`:
 Add import: `import { readDueQualifier } from "./due-qualifier";`
 
 Extend `OpenCommitmentRow` with:
+
 ```ts
-  dueMetadata: unknown;
-  dueInstant: Date | null;
+dueMetadata: unknown;
+dueInstant: Date | null;
 ```
 
 In the `.select({ ... })`, after `dueOn: dueMetadata.label,` add:
+
 ```ts
       dueMetadata: dueClaim.metadata,
       dueInstant: dueClaim.objectInstant,
 ```
 
 In the row-mapping loop, where it pushes a commitment, replace the `dueOn: row.dueOn,` line region with:
+
 ```ts
-    const due = readDueQualifier(row.dueMetadata, row.dueInstant);
-    commitments.push({
-      taskId: row.taskId,
-      label: row.label,
-      status,
-      owner:
-        row.ownerNodeId === null
-          ? null
-          : { nodeId: row.ownerNodeId, label: row.ownerLabel },
-      dueOn: row.dueOn,
-      dueTime: due.dueTime,
-      timeZone: due.timeZone,
-      dueAt: due.dueAt,
-      statedAt: row.statedAt,
-      sourceId: row.sourceId,
-    });
+const due = readDueQualifier(row.dueMetadata, row.dueInstant);
+commitments.push({
+  taskId: row.taskId,
+  label: row.label,
+  status,
+  owner:
+    row.ownerNodeId === null
+      ? null
+      : { nodeId: row.ownerNodeId, label: row.ownerLabel },
+  dueOn: row.dueOn,
+  dueTime: due.dueTime,
+  timeZone: due.timeZone,
+  dueAt: due.dueAt,
+  statedAt: row.statedAt,
+  sourceId: row.sourceId,
+});
 ```
 
 - [ ] **Step 7: Run the test to verify it passes**
@@ -897,6 +1034,7 @@ git commit -m "✨ feat(commitments): surface dueTime/timeZone/dueAt in open-com
 ## Task 7: Read — `listCommitments` instant filters + `dueAt` sort + fields
 
 **Files:**
+
 - Modify: `src/lib/schemas/list-commitments.ts`
 - Modify: `src/lib/query/commitments-list.ts`
 - Modify: `src/lib/query/commitments-list.test.ts` (provisioning + tests)
@@ -906,11 +1044,19 @@ git commit -m "✨ feat(commitments): surface dueTime/timeZone/dueAt in open-com
 In `src/lib/schemas/list-commitments.ts`:
 
 Add `"dueAt"` to the sort enum:
+
 ```ts
-export const commitmentSortEnum = z.enum(["statusChangedAt", "dueOn", "dueAt", "createdAt", "label"]);
+export const commitmentSortEnum = z.enum([
+  "statusChangedAt",
+  "dueOn",
+  "dueAt",
+  "createdAt",
+  "label",
+]);
 ```
 
 Add request fields (after `dueAfter`):
+
 ```ts
     /** ISO instant, inclusive upper bound on `object_instant` (timed tasks only). */
     dueBeforeInstant: z.string().datetime().pipe(z.coerce.date()).optional(),
@@ -919,6 +1065,7 @@ Add request fields (after `dueAfter`):
 ```
 
 Add to `commitmentListItemSchema` (after `dueOn`):
+
 ```ts
   dueTime: z.string().nullable(),
   timeZone: z.string().nullable(),
@@ -935,7 +1082,13 @@ This file also seeds via direct `INSERT`. Add this module-level helper near the 
 async function seedTask(
   client: import("pg").Client,
   userId: string,
-  opts: { label: string; dueOn?: string; dueTime?: string; timeZone?: string; dueAt?: string },
+  opts: {
+    label: string;
+    dueOn?: string;
+    dueTime?: string;
+    timeZone?: string;
+    dueAt?: string;
+  },
 ): Promise<string> {
   const taskId = newTypeId("node");
   const sourceId = newTypeId("source");
@@ -943,7 +1096,10 @@ async function seedTask(
     `INSERT INTO "sources" ("id","user_id","type","external_id") VALUES ($1,$2,'manual',$3)`,
     [sourceId, userId, `manual:${taskId}`],
   );
-  await client.query(`INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Task')`, [taskId, userId]);
+  await client.query(
+    `INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Task')`,
+    [taskId, userId],
+  );
   await client.query(
     `INSERT INTO "node_metadata" ("id","node_id","label","canonical_label") VALUES ($1,$2,$3,$3)`,
     [newTypeId("node_metadata"), taskId, opts.label],
@@ -955,16 +1111,30 @@ async function seedTask(
   );
   if (opts.dueOn) {
     const dayId = newTypeId("node");
-    await client.query(`INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Temporal')`, [dayId, userId]);
+    await client.query(
+      `INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Temporal')`,
+      [dayId, userId],
+    );
     await client.query(
       `INSERT INTO "node_metadata" ("id","node_id","label","canonical_label") VALUES ($1,$2,$3,$3)`,
       [newTypeId("node_metadata"), dayId, opts.dueOn],
     );
-    const metadata = opts.dueTime && opts.timeZone ? JSON.stringify({ dueTime: opts.dueTime, timeZone: opts.timeZone }) : null;
+    const metadata =
+      opts.dueTime && opts.timeZone
+        ? JSON.stringify({ dueTime: opts.dueTime, timeZone: opts.timeZone })
+        : null;
     await client.query(
       `INSERT INTO "claims" ("id","user_id","subject_node_id","object_node_id","predicate","statement","source_id","asserted_by_kind","stated_at","status","metadata","object_instant")
        VALUES ($1,$2,$3,$4,'DUE_ON','due',$5,'user',now(),'active',$6::jsonb,$7)`,
-      [newTypeId("claim"), userId, taskId, dayId, sourceId, metadata, opts.dueAt ?? null],
+      [
+        newTypeId("claim"),
+        userId,
+        taskId,
+        dayId,
+        sourceId,
+        metadata,
+        opts.dueAt ?? null,
+      ],
     );
   }
   return taskId;
@@ -978,34 +1148,85 @@ Add tests (reuse the file's per-test client/drizzle/`vi.doMock`/`CREATE TABLE` s
 ```ts
 it("sorts by dueAt ascending with timed tasks first, nulls last", async () => {
   // ... per-test setup + insert user ...
-  await seedTask(client, userId, { label: "A", dueOn: "2026-06-10", dueTime: "17:00", timeZone: "America/New_York", dueAt: "2026-06-10T21:00:00Z" });
-  await seedTask(client, userId, { label: "B", dueOn: "2026-06-10", dueTime: "09:00", timeZone: "America/New_York", dueAt: "2026-06-10T13:00:00Z" });
+  await seedTask(client, userId, {
+    label: "A",
+    dueOn: "2026-06-10",
+    dueTime: "17:00",
+    timeZone: "America/New_York",
+    dueAt: "2026-06-10T21:00:00Z",
+  });
+  await seedTask(client, userId, {
+    label: "B",
+    dueOn: "2026-06-10",
+    dueTime: "09:00",
+    timeZone: "America/New_York",
+    dueAt: "2026-06-10T13:00:00Z",
+  });
   await seedTask(client, userId, { label: "C", dueOn: "2026-06-11" }); // date-only, null instant
   const { listCommitments } = await import("./commitments-list");
-  const { listCommitmentsRequestSchema } = await import("~/lib/schemas/list-commitments");
-  const page = await listCommitments(listCommitmentsRequestSchema.parse({ userId, sort: "dueAt", order: "asc", limit: 50 }));
+  const { listCommitmentsRequestSchema } = await import(
+    "~/lib/schemas/list-commitments"
+  );
+  const page = await listCommitments(
+    listCommitmentsRequestSchema.parse({
+      userId,
+      sort: "dueAt",
+      order: "asc",
+      limit: 50,
+    }),
+  );
   const labels = page.commitments.map((c) => c.label);
   expect(labels.slice(0, 2)).toEqual(["B", "A"]); // 13:00Z before 21:00Z
-  expect(labels[2]).toBe("C");                      // date-only (null instant) last
+  expect(labels[2]).toBe("C"); // date-only (null instant) last
 });
 
 it("filters by dueBeforeInstant (timed tasks only)", async () => {
   // ... setup ...
-  await seedTask(client, userId, { label: "A", dueOn: "2026-06-10", dueTime: "17:00", timeZone: "America/New_York", dueAt: "2026-06-10T21:00:00Z" });
-  await seedTask(client, userId, { label: "B", dueOn: "2026-06-10", dueTime: "09:00", timeZone: "America/New_York", dueAt: "2026-06-10T13:00:00Z" });
+  await seedTask(client, userId, {
+    label: "A",
+    dueOn: "2026-06-10",
+    dueTime: "17:00",
+    timeZone: "America/New_York",
+    dueAt: "2026-06-10T21:00:00Z",
+  });
+  await seedTask(client, userId, {
+    label: "B",
+    dueOn: "2026-06-10",
+    dueTime: "09:00",
+    timeZone: "America/New_York",
+    dueAt: "2026-06-10T13:00:00Z",
+  });
   await seedTask(client, userId, { label: "C", dueOn: "2026-06-11" });
   const { listCommitments } = await import("./commitments-list");
-  const { listCommitmentsRequestSchema } = await import("~/lib/schemas/list-commitments");
-  const page = await listCommitments(listCommitmentsRequestSchema.parse({ userId, dueBeforeInstant: "2026-06-10T15:00:00.000Z", limit: 50 }));
+  const { listCommitmentsRequestSchema } = await import(
+    "~/lib/schemas/list-commitments"
+  );
+  const page = await listCommitments(
+    listCommitmentsRequestSchema.parse({
+      userId,
+      dueBeforeInstant: "2026-06-10T15:00:00.000Z",
+      limit: 50,
+    }),
+  );
   expect(page.commitments.map((c) => c.label)).toEqual(["B"]); // only 13:00Z ≤ 15:00Z; date-only excluded
 });
 
 it("includes dueTime/timeZone/dueAt on items", async () => {
   // ... setup ...
-  await seedTask(client, userId, { label: "A", dueOn: "2026-06-10", dueTime: "17:00", timeZone: "America/New_York", dueAt: "2026-06-10T21:00:00Z" });
+  await seedTask(client, userId, {
+    label: "A",
+    dueOn: "2026-06-10",
+    dueTime: "17:00",
+    timeZone: "America/New_York",
+    dueAt: "2026-06-10T21:00:00Z",
+  });
   const { listCommitments } = await import("./commitments-list");
-  const { listCommitmentsRequestSchema } = await import("~/lib/schemas/list-commitments");
-  const page = await listCommitments(listCommitmentsRequestSchema.parse({ userId, limit: 50 }));
+  const { listCommitmentsRequestSchema } = await import(
+    "~/lib/schemas/list-commitments"
+  );
+  const page = await listCommitments(
+    listCommitmentsRequestSchema.parse({ userId, limit: 50 }),
+  );
   const a = page.commitments.find((c) => c.label === "A")!;
   expect(a).toMatchObject({ dueTime: "17:00", timeZone: "America/New_York" });
   expect(a.dueAt?.toISOString()).toBe("2026-06-10T21:00:00.000Z");
@@ -1024,19 +1245,22 @@ In `src/lib/query/commitments-list.ts`:
 Add import: `import { readDueQualifier } from "./due-qualifier";`
 
 Extend `ListRow` with:
+
 ```ts
-  dueMetadata: unknown;
-  dueInstant: Date | null;
+dueMetadata: unknown;
+dueInstant: Date | null;
 ```
 
 Destructure the new params: add `dueBeforeInstant, dueAfterInstant` to the `const { ... } = params;`.
 
 Add `dueAt` to `sortColumns`:
+
 ```ts
     dueAt: sql`${dueClaim.objectInstant}`,
 ```
 
 Add the instant filters to `whereClauses` (after the `dueAfter` clause):
+
 ```ts
     dueBeforeInstant === undefined
       ? undefined
@@ -1047,28 +1271,34 @@ Add the instant filters to `whereClauses` (after the `dueAfter` clause):
 ```
 
 Handle `dueAt` ordering like `dueOn` (nulls last). Change the `nullFlag` + `orderBy` to treat both date-style sorts:
+
 ```ts
-  const nullFlag =
-    sort === "dueAt"
-      ? sql<boolean>`(${dueClaim.objectInstant} IS NULL)`
-      : sql<boolean>`(${dueMetadata.label} IS NULL)`;
+const nullFlag =
+  sort === "dueAt"
+    ? sql<boolean>`(${dueClaim.objectInstant} IS NULL)`
+    : sql<boolean>`(${dueMetadata.label} IS NULL)`;
 ```
+
 and:
+
 ```ts
-  const orderBy: SQL[] =
-    sort === "dueOn" || sort === "dueAt"
-      ? [asc(nullFlag), dir(sortColumn), dir(nodes.id)]
-      : [dir(sortColumn), dir(nodes.id)];
+const orderBy: SQL[] =
+  sort === "dueOn" || sort === "dueAt"
+    ? [asc(nullFlag), dir(sortColumn), dir(nodes.id)]
+    : [dir(sortColumn), dir(nodes.id)];
 ```
 
 In `keysetClause`, extend the nulls-last branch to cover `dueAt` as well — change `if (sort === "dueOn") {` to `if (sort === "dueOn" || sort === "dueAt") {`.
 
 In `sortValueOf`, add a `dueAt` case:
+
 ```ts
     case "dueAt":
       return row.dueInstant === null ? null : row.dueInstant.toISOString();
 ```
+
 and update the `nextCursor` null flag: change `n: sort === "dueOn" && last.dueOn === null,` to:
+
 ```ts
       n:
         (sort === "dueOn" && last.dueOn === null) ||
@@ -1076,30 +1306,32 @@ and update the `nextCursor` null flag: change `n: sort === "dueOn" && last.dueOn
 ```
 
 In the `.select({ ... })`, after `dueOn: dueMetadata.label,` add:
+
 ```ts
       dueMetadata: dueClaim.metadata,
       dueInstant: dueClaim.objectInstant,
 ```
 
 In the row→item mapping (the `commitments.push({ ... })`), replace `dueOn: row.dueOn,` region with:
+
 ```ts
-    const due = readDueQualifier(row.dueMetadata, row.dueInstant);
-    commitments.push({
-      taskId: row.taskId,
-      label: row.label,
-      status,
-      owner:
-        row.ownerNodeId === null
-          ? null
-          : { nodeId: row.ownerNodeId, label: row.ownerLabel },
-      dueOn: row.dueOn,
-      dueTime: due.dueTime,
-      timeZone: due.timeZone,
-      dueAt: due.dueAt,
-      statusChangedAt: row.statusChangedAt,
-      createdAt: row.createdAt,
-      sourceId: row.sourceId,
-    });
+const due = readDueQualifier(row.dueMetadata, row.dueInstant);
+commitments.push({
+  taskId: row.taskId,
+  label: row.label,
+  status,
+  owner:
+    row.ownerNodeId === null
+      ? null
+      : { nodeId: row.ownerNodeId, label: row.ownerLabel },
+  dueOn: row.dueOn,
+  dueTime: due.dueTime,
+  timeZone: due.timeZone,
+  dueAt: due.dueAt,
+  statusChangedAt: row.statusChangedAt,
+  createdAt: row.createdAt,
+  sourceId: row.sourceId,
+});
 ```
 
 - [ ] **Step 6: Run the tests to verify they pass**
@@ -1124,6 +1356,7 @@ git commit -m "✨ feat(commitments): dueAt sort + instant-range filters in list
 ## Task 8: Read — `getCommitment` detail exposes due time/zone/instant
 
 **Files:**
+
 - Modify: `src/lib/schemas/get-commitment.ts` (response)
 - Modify: `src/lib/query/commitment-detail.ts`
 - Modify: `src/lib/query/commitment-detail.test.ts` (provisioning + test)
@@ -1131,6 +1364,7 @@ git commit -m "✨ feat(commitments): dueAt sort + instant-range filters in list
 - [ ] **Step 1: Update the response schema**
 
 In `src/lib/schemas/get-commitment.ts`, add to `getCommitmentResponseSchema` (after `dueOn`):
+
 ```ts
   dueTime: z.string().nullable(),
   timeZone: z.string().nullable(),
@@ -1142,17 +1376,35 @@ In `src/lib/schemas/get-commitment.ts`, add to `getCommitmentResponseSchema` (af
 In `src/lib/query/commitment-detail.test.ts`: add `"object_instant" timestamp with time zone,` after `"metadata" jsonb,` in **both** inline `CREATE TABLE "claims"` blocks (this file has two).
 
 Add a test (reuse the file's setup; create via the writer):
+
 ```ts
 it("returns dueTime, timeZone and dueAt for a timed commitment", async () => {
   // ... per-test setup ...
   const { createCommitment } = await import("~/lib/commitments");
   const { getCommitment } = await import("./commitment-detail");
-  const { createCommitmentRequestSchema } = await import("~/lib/schemas/create-commitment");
-  const created = await createCommitment(createCommitmentRequestSchema.parse({
-    userId, label: "Timed", dueOn: "2026-06-10", dueTime: "17:00", timeZone: "America/New_York",
-  }));
-  const detail = await getCommitment({ userId, taskId: created.taskId, includeHistory: false, includeSources: false });
-  expect(detail).toMatchObject({ dueOn: "2026-06-10", dueTime: "17:00", timeZone: "America/New_York" });
+  const { createCommitmentRequestSchema } = await import(
+    "~/lib/schemas/create-commitment"
+  );
+  const created = await createCommitment(
+    createCommitmentRequestSchema.parse({
+      userId,
+      label: "Timed",
+      dueOn: "2026-06-10",
+      dueTime: "17:00",
+      timeZone: "America/New_York",
+    }),
+  );
+  const detail = await getCommitment({
+    userId,
+    taskId: created.taskId,
+    includeHistory: false,
+    includeSources: false,
+  });
+  expect(detail).toMatchObject({
+    dueOn: "2026-06-10",
+    dueTime: "17:00",
+    timeZone: "America/New_York",
+  });
   expect(detail.dueAt?.toISOString()).toBe("2026-06-10T21:00:00.000Z");
 });
 ```
@@ -1169,28 +1421,36 @@ Expected: FAIL — detail doesn't return the new fields.
 In `src/lib/query/commitment-detail.ts`:
 
 The file already imports `and, eq, inArray` from `drizzle-orm` and `useDatabase` from `~/utils/db`. Make two import changes only:
+
 - Change `import { sources } from "~/db/schema";` → `import { claims, sources } from "~/db/schema";`
 - Add `import { readDueQualifier } from "./due-qualifier";`
 
 `getCommitment` does not currently hold a `db` handle (it calls `getNodeById`, and `loadSources` opens its own). Add one near the top of `getCommitment` (right after destructuring `params`):
+
 ```ts
-  const db = await useDatabase();
+const db = await useDatabase();
 ```
 
 Then, just before the final `return { ... }`, resolve the due qualifier from the active claim with a single indexed PK lookup:
+
 ```ts
-  let due = { dueTime: null as string | null, timeZone: null as string | null, dueAt: null as Date | null };
-  if (activeDue) {
-    const [dueRow] = await db
-      .select({ metadata: claims.metadata, objectInstant: claims.objectInstant })
-      .from(claims)
-      .where(and(eq(claims.id, activeDue.id), eq(claims.userId, userId)))
-      .limit(1);
-    if (dueRow) due = readDueQualifier(dueRow.metadata, dueRow.objectInstant);
-  }
+let due = {
+  dueTime: null as string | null,
+  timeZone: null as string | null,
+  dueAt: null as Date | null,
+};
+if (activeDue) {
+  const [dueRow] = await db
+    .select({ metadata: claims.metadata, objectInstant: claims.objectInstant })
+    .from(claims)
+    .where(and(eq(claims.id, activeDue.id), eq(claims.userId, userId)))
+    .limit(1);
+  if (dueRow) due = readDueQualifier(dueRow.metadata, dueRow.objectInstant);
+}
 ```
 
 Then in the returned object add after `dueOn: activeDue ? activeDue.objectLabel : null,`:
+
 ```ts
     dueTime: due.dueTime,
     timeZone: due.timeZone,
@@ -1219,6 +1479,7 @@ git commit -m "✨ feat(commitments): expose due time/zone/instant in commitment
 ## Task 9: Digest — instant-aware overdue/due-today bucketing
 
 **Files:**
+
 - Modify: `src/lib/digest/get-digest.ts` (`bucketCommitments` `:36-52`, call site `:100`)
 - Modify: `src/lib/digest/get-digest.test.ts` (add a pure unit test block)
 
@@ -1230,7 +1491,9 @@ Append to `src/lib/digest/get-digest.test.ts` a server-independent block (no DB)
 import { bucketCommitments } from "./get-digest";
 import type { OpenCommitment } from "~/lib/schemas/open-commitments";
 
-function commitment(partial: Partial<OpenCommitment> & { label: string }): OpenCommitment {
+function commitment(
+  partial: Partial<OpenCommitment> & { label: string },
+): OpenCommitment {
   return {
     taskId: "node_x" as OpenCommitment["taskId"],
     status: "pending",
@@ -1250,13 +1513,31 @@ describe("bucketCommitments (instant-aware)", () => {
   const tz = "America/New_York";
 
   it("moves a timed task to overdue once its instant passes now", () => {
-    const due9am = commitment({ label: "9am", dueOn: "2026-06-10", dueTime: "09:00", timeZone: tz, dueAt: new Date("2026-06-10T13:00:00Z") });
+    const due9am = commitment({
+      label: "9am",
+      dueOn: "2026-06-10",
+      dueTime: "09:00",
+      timeZone: tz,
+      dueAt: new Date("2026-06-10T13:00:00Z"),
+    });
     // now = 10:00 ET = 14:00Z → 9am task is overdue
-    const after = bucketCommitments([due9am], date, tz, 7, new Date("2026-06-10T14:00:00Z"));
+    const after = bucketCommitments(
+      [due9am],
+      date,
+      tz,
+      7,
+      new Date("2026-06-10T14:00:00Z"),
+    );
     expect(after.overdue.map((c) => c.label)).toEqual(["9am"]);
     expect(after.dueToday).toEqual([]);
     // now = 08:00 ET = 12:00Z → still due today
-    const before = bucketCommitments([due9am], date, tz, 7, new Date("2026-06-10T12:00:00Z"));
+    const before = bucketCommitments(
+      [due9am],
+      date,
+      tz,
+      7,
+      new Date("2026-06-10T12:00:00Z"),
+    );
     expect(before.dueToday.map((c) => c.label)).toEqual(["9am"]);
     expect(before.overdue).toEqual([]);
   });
@@ -1265,15 +1546,33 @@ describe("bucketCommitments (instant-aware)", () => {
     const today = commitment({ label: "today", dueOn: "2026-06-10" });
     const yesterday = commitment({ label: "yest", dueOn: "2026-06-09" });
     const soon = commitment({ label: "soon", dueOn: "2026-06-12" });
-    const res = bucketCommitments([today, yesterday, soon], date, tz, 7, new Date("2026-06-10T14:00:00Z"));
+    const res = bucketCommitments(
+      [today, yesterday, soon],
+      date,
+      tz,
+      7,
+      new Date("2026-06-10T14:00:00Z"),
+    );
     expect(res.dueToday.map((c) => c.label)).toEqual(["today"]);
     expect(res.overdue.map((c) => c.label)).toEqual(["yest"]);
     expect(res.upcoming.map((c) => c.label)).toEqual(["soon"]);
   });
 
   it("buckets a future timed task as upcoming", () => {
-    const tomorrow = commitment({ label: "tom", dueOn: "2026-06-11", dueTime: "09:00", timeZone: tz, dueAt: new Date("2026-06-11T13:00:00Z") });
-    const res = bucketCommitments([tomorrow], date, tz, 7, new Date("2026-06-10T14:00:00Z"));
+    const tomorrow = commitment({
+      label: "tom",
+      dueOn: "2026-06-11",
+      dueTime: "09:00",
+      timeZone: tz,
+      dueAt: new Date("2026-06-11T13:00:00Z"),
+    });
+    const res = bucketCommitments(
+      [tomorrow],
+      date,
+      tz,
+      7,
+      new Date("2026-06-10T14:00:00Z"),
+    );
     expect(res.upcoming.map((c) => c.label)).toEqual(["tom"]);
   });
 });
@@ -1306,7 +1605,10 @@ export function bucketCommitments(
 ): DigestCommitments {
   const upcomingUntil = shiftIsoDate(date, upcomingWithinDays);
   const todayEnd = startOfDayInTimeZone(shiftIsoDate(date, 1), timeZone);
-  const upcomingEndExcl = startOfDayInTimeZone(shiftIsoDate(date, upcomingWithinDays + 1), timeZone);
+  const upcomingEndExcl = startOfDayInTimeZone(
+    shiftIsoDate(date, upcomingWithinDays + 1),
+    timeZone,
+  );
 
   const dueToday: OpenCommitment[] = [];
   const overdue: OpenCommitment[] = [];
@@ -1333,9 +1635,11 @@ export function bucketCommitments(
 - [ ] **Step 4: Update the call site**
 
 In `getDigest`, the `commitments:` field currently calls `bucketCommitments(commitments, date, upcomingUntil)`. Replace with:
+
 ```ts
     commitments: bucketCommitments(commitments, date, timeZone, upcomingWithinDays, new Date()),
 ```
+
 Remove the now-unused `const upcomingUntil = shiftIsoDate(date, upcomingWithinDays);` line (the bucketer computes it internally). Keep `shiftIsoDate` and `startOfDayInTimeZone` imports — both are used inside the bucketer now. `startOfDayInTimeZone` is already imported (Task 2 updated its path).
 
 - [ ] **Step 5: Run the test to verify it passes**
@@ -1360,6 +1664,7 @@ git commit -m "✨ feat(digest): instant-aware overdue/due-today bucketing"
 ## Task 10: Context section renders time + zone
 
 **Files:**
+
 - Modify: `src/lib/context/sections/open-commitments.ts` (`renderLine` `:21-31`)
 - Create: `src/lib/context/sections/open-commitments.test.ts`
 
@@ -1368,25 +1673,42 @@ git commit -m "✨ feat(digest): instant-aware overdue/due-today bucketing"
 Create `src/lib/context/sections/open-commitments.test.ts`:
 
 ```ts
-import { describe, expect, it } from "vitest";
 import { renderLine } from "./open-commitments";
+import { describe, expect, it } from "vitest";
 import type { OpenCommitment } from "~/lib/schemas/open-commitments";
 
-function c(partial: Partial<OpenCommitment> & { label: string }): OpenCommitment {
+function c(
+  partial: Partial<OpenCommitment> & { label: string },
+): OpenCommitment {
   return {
     taskId: "node_x" as OpenCommitment["taskId"],
-    status: "pending", owner: null, dueOn: null, dueTime: null, timeZone: null,
-    dueAt: null, statedAt: new Date(), sourceId: "source_x" as OpenCommitment["sourceId"],
+    status: "pending",
+    owner: null,
+    dueOn: null,
+    dueTime: null,
+    timeZone: null,
+    dueAt: null,
+    statedAt: new Date(),
+    sourceId: "source_x" as OpenCommitment["sourceId"],
     ...partial,
   };
 }
 
 describe("renderLine", () => {
   it("renders date only when no time", () => {
-    expect(renderLine(c({ label: "A", dueOn: "2026-06-10" }))).toContain("due=2026-06-10");
+    expect(renderLine(c({ label: "A", dueOn: "2026-06-10" }))).toContain(
+      "due=2026-06-10",
+    );
   });
   it("renders date + time + zone when timed", () => {
-    const line = renderLine(c({ label: "A", dueOn: "2026-06-10", dueTime: "17:00", timeZone: "America/New_York" }));
+    const line = renderLine(
+      c({
+        label: "A",
+        dueOn: "2026-06-10",
+        dueTime: "17:00",
+        timeZone: "America/New_York",
+      }),
+    );
     expect(line).toContain("due=2026-06-10 17:00 America/New_York");
   });
   it("omits due entirely when undated", () => {
@@ -1405,13 +1727,13 @@ Expected: FAIL — `renderLine` is not exported / does not render time.
 In `src/lib/context/sections/open-commitments.ts`, change `function renderLine(` to `export function renderLine(` and replace the due block:
 
 ```ts
-  if (commitment.dueOn !== null) {
-    const due =
-      commitment.dueTime !== null && commitment.timeZone !== null
-        ? `${commitment.dueOn} ${commitment.dueTime} ${commitment.timeZone}`
-        : commitment.dueOn;
-    parts.push(`due=${due}`);
-  }
+if (commitment.dueOn !== null) {
+  const due =
+    commitment.dueTime !== null && commitment.timeZone !== null
+      ? `${commitment.dueOn} ${commitment.dueTime} ${commitment.timeZone}`
+      : commitment.dueOn;
+  parts.push(`due=${due}`);
+}
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
@@ -1431,6 +1753,7 @@ git commit -m "✨ feat(context): render due time + zone in open-commitments sec
 ## Task 11: SDK doc comments, SDK docs, CHANGELOG, version bump
 
 **Files:**
+
 - Modify: `src/sdk/memory-client.ts` (doc comments on `setCommitmentDue`/`createCommitment`, ~`:731-755`)
 - Modify: `docs/sdk/commitments.md`
 - Modify: `CHANGELOG.md`
@@ -1465,6 +1788,7 @@ git commit -m "📚 docs(commitments): document due time + timezone; bump to 1.1
 ## Task 12: Full verification + provisioning sweep
 
 **Files:**
+
 - Possibly modify: any remaining `*.test.ts` whose provisioned `claims` table lacks `object_instant` (and `metadata`).
 
 - [ ] **Step 1: Run the full test suite**

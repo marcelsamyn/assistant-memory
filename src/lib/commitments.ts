@@ -19,7 +19,6 @@ import type {
   SetCommitmentDueRequest,
   SetCommitmentDueResponse,
 } from "~/lib/schemas/set-commitment-due";
-import { instantFromLocalTime } from "~/lib/time-zone";
 import type {
   SetCommitmentOwnerRequest,
   SetCommitmentOwnerResponse,
@@ -33,6 +32,7 @@ import type {
   UpdateCommitmentResponse,
 } from "~/lib/schemas/update-commitment";
 import { ensureDayNode } from "~/lib/temporal";
+import { instantFromLocalTime } from "~/lib/time-zone";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -111,7 +111,8 @@ function resolveDueQualifier(
 export async function setCommitmentDue(
   input: SetCommitmentDueRequest,
 ): Promise<SetCommitmentDueResponse> {
-  const { userId, taskId, dueOn, dueTime, timeZone, note, assertedByKind } = input;
+  const { userId, taskId, dueOn, dueTime, timeZone, note, assertedByKind } =
+    input;
   const db = await useDatabase();
 
   await requireOwnedTask(db, userId, taskId);
@@ -137,7 +138,15 @@ export async function setCommitmentDue(
       if (updated) retractedClaimIds.push(updated.id);
     }
 
-    return { taskId, dueOn: null, dueTime: null, timeZone: null, dueAt: null, claimId: null, retractedClaimIds };
+    return {
+      taskId,
+      dueOn: null,
+      dueTime: null,
+      timeZone: null,
+      dueAt: null,
+      claimId: null,
+      retractedClaimIds,
+    };
   }
 
   // Resolve or create the canonical Temporal node for the requested date.
@@ -146,7 +155,11 @@ export async function setCommitmentDue(
   const targetDate = parseISO(dueOn);
   const dayNodeId = await ensureDayNode(db, userId, targetDate);
 
-  const { metadata, objectInstant } = resolveDueQualifier(dueOn, dueTime, timeZone);
+  const { metadata, objectInstant } = resolveDueQualifier(
+    dueOn,
+    dueTime,
+    timeZone,
+  );
 
   const created = await createClaim({
     userId,
@@ -191,8 +204,17 @@ export async function setCommitmentDue(
 export async function createCommitment(
   input: CreateCommitmentRequest,
 ): Promise<CreateCommitmentResponse> {
-  const { userId, label, description, status, dueOn, dueTime, timeZone, ownedBy, assertedByKind } =
-    input;
+  const {
+    userId,
+    label,
+    description,
+    status,
+    dueOn,
+    dueTime,
+    timeZone,
+    ownedBy,
+    assertedByKind,
+  } = input;
   const db = await useDatabase();
 
   // Resolve the owner up-front: it yields a natural-language OWNED_BY statement
@@ -224,7 +246,10 @@ export async function createCommitment(
   ];
 
   let dueIndex: number | null = null;
-  let dueQualifier: { metadata?: Record<string, unknown>; objectInstant?: Date } = {};
+  let dueQualifier: {
+    metadata?: Record<string, unknown>;
+    objectInstant?: Date;
+  } = {};
   if (dueOn !== undefined) {
     const dueNodeId = await ensureDayNode(db, userId, parseISO(dueOn));
     dueQualifier = resolveDueQualifier(dueOn, dueTime, timeZone);
