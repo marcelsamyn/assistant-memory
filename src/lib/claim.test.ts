@@ -183,4 +183,118 @@ describeIfServer("claim operations", () => {
       await client.end();
     }
   });
+
+  it("persists metadata and objectInstant when provided", async () => {
+    const userId = "user_meta";
+    const sourceId = newTypeId("source");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+
+    try {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS "users" ("id" text PRIMARY KEY NOT NULL);
+        CREATE TABLE IF NOT EXISTS "nodes" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "node_type" varchar(50) NOT NULL,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS "sources" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "type" varchar(50) NOT NULL,
+          "external_id" text NOT NULL,
+          "scope" varchar(16) DEFAULT 'personal' NOT NULL,
+          "status" varchar(20) DEFAULT 'completed',
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS "claims" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "subject_node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+          "object_node_id" text REFERENCES "nodes"("id") ON DELETE CASCADE,
+          "object_value" text,
+          "predicate" varchar(80) NOT NULL,
+          "statement" text NOT NULL,
+          "description" text,
+          "metadata" jsonb,
+          "object_instant" timestamp with time zone,
+          "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
+          "scope" varchar(16) DEFAULT 'personal' NOT NULL,
+          "asserted_by_kind" varchar(24) NOT NULL,
+          "asserted_by_node_id" text REFERENCES "nodes"("id") ON DELETE SET NULL,
+          "superseded_by_claim_id" text REFERENCES "claims"("id") ON DELETE SET NULL,
+          "contradicted_by_claim_id" text REFERENCES "claims"("id") ON DELETE SET NULL,
+          "stated_at" timestamp with time zone NOT NULL,
+          "valid_from" timestamp with time zone,
+          "valid_to" timestamp with time zone,
+          "status" varchar(30) DEFAULT 'active' NOT NULL,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+          "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+          CONSTRAINT "claims_object_shape_xor_ck2"
+            CHECK (num_nonnulls("object_node_id", "object_value") = 1)
+        );
+        CREATE TABLE IF NOT EXISTS "node_metadata" (
+          "id" text PRIMARY KEY NOT NULL,
+          "node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+          "label" text NOT NULL,
+          "canonical_label" text NOT NULL
+        );
+      `);
+
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`, [userId]);
+      await client.query(
+        `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+           VALUES ($1, $2, 'manual', 'manual:user_meta', 'completed')`,
+        [sourceId, userId],
+      );
+
+      const { createClaim } = await import("./claim");
+      const { setSkipEmbeddingPersistence } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      const subjectId = newTypeId("node");
+      await client.query(
+        `INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Entity')`,
+        [subjectId, userId],
+      );
+
+      const objectId = newTypeId("node");
+      await client.query(
+        `INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Temporal')`,
+        [objectId, userId],
+      );
+
+      const created = await createClaim({
+        userId,
+        subjectNodeId: subjectId,
+        predicate: "DUE_ON",
+        statement: "test due",
+        objectNodeId: objectId,
+        sourceId,
+        metadata: { dueTime: "17:00", timeZone: "America/New_York" },
+        objectInstant: new Date("2026-06-10T21:00:00.000Z"),
+      });
+
+      const { rows } = await client.query(
+        `SELECT metadata, object_instant FROM claims WHERE id = $1`,
+        [created.id],
+      );
+      expect(rows[0].metadata).toEqual({ dueTime: "17:00", timeZone: "America/New_York" });
+      expect(new Date(rows[0].object_instant).toISOString()).toBe("2026-06-10T21:00:00.000Z");
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
 });

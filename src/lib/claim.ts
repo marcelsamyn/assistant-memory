@@ -101,6 +101,17 @@ export type CreateClaimInput = {
    * (e.g. `add_claim` cleanup op) pass this through.
    */
   scope?: Scope | undefined;
+  /**
+   * Optional jsonb payload stored on the claim. Used for predicate-specific
+   * qualifiers (e.g. a `DUE_ON` claim's `{ dueTime, timeZone }`). Opaque here —
+   * callers own the shape and validate it at their boundary.
+   */
+  metadata?: Record<string, unknown> | undefined;
+  /**
+   * Optional resolved UTC instant for a time-qualified temporal-object claim
+   * (persisted to `claims.object_instant`). NULL/undefined for date-only claims.
+   */
+  objectInstant?: Date | undefined;
 };
 
 /** Generate claim embedding text independent of node labels. */
@@ -208,6 +219,8 @@ export async function createClaim(
       predicate: input.predicate,
       statement: input.statement,
       description: input.description,
+      metadata: input.metadata,
+      objectInstant: input.objectInstant,
       sourceId,
       scope: input.scope ?? "personal",
       assertedByKind: input.assertedByKind ?? "user",
