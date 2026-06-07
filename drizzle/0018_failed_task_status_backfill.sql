@@ -15,11 +15,15 @@
 --
 -- Idempotent and scoped strictly to predicate = 'HAS_TASK_STATUS'. Rows already
 -- on a canonical value don't match (guarded by object_value <> 'abandoned').
+--
+-- Unlike 0017, this match needs no regexp_replace: 'failed' is a single token
+-- with no whitespace or hyphens, so `lower(btrim(...))` already covers every
+-- casing/padding variant `coerceTaskStatus` maps (e.g. 'Failed', ' failed ').
 
 UPDATE "claims"
 SET "object_value" = 'abandoned',
     "updated_at" = now()
 WHERE "predicate" = 'HAS_TASK_STATUS'
   AND "object_value" IS NOT NULL
-  AND regexp_replace(lower(btrim("object_value")), '[[:space:]-]+', '_', 'g') = 'failed'
+  AND lower(btrim("object_value")) = 'failed'
   AND "object_value" <> 'abandoned';
