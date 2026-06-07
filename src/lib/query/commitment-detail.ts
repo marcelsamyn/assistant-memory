@@ -1,6 +1,7 @@
 /** Detail read model for a single commitment (current state + history + sources). */
 import { and, eq, inArray } from "drizzle-orm";
-import { sources } from "~/db/schema";
+import { claims, sources } from "~/db/schema";
+import { readDueQualifier, type DueQualifierFields } from "./due-qualifier";
 import { coerceTaskStatus } from "~/lib/claims/task-status";
 import { TaskNotFoundError } from "~/lib/commitments";
 import { getNodeById } from "~/lib/node";
@@ -55,6 +56,8 @@ export async function getCommitment(
   params: GetCommitmentRequest,
 ): Promise<GetCommitmentResponse> {
   const { userId, taskId, includeHistory, includeSources } = params;
+
+  const db = await useDatabase();
 
   const result = await getNodeById(userId, taskId, {
     predicates: [...TASK_PREDICATES],
@@ -121,6 +124,16 @@ export async function getCommitment(
       )
     : [];
 
+  let due: DueQualifierFields = { dueTime: null, timeZone: null, dueAt: null };
+  if (activeDue) {
+    const [dueRow] = await db
+      .select({ metadata: claims.metadata, objectInstant: claims.objectInstant })
+      .from(claims)
+      .where(and(eq(claims.id, activeDue.id), eq(claims.userId, userId)))
+      .limit(1);
+    if (dueRow) due = readDueQualifier(dueRow.metadata, dueRow.objectInstant);
+  }
+
   return {
     taskId,
     label: result.node.label,
@@ -132,6 +145,9 @@ export async function getCommitment(
     statusAssertedByKind: activeStatus ? activeStatus.assertedByKind : null,
     owner,
     dueOn: activeDue ? activeDue.objectLabel : null,
+    dueTime: due.dueTime,
+    timeZone: due.timeZone,
+    dueAt: due.dueAt,
     dueClaimId: activeDue ? activeDue.id : null,
     sources: sourcesList,
     history,

@@ -66,6 +66,9 @@ export const getCommitmentResponseSchema = z.object({
     })
     .nullable(),
   dueOn: z.string().nullable(),
+  dueTime: z.string().nullable(),
+  timeZone: z.string().nullable(),
+  dueAt: z.coerce.date().nullable(),
   dueClaimId: typeIdSchema("claim").nullable(),
   /** Evidence sources; empty when `includeSources=false`. */
   sources: z.array(commitmentSourceSchema),
