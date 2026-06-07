@@ -21,6 +21,8 @@ describe("coerceTaskStatus", () => {
     expect(coerceTaskStatus("complete")).toBe("done");
     expect(coerceTaskStatus("cancelled")).toBe("abandoned");
     expect(coerceTaskStatus("canceled")).toBe("abandoned");
+    expect(coerceTaskStatus("failed")).toBe("abandoned");
+    expect(coerceTaskStatus("Failed")).toBe("abandoned");
     expect(coerceTaskStatus("todo")).toBe("pending");
     expect(coerceTaskStatus("doing")).toBe("in_progress");
   });
