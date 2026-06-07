@@ -37,22 +37,86 @@ function isMalformedUpstreamCompletion(err: unknown): boolean {
 }
 
 /**
- * Wrapper around `client.chat.completions.parse` that normalizes the
- * SDK's malformed-response `TypeError` into {@link MalformedUpstreamCompletionError}.
- * Signature mirrors the SDK so call sites preserve full type inference on
- * the parsed payload.
+ * Total attempts (1 initial + retries) for a structured completion whose
+ * failure looks like a transient bad-response shape rather than well-formed
+ * data we disagree with. Kept small so a deterministically broken call still
+ * fails fast instead of hammering the provider.
+ */
+export const STRUCTURED_COMPLETION_MAX_ATTEMPTS = 3;
+
+/**
+ * True when a failed `chat.completions.parse` looks like a transient
+ * bad-response shape worth re-issuing, as opposed to a deterministic problem
+ * (auth, rate limit, a schema mismatch in well-formed JSON) that a retry
+ * can't fix.
+ *
+ * - `SyntaxError`: the SDK runs `JSON.parse` on the response body inside
+ *   `.parse()` (via `zodResponseFormat`'s `$parseRaw`). A provider that
+ *   truncates a long structured response mid-string — common with custom
+ *   base-URL providers that don't flag `finish_reason: "length"` — surfaces
+ *   here as "Unterminated string in JSON at position …". The model is
+ *   stochastic, so a fresh attempt usually returns a complete, parseable body.
+ * - {@link MalformedUpstreamCompletionError}: provider returned an envelope
+ *   without `choices` (already normalized from the SDK's TypeError below).
+ * - `LengthFinishReasonError`: provider *did* flag length truncation; matched
+ *   by name to avoid importing the SDK error class. Output length varies
+ *   run-to-run, so a retry can still land under the cap.
+ *
+ * A `ZodError` (well-formed JSON that violates the schema) is intentionally
+ * NOT retried — that signals a prompt/schema bug, and retrying would just burn
+ * tokens while masking it.
+ */
+function isRetryableCompletionError(err: unknown): boolean {
+  if (err instanceof SyntaxError) return true;
+  if (err instanceof MalformedUpstreamCompletionError) return true;
+  return err instanceof Error && err.name === "LengthFinishReasonError";
+}
+
+/**
+ * Wrapper around `client.chat.completions.parse` that normalizes the SDK's
+ * malformed-response `TypeError` into {@link MalformedUpstreamCompletionError}
+ * and retries transient bad-response shapes (truncated/unparseable JSON,
+ * missing-`choices` envelopes, length truncation) up to
+ * {@link STRUCTURED_COMPLETION_MAX_ATTEMPTS} times. Retries are immediate:
+ * the failure modes covered here are response-shape problems, not rate
+ * limiting, so backing off would only add latency.
+ *
+ * Signature mirrors the SDK so call sites preserve full type inference on the
+ * parsed payload.
  */
 export async function parseStructuredCompletion<
   Body extends ChatCompletionCreateParamsNonStreaming,
 >(client: OpenAI, body: Body) {
-  try {
-    return await client.chat.completions.parse(body);
-  } catch (err) {
-    if (isMalformedUpstreamCompletion(err)) {
-      throw new MalformedUpstreamCompletionError({ cause: err });
+  let lastError: unknown;
+  for (
+    let attempt = 1;
+    attempt <= STRUCTURED_COMPLETION_MAX_ATTEMPTS;
+    attempt++
+  ) {
+    try {
+      return await client.chat.completions.parse(body);
+    } catch (err) {
+      lastError = isMalformedUpstreamCompletion(err)
+        ? new MalformedUpstreamCompletionError({ cause: err })
+        : err;
+
+      const canRetry =
+        attempt < STRUCTURED_COMPLETION_MAX_ATTEMPTS &&
+        isRetryableCompletionError(lastError);
+      if (!canRetry) throw lastError;
+
+      const detail =
+        lastError instanceof Error
+          ? `${lastError.name}: ${lastError.message}`
+          : String(lastError);
+      console.warn(
+        `parseStructuredCompletion: attempt ${attempt}/${STRUCTURED_COMPLETION_MAX_ATTEMPTS} failed (${detail}); retrying`,
+      );
     }
-    throw err;
   }
+  // The loop returns on success and throws on a non-retryable or final-attempt
+  // failure, so this is unreachable; it satisfies the type checker.
+  throw lastError;
 }
 
 export async function createCompletionClient(userId: string): Promise<OpenAI> {
