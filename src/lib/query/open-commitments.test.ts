@@ -119,6 +119,8 @@ describeIfServer("open commitments query", () => {
           "subject_node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
           "object_node_id" text REFERENCES "nodes"("id") ON DELETE CASCADE,
           "object_value" text,
+          "metadata" jsonb,
+          "object_instant" timestamp with time zone,
           "predicate" varchar(80) NOT NULL,
           "statement" text NOT NULL,
           "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
