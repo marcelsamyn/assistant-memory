@@ -1,6 +1,8 @@
 import { AssertedByKindEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
 import { z } from "zod";
+import { DUE_TIME_PATTERN } from "./due-claim-metadata.js";
+import { isValidTimeZone } from "~/lib/time-zone.js";
 
 /**
  * Set or clear a Task's due date as a single, idempotent operation.
@@ -14,34 +16,58 @@ import { z } from "zod";
  * internally, so callers don't need to know how Temporal nodes are labelled
  * or de-duplicated.
  */
-export const setCommitmentDueRequestSchema = z.object({
-  userId: z.string(),
-  taskId: typeIdSchema("node"),
-  /**
-   * `YYYY-MM-DD` to set the due date, or `null` to clear it. Pass the date
-   * the user means in their own local context — the server normalises to
-   * a Temporal day node keyed by the literal string.
-   */
-  dueOn: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/, "dueOn must be YYYY-MM-DD or null")
-    .nullable(),
-  /**
-   * Optional human-readable note attached to the new claim's description
-   * (e.g. "client requested extra time"). Ignored when `dueOn` is `null`
-   * because no new claim is asserted.
-   */
-  note: z.string().min(1).optional(),
-  /**
-   * Provenance for the new `DUE_ON` claim. Defaults to `"user"`. Has no
-   * effect when `dueOn` is `null`.
-   */
-  assertedByKind: AssertedByKindEnum.optional(),
-});
+export const setCommitmentDueRequestSchema = z
+  .object({
+    userId: z.string(),
+    taskId: typeIdSchema("node"),
+    /**
+     * `YYYY-MM-DD` to set the due date, or `null` to clear it. Pass the date
+     * the user means in their own local context — the server normalises to
+     * a Temporal day node keyed by the literal string.
+     */
+    dueOn: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "dueOn must be YYYY-MM-DD or null")
+      .nullable(),
+    /** Optional wall-clock time `HH:mm` to qualify the date. Requires `timeZone`. */
+    dueTime: z
+      .string()
+      .regex(DUE_TIME_PATTERN, "dueTime must be HH:mm")
+      .nullish(),
+    /** IANA zone for `dueTime`. Required iff `dueTime` is set. */
+    timeZone: z
+      .string()
+      .refine(isValidTimeZone, "Invalid IANA time zone")
+      .nullish(),
+    /**
+     * Optional human-readable note attached to the new claim's description
+     * (e.g. "client requested extra time"). Ignored when `dueOn` is `null`
+     * because no new claim is asserted.
+     */
+    note: z.string().min(1).optional(),
+    /**
+     * Provenance for the new `DUE_ON` claim. Defaults to `"user"`. Has no
+     * effect when `dueOn` is `null`.
+     */
+    assertedByKind: AssertedByKindEnum.optional(),
+  })
+  .superRefine((v, ctx) => {
+    const hasTime = v.dueTime != null;
+    const hasZone = v.timeZone != null;
+    if (hasTime !== hasZone) {
+      ctx.addIssue({ code: "custom", message: "dueTime and timeZone must be set together" });
+    }
+    if (v.dueOn === null && (hasTime || hasZone)) {
+      ctx.addIssue({ code: "custom", message: "dueTime/timeZone require a dueOn date" });
+    }
+  });
 
 export const setCommitmentDueResponseSchema = z.object({
   taskId: typeIdSchema("node"),
   dueOn: z.string().nullable(),
+  dueTime: z.string().nullable(),
+  timeZone: z.string().nullable(),
+  dueAt: z.coerce.date().nullable(),
   /**
    * ID of the newly asserted `DUE_ON` claim. `null` when `dueOn` was set to
    * `null` (i.e. the operation only retracted prior claims).
