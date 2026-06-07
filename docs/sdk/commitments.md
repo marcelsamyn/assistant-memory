@@ -29,21 +29,26 @@ Opens a new Task node, bootstrapping it with a `HAS_TASK_STATUS` claim and optio
 | `description`    | `string` (min 1)             | no       | Optional longer description.                                                                                                |
 | `status`         | `"pending" \| "in_progress"` | no       | Defaults to `"pending"`. Only open statuses are allowed at creation; use `setCommitmentStatus` to reach `done`/`abandoned`. |
 | `dueOn`          | `string` (`YYYY-MM-DD`)      | no       | Server resolves/creates the Temporal day node.                                                                              |
+| `dueTime`        | `string` (`HH:mm`)           | no       | 24h wall-clock time to qualify `dueOn`. Mutually required with `timeZone`; requires `dueOn` to be set.                      |
+| `timeZone`       | `string` (IANA)              | no       | IANA timezone name (e.g. `"America/New_York"`). Mutually required with `dueTime`; requires `dueOn` to be set.               |
 | `ownedBy`        | `nodeId`                     | no       | Must be an existing node owned by `userId`.                                                                                 |
 | `assertedByKind` | `AssertedByKind`             | no       | Defaults to `"user"`.                                                                                                       |
 
 **Response**
 
-| Field           | Type                         | Notes                                     |
-| --------------- | ---------------------------- | ----------------------------------------- |
-| `taskId`        | `nodeId`                     | The new Task node id.                     |
-| `label`         | `string`                     | As stored.                                |
-| `status`        | `"pending" \| "in_progress"` |                                           |
-| `dueOn`         | `string \| null`             |                                           |
-| `owner`         | `{ nodeId, label } \| null`  |                                           |
-| `statusClaimId` | `claimId`                    | The bootstrapped `HAS_TASK_STATUS` claim. |
-| `dueClaimId`    | `claimId \| null`            |                                           |
-| `ownerClaimId`  | `claimId \| null`            |                                           |
+| Field           | Type                         | Notes                                                                |
+| --------------- | ---------------------------- | -------------------------------------------------------------------- |
+| `taskId`        | `nodeId`                     | The new Task node id.                                                |
+| `label`         | `string`                     | As stored.                                                           |
+| `status`        | `"pending" \| "in_progress"` |                                                                      |
+| `dueOn`         | `string \| null`             |                                                                      |
+| `dueTime`       | `string \| null`             | The stored `HH:mm` time, or `null` for date-only.                    |
+| `timeZone`      | `string \| null`             | The stored IANA timezone, or `null` for date-only.                   |
+| `dueAt`         | `Date \| null`               | Resolved UTC instant (`dueOn` + `dueTime` in `timeZone`), or `null`. |
+| `owner`         | `{ nodeId, label } \| null`  |                                                                      |
+| `statusClaimId` | `claimId`                    | The bootstrapped `HAS_TASK_STATUS` claim.                            |
+| `dueClaimId`    | `claimId \| null`            |                                                                      |
+| `ownerClaimId`  | `claimId \| null`            |                                                                      |
 
 **Lifecycle effect:** creates a fresh Task node; always starts in an open status. Does not deduplicate against existing tasks with the same label.
 
@@ -55,6 +60,16 @@ const task = await client.createCommitment({
   status: "in_progress",
 });
 // task.taskId, task.statusClaimId are available immediately
+
+// With time-of-day precision:
+const timed = await client.createCommitment({
+  userId: "user_abc",
+  label: "Board call",
+  dueOn: "2026-07-31",
+  dueTime: "14:00",
+  timeZone: "America/New_York",
+});
+// timed.dueAt is the resolved UTC Date (14:00 EDT = 18:00Z)
 ```
 
 ---
@@ -194,31 +209,47 @@ Set or clear a Task's due date. The server resolves the canonical Temporal day n
 
 **Request**
 
-| Field            | Type             | Required | Notes                                               |
-| ---------------- | ---------------- | -------- | --------------------------------------------------- |
-| `userId`         | `string`         | yes      |                                                     |
-| `taskId`         | `nodeId`         | yes      |                                                     |
-| `dueOn`          | `string \| null` | yes      | `YYYY-MM-DD` to set, `null` to clear.               |
-| `note`           | `string` (min 1) | no       | Stored on the new `DUE_ON` claim. Ignored on clear. |
-| `assertedByKind` | `AssertedByKind` | no       | Defaults to `"user"`. Ignored on clear.             |
+| Field            | Type               | Required | Notes                                                                                                     |
+| ---------------- | ------------------ | -------- | --------------------------------------------------------------------------------------------------------- |
+| `userId`         | `string`           | yes      |                                                                                                           |
+| `taskId`         | `nodeId`           | yes      |                                                                                                           |
+| `dueOn`          | `string \| null`   | yes      | `YYYY-MM-DD` to set, `null` to clear.                                                                     |
+| `dueTime`        | `string` (`HH:mm`) | no       | 24h wall-clock time. Mutually required with `timeZone`; `dueOn` must not be `null` when set.              |
+| `timeZone`       | `string` (IANA)    | no       | IANA timezone name (e.g. `"Europe/Paris"`). Mutually required with `dueTime`; `dueOn` must not be `null`. |
+| `note`           | `string` (min 1)   | no       | Stored on the new `DUE_ON` claim. Ignored on clear.                                                       |
+| `assertedByKind` | `AssertedByKind`   | no       | Defaults to `"user"`. Ignored on clear.                                                                   |
 
 **Response**
 
-| Field               | Type              | Notes                                                              |
-| ------------------- | ----------------- | ------------------------------------------------------------------ |
-| `taskId`            | `nodeId`          |                                                                    |
-| `dueOn`             | `string \| null`  | The new date, or `null` after a clear.                             |
-| `claimId`           | `claimId \| null` | The new `DUE_ON` claim. `null` on the clear path.                  |
-| `retractedClaimIds` | `claimId[]`       | Prior `DUE_ON` claims retracted. Populated only on the clear path. |
+| Field               | Type              | Notes                                                               |
+| ------------------- | ----------------- | ------------------------------------------------------------------- |
+| `taskId`            | `nodeId`          |                                                                     |
+| `dueOn`             | `string \| null`  | The new date, or `null` after a clear.                              |
+| `dueTime`           | `string \| null`  | The stored `HH:mm` time, or `null` for date-only or after a clear.  |
+| `timeZone`          | `string \| null`  | The stored IANA timezone, or `null` for date-only or after a clear. |
+| `dueAt`             | `Date \| null`    | Resolved UTC instant, or `null` for date-only or after a clear.     |
+| `claimId`           | `claimId \| null` | The new `DUE_ON` claim. `null` on the clear path.                   |
+| `retractedClaimIds` | `claimId[]`       | Prior `DUE_ON` claims retracted. Populated only on the clear path.  |
 
-**Lifecycle effect:** identical pattern to `setCommitmentOwner`. Set path supersedes via lifecycle; clear path retracts explicitly.
+**Lifecycle effect:** identical pattern to `setCommitmentOwner`. Set path supersedes via lifecycle; clear path retracts explicitly. Calling without `dueTime`/`timeZone` sets a date-only due (clears any prior time).
 
 ```ts
+// Date only
 await client.setCommitmentDue({
   userId: "user_abc",
   taskId: "node_01kq...",
   dueOn: "2026-08-15",
 });
+
+// With time-of-day precision
+const result = await client.setCommitmentDue({
+  userId: "user_abc",
+  taskId: "node_01kq...",
+  dueOn: "2026-08-15",
+  dueTime: "09:30",
+  timeZone: "Europe/Paris",
+});
+// result.dueAt is the resolved UTC Date (09:30 CEST = 07:30Z)
 ```
 
 ---
@@ -243,15 +274,18 @@ Returns only Task nodes whose latest **trusted** personal `HAS_TASK_STATUS` is `
 
 Each `OpenCommitment`:
 
-| Field      | Type                         |
-| ---------- | ---------------------------- |
-| `taskId`   | `nodeId`                     |
-| `label`    | `string \| null`             |
-| `status`   | `"pending" \| "in_progress"` |
-| `owner`    | `{ nodeId, label } \| null`  |
-| `dueOn`    | `string \| null`             |
-| `statedAt` | `Date`                       |
-| `sourceId` | `sourceId`                   |
+| Field      | Type                         | Notes                                                           |
+| ---------- | ---------------------------- | --------------------------------------------------------------- |
+| `taskId`   | `nodeId`                     |                                                                 |
+| `label`    | `string \| null`             |                                                                 |
+| `status`   | `"pending" \| "in_progress"` |                                                                 |
+| `owner`    | `{ nodeId, label } \| null`  |                                                                 |
+| `dueOn`    | `string \| null`             |                                                                 |
+| `dueTime`  | `string \| null`             | `HH:mm` wall-clock time, or `null` for date-only tasks.         |
+| `timeZone` | `string \| null`             | IANA timezone, or `null` for date-only tasks.                   |
+| `dueAt`    | `Date \| null`               | Resolved UTC instant, or `null` for date-only or undated tasks. |
+| `statedAt` | `Date`                       |                                                                 |
+| `sourceId` | `sourceId`                   |                                                                 |
 
 ```ts
 const { commitments } = await client.getOpenCommitments({
@@ -270,40 +304,47 @@ Paginated, sortable, searchable list across **all four statuses** (open, done, a
 
 **Request**
 
-| Field        | Type                                                     | Required | Default             | Notes                                                                                  |
-| ------------ | -------------------------------------------------------- | -------- | ------------------- | -------------------------------------------------------------------------------------- |
-| `userId`     | `string`                                                 | yes      |                     |                                                                                        |
-| `statuses`   | `TaskStatus[]`                                           | no       | all four            | Filter to specific statuses.                                                           |
-| `provenance` | `"trusted" \| "candidate" \| "all"`                      | no       | `"trusted"`         | `"trusted"` excludes `assistant_inferred`; `"candidate"` is only `assistant_inferred`. |
-| `ownedBy`    | `nodeId`                                                 | no       |                     | Mutually exclusive with `unowned`.                                                     |
-| `unowned`    | `boolean`                                                | no       |                     | Only tasks with no active `OWNED_BY`.                                                  |
-| `dueBefore`  | `string` (`YYYY-MM-DD`)                                  | no       |                     | Inclusive upper bound on due date.                                                     |
-| `dueAfter`   | `string` (`YYYY-MM-DD`)                                  | no       |                     | Inclusive lower bound on due date.                                                     |
-| `hasDueDate` | `boolean`                                                | no       |                     | `false` = undated tasks only; `true` = dated tasks only.                               |
-| `search`     | `string` (min 1)                                         | no       |                     | Case-insensitive label substring match.                                                |
-| `sort`       | `"statusChangedAt" \| "dueOn" \| "createdAt" \| "label"` | no       | `"statusChangedAt"` |                                                                                        |
-| `order`      | `"asc" \| "desc"`                                        | no       | `"desc"`            |                                                                                        |
-| `limit`      | `number` (1–200)                                         | no       | `50`                |                                                                                        |
-| `cursor`     | `string`                                                 | no       |                     | Opaque keyset cursor from a prior page's `nextCursor`.                                 |
+| Field              | Type                                                                | Required | Default             | Notes                                                                                  |
+| ------------------ | ------------------------------------------------------------------- | -------- | ------------------- | -------------------------------------------------------------------------------------- |
+| `userId`           | `string`                                                            | yes      |                     |                                                                                        |
+| `statuses`         | `TaskStatus[]`                                                      | no       | all four            | Filter to specific statuses.                                                           |
+| `provenance`       | `"trusted" \| "candidate" \| "all"`                                 | no       | `"trusted"`         | `"trusted"` excludes `assistant_inferred`; `"candidate"` is only `assistant_inferred`. |
+| `ownedBy`          | `nodeId`                                                            | no       |                     | Mutually exclusive with `unowned`.                                                     |
+| `unowned`          | `boolean`                                                           | no       |                     | Only tasks with no active `OWNED_BY`.                                                  |
+| `dueBefore`        | `string` (`YYYY-MM-DD`)                                             | no       |                     | Inclusive upper bound on due date.                                                     |
+| `dueAfter`         | `string` (`YYYY-MM-DD`)                                             | no       |                     | Inclusive lower bound on due date.                                                     |
+| `dueBeforeInstant` | `string` (ISO 8601 instant)                                         | no       |                     | Inclusive upper bound on `dueAt` (UTC instant). Matches timed tasks only.              |
+| `dueAfterInstant`  | `string` (ISO 8601 instant)                                         | no       |                     | Inclusive lower bound on `dueAt` (UTC instant). Matches timed tasks only.              |
+| `hasDueDate`       | `boolean`                                                           | no       |                     | `false` = undated tasks only; `true` = dated tasks only.                               |
+| `search`           | `string` (min 1)                                                    | no       |                     | Case-insensitive label substring match.                                                |
+| `sort`             | `"statusChangedAt" \| "dueOn" \| "dueAt" \| "createdAt" \| "label"` | no       | `"statusChangedAt"` |                                                                                        |
+| `order`            | `"asc" \| "desc"`                                                   | no       | `"desc"`            |                                                                                        |
+| `limit`            | `number` (1–200)                                                    | no       | `50`                |                                                                                        |
+| `cursor`           | `string`                                                            | no       |                     | Opaque keyset cursor from a prior page's `nextCursor`.                                 |
 
 `ownedBy` and `unowned` are mutually exclusive; passing both returns a validation error.
 
-Undated tasks always sort **last** when `sort: "dueOn"`, regardless of `order`.
+Undated tasks always sort **last** when `sort: "dueOn"` or `sort: "dueAt"`, regardless of `order`. `sort: "dueAt"` orders by the resolved UTC instant; date-only tasks have no instant and sort last alongside undated tasks.
+
+The instant filters (`dueBeforeInstant` / `dueAfterInstant`) match timed tasks only. Date-only tasks have no resolved instant and are excluded when either filter is active.
 
 **Response:** `{ commitments: CommitmentListItem[], nextCursor: string | null }`
 
 Each `CommitmentListItem`:
 
-| Field             | Type                        | Notes                                  |
-| ----------------- | --------------------------- | -------------------------------------- |
-| `taskId`          | `nodeId`                    |                                        |
-| `label`           | `string \| null`            |                                        |
-| `status`          | `TaskStatus`                | Any of the four.                       |
-| `owner`           | `{ nodeId, label } \| null` |                                        |
-| `dueOn`           | `string \| null`            |                                        |
-| `statusChangedAt` | `Date`                      | `statedAt` of the active status claim. |
-| `createdAt`       | `Date`                      |                                        |
-| `sourceId`        | `sourceId`                  |                                        |
+| Field             | Type                        | Notes                                                           |
+| ----------------- | --------------------------- | --------------------------------------------------------------- |
+| `taskId`          | `nodeId`                    |                                                                 |
+| `label`           | `string \| null`            |                                                                 |
+| `status`          | `TaskStatus`                | Any of the four.                                                |
+| `owner`           | `{ nodeId, label } \| null` |                                                                 |
+| `dueOn`           | `string \| null`            |                                                                 |
+| `dueTime`         | `string \| null`            | `HH:mm` wall-clock time, or `null` for date-only tasks.         |
+| `timeZone`        | `string \| null`            | IANA timezone, or `null` for date-only tasks.                   |
+| `dueAt`           | `Date \| null`              | Resolved UTC instant, or `null` for date-only or undated tasks. |
+| `statusChangedAt` | `Date`                      | `statedAt` of the active status claim.                          |
+| `createdAt`       | `Date`                      |                                                                 |
+| `sourceId`        | `sourceId`                  |                                                                 |
 
 ```ts
 // First page of done tasks, newest first
@@ -359,6 +400,9 @@ Detailed read model for a single Task: current state (status, owner, due date) p
 | `statusAssertedByKind` | `AssertedByKind \| null`             |                                                                       |
 | `owner`                | `{ nodeId, label, claimId } \| null` | Includes the active `OWNED_BY` claim id.                              |
 | `dueOn`                | `string \| null`                     |                                                                       |
+| `dueTime`              | `string \| null`                     | `HH:mm` wall-clock time, or `null` for date-only.                     |
+| `timeZone`             | `string \| null`                     | IANA timezone, or `null` for date-only.                               |
+| `dueAt`                | `Date \| null`                       | Resolved UTC instant, or `null` for date-only or undated tasks.       |
 | `dueClaimId`           | `claimId \| null`                    |                                                                       |
 | `sources`              | `CommitmentSource[]`                 | Empty when `includeSources: false`.                                   |
 | `history`              | `TaskLifecycleEntry[]`               | Sorted `statedAt` desc; empty when `includeHistory: false`.           |
@@ -586,3 +630,5 @@ for (const c of candidates) {
 - **`description` is Task-only:** editing `description` via `updateCommitment` is valid because a Task's description is user-authored. The generic `POST /node/update` route rejects `description` edits on knowledge nodes.
 - **Idempotent status re-assertion:** calling `setCommitmentStatus` with the same value the task already has is allowed; it records a fresh claim with the current timestamp.
 - **Cursor opacity:** `nextCursor` is a base64url-encoded keyset value. Do not parse or construct it; treat it as an opaque token.
+- **Due time storage:** `dueTime` and `timeZone` are stored as human truth in the `DUE_ON` claim's metadata jsonb (`{ dueTime, timeZone }`). The resolved UTC instant (`dueAt`) is derived from these and indexed for instant-range queries. All new fields are nullable; date-only tasks are fully backward-compatible.
+- **Digest intraday-overdue behavior:** the daily digest buckets timed tasks by comparing their `dueAt` instant to the current wall-clock time in the caller's timezone. A timed task that would normally appear in _due today_ flips into _overdue_ once its instant passes — even if the calendar date has not changed. Date-only tasks continue to use calendar-day comparison.
