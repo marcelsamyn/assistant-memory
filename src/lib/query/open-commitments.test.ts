@@ -7,7 +7,13 @@ import { newTypeId } from "~/types/typeid";
 async function seedTask(
   client: import("pg").Client,
   userId: string,
-  opts: { label: string; dueOn?: string; dueTime?: string; timeZone?: string; dueAt?: string },
+  opts: {
+    label: string;
+    dueOn?: string;
+    dueTime?: string;
+    timeZone?: string;
+    dueAt?: string;
+  },
 ): Promise<string> {
   const taskId = newTypeId("node");
   const sourceId = newTypeId("source");
@@ -15,7 +21,10 @@ async function seedTask(
     `INSERT INTO "sources" ("id","user_id","type","external_id") VALUES ($1,$2,'manual',$3)`,
     [sourceId, userId, `manual:${taskId}`],
   );
-  await client.query(`INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Task')`, [taskId, userId]);
+  await client.query(
+    `INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Task')`,
+    [taskId, userId],
+  );
   await client.query(
     `INSERT INTO "node_metadata" ("id","node_id","label","canonical_label") VALUES ($1,$2,$3,$3)`,
     [newTypeId("node_metadata"), taskId, opts.label],
@@ -27,16 +36,30 @@ async function seedTask(
   );
   if (opts.dueOn) {
     const dayId = newTypeId("node");
-    await client.query(`INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Temporal')`, [dayId, userId]);
+    await client.query(
+      `INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Temporal')`,
+      [dayId, userId],
+    );
     await client.query(
       `INSERT INTO "node_metadata" ("id","node_id","label","canonical_label") VALUES ($1,$2,$3,$3)`,
       [newTypeId("node_metadata"), dayId, opts.dueOn],
     );
-    const metadata = opts.dueTime && opts.timeZone ? JSON.stringify({ dueTime: opts.dueTime, timeZone: opts.timeZone }) : null;
+    const metadata =
+      opts.dueTime && opts.timeZone
+        ? JSON.stringify({ dueTime: opts.dueTime, timeZone: opts.timeZone })
+        : null;
     await client.query(
       `INSERT INTO "claims" ("id","user_id","subject_node_id","object_node_id","predicate","statement","source_id","asserted_by_kind","stated_at","status","metadata","object_instant")
        VALUES ($1,$2,$3,$4,'DUE_ON','due',$5,'user',now(),'active',$6::jsonb,$7)`,
-      [newTypeId("claim"), userId, taskId, dayId, sourceId, metadata, opts.dueAt ?? null],
+      [
+        newTypeId("claim"),
+        userId,
+        taskId,
+        dayId,
+        sourceId,
+        metadata,
+        opts.dueAt ?? null,
+      ],
     );
   }
   return taskId;
@@ -420,15 +443,25 @@ describeIfServer("open commitments query", () => {
         );
       `);
 
-      await client.query(`INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`, [userId]);
+      await client.query(
+        `INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`,
+        [userId],
+      );
       await seedTask(client, userId, {
-        label: "Timed task", dueOn: "2026-06-10",
-        dueTime: "17:00", timeZone: "America/New_York", dueAt: "2026-06-10T21:00:00Z",
+        label: "Timed task",
+        dueOn: "2026-06-10",
+        dueTime: "17:00",
+        timeZone: "America/New_York",
+        dueAt: "2026-06-10T21:00:00Z",
       });
       const { getOpenCommitments } = await import("./open-commitments");
       const open = await getOpenCommitments({ userId });
       expect(open).toHaveLength(1);
-      expect(open[0]).toMatchObject({ dueOn: "2026-06-10", dueTime: "17:00", timeZone: "America/New_York" });
+      expect(open[0]).toMatchObject({
+        dueOn: "2026-06-10",
+        dueTime: "17:00",
+        timeZone: "America/New_York",
+      });
       expect(open[0]!.dueAt?.toISOString()).toBe("2026-06-10T21:00:00.000Z");
     } finally {
       vi.doUnmock("~/utils/db");
@@ -497,11 +530,22 @@ describeIfServer("open commitments query", () => {
         );
       `);
 
-      await client.query(`INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`, [userId]);
-      await seedTask(client, userId, { label: "Date only", dueOn: "2026-06-10" });
+      await client.query(
+        `INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`,
+        [userId],
+      );
+      await seedTask(client, userId, {
+        label: "Date only",
+        dueOn: "2026-06-10",
+      });
       const { getOpenCommitments } = await import("./open-commitments");
       const open = await getOpenCommitments({ userId });
-      expect(open[0]).toMatchObject({ dueOn: "2026-06-10", dueTime: null, timeZone: null, dueAt: null });
+      expect(open[0]).toMatchObject({
+        dueOn: "2026-06-10",
+        dueTime: null,
+        timeZone: null,
+        dueAt: null,
+      });
     } finally {
       vi.doUnmock("~/utils/db");
       vi.resetModules();

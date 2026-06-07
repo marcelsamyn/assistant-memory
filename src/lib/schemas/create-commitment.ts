@@ -1,7 +1,7 @@
 import { AssertedByKindEnum, TaskStatusEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
-import { z } from "zod";
 import { DUE_TIME_PATTERN } from "./due-claim-metadata.js";
+import { z } from "zod";
 import { isValidTimeZone } from "~/lib/time-zone.js";
 
 /**
@@ -32,7 +32,9 @@ export const createCommitmentRequestSchema = z
      * `in_progress`; `done`/`abandoned` are reached later via a superseding
      * `HAS_TASK_STATUS` claim, not at creation. Defaults to `pending`.
      */
-    status: TaskStatusEnum.extract(["pending", "in_progress"]).default("pending"),
+    status: TaskStatusEnum.extract(["pending", "in_progress"]).default(
+      "pending",
+    ),
     /**
      * Optional due date as `YYYY-MM-DD`. The server resolves (or creates) the
      * canonical Temporal day node and asserts a `DUE_ON` claim.
@@ -66,10 +68,16 @@ export const createCommitmentRequestSchema = z
     const hasTime = v.dueTime != null;
     const hasZone = v.timeZone != null;
     if (hasTime !== hasZone) {
-      ctx.addIssue({ code: "custom", message: "dueTime and timeZone must be set together" });
+      ctx.addIssue({
+        code: "custom",
+        message: "dueTime and timeZone must be set together",
+      });
     }
     if (v.dueOn === undefined && (hasTime || hasZone)) {
-      ctx.addIssue({ code: "custom", message: "dueTime/timeZone require a dueOn date" });
+      ctx.addIssue({
+        code: "custom",
+        message: "dueTime/timeZone require a dueOn date",
+      });
     }
   });
 

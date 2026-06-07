@@ -1248,8 +1248,13 @@ describeIfServer("commitment due time", () => {
           `SELECT metadata, object_instant FROM claims WHERE id = $1`,
           [created.dueClaimId],
         );
-        expect(rows[0].metadata).toEqual({ dueTime: "17:00", timeZone: "America/New_York" });
-        expect(new Date(rows[0].object_instant).toISOString()).toBe("2026-06-10T21:00:00.000Z");
+        expect(rows[0].metadata).toEqual({
+          dueTime: "17:00",
+          timeZone: "America/New_York",
+        });
+        expect(new Date(rows[0].object_instant).toISOString()).toBe(
+          "2026-06-10T21:00:00.000Z",
+        );
       } finally {
         resetTestOverrides();
       }
@@ -1280,16 +1285,25 @@ describeIfServer("commitment due time", () => {
       setSkipEmbeddingPersistence(true);
 
       try {
-        const { createCommitment, setCommitmentDue } = await import("./commitments");
+        const { createCommitment, setCommitmentDue } = await import(
+          "./commitments"
+        );
 
         const created = await createCommitment(
-          createCommitmentRequestSchema.parse({ userId, label: "Ship it", dueOn: "2026-06-10" }),
+          createCommitmentRequestSchema.parse({
+            userId,
+            label: "Ship it",
+            dueOn: "2026-06-10",
+          }),
         );
 
         const timed = await setCommitmentDue(
           setCommitmentDueRequestSchema.parse({
-            userId, taskId: created.taskId, dueOn: "2026-06-10",
-            dueTime: "09:30", timeZone: "Europe/Paris",
+            userId,
+            taskId: created.taskId,
+            dueOn: "2026-06-10",
+            dueTime: "09:30",
+            timeZone: "Europe/Paris",
           }),
         );
         expect(timed.dueTime).toBe("09:30");
@@ -1297,7 +1311,11 @@ describeIfServer("commitment due time", () => {
         expect(timed.dueAt?.toISOString()).toBe("2026-06-10T07:30:00.000Z"); // 09:30 CEST = 07:30Z
 
         const cleared = await setCommitmentDue(
-          setCommitmentDueRequestSchema.parse({ userId, taskId: created.taskId, dueOn: "2026-06-10" }),
+          setCommitmentDueRequestSchema.parse({
+            userId,
+            taskId: created.taskId,
+            dueOn: "2026-06-10",
+          }),
         );
         expect(cleared.dueTime).toBeNull();
         expect(cleared.timeZone).toBeNull();
@@ -1322,7 +1340,10 @@ describeIfServer("commitment due time", () => {
   it("rejects dueTime without timeZone at the schema boundary", () => {
     expect(
       setCommitmentDueRequestSchema.safeParse({
-        userId: "u", taskId: newTypeId("node"), dueOn: "2026-06-10", dueTime: "09:00",
+        userId: "u",
+        taskId: newTypeId("node"),
+        dueOn: "2026-06-10",
+        dueTime: "09:00",
       }).success,
     ).toBe(false);
   });

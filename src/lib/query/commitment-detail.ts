@@ -1,7 +1,7 @@
 /** Detail read model for a single commitment (current state + history + sources). */
+import { readDueQualifier, type DueQualifierFields } from "./due-qualifier";
 import { and, eq, inArray } from "drizzle-orm";
 import { claims, sources } from "~/db/schema";
-import { readDueQualifier, type DueQualifierFields } from "./due-qualifier";
 import { coerceTaskStatus } from "~/lib/claims/task-status";
 import { TaskNotFoundError } from "~/lib/commitments";
 import { getNodeById } from "~/lib/node";
@@ -127,7 +127,10 @@ export async function getCommitment(
   let due: DueQualifierFields = { dueTime: null, timeZone: null, dueAt: null };
   if (activeDue) {
     const [dueRow] = await db
-      .select({ metadata: claims.metadata, objectInstant: claims.objectInstant })
+      .select({
+        metadata: claims.metadata,
+        objectInstant: claims.objectInstant,
+      })
       .from(claims)
       .where(and(eq(claims.id, activeDue.id), eq(claims.userId, userId)))
       .limit(1);

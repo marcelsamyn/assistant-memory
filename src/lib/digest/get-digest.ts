@@ -7,7 +7,6 @@
  *
  * Common aliases: getDigest, daily digest, today rollup.
  */
-import { startOfDayInTimeZone } from "~/lib/time-zone";
 import { getConversationBootstrapContext } from "~/lib/context/assemble-bootstrap-context";
 import type { ContextBundle } from "~/lib/context/types";
 import { getMetricMovers } from "~/lib/metrics/movers";
@@ -19,6 +18,7 @@ import {
   type GetDigestResponse,
 } from "~/lib/schemas/digest";
 import type { OpenCommitment } from "~/lib/schemas/open-commitments";
+import { startOfDayInTimeZone } from "~/lib/time-zone";
 
 const DEFAULT_UPCOMING_WITHIN_DAYS = 7;
 const DEFAULT_WHATS_NEW_LIMIT = 50;
@@ -46,7 +46,10 @@ export function bucketCommitments(
 ): DigestCommitments {
   const upcomingUntil = shiftIsoDate(date, upcomingWithinDays);
   const todayEnd = startOfDayInTimeZone(shiftIsoDate(date, 1), timeZone);
-  const upcomingEndExcl = startOfDayInTimeZone(shiftIsoDate(date, upcomingWithinDays + 1), timeZone);
+  const upcomingEndExcl = startOfDayInTimeZone(
+    shiftIsoDate(date, upcomingWithinDays + 1),
+    timeZone,
+  );
 
   const dueToday: OpenCommitment[] = [];
   const overdue: OpenCommitment[] = [];
@@ -116,7 +119,13 @@ export async function getDigest(
     timeZone,
     since,
     generatedAt: new Date(),
-    commitments: bucketCommitments(commitments, date, timeZone, upcomingWithinDays, new Date()),
+    commitments: bucketCommitments(
+      commitments,
+      date,
+      timeZone,
+      upcomingWithinDays,
+      new Date(),
+    ),
     metricMovers,
     whatsNew,
     ...(bundle !== null && { pinned: pinnedSubset(bundle) }),

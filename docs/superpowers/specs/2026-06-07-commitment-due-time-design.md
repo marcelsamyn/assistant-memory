@@ -27,8 +27,8 @@ we keep it that way" non-goal recorded in
   extractor (`src/lib/extract-graph.ts`) may still emit date-only `DUE_ON` claims;
   parsing times/zones from prose (and inferring an absent zone) is a separate
   LLM-prompt effort. Out of scope.
-- **No reminder scheduler.** None exists in the repo. We persist a *resolvable
-  instant*; wiring an actual cron/notification job is future work.
+- **No reminder scheduler.** None exists in the repo. We persist a _resolvable
+  instant_; wiring an actual cron/notification job is future work.
 - **No stored user-level timezone / user settings.** Matching the digest's existing
   convention, the zone is provided by the caller per write. A user-default zone
   would be a new settings concept — out of scope.
@@ -41,7 +41,7 @@ we keep it that way" non-goal recorded in
 ## Decisions (resolved during brainstorming)
 
 1. **Purpose:** all four of display, reminders, overdue querying, cross-tz
-   correctness. → store both human truth *and* a resolvable instant.
+   correctness. → store both human truth _and_ a resolvable instant.
 2. **Query scope:** full instant querying. → the resolved instant must be
    **persisted and indexed**, not merely computed on read.
 3. **Instant storage:** a nullable `timestamptz` column on the existing `claims`
@@ -83,10 +83,16 @@ we keep it that way" non-goal recorded in
 The `DUE_ON` claim keeps `object_node_id` → the shared `YYYY-MM-DD` day node. We add:
 
 - **Human truth → `claims.metadata`:**
+
   ```jsonc
-  { "dueTime": "HH:mm", "timeZone": "<IANA>" }   // e.g. { "dueTime": "17:00", "timeZone": "America/New_York" }
+  { "dueTime": "HH:mm", "timeZone": "<IANA>" }
+
+
+  // e.g. { "dueTime": "17:00", "timeZone": "America/New_York" }
   ```
+
   Canonical, DST-safe, recomputable. Absent ⇒ date-only (today's behavior).
+
 - **Derived index → `claims.object_instant` (new, nullable `timestamptz`):**
   the UTC instant of `<dayLabel>T<dueTime>` interpreted in `timeZone`. Denormalized
   for indexed instant-range queries; recomputable from the canonical fields.
@@ -139,7 +145,11 @@ Add a generalized resolver and refactor the existing one to delegate:
 
 ```ts
 /** UTC instant for `time` (HH:mm) local on `date` (YYYY-MM-DD) in `timeZone`. */
-export function instantFromLocalTime(date: string, time: string, timeZone: string): Date {
+export function instantFromLocalTime(
+  date: string,
+  time: string,
+  timeZone: string,
+): Date {
   const [y, m, d] = date.split("-").map(Number);
   const [hh, mm] = time.split(":").map(Number);
   const utcGuess = Date.UTC(y!, m! - 1, d!, hh!, mm!, 0);
@@ -206,10 +216,16 @@ Cross-field `.refine`s:
 A private module helper resolves the pair (two in-module callers ⇒ justified):
 
 ```ts
-function resolveDueQualifier(dueOn: string, dueTime?: string | null, timeZone?: string | null):
-  { metadata?: Record<string, unknown>; objectInstant?: Date } {
+function resolveDueQualifier(
+  dueOn: string,
+  dueTime?: string | null,
+  timeZone?: string | null,
+): { metadata?: Record<string, unknown>; objectInstant?: Date } {
   if (!dueTime || !timeZone) return {};
-  return { metadata: { dueTime, timeZone }, objectInstant: instantFromLocalTime(dueOn, dueTime, timeZone) };
+  return {
+    metadata: { dueTime, timeZone },
+    objectInstant: instantFromLocalTime(dueOn, dueTime, timeZone),
+  };
 }
 ```
 
@@ -229,11 +245,18 @@ surface stays consistent and resilient:
 
 ```ts
 // from dueClaim.metadata (jsonb) + dueClaim.objectInstant (Date|null)
-function readDueQualifier(metadata: unknown, objectInstant: Date | null):
-  { dueTime: string | null; timeZone: string | null; dueAt: Date | null } {
+function readDueQualifier(
+  metadata: unknown,
+  objectInstant: Date | null,
+): { dueTime: string | null; timeZone: string | null; dueAt: Date | null } {
   const parsed = dueClaimMetadataSchema.safeParse(metadata ?? undefined);
-  if (!parsed.success) return { dueTime: null, timeZone: null, dueAt: objectInstant ?? null };
-  return { dueTime: parsed.data.dueTime, timeZone: parsed.data.timeZone, dueAt: objectInstant ?? null };
+  if (!parsed.success)
+    return { dueTime: null, timeZone: null, dueAt: objectInstant ?? null };
+  return {
+    dueTime: parsed.data.dueTime,
+    timeZone: parsed.data.timeZone,
+    dueAt: objectInstant ?? null,
+  };
 }
 ```
 
@@ -347,28 +370,28 @@ lint/format/build only).
 
 ## File-by-file change summary
 
-| File | Change |
-| --- | --- |
-| `src/db/schema.ts` | + `object_instant` column + `claims_due_instant_idx` partial index |
-| `drizzle/0018_*.sql` | generated migration (column + index) |
-| `src/lib/time-zone.ts` | **moved** from `src/lib/digest/`; + `instantFromLocalTime`; `startOfDayInTimeZone` delegates |
-| `src/lib/digest/get-digest.ts` | import path update; instant-aware `bucketCommitments` |
-| `src/lib/schemas/digest.ts` | import path update |
-| `src/lib/schemas/due-claim-metadata.ts` | **new** shared `dueClaimMetadataSchema` |
-| `src/lib/claim.ts` | `CreateClaimInput` + insert gain `metadata`, `objectInstant` |
-| `src/lib/commitments.ts` | `resolveDueQualifier`; write `dueTime`/`timeZone`/instant; richer statement; responses echo new fields |
-| `src/lib/schemas/set-commitment-due.ts` | request `dueTime`/`timeZone` + refines; response `dueTime`/`timeZone`/`dueAt` |
-| `src/lib/schemas/create-commitment.ts` | same additions |
-| `src/lib/query/open-commitments.ts` | select/map metadata + instant; `readDueQualifier` |
-| `src/lib/schemas/open-commitments.ts` | item schema + `dueTime`/`timeZone`/`dueAt` |
-| `src/lib/query/commitment-detail.ts` | derive new fields from active due claim |
-| `src/lib/schemas/get-commitment.ts` | response + new fields |
-| `src/lib/query/commitments-list.ts` | select/map; instant filters; `dueAt` sort |
-| `src/lib/schemas/list-commitments.ts` | request `dueBeforeInstant`/`dueAfterInstant`, sort enum `dueAt`; item fields |
-| `src/lib/context/sections/open-commitments.ts` | render time + zone |
-| `src/sdk/memory-client.ts` | doc-comment updates (types flow from schemas) |
-| `docs/sdk/commitments.md`, `CHANGELOG.md` | docs + version bump |
-| tests | as listed above |
+| File                                           | Change                                                                                                 |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `src/db/schema.ts`                             | + `object_instant` column + `claims_due_instant_idx` partial index                                     |
+| `drizzle/0018_*.sql`                           | generated migration (column + index)                                                                   |
+| `src/lib/time-zone.ts`                         | **moved** from `src/lib/digest/`; + `instantFromLocalTime`; `startOfDayInTimeZone` delegates           |
+| `src/lib/digest/get-digest.ts`                 | import path update; instant-aware `bucketCommitments`                                                  |
+| `src/lib/schemas/digest.ts`                    | import path update                                                                                     |
+| `src/lib/schemas/due-claim-metadata.ts`        | **new** shared `dueClaimMetadataSchema`                                                                |
+| `src/lib/claim.ts`                             | `CreateClaimInput` + insert gain `metadata`, `objectInstant`                                           |
+| `src/lib/commitments.ts`                       | `resolveDueQualifier`; write `dueTime`/`timeZone`/instant; richer statement; responses echo new fields |
+| `src/lib/schemas/set-commitment-due.ts`        | request `dueTime`/`timeZone` + refines; response `dueTime`/`timeZone`/`dueAt`                          |
+| `src/lib/schemas/create-commitment.ts`         | same additions                                                                                         |
+| `src/lib/query/open-commitments.ts`            | select/map metadata + instant; `readDueQualifier`                                                      |
+| `src/lib/schemas/open-commitments.ts`          | item schema + `dueTime`/`timeZone`/`dueAt`                                                             |
+| `src/lib/query/commitment-detail.ts`           | derive new fields from active due claim                                                                |
+| `src/lib/schemas/get-commitment.ts`            | response + new fields                                                                                  |
+| `src/lib/query/commitments-list.ts`            | select/map; instant filters; `dueAt` sort                                                              |
+| `src/lib/schemas/list-commitments.ts`          | request `dueBeforeInstant`/`dueAfterInstant`, sort enum `dueAt`; item fields                           |
+| `src/lib/context/sections/open-commitments.ts` | render time + zone                                                                                     |
+| `src/sdk/memory-client.ts`                     | doc-comment updates (types flow from schemas)                                                          |
+| `docs/sdk/commitments.md`, `CHANGELOG.md`      | docs + version bump                                                                                    |
+| tests                                          | as listed above                                                                                        |
 
 ## Open questions
 

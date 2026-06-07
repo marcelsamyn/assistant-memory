@@ -20,9 +20,15 @@ export function readDueQualifier(
   const parsed = dueClaimMetadataSchema.safeParse(metadata);
   if (!parsed.success) {
     if (metadata != null) {
-      console.warn(`Ignoring malformed DUE_ON metadata: ${JSON.stringify(metadata)}`);
+      console.warn(
+        `Ignoring malformed DUE_ON metadata: ${JSON.stringify(metadata)}`,
+      );
     }
     return { dueTime: null, timeZone: null, dueAt: objectInstant ?? null };
   }
-  return { dueTime: parsed.data.dueTime, timeZone: parsed.data.timeZone, dueAt: objectInstant ?? null };
+  return {
+    dueTime: parsed.data.dueTime,
+    timeZone: parsed.data.timeZone,
+    dueAt: objectInstant ?? null,
+  };
 }
