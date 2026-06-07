@@ -31,17 +31,37 @@ function shiftIsoDate(date: string, days: number): string {
     .slice(0, 10);
 }
 
-/** Bucket dated commitments relative to the digest day; undated tasks are
- * date-irrelevant to a "Today" view and intentionally omitted here. */
-function bucketCommitments(
+/**
+ * Bucket dated commitments relative to the digest day. Timed tasks (those with
+ * a resolved `dueAt` instant) bucket by comparing the instant to `now` and the
+ * caller-zone day boundaries; date-only tasks keep calendar-day string
+ * comparison. Undated tasks are omitted. Exported for direct unit testing.
+ */
+export function bucketCommitments(
   commitments: OpenCommitment[],
   date: string,
-  upcomingUntil: string,
+  timeZone: string,
+  upcomingWithinDays: number,
+  now: Date,
 ): DigestCommitments {
+  const upcomingUntil = shiftIsoDate(date, upcomingWithinDays);
+  const todayEnd = startOfDayInTimeZone(shiftIsoDate(date, 1), timeZone);
+  const upcomingEndExcl = startOfDayInTimeZone(shiftIsoDate(date, upcomingWithinDays + 1), timeZone);
+
   const dueToday: OpenCommitment[] = [];
   const overdue: OpenCommitment[] = [];
   const upcoming: OpenCommitment[] = [];
+
   for (const commitment of commitments) {
+    if (commitment.dueAt !== null) {
+      const at = commitment.dueAt.getTime();
+      if (at < now.getTime()) overdue.push(commitment);
+      else if (at < todayEnd.getTime()) dueToday.push(commitment);
+      else if (at < upcomingEndExcl.getTime()) upcoming.push(commitment);
+      // Timed tasks past the upcoming horizon are intentionally omitted —
+      // symmetric with date-only tasks beyond upcomingUntil below.
+      continue;
+    }
     const { dueOn } = commitment;
     if (dueOn === null) continue;
     if (dueOn < date) overdue.push(commitment);
@@ -74,7 +94,6 @@ export async function getDigest(
   } = params;
 
   const since = params.since ?? startOfDayInTimeZone(date, timeZone);
-  const upcomingUntil = shiftIsoDate(date, upcomingWithinDays);
 
   const [commitments, metricMovers, whatsNew, bundle] = await Promise.all([
     getOpenCommitments({ userId }),
@@ -97,7 +116,7 @@ export async function getDigest(
     timeZone,
     since,
     generatedAt: new Date(),
-    commitments: bucketCommitments(commitments, date, upcomingUntil),
+    commitments: bucketCommitments(commitments, date, timeZone, upcomingWithinDays, new Date()),
     metricMovers,
     whatsNew,
     ...(bundle !== null && { pinned: pinnedSubset(bundle) }),
