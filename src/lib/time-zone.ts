@@ -1,8 +1,8 @@
 /**
- * IANA time-zone helpers for resolving a local calendar day to a UTC
- * instant, without pulling in a date library. Used to default the digest's
- * "what's new since" cursor to the start of the requested day in the
- * caller's zone.
+ * IANA time-zone helpers for resolving a local calendar date and time to a UTC
+ * instant, without pulling in a date library.
+ *
+ * Common aliases: time zone, timezone, IANA zone, UTC instant, local time.
  */
 
 export function isValidTimeZone(timeZone: string): boolean {
@@ -41,10 +41,20 @@ function zoneOffsetMs(instant: Date, timeZone: string): number {
   return asUtc - instant.getTime();
 }
 
-/** UTC instant for 00:00:00 local time on `date` (YYYY-MM-DD) in `timeZone`. */
-export function startOfDayInTimeZone(date: string, timeZone: string): Date {
+/** UTC instant for `time` (HH:mm) local on `date` (YYYY-MM-DD) in `timeZone`. */
+export function instantFromLocalTime(
+  date: string,
+  time: string,
+  timeZone: string,
+): Date {
   const [year, month, day] = date.split("-").map(Number);
-  const utcGuess = Date.UTC(year!, month! - 1, day!, 0, 0, 0);
+  const [hour, minute] = time.split(":").map(Number);
+  const utcGuess = Date.UTC(year!, month! - 1, day!, hour!, minute!, 0);
   const offset = zoneOffsetMs(new Date(utcGuess), timeZone);
   return new Date(utcGuess - offset);
+}
+
+/** UTC instant for 00:00:00 local time on `date` (YYYY-MM-DD) in `timeZone`. */
+export function startOfDayInTimeZone(date: string, timeZone: string): Date {
+  return instantFromLocalTime(date, "00:00", timeZone);
 }
