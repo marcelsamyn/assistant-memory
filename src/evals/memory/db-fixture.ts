@@ -105,6 +105,7 @@ const HARNESS_DDL = `
     "statement" text NOT NULL,
     "description" text,
     "metadata" jsonb,
+    "object_instant" timestamp with time zone,
     "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
     "scope" varchar(16) DEFAULT 'personal' NOT NULL,
     "asserted_by_kind" varchar(24) NOT NULL,
