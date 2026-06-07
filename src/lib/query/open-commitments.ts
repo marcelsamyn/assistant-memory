@@ -18,6 +18,7 @@ import {
 import { type TaskStatus } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
+import { readDueQualifier } from "./due-qualifier";
 
 const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const DATE_ONLY_SQL_PATTERN = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$";
@@ -33,6 +34,8 @@ interface OpenCommitmentRow {
   ownerNodeId: TypeId<"node"> | null;
   ownerLabel: string | null;
   dueOn: string | null;
+  dueMetadata: unknown;
+  dueInstant: Date | null;
   statedAt: Date;
   sourceId: TypeId<"source">;
 }
@@ -130,6 +133,8 @@ async function queryCommitments(
       ownerNodeId: ownerClaim.objectNodeId,
       ownerLabel: ownerMetadata.label,
       dueOn: dueMetadata.label,
+      dueMetadata: dueClaim.metadata,
+      dueInstant: dueClaim.objectInstant,
       statedAt: claims.statedAt,
       sourceId: claims.sourceId,
     })
@@ -225,6 +230,7 @@ async function queryCommitments(
     if (!isOpenTaskStatus(status)) continue;
     if (!matchesDueBefore(row.dueOn, dueBefore)) continue;
 
+    const due = readDueQualifier(row.dueMetadata, row.dueInstant);
     commitments.push({
       taskId: row.taskId,
       label: row.label,
@@ -234,6 +240,9 @@ async function queryCommitments(
           ? null
           : { nodeId: row.ownerNodeId, label: row.ownerLabel },
       dueOn: row.dueOn,
+      dueTime: due.dueTime,
+      timeZone: due.timeZone,
+      dueAt: due.dueAt,
       statedAt: row.statedAt,
       sourceId: row.sourceId,
     });

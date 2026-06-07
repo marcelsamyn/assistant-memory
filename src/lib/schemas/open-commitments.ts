@@ -22,6 +22,9 @@ export const openCommitmentSchema = z.object({
     })
     .nullable(),
   dueOn: z.string().nullable(),
+  dueTime: z.string().nullable(),
+  timeZone: z.string().nullable(),
+  dueAt: z.coerce.date().nullable(),
   statedAt: z.coerce.date(),
   sourceId: typeIdSchema("source"),
 });
