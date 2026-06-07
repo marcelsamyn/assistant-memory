@@ -113,11 +113,21 @@ export const llmMetricsSchema = z.object({
   standalone: z.array(llmMetricStandaloneObservationSchema).nullish(),
 });
 
+// The top-level collections are `.nullish()`, not required, on purpose. The
+// extraction endpoint is an OpenAI-*compatible* provider, not OpenAI strict
+// structured outputs, so it does NOT backfill an omitted/empty array to `[]`.
+// Models routinely drop a collection they have nothing to emit for — most often
+// `aliases`, since most sources introduce no nickname — which otherwise fails
+// the entire parse with `expected array, received undefined`. Absent/null
+// coerces to `[]` at the read sites in `extractGraph`. The item shapes above
+// stay strict so a genuinely malformed entry still surfaces (and the job
+// retries) rather than being silently swallowed: lax about an empty collection,
+// not about a broken one.
 export const llmExtractionSchema = z.object({
-  nodes: z.array(llmNodeSchema),
-  relationshipClaims: z.array(llmRelationshipClaimSchema),
-  attributeClaims: z.array(llmAttributeClaimSchema),
-  aliases: z.array(llmAliasSchema),
+  nodes: z.array(llmNodeSchema).nullish(),
+  relationshipClaims: z.array(llmRelationshipClaimSchema).nullish(),
+  attributeClaims: z.array(llmAttributeClaimSchema).nullish(),
+  aliases: z.array(llmAliasSchema).nullish(),
   metrics: llmMetricsSchema.nullish(),
 });
 
