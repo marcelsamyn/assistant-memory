@@ -732,6 +732,14 @@ export class MemoryClient {
    * new `DUE_ON` claim (the predicate lifecycle supersedes any prior date),
    * or `dueOn: null` to retract every active `DUE_ON` claim on the task.
    * The server resolves/creates the canonical Temporal node internally.
+   *
+   * Optional time-of-day precision: pass `dueTime` (`HH:mm`, 24h) together
+   * with `timeZone` (IANA name, e.g. `"America/New_York"`) to qualify the
+   * date with a wall-clock instant. `dueTime` and `timeZone` are mutually
+   * required — you must supply both or neither. A time requires a date
+   * (`dueOn` must not be `null` when either field is set). The resolved UTC
+   * instant is returned as `dueAt` (`Date | null`) alongside `dueTime` and
+   * `timeZone` on the response.
    */
   async setCommitmentDue(
     payload: SetCommitmentDueRequest,
@@ -749,6 +757,13 @@ export class MemoryClient {
    * `HAS_TASK_STATUS` claim (pending or in_progress), plus an optional `DUE_ON`
    * (server resolves the Temporal node) and `OWNED_BY` claim. Always creates a
    * new Task — use `createClaim`/`setCommitmentDue` to advance an existing one.
+   *
+   * Optional time-of-day precision: pass `dueTime` (`HH:mm`, 24h) together
+   * with `timeZone` (IANA name, e.g. `"Europe/Paris"`) to qualify the due date
+   * with a wall-clock instant. `dueTime` and `timeZone` are mutually required —
+   * you must supply both or neither. A time requires a date (`dueOn` must be
+   * present when either field is set). The resolved UTC instant is returned as
+   * `dueAt` (`Date | null`) alongside `dueTime` and `timeZone` on the response.
    */
   async createCommitment(
     payload: CreateCommitmentRequest,
