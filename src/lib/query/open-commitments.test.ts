@@ -4,6 +4,44 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
 import { newTypeId } from "~/types/typeid";
 
+async function seedTask(
+  client: import("pg").Client,
+  userId: string,
+  opts: { label: string; dueOn?: string; dueTime?: string; timeZone?: string; dueAt?: string },
+): Promise<string> {
+  const taskId = newTypeId("node");
+  const sourceId = newTypeId("source");
+  await client.query(
+    `INSERT INTO "sources" ("id","user_id","type","external_id") VALUES ($1,$2,'manual',$3)`,
+    [sourceId, userId, `manual:${taskId}`],
+  );
+  await client.query(`INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Task')`, [taskId, userId]);
+  await client.query(
+    `INSERT INTO "node_metadata" ("id","node_id","label","canonical_label") VALUES ($1,$2,$3,$3)`,
+    [newTypeId("node_metadata"), taskId, opts.label],
+  );
+  await client.query(
+    `INSERT INTO "claims" ("id","user_id","subject_node_id","object_value","predicate","statement","source_id","asserted_by_kind","stated_at","status")
+     VALUES ($1,$2,$3,'pending','HAS_TASK_STATUS','status',$4,'user',now(),'active')`,
+    [newTypeId("claim"), userId, taskId, sourceId],
+  );
+  if (opts.dueOn) {
+    const dayId = newTypeId("node");
+    await client.query(`INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Temporal')`, [dayId, userId]);
+    await client.query(
+      `INSERT INTO "node_metadata" ("id","node_id","label","canonical_label") VALUES ($1,$2,$3,$3)`,
+      [newTypeId("node_metadata"), dayId, opts.dueOn],
+    );
+    const metadata = opts.dueTime && opts.timeZone ? JSON.stringify({ dueTime: opts.dueTime, timeZone: opts.timeZone }) : null;
+    await client.query(
+      `INSERT INTO "claims" ("id","user_id","subject_node_id","object_node_id","predicate","statement","source_id","asserted_by_kind","stated_at","status","metadata","object_instant")
+       VALUES ($1,$2,$3,$4,'DUE_ON','due',$5,'user',now(),'active',$6::jsonb,$7)`,
+      [newTypeId("claim"), userId, taskId, dayId, sourceId, metadata, opts.dueAt ?? null],
+    );
+  }
+  return taskId;
+}
+
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
 const TEST_DB_PORT = Number(process.env["TEST_PG_PORT"] ?? 5431);
 const TEST_DB_USER = process.env["TEST_PG_USER"] ?? "postgres";
@@ -315,6 +353,155 @@ describeIfServer("open commitments query", () => {
         { taskId: otherOwnerTaskNodeId },
         { taskId: openTaskNodeId },
       ]);
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("returns dueTime, timeZone, and dueAt for a timed commitment", async () => {
+    const userId = "user_open_commitments_timed";
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+
+    try {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS "users" ("id" text PRIMARY KEY NOT NULL);
+        CREATE TABLE IF NOT EXISTS "nodes" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "node_type" varchar(50) NOT NULL,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS "node_metadata" (
+          "id" text PRIMARY KEY NOT NULL,
+          "node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+          "label" text,
+          "canonical_label" text,
+          "description" text,
+          "additional_data" jsonb,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+          CONSTRAINT "node_metadata_node_id_unique" UNIQUE ("node_id")
+        );
+        CREATE TABLE IF NOT EXISTS "sources" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "type" varchar(50) NOT NULL,
+          "external_id" text NOT NULL,
+          "scope" varchar(16) DEFAULT 'personal' NOT NULL,
+          "status" varchar(20) DEFAULT 'completed',
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS "claims" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "subject_node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+          "object_node_id" text REFERENCES "nodes"("id") ON DELETE CASCADE,
+          "object_value" text,
+          "metadata" jsonb,
+          "object_instant" timestamp with time zone,
+          "predicate" varchar(80) NOT NULL,
+          "statement" text NOT NULL,
+          "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
+          "scope" varchar(16) DEFAULT 'personal' NOT NULL,
+          "asserted_by_kind" varchar(24) NOT NULL,
+          "stated_at" timestamp with time zone NOT NULL,
+          "status" varchar(30) DEFAULT 'active' NOT NULL,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+          "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+        );
+      `);
+
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`, [userId]);
+      await seedTask(client, userId, {
+        label: "Timed task", dueOn: "2026-06-10",
+        dueTime: "17:00", timeZone: "America/New_York", dueAt: "2026-06-10T21:00:00Z",
+      });
+      const { getOpenCommitments } = await import("./open-commitments");
+      const open = await getOpenCommitments({ userId });
+      expect(open).toHaveLength(1);
+      expect(open[0]).toMatchObject({ dueOn: "2026-06-10", dueTime: "17:00", timeZone: "America/New_York" });
+      expect(open[0]!.dueAt?.toISOString()).toBe("2026-06-10T21:00:00.000Z");
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("returns null due fields for a date-only commitment", async () => {
+    const userId = "user_open_commitments_dateonly";
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+
+    try {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS "users" ("id" text PRIMARY KEY NOT NULL);
+        CREATE TABLE IF NOT EXISTS "nodes" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "node_type" varchar(50) NOT NULL,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS "node_metadata" (
+          "id" text PRIMARY KEY NOT NULL,
+          "node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+          "label" text,
+          "canonical_label" text,
+          "description" text,
+          "additional_data" jsonb,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+          CONSTRAINT "node_metadata_node_id_unique" UNIQUE ("node_id")
+        );
+        CREATE TABLE IF NOT EXISTS "sources" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "type" varchar(50) NOT NULL,
+          "external_id" text NOT NULL,
+          "scope" varchar(16) DEFAULT 'personal' NOT NULL,
+          "status" varchar(20) DEFAULT 'completed',
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS "claims" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "subject_node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+          "object_node_id" text REFERENCES "nodes"("id") ON DELETE CASCADE,
+          "object_value" text,
+          "metadata" jsonb,
+          "object_instant" timestamp with time zone,
+          "predicate" varchar(80) NOT NULL,
+          "statement" text NOT NULL,
+          "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
+          "scope" varchar(16) DEFAULT 'personal' NOT NULL,
+          "asserted_by_kind" varchar(24) NOT NULL,
+          "stated_at" timestamp with time zone NOT NULL,
+          "status" varchar(30) DEFAULT 'active' NOT NULL,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+          "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+        );
+      `);
+
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`, [userId]);
+      await seedTask(client, userId, { label: "Date only", dueOn: "2026-06-10" });
+      const { getOpenCommitments } = await import("./open-commitments");
+      const open = await getOpenCommitments({ userId });
+      expect(open[0]).toMatchObject({ dueOn: "2026-06-10", dueTime: null, timeZone: null, dueAt: null });
     } finally {
       vi.doUnmock("~/utils/db");
       vi.resetModules();
