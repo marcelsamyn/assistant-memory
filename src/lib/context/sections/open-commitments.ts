@@ -18,19 +18,24 @@ const MAX_COMMITMENTS = 20;
 const USAGE =
   "Pending or in-progress only — never list these as todo unless they appear here. Treat as the authoritative open-work view; do not infer commitments from search results.";
 
+/** Returns the `due=…` token for a commitment, or null when undated. */
+export function formatDue(commitment: OpenCommitment): string | null {
+  if (commitment.dueOn === null) return null;
+  const value =
+    commitment.dueTime !== null && commitment.timeZone !== null
+      ? `${commitment.dueOn} ${commitment.dueTime} ${commitment.timeZone}`
+      : commitment.dueOn;
+  return `due=${value}`;
+}
+
 export function renderLine(commitment: OpenCommitment): string {
   const label = commitment.label ?? "(unlabeled task)";
   const parts: string[] = [`- ${label} [${commitment.status}]`];
   if (commitment.owner !== null) {
     parts.push(`owner=${commitment.owner.label ?? "(unlabeled)"}`);
   }
-  if (commitment.dueOn !== null) {
-    const due =
-      commitment.dueTime !== null && commitment.timeZone !== null
-        ? `${commitment.dueOn} ${commitment.dueTime} ${commitment.timeZone}`
-        : commitment.dueOn;
-    parts.push(`due=${due}`);
-  }
+  const due = formatDue(commitment);
+  if (due !== null) parts.push(due);
   return parts.join(" ");
 }
 

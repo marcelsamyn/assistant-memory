@@ -98,6 +98,8 @@ export async function getDigest(
 
   const since = params.since ?? startOfDayInTimeZone(date, timeZone);
 
+  const now = new Date();
+
   const [commitments, metricMovers, whatsNew, bundle] = await Promise.all([
     getOpenCommitments({ userId }),
     getMetricMovers({
@@ -118,13 +120,13 @@ export async function getDigest(
     date,
     timeZone,
     since,
-    generatedAt: new Date(),
+    generatedAt: now,
     commitments: bucketCommitments(
       commitments,
       date,
       timeZone,
       upcomingWithinDays,
-      new Date(),
+      now,
     ),
     metricMovers,
     whatsNew,

@@ -60,6 +60,14 @@ describe("instantFromLocalTime", () => {
     expect(a.toISOString()).toBe(b.toISOString());
   });
 
+  it("is deterministic on a fall-back repeated local time", () => {
+    // 2026-11-01 01:30 America/New_York is ambiguous (EDT→EST, hour repeats).
+    const a = instantFromLocalTime("2026-11-01", "01:30", "America/New_York");
+    const b = instantFromLocalTime("2026-11-01", "01:30", "America/New_York");
+    expect(Number.isNaN(a.getTime())).toBe(false);
+    expect(a.toISOString()).toBe(b.toISOString());
+  });
+
   it("startOfDayInTimeZone equals instantFromLocalTime at 00:00", () => {
     expect(
       startOfDayInTimeZone("2026-07-15", "America/New_York").toISOString(),
