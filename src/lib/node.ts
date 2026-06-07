@@ -406,6 +406,8 @@ export interface CreateNodeInitialClaimInput {
   objectValue?: string | undefined;
   assertedByKind?: AssertedByKind | undefined;
   assertedByNodeId?: TypeId<"node"> | undefined;
+  metadata?: Record<string, unknown> | undefined;
+  objectInstant?: Date | undefined;
 }
 
 /**
@@ -498,6 +500,8 @@ export async function createNode(
           objectValue: claim.objectValue,
           assertedByKind: claim.assertedByKind,
           assertedByNodeId: claim.assertedByNodeId,
+          metadata: claim.metadata,
+          objectInstant: claim.objectInstant,
         });
         initialClaimIds.push(created.id);
       }
