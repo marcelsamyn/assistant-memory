@@ -6,6 +6,7 @@ import { z } from "zod";
 export const commitmentSortEnum = z.enum([
   "statusChangedAt",
   "dueOn",
+  "dueAt",
   "createdAt",
   "label",
 ]);
@@ -45,6 +46,10 @@ export const listCommitmentsRequestSchema = z
       .string()
       .regex(/^\d{4}-\d{2}-\d{2}$/, "dueAfter must be YYYY-MM-DD")
       .optional(),
+    /** ISO instant, inclusive upper bound on `object_instant` (timed tasks only). */
+    dueBeforeInstant: z.string().datetime().pipe(z.coerce.date()).optional(),
+    /** ISO instant, inclusive lower bound on `object_instant` (timed tasks only). */
+    dueAfterInstant: z.string().datetime().pipe(z.coerce.date()).optional(),
     /** `false` → only tasks without a due date; `true` → only tasks with one. */
     hasDueDate: z.boolean().optional(),
     /** Case-insensitive label substring search. */
@@ -71,6 +76,9 @@ export const commitmentListItemSchema = z.object({
     })
     .nullable(),
   dueOn: z.string().nullable(),
+  dueTime: z.string().nullable(),
+  timeZone: z.string().nullable(),
+  dueAt: z.coerce.date().nullable(),
   /** `statedAt` of the active status claim. */
   statusChangedAt: z.coerce.date(),
   createdAt: z.coerce.date(),
