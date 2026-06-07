@@ -265,7 +265,7 @@ describeIfServer("open commitments query", () => {
             "predicate", "statement", "source_id", "scope", "asserted_by_kind", "stated_at", "status"
           )
           VALUES
-            ($1, $2, $3, NULL, 'pending', 'HAS_TASK_STATUS', 'Done task used to be pending.', $4, 'personal', 'user', '2026-04-01T09:00:00Z', 'active')
+            ($1, $2, $3, NULL, 'pending', 'HAS_TASK_STATUS', 'Done task used to be pending.', $4, 'personal', 'user', '2026-04-01T09:00:00Z', 'superseded')
         `,
         [newTypeId("claim"), userId, doneTaskNodeId, personalSourceId],
       );
@@ -276,7 +276,7 @@ describeIfServer("open commitments query", () => {
             "predicate", "statement", "source_id", "scope", "asserted_by_kind", "stated_at", "status"
           )
           VALUES
-            ($1, $2, $3, $4, NULL, 'DUE_ON', 'Review memo was previously due on 2026-04-27.', $5, 'personal', 'user', '2026-04-01T10:02:00Z', 'active')
+            ($1, $2, $3, $4, NULL, 'DUE_ON', 'Review memo was previously due on 2026-04-27.', $5, 'personal', 'user', '2026-04-01T10:02:00Z', 'superseded')
         `,
         [
           newTypeId("claim"),
