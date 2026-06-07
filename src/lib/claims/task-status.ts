@@ -8,10 +8,14 @@ import { TaskStatusEnum, type TaskStatus } from "~/types/graph";
  * Kept deliberately conservative — only labels whose intent is unambiguous.
  * This guards the read model against the `completed`/`cancelled` vocabulary
  * drift documented in docs/sdk-consumer-migration.md, where a consumer's tool
- * schema diverged from the SDK enum.
+ * schema diverged from the SDK enum. `failed` maps to `abandoned` because it
+ * is the only terminal "closed but not completed" value in the enum — the
+ * extraction LLM emits it for tasks the user gave up on or could not finish.
  *
- * NOTE: the SQL twin of this map lives in
- * `drizzle/0016_task_status_vocabulary_backfill.sql`. Keep the two in sync.
+ * NOTE: each synonym needs a SQL twin so rows already in the store are
+ * repaired, not just freshly-extracted ones. The base map was seeded by
+ * `drizzle/0017_task_status_vocabulary_backfill.sql`; `failed` was added in
+ * `drizzle/0018_failed_task_status_backfill.sql`. Keep them in sync.
  */
 const TASK_STATUS_SYNONYMS: Readonly<Record<string, TaskStatus>> = {
   completed: "done",
@@ -20,6 +24,7 @@ const TASK_STATUS_SYNONYMS: Readonly<Record<string, TaskStatus>> = {
   cancelled: "abandoned",
   canceled: "abandoned",
   dropped: "abandoned",
+  failed: "abandoned",
   todo: "pending",
   to_do: "pending",
   not_started: "pending",
