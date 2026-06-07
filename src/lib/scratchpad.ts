@@ -7,6 +7,7 @@ import type {
 } from "./schemas/scratchpad";
 import db from "~/db";
 import { scratchpads } from "~/db/schema";
+import { ensureUser } from "~/lib/ingestion/ensure-user";
 
 export async function readScratchpad(
   params: ScratchpadReadRequest,
@@ -71,6 +72,8 @@ async function upsertScratchpad(
   userId: string,
   content: string,
 ): Promise<ScratchpadResponse> {
+  await ensureUser(db, userId);
+
   const now = new Date();
   const rows = await db
     .insert(scratchpads)
