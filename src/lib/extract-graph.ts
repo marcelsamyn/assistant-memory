@@ -403,15 +403,20 @@ ${
     }
   }
 
-  const uniqueParsedLlmNodes = _deduplicateLlmNodes(parsedLlmOutput.nodes);
+  // `?? []`: the extraction provider isn't strict structured output, so any of
+  // these collections may be omitted/null when the model has nothing to emit
+  // (see llmExtractionSchema). Treat a missing collection as empty.
+  const uniqueParsedLlmNodes = _deduplicateLlmNodes(
+    parsedLlmOutput.nodes ?? [],
+  );
   const uniqueParsedLlmClaims = _deduplicateLlmClaims(
-    parsedLlmOutput.relationshipClaims,
+    parsedLlmOutput.relationshipClaims ?? [],
   );
   const uniqueParsedLlmAttributeClaims = _deduplicateLlmAttributeClaims(
-    parsedLlmOutput.attributeClaims,
+    parsedLlmOutput.attributeClaims ?? [],
   );
   const uniqueParsedLlmAliases = _deduplicateLlmAliases(
-    parsedLlmOutput.aliases,
+    parsedLlmOutput.aliases ?? [],
   );
 
   const parentSourceScope = await _fetchSourceScope(db, userId, sourceId);

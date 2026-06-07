@@ -14,3 +14,39 @@ describe("structured output JSON schemas", () => {
     ).not.toThrow();
   });
 });
+
+describe("llmExtractionSchema leniency", () => {
+  const validNode = { id: "temp_person_1", type: "Person", label: "Ada" };
+
+  it("parses a response that omits empty top-level collections", () => {
+    // A non-strict provider drops collections it has nothing for — most often
+    // `aliases`. This is the exact shape that previously threw
+    // `ZodError: expected array, received undefined` at path `aliases`.
+    const parsed = llmExtractionSchema.parse({
+      nodes: [validNode],
+      relationshipClaims: [],
+      attributeClaims: [],
+    });
+    expect(parsed.nodes).toHaveLength(1);
+    expect(parsed.aliases ?? []).toEqual([]);
+  });
+
+  it("parses when a collection arrives as null", () => {
+    const parsed = llmExtractionSchema.parse({
+      nodes: null,
+      relationshipClaims: null,
+      attributeClaims: null,
+      aliases: null,
+    });
+    expect(parsed.nodes ?? []).toEqual([]);
+    expect(parsed.aliases ?? []).toEqual([]);
+  });
+
+  it("still rejects a structurally malformed item (lax about empty, not broken)", () => {
+    expect(() =>
+      llmExtractionSchema.parse({
+        nodes: [{ id: "temp_1", type: "NotARealNodeType", label: "x" }],
+      }),
+    ).toThrow();
+  });
+});
