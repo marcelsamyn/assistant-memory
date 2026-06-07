@@ -7,7 +7,7 @@
  *
  * Common aliases: getDigest, daily digest, today rollup.
  */
-import { startOfDayInTimeZone } from "./time-zone";
+import { startOfDayInTimeZone } from "~/lib/time-zone";
 import { getConversationBootstrapContext } from "~/lib/context/assemble-bootstrap-context";
 import type { ContextBundle } from "~/lib/context/types";
 import { getMetricMovers } from "~/lib/metrics/movers";
