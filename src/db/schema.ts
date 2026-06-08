@@ -10,6 +10,7 @@ import {
   vector,
   index,
   unique,
+  primaryKey,
   integer,
   boolean,
   type AnyPgColumn,
@@ -442,6 +443,30 @@ export const sourceLinksRelations = relations(sourceLinks, ({ one }) => ({
     references: [nodes.id],
   }),
 }));
+
+/**
+ * Records that a consumed node was merged into a survivor, so stale references
+ * (e.g. citations) can follow `from → to`. `from_node_id` intentionally has NO
+ * FK: the consumed node row is deleted by the merge, but the redirect must
+ * survive it. Common aliases: node redirect, merge tombstone, node alias.
+ */
+export const nodeRedirects = pgTable(
+  "node_redirects",
+  {
+    userId: text()
+      .references(() => users.id)
+      .notNull(),
+    fromNodeId: typeIdNoDefault("node", { name: "from_node_id" }).notNull(),
+    toNodeId: typeId("node", { name: "to_node_id" })
+      .references(() => nodes.id, { onDelete: "cascade" })
+      .notNull(),
+    createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.fromNodeId] }),
+    index("node_redirects_user_to_node_idx").on(table.userId, table.toNodeId),
+  ],
+);
 
 // --- Specialized Data ---
 
