@@ -25,6 +25,7 @@ export async function writeNodeRedirects(
   consumedIds: TypeId<"node">[],
 ): Promise<void> {
   if (consumedIds.length === 0) return;
+  const uniqueConsumedIds = [...new Set(consumedIds)];
 
   await db
     .update(nodeRedirects)
@@ -32,14 +33,14 @@ export async function writeNodeRedirects(
     .where(
       and(
         eq(nodeRedirects.userId, userId),
-        inArray(nodeRedirects.toNodeId, consumedIds),
+        inArray(nodeRedirects.toNodeId, uniqueConsumedIds),
       ),
     );
 
   await db
     .insert(nodeRedirects)
     .values(
-      consumedIds.map((fromNodeId) => ({
+      uniqueConsumedIds.map((fromNodeId) => ({
         userId,
         fromNodeId,
         toNodeId: survivorId,
@@ -64,6 +65,7 @@ export async function resolveNodeRedirects(
     ids.map((id) => [id, id]),
   );
   if (ids.length === 0) return out;
+  const uniqueIds = [...new Set(ids)];
 
   const rows = await db
     .select({
@@ -74,7 +76,7 @@ export async function resolveNodeRedirects(
     .where(
       and(
         eq(nodeRedirects.userId, userId),
-        inArray(nodeRedirects.fromNodeId, ids),
+        inArray(nodeRedirects.fromNodeId, uniqueIds),
       ),
     );
   for (const r of rows) out.set(r.fromNodeId, r.toNodeId);
