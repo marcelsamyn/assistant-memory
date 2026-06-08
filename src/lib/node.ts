@@ -25,6 +25,7 @@ import {
 } from "~/lib/graph";
 import { ensureUser } from "~/lib/ingestion/ensure-user";
 import { normalizeLabel } from "~/lib/label";
+import { writeNodeRedirects } from "~/lib/node-redirects";
 import { getEffectiveNodeScopes } from "~/lib/node-scope";
 import { ensureSystemSource, sourceService } from "~/lib/sources";
 import { ensureDayNode } from "~/lib/temporal";
@@ -648,6 +649,9 @@ export async function mergeNodes(
 
       await tx.delete(sourceLinks).where(eq(sourceLinks.nodeId, consumedId));
     }
+
+    // Record redirects so stale references (e.g. citations) follow consumed → survivor.
+    await writeNodeRedirects(tx, userId, survivorId, consumedIds);
 
     // Delete consumed nodes
     await tx
