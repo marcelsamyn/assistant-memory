@@ -62,7 +62,9 @@ describeIfServer("resolveCitations", () => {
     const missingNode = newTypeId("node");
     const src1 = newTypeId("source");
     const src2 = newTypeId("source");
+    const srcDeleted = newTypeId("source");
     const claim1 = newTypeId("claim");
+    const claimSuperseded = newTypeId("claim");
 
     const client = new Client({ connectionString: dsnFor(dbName) });
     await client.connect();
@@ -161,6 +163,21 @@ describeIfServer("resolveCitations", () => {
         [claim1, liveNode, src1],
       );
 
+      // soft-deleted source: row exists but deleted_at is set
+      await client.query(
+        `INSERT INTO "sources" ("id","user_id","type","external_id","metadata","deleted_at")
+         VALUES ($1,'user_A','document','ext_deleted',$2,now())`,
+        [srcDeleted, JSON.stringify({ title: "Deleted doc" })],
+      );
+
+      // superseded claim: row exists but status is 'superseded'
+      await client.query(
+        `INSERT INTO "claims"
+          ("id","user_id","subject_node_id","object_value","predicate","statement","source_id","asserted_by_kind","stated_at","status")
+         VALUES ($1,'user_A',$2,'Oct 1','HAS_STATUS','Launch was Oct 1',$3,'user',now(),'superseded')`,
+        [claimSuperseded, liveNode, src1],
+      );
+
       // mergedAway was merged into liveNode (node row gone, redirect remains)
       await writeNodeRedirects(database, userId, liveNode, [mergedAway]);
 
@@ -170,6 +187,8 @@ describeIfServer("resolveCitations", () => {
         claim1,
         src2,
         missingNode,
+        srcDeleted,
+        claimSuperseded,
       ]);
 
       const by = new Map(result.map((r) => [r.requestedId, r]));
@@ -203,6 +222,20 @@ describeIfServer("resolveCitations", () => {
         canonicalId: null,
         title: null,
       });
+      // soft-deleted source: row exists but deleted_at set → unavailable
+      expect(by.get(srcDeleted)).toMatchObject({
+        kind: "source",
+        available: false,
+        canonicalId: null,
+        title: "Deleted doc",
+      });
+      // superseded claim: row exists but status !== 'active' → unavailable; title still returned
+      expect(by.get(claimSuperseded)).toMatchObject({
+        kind: "claim",
+        available: false,
+        canonicalId: null,
+        title: "Launch was Oct 1",
+      });
       // input order preserved
       expect(result.map((r) => r.requestedId)).toEqual([
         liveNode,
@@ -210,6 +243,8 @@ describeIfServer("resolveCitations", () => {
         claim1,
         src2,
         missingNode,
+        srcDeleted,
+        claimSuperseded,
       ]);
     } finally {
       await client.end();

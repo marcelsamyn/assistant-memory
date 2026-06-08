@@ -3,7 +3,7 @@ import { z } from "zod";
 
 export const resolveCitationsRequestSchema = z.object({
   userId: z.string(),
-  ids: z.array(z.string()).max(200),
+  ids: z.array(z.string().max(200)).max(200),
 });
 export type ResolveCitationsRequest = z.infer<
   typeof resolveCitationsRequestSchema

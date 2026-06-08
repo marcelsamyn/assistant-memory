@@ -82,6 +82,7 @@ export async function resolveCitations(
           statement: claims.statement,
           description: claims.description,
           sourceId: claims.sourceId,
+          status: claims.status,
           sourceType: sources.type,
           sourceMetadata: sources.metadata,
         })
@@ -92,11 +93,12 @@ export async function resolveCitations(
   const claimById = new Map(claimRows.map((r) => [r.id, r]));
   const claimCitations: ResolvedCitation[] = claimIds.map((requestedId) => {
     const row = claimById.get(requestedId);
+    const active = row?.status === "active";
     return {
       requestedId,
       kind: "claim",
-      available: Boolean(row),
-      canonicalId: row ? requestedId : null,
+      available: active,
+      canonicalId: active ? requestedId : null,
       title: row?.statement ?? null,
       snippet: row?.description ?? null,
       source: row
