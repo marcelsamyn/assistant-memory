@@ -26,6 +26,8 @@ export const resolvedCitationSchema = z.object({
       type: z.string(),
     })
     .nullable(),
+  /** For a claim, the node it is asserted about (its subject); for deep-linking. */
+  subjectNodeId: typeIdSchema("node").nullable().optional(),
 });
 export type ResolvedCitation = z.infer<typeof resolvedCitationSchema>;
 

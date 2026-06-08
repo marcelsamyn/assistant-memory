@@ -84,6 +84,7 @@ export async function resolveCitations(
           statement: claims.statement,
           description: claims.description,
           sourceId: claims.sourceId,
+          subjectNodeId: claims.subjectNodeId,
           status: claims.status,
           sourceType: sources.type,
           sourceMetadata: sources.metadata,
@@ -110,6 +111,7 @@ export async function resolveCitations(
             type: row.sourceType ?? "unknown",
           }
         : null,
+      subjectNodeId: row?.subjectNodeId ?? null,
     };
   });
 

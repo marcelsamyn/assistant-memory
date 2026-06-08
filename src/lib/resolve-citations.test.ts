@@ -211,6 +211,7 @@ describeIfServer("resolveCitations", () => {
         title: "Launch moved to Nov 14",
         source: { id: src1, title: "2026 plan", type: "document" },
       });
+      expect(by.get(claim1)?.subjectNodeId).toBe(liveNode);
       expect(by.get(src2)).toMatchObject({
         kind: "source",
         available: true,
