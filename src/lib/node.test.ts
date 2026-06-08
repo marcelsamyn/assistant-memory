@@ -270,8 +270,10 @@ describeIfServer("node operations", () => {
 
   async function ensureMergeTables(client: Client): Promise<void> {
     // The first test in this file creates the core tables inline. Merge-path
-    // tests additionally need `node_embeddings`. Idempotent so subsequent
-    // tests can call this without conflicting with the inline creation above.
+    // tests additionally need `node_embeddings` and `node_redirects` (the merge
+    // transaction now records a redirect per consumed node). Idempotent so
+    // subsequent tests can call this without conflicting with the inline
+    // creation above.
     await client.query(`
       CREATE TABLE IF NOT EXISTS "node_embeddings" (
         "id" text PRIMARY KEY NOT NULL,
@@ -279,6 +281,14 @@ describeIfServer("node operations", () => {
         "embedding" jsonb,
         "model_name" varchar(100),
         "created_at" timestamp with time zone DEFAULT now() NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS "node_redirects" (
+        "user_id" text NOT NULL REFERENCES "users"("id"),
+        "from_node_id" text NOT NULL,
+        "to_node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+        "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+        CONSTRAINT "node_redirects_user_id_from_node_id_pk"
+          PRIMARY KEY ("user_id","from_node_id")
       );
     `);
   }
@@ -387,6 +397,62 @@ describeIfServer("node operations", () => {
     } finally {
       vi.doUnmock("~/utils/db");
       vi.doUnmock("~/lib/embeddings");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("writes a node redirect when merging", async () => {
+    const userId = "user_merge_redirect";
+    const survivor = newTypeId("node");
+    const consumed = newTypeId("node");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+    vi.doMock("~/lib/embeddings", () => ({
+      generateEmbeddings: async () => ({
+        data: [{ embedding: Array.from({ length: 1024 }, () => 0) }],
+        usage: { total_tokens: 0 },
+      }),
+    }));
+    vi.doMock("~/lib/sources", () => ({
+      sourceService: { fetchRaw: async () => [] },
+    }));
+
+    try {
+      await ensureMergeTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id","user_id","node_type") VALUES
+          ($1,$3,'Object'),($2,$3,'Object')`,
+        [survivor, consumed, userId],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id","node_id","label") VALUES ($1,$2,'Acme'),($3,$4,'Acme Inc')`,
+        [
+          newTypeId("node_metadata"),
+          survivor,
+          newTypeId("node_metadata"),
+          consumed,
+        ],
+      );
+
+      const { mergeNodes } = await import("./node");
+      await mergeNodes(userId, [survivor, consumed]);
+
+      const { rows } = await client.query(
+        `SELECT "from_node_id","to_node_id" FROM "node_redirects" WHERE "user_id" = $1`,
+        [userId],
+      );
+      expect(rows).toEqual([{ from_node_id: consumed, to_node_id: survivor }]);
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.doUnmock("~/lib/embeddings");
+      vi.doUnmock("~/lib/sources");
       vi.resetModules();
       await client.end();
     }
