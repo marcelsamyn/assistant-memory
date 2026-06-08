@@ -1,4 +1,4 @@
-import { defineEventHandler } from "h3";
+import { defineEventHandler, readBody } from "h3";
 import { resolveCitations } from "~/lib/resolve-citations";
 import {
   resolveCitationsRequestSchema,

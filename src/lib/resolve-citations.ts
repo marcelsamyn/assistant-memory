@@ -35,13 +35,15 @@ export async function resolveCitations(
   userId: string,
   ids: string[],
 ): Promise<ResolvedCitation[]> {
-  const nodeIds = ids.filter((i) => prefixOf(i) === "node") as TypeId<"node">[];
-  const claimIds = ids.filter(
-    (i) => prefixOf(i) === "claim",
-  ) as TypeId<"claim">[];
-  const sourceIds = ids.filter(
-    (i) => prefixOf(i) === "src",
-  ) as TypeId<"source">[];
+  const nodeIds = [
+    ...new Set(ids.filter((i) => prefixOf(i) === "node")),
+  ] as TypeId<"node">[];
+  const claimIds = [
+    ...new Set(ids.filter((i) => prefixOf(i) === "claim")),
+  ] as TypeId<"claim">[];
+  const sourceIds = [
+    ...new Set(ids.filter((i) => prefixOf(i) === "src")),
+  ] as TypeId<"source">[];
 
   // --- nodes: follow merge redirects, then load metadata ---
   const redirects = await resolveNodeRedirects(db, userId, nodeIds);
