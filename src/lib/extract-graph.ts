@@ -295,7 +295,7 @@ ${
 - "assistant_inferred" — used ONLY if you decide to extract something that the assistant said and the user did NOT confirm. Prefer to NOT extract these at all; if you must, mark them with this kind so they are demoted later.
 - NEVER use "user" for an assistant-only statement.
 - Do NOT emit "participant" — multi-party transcript ingestion is not yet supported.
-- For a brand-new Task node, this same rule is strict: use "user"/"user_confirmed" only when the user actually committed, otherwise "assistant_inferred". See the assertionKind rules under "CURRENT OPEN TASKS".`
+- A brand-new Task node is always recorded as tentative no matter what assertionKind you give its status claim. To CONFIRM a task instead, the source must let you target an EXISTING task node with assertionKind "user" (see "CURRENT OPEN TASKS" / "CANDIDATE TASKS").`
 }
 
 Few-shot examples:
@@ -710,10 +710,7 @@ These are the user's currently open Task nodes. Each line lists the task's exist
   - general planning, brainstorming, venting, or discussion the user did not commit to acting on;
   - the existence of the conversation itself — NEVER create a "check-in", "weekly planning", "review", or similar meta task that merely restates that this conversation took place.
 - A Task node's label must be a short imperative action (e.g. "Book Zouk social tickets"), NOT a topic, a date, or a description of the conversation. NEVER put a multi-point summary, recap, or transcript of the conversation into a Task node's label or description.
-- For a genuine brand-new task not in this list, create a new Task node with a temporary id (e.g. "temp_task_1") and emit \`HAS_TASK_STATUS=pending\` (and \`OWNED_BY\` / \`DUE_ON\` as applicable). Set its \`assertionKind\` by who actually committed to it:
-  - "user" ONLY when the user explicitly said they will do it (e.g. "I'll book the tickets", "I need to finish the deck by Friday");
-  - "user_confirmed" when the assistant proposed it and the user explicitly agreed;
-  - "assistant_inferred" for anything the assistant suggested, or that you inferred, without the user clearly committing. When in doubt, use "assistant_inferred" — a tentative task is cheap to confirm later, but a fabricated firm commitment is harmful.`;
+- For a genuine brand-new task not in this list, create a new Task node with a temporary id (e.g. "temp_task_1") and emit \`HAS_TASK_STATUS=pending\` (and \`OWNED_BY\` / \`DUE_ON\` as applicable). Every newly created task is recorded as TENTATIVE (unconfirmed) and surfaced to the user to confirm — ingestion never creates a firm commitment, and the \`assertionKind\` you put on a new task's status claim does not change that. Do NOT lower the bar above just because the task will be tentative: still only create one when the source establishes a real action item.`;
 
   if (openCommitments.length === 0) {
     return `${header}
@@ -1037,21 +1034,19 @@ async function _processAndInsertLlmClaims(
       objectValue = coerced;
     }
 
-    // Safety net for brand-new tasks: when the model mints a Task node but
-    // leaves its provenance unspecified, `_resolveAssertedByKind` falls back to
-    // the generic "user" default, which would drop the task straight into the
-    // trusted commitment band. A task we surfaced without an explicit
-    // user/user-confirmed signal should be tentative instead, so the user can
-    // confirm it rather than discovering an unasked-for commitment. We only
-    // touch the omitted case — an explicit "user"/"user_confirmed" from the
-    // model is a genuine commitment and is left intact. Transcript mode resolves
-    // provenance from the speaker map (a stronger signal), so it's exempt.
+    // Background ingestion never mints a firm commitment. Any task created
+    // during document/conversation ingestion is recorded as tentative (the
+    // candidate band), regardless of what the model asserts about who
+    // committed to it — we don't trust a passive ingest to manufacture an
+    // obligation. Firm commitments arise only from explicit user action: the
+    // candidate-confirmation flow (a later HAS_TASK_STATUS against the
+    // *existing* task node, which is not in `newTaskNodeIds`) or the commitment
+    // write APIs. So we force the provenance here for brand-new tasks only and
+    // leave status updates to existing tasks (including promotions) untouched.
     let assertedByKind = provenance.kind;
     if (
       llmClaim.predicate === "HAS_TASK_STATUS" &&
-      newTaskNodeIds.has(subjectNodeId) &&
-      !llmClaim.assertionKind &&
-      !(speakerMap && speakerMap.size > 0)
+      newTaskNodeIds.has(subjectNodeId)
     ) {
       assertedByKind = "assistant_inferred";
     }

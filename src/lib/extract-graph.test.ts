@@ -850,7 +850,7 @@ describeIfServer("extractGraph claim-native insertion", () => {
     }
   });
 
-  it("keeps a brand-new task in the trusted band when the model marks it user-stated", async () => {
+  it("forces a brand-new task into the tentative band even when the model marks it user-stated", async () => {
     const userId = "user_new_task_trusted";
     const conversationNodeId = newTypeId("node");
     const parentSourceId = newTypeId("source");
@@ -964,7 +964,7 @@ describeIfServer("extractGraph claim-native insertion", () => {
         [userId],
       );
       expect(claimRows.rows).toHaveLength(1);
-      expect(claimRows.rows[0]?.asserted_by_kind).toBe("user");
+      expect(claimRows.rows[0]?.asserted_by_kind).toBe("assistant_inferred");
     } finally {
       vi.doUnmock("~/utils/db");
       vi.doUnmock("./graph");
