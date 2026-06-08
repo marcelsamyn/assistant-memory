@@ -133,6 +133,14 @@ const HARNESS_DDL = `
     "created_at" timestamp with time zone DEFAULT now() NOT NULL,
     UNIQUE ("user_id", "normalized_alias_text", "canonical_node_id")
   );
+  CREATE TABLE IF NOT EXISTS "node_redirects" (
+    "user_id" text NOT NULL REFERENCES "users"("id"),
+    "from_node_id" text NOT NULL,
+    "to_node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+    "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT "node_redirects_user_id_from_node_id_pk"
+      PRIMARY KEY ("user_id","from_node_id")
+  );
   CREATE TABLE IF NOT EXISTS "user_profiles" (
     "id" text PRIMARY KEY NOT NULL,
     "user_id" text NOT NULL REFERENCES "users"("id"),

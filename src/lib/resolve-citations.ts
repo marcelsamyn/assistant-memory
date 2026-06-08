@@ -1,10 +1,10 @@
 /** Batch-resolve node/claim/source ids to citation-ready records. */
+import { resolveNodeRedirects } from "./node-redirects";
+import type { ResolvedCitation } from "./schemas/resolve-citations";
 import { and, eq, inArray } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { claims, nodeMetadata, nodes, sources } from "~/db/schema";
 import type { TypeId } from "~/types/typeid";
-import { resolveNodeRedirects } from "./node-redirects";
-import type { ResolvedCitation } from "./schemas/resolve-citations";
 
 type Database =
   | DrizzleDB
