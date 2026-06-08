@@ -1,10 +1,10 @@
+import { writeNodeRedirects } from "./node-redirects";
+import { resolveCitations } from "./resolve-citations";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
 import { newTypeId } from "~/types/typeid";
-import { writeNodeRedirects } from "./node-redirects";
-import { resolveCitations } from "./resolve-citations";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
 const TEST_DB_PORT = Number(process.env["TEST_PG_PORT"] ?? 5431);

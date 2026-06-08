@@ -135,6 +135,14 @@ async function createTables(client: Client): Promise<void> {
       "created_at" timestamp with time zone DEFAULT now() NOT NULL,
       UNIQUE ("user_id", "normalized_alias_text", "canonical_node_id")
     );
+    CREATE TABLE IF NOT EXISTS "node_redirects" (
+      "user_id" text NOT NULL REFERENCES "users"("id"),
+      "from_node_id" text NOT NULL,
+      "to_node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+      "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+      CONSTRAINT "node_redirects_user_id_from_node_id_pk"
+        PRIMARY KEY ("user_id","from_node_id")
+    );
   `);
 }
 
@@ -293,7 +301,7 @@ describeIfServer("cleanup operation helpers", () => {
   afterEach(async () => {
     // Truncate user-scoped data so tests don't bleed.
     await rootClient.query(
-      `TRUNCATE "aliases", "claims", "source_links",
+      `TRUNCATE "node_redirects", "aliases", "claims", "source_links",
               "node_metadata", "nodes", "sources", "users" CASCADE`,
     );
   });
