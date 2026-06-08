@@ -16,6 +16,7 @@ export {
   type ProposedMetricDefinition,
 } from "../lib/schemas/metric-definition.js";
 export * from "../lib/schemas/query-search.js";
+export * from "../lib/schemas/resolve-citations.js";
 export * from "../lib/schemas/query-atlas.js";
 export * from "../lib/schemas/query-day.js";
 export * from "../lib/schemas/query-node-type.js";

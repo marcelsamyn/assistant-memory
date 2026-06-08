@@ -208,6 +208,11 @@ import {
   queryTimelineResponseSchema,
 } from "../lib/schemas/query-timeline.js";
 import {
+  resolveCitationsResponseSchema,
+  type ResolveCitationsRequest,
+  type ResolveCitationsResponse,
+} from "../lib/schemas/resolve-citations.js";
+import {
   ScratchpadReadRequest,
   ScratchpadWriteRequest,
   ScratchpadEditRequest,
@@ -931,6 +936,17 @@ export class MemoryClient {
 
   async getNode(payload: GetNodeRequest): Promise<GetNodeResponse> {
     return this._fetch("POST", "/node/get", getNodeResponseSchema, payload);
+  }
+
+  async resolveCitations(
+    payload: ResolveCitationsRequest,
+  ): Promise<ResolveCitationsResponse> {
+    return this._fetch(
+      "POST",
+      "/citations/resolve",
+      resolveCitationsResponseSchema,
+      payload,
+    );
   }
 
   async getNodeSources(
