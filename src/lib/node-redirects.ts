@@ -13,6 +13,10 @@ type Database =
  * Record that `consumedIds` merged into `survivorId`. Re-points any existing
  * redirect that targeted a consumed id at the new survivor so chains stay flat
  * (max one hop). Idempotent on (userId, fromNodeId).
+ *
+ * @remarks
+ * Performs a two-step UPDATE-then-INSERT that is only atomic when called inside
+ * a DB transaction; `mergeNodes` already wraps it in one.
  */
 export async function writeNodeRedirects(
   db: Database,
