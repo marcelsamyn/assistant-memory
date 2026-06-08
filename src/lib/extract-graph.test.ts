@@ -724,6 +724,260 @@ describeIfServer("extractGraph claim-native insertion", () => {
     }
   });
 
+  it("defaults a brand-new task to the tentative band when the model omits assertionKind", async () => {
+    const userId = "user_new_task_tentative";
+    const conversationNodeId = newTypeId("node");
+    const parentSourceId = newTypeId("source");
+    const messageSourceId = newTypeId("source");
+    const statedAt = new Date("2026-05-01T10:00:00.000Z");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+    vi.doMock("./graph", () => ({
+      findSimilarNodes: async () => [],
+      findOneHopNodes: async () => [],
+      findNodesByType: async () => [],
+    }));
+    vi.doMock("./embeddings-util", () => ({
+      generateAndInsertClaimEmbeddings: async () => undefined,
+      generateAndInsertNodeEmbeddings: async () => undefined,
+    }));
+    vi.doMock("./debug-utils", () => ({
+      debugGraph: () => undefined,
+    }));
+    vi.doMock("./ai", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./ai")>()),
+      createCompletionClient: async () => ({
+        chat: {
+          completions: {
+            parse: async () => ({
+              choices: [
+                {
+                  message: {
+                    parsed: {
+                      nodes: [
+                        {
+                          id: "temp_task_1",
+                          type: "Task",
+                          label: "Book Zouk social tickets",
+                          description: null,
+                        },
+                      ],
+                      relationshipClaims: [],
+                      attributeClaims: [
+                        {
+                          subjectId: "temp_task_1",
+                          predicate: "HAS_TASK_STATUS",
+                          objectValue: "pending",
+                          statement: "A Zouk social ticket booking surfaced.",
+                          sourceRef: "msg_new_task",
+                          statedAt: statedAt.toISOString(),
+                          // assertionKind intentionally omitted — the model
+                          // didn't say who committed to this.
+                        },
+                      ],
+                      aliases: [],
+                    },
+                  },
+                },
+              ],
+            }),
+          },
+        },
+      }),
+    }));
+
+    try {
+      await createExtractionTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Conversation')`,
+        [conversationNodeId, userId],
+      );
+      await client.query(
+        `
+          INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label", "description")
+            VALUES ($1, $2, 'Conversation', 'conversation', null)
+        `,
+        [newTypeId("node_metadata"), conversationNodeId],
+      );
+      await client.query(
+        `
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+            VALUES
+              ($1, $3, 'conversation', 'conv_new_task', 'completed'),
+              ($2, $3, 'conversation_message', 'msg_new_task', 'completed')
+        `,
+        [parentSourceId, messageSourceId, userId],
+      );
+
+      const { extractGraph } = await import("./extract-graph");
+      await extractGraph({
+        userId,
+        sourceType: "conversation",
+        sourceId: parentSourceId,
+        statedAt,
+        linkedNodeId: conversationNodeId,
+        sourceRefs: [
+          { externalId: "msg_new_task", sourceId: messageSourceId, statedAt },
+        ],
+        content:
+          '<message id="msg_new_task" role="assistant">You could book Zouk social tickets.</message>',
+      });
+
+      const claimRows = await client.query<{ asserted_by_kind: string }>(
+        `
+          SELECT "asserted_by_kind" FROM "claims"
+          WHERE "user_id" = $1 AND "predicate" = 'HAS_TASK_STATUS'
+        `,
+        [userId],
+      );
+      expect(claimRows.rows).toHaveLength(1);
+      expect(claimRows.rows[0]?.asserted_by_kind).toBe("assistant_inferred");
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.doUnmock("./graph");
+      vi.doUnmock("./embeddings-util");
+      vi.doUnmock("./debug-utils");
+      vi.doUnmock("./ai");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("forces a brand-new task into the tentative band even when the model marks it user-stated", async () => {
+    const userId = "user_new_task_trusted";
+    const conversationNodeId = newTypeId("node");
+    const parentSourceId = newTypeId("source");
+    const messageSourceId = newTypeId("source");
+    const statedAt = new Date("2026-05-02T10:00:00.000Z");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+    vi.doMock("./graph", () => ({
+      findSimilarNodes: async () => [],
+      findOneHopNodes: async () => [],
+      findNodesByType: async () => [],
+    }));
+    vi.doMock("./embeddings-util", () => ({
+      generateAndInsertClaimEmbeddings: async () => undefined,
+      generateAndInsertNodeEmbeddings: async () => undefined,
+    }));
+    vi.doMock("./debug-utils", () => ({
+      debugGraph: () => undefined,
+    }));
+    vi.doMock("./ai", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./ai")>()),
+      createCompletionClient: async () => ({
+        chat: {
+          completions: {
+            parse: async () => ({
+              choices: [
+                {
+                  message: {
+                    parsed: {
+                      nodes: [
+                        {
+                          id: "temp_task_1",
+                          type: "Task",
+                          label: "File taxes by Friday",
+                          description: null,
+                        },
+                      ],
+                      relationshipClaims: [],
+                      attributeClaims: [
+                        {
+                          subjectId: "temp_task_1",
+                          predicate: "HAS_TASK_STATUS",
+                          objectValue: "pending",
+                          statement:
+                            "User committed to filing taxes by Friday.",
+                          sourceRef: "msg_user_task",
+                          statedAt: statedAt.toISOString(),
+                          assertionKind: "user",
+                        },
+                      ],
+                      aliases: [],
+                    },
+                  },
+                },
+              ],
+            }),
+          },
+        },
+      }),
+    }));
+
+    try {
+      await createExtractionTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Conversation')`,
+        [conversationNodeId, userId],
+      );
+      await client.query(
+        `
+          INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label", "description")
+            VALUES ($1, $2, 'Conversation', 'conversation', null)
+        `,
+        [newTypeId("node_metadata"), conversationNodeId],
+      );
+      await client.query(
+        `
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+            VALUES
+              ($1, $3, 'conversation', 'conv_user_task', 'completed'),
+              ($2, $3, 'conversation_message', 'msg_user_task', 'completed')
+        `,
+        [parentSourceId, messageSourceId, userId],
+      );
+
+      const { extractGraph } = await import("./extract-graph");
+      await extractGraph({
+        userId,
+        sourceType: "conversation",
+        sourceId: parentSourceId,
+        statedAt,
+        linkedNodeId: conversationNodeId,
+        sourceRefs: [
+          { externalId: "msg_user_task", sourceId: messageSourceId, statedAt },
+        ],
+        content:
+          '<message id="msg_user_task" role="user">I need to file my taxes by Friday.</message>',
+      });
+
+      const claimRows = await client.query<{ asserted_by_kind: string }>(
+        `
+          SELECT "asserted_by_kind" FROM "claims"
+          WHERE "user_id" = $1 AND "predicate" = 'HAS_TASK_STATUS'
+        `,
+        [userId],
+      );
+      expect(claimRows.rows).toHaveLength(1);
+      expect(claimRows.rows[0]?.asserted_by_kind).toBe("assistant_inferred");
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.doUnmock("./graph");
+      vi.doUnmock("./embeddings-util");
+      vi.doUnmock("./debug-utils");
+      vi.doUnmock("./ai");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
   it("reactivates the previous status when reprocessing removes the active source claim", async () => {
     const userId = "user_B";
     const aliceNodeId = newTypeId("node");

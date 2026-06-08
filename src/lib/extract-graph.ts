@@ -294,7 +294,8 @@ ${
 - "user_confirmed" — the assistant said something and the user explicitly agreed (e.g., user replied "yes", "right", "exactly", "correct").
 - "assistant_inferred" — used ONLY if you decide to extract something that the assistant said and the user did NOT confirm. Prefer to NOT extract these at all; if you must, mark them with this kind so they are demoted later.
 - NEVER use "user" for an assistant-only statement.
-- Do NOT emit "participant" — multi-party transcript ingestion is not yet supported.`
+- Do NOT emit "participant" — multi-party transcript ingestion is not yet supported.
+- A brand-new Task node is always recorded as tentative no matter what assertionKind you give its status claim. To CONFIRM a task instead, the source must let you target an EXISTING task node with assertionKind "user" (see "CURRENT OPEN TASKS" / "CANDIDATE TASKS").`
 }
 
 Few-shot examples:
@@ -450,6 +451,14 @@ ${
       )
     : [];
 
+  // Tasks freshly minted in this run, so the claim insert can keep new tasks
+  // out of the trusted commitment band when their provenance is unclear.
+  const newTaskNodeIds = new Set(
+    detailsOfNewlyCreatedNodes
+      .filter((node) => node.nodeType === "Task")
+      .map((node) => node.id),
+  );
+
   const insertedClaimRecords = await _processAndInsertLlmClaims(
     db,
     userId,
@@ -460,6 +469,7 @@ ${
     sourceRefMap,
     sourceType,
     speakerMap,
+    newTaskNodeIds,
   );
 
   await _processAndInsertLlmAliases(db, userId, uniqueParsedLlmAliases, idMap);
@@ -693,7 +703,14 @@ function _formatOpenCommitmentsSection(
 These are the user's currently open Task nodes. Each line lists the task's existing nodeId, label, current status, owner, and due date. RULES:
 - If the source mentions completing, abandoning, or progressing one of these tasks, emit an attribute claim with predicate \`HAS_TASK_STATUS\` (objectValue one of "pending", "in_progress", "done", "abandoned") whose subjectId is the task's existingNodeId shown below. DO NOT create a new Task node for it.
 - Only emit \`HAS_TASK_STATUS\`, \`OWNED_BY\`, or \`DUE_ON\` claims for these existing tasks if their status, owner, or due date has actually changed in the source. Tasks whose state is unchanged should NOT be re-emitted.
-- For brand-new tasks not in this list, create a new Task node with a temporary id (e.g. "temp_task_1") and emit \`HAS_TASK_STATUS=pending\` (and \`OWNED_BY\` / \`DUE_ON\` as applicable).`;
+- A "task" is a concrete, actionable item a specific person still has to DO. Only create one when the source establishes a real action item with a clear owner.
+- DO NOT manufacture tasks from any of the following:
+  - assistant suggestions, proposals, offers, or recommendations the user did not take up (e.g. "you could try…", "maybe set up a…", "we should…", "want me to…");
+  - recaps, summaries, or reflections about what already happened;
+  - general planning, brainstorming, venting, or discussion the user did not commit to acting on;
+  - the existence of the conversation itself — NEVER create a "check-in", "weekly planning", "review", or similar meta task that merely restates that this conversation took place.
+- A Task node's label must be a short imperative action (e.g. "Book Zouk social tickets"), NOT a topic, a date, or a description of the conversation. NEVER put a multi-point summary, recap, or transcript of the conversation into a Task node's label or description.
+- For a genuine brand-new task not in this list, create a new Task node with a temporary id (e.g. "temp_task_1") and emit \`HAS_TASK_STATUS=pending\` (and \`OWNED_BY\` / \`DUE_ON\` as applicable). Every newly created task is recorded as TENTATIVE (unconfirmed) and surfaced to the user to confirm — ingestion never creates a firm commitment, and the \`assertionKind\` you put on a new task's status claim does not change that. Do NOT lower the bar above just because the task will be tentative: still only create one when the source establishes a real action item.`;
 
   if (openCommitments.length === 0) {
     return `${header}
@@ -902,6 +919,7 @@ async function _processAndInsertLlmClaims(
   sourceRefMap: Map<string, SourceRef>,
   sourceType: SourceType,
   speakerMap: ExtractGraphSpeakerMap | undefined,
+  newTaskNodeIds: Set<TypeId<"node">>,
 ): Promise<Array<typeof claims.$inferSelect>> {
   const claimInserts: Array<typeof claims.$inferInsert> = [];
   const sourceScopeMap = await _fetchSourceScopeMap(
@@ -1016,6 +1034,23 @@ async function _processAndInsertLlmClaims(
       objectValue = coerced;
     }
 
+    // Background ingestion never mints a firm commitment. Any task created
+    // during document/conversation ingestion is recorded as tentative (the
+    // candidate band), regardless of what the model asserts about who
+    // committed to it — we don't trust a passive ingest to manufacture an
+    // obligation. Firm commitments arise only from explicit user action: the
+    // candidate-confirmation flow (a later HAS_TASK_STATUS against the
+    // *existing* task node, which is not in `newTaskNodeIds`) or the commitment
+    // write APIs. So we force the provenance here for brand-new tasks only and
+    // leave status updates to existing tasks (including promotions) untouched.
+    let assertedByKind = provenance.kind;
+    if (
+      llmClaim.predicate === "HAS_TASK_STATUS" &&
+      newTaskNodeIds.has(subjectNodeId)
+    ) {
+      assertedByKind = "assistant_inferred";
+    }
+
     claimInserts.push({
       userId,
       subjectNodeId,
@@ -1025,7 +1060,7 @@ async function _processAndInsertLlmClaims(
       description: llmClaim.statement,
       sourceId: claimSource.sourceId,
       scope,
-      assertedByKind: provenance.kind,
+      assertedByKind,
       assertedByNodeId: provenance.nodeId,
       statedAt: claimSource.statedAt,
       validFrom: _parseOptionalDate(llmClaim.validFrom),

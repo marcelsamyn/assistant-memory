@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Conversation/document ingestion no longer manufactures spurious or auto-trusted tasks.** The graph-extraction prompt now explicitly forbids minting Task nodes from assistant suggestions, recaps/summaries, uncommitted planning, or the existence of the conversation itself (e.g. a "weekly check-in" task), and requires Task labels to be short imperative actions rather than conversation summaries. Additionally, **every brand-new task created during ingestion is now recorded as tentative (the candidate band) deterministically** — the model no longer decides this, so a passive background ingest can never fabricate a firm commitment. Firm commitments arise only from explicit user action: the candidate-confirmation flow (a later status claim against the existing task) or the commitment write APIs.
+
 ## [1.17.0] — 2026-06-07
 
 ### Added
