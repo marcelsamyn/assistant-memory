@@ -5,6 +5,7 @@ import { claims, nodeMetadata, nodes } from "~/db/schema";
 import { createClaim, updateClaim, NodesNotFoundError } from "~/lib/claim";
 import { coerceTaskStatus } from "~/lib/claims/task-status";
 import { createNode, updateNode } from "~/lib/node";
+import type { CreateNodeInitialClaimInput } from "~/lib/node";
 import type {
   CommitmentActionRequest,
   ConfirmCommitmentResponse,
@@ -14,8 +15,10 @@ import type {
   CreateCommitmentRequest,
   CreateCommitmentResponse,
 } from "~/lib/schemas/create-commitment";
-import type { CreateNodeInitialClaim } from "~/lib/schemas/node";
-import type { SetCommitmentDueRequest } from "~/lib/schemas/set-commitment-due";
+import type {
+  SetCommitmentDueRequest,
+  SetCommitmentDueResponse,
+} from "~/lib/schemas/set-commitment-due";
 import type {
   SetCommitmentOwnerRequest,
   SetCommitmentOwnerResponse,
@@ -29,6 +32,7 @@ import type {
   UpdateCommitmentResponse,
 } from "~/lib/schemas/update-commitment";
 import { ensureDayNode } from "~/lib/temporal";
+import { instantFromLocalTime } from "~/lib/time-zone";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -75,6 +79,24 @@ async function requireOwnedTask(
 }
 
 /**
+ * Resolve a date + optional time/zone into the claim qualifiers. Returns the
+ * `metadata` jsonb and resolved UTC `objectInstant` when a time is supplied, or
+ * an empty object for a date-only due. The caller's schema guarantees
+ * `dueTime`/`timeZone` are both present or both absent.
+ */
+function resolveDueQualifier(
+  dueOn: string,
+  dueTime: string | null | undefined,
+  timeZone: string | null | undefined,
+): { metadata?: Record<string, unknown>; objectInstant?: Date } {
+  if (dueTime == null || timeZone == null) return {};
+  return {
+    metadata: { dueTime, timeZone },
+    objectInstant: instantFromLocalTime(dueOn, dueTime, timeZone),
+  };
+}
+
+/**
  * Set or clear a Task's `DUE_ON` claim.
  *
  * - `dueOn: "YYYY-MM-DD"` → resolve/create the canonical Temporal node and
@@ -88,13 +110,9 @@ async function requireOwnedTask(
  */
 export async function setCommitmentDue(
   input: SetCommitmentDueRequest,
-): Promise<{
-  taskId: TypeId<"node">;
-  dueOn: string | null;
-  claimId: TypeId<"claim"> | null;
-  retractedClaimIds: TypeId<"claim">[];
-}> {
-  const { userId, taskId, dueOn, note, assertedByKind } = input;
+): Promise<SetCommitmentDueResponse> {
+  const { userId, taskId, dueOn, dueTime, timeZone, note, assertedByKind } =
+    input;
   const db = await useDatabase();
 
   await requireOwnedTask(db, userId, taskId);
@@ -120,7 +138,15 @@ export async function setCommitmentDue(
       if (updated) retractedClaimIds.push(updated.id);
     }
 
-    return { taskId, dueOn: null, claimId: null, retractedClaimIds };
+    return {
+      taskId,
+      dueOn: null,
+      dueTime: null,
+      timeZone: null,
+      dueAt: null,
+      claimId: null,
+      retractedClaimIds,
+    };
   }
 
   // Resolve or create the canonical Temporal node for the requested date.
@@ -129,20 +155,33 @@ export async function setCommitmentDue(
   const targetDate = parseISO(dueOn);
   const dayNodeId = await ensureDayNode(db, userId, targetDate);
 
+  const { metadata, objectInstant } = resolveDueQualifier(
+    dueOn,
+    dueTime,
+    timeZone,
+  );
+
   const created = await createClaim({
     userId,
     subjectNodeId: taskId,
     predicate: "DUE_ON",
-    statement: `Task due on ${dueOn}`,
+    statement: objectInstant
+      ? `Task due on ${dueOn} at ${dueTime} (${timeZone})`
+      : `Task due on ${dueOn}`,
     objectNodeId: dayNodeId,
     description: note,
     assertedByKind,
     statedAt: new Date(),
+    metadata,
+    objectInstant,
   });
 
   return {
     taskId,
     dueOn: format(targetDate, "yyyy-MM-dd"),
+    dueTime: dueTime ?? null,
+    timeZone: timeZone ?? null,
+    dueAt: objectInstant ?? null,
     claimId: created.id,
     retractedClaimIds: [],
   };
@@ -165,8 +204,17 @@ export async function setCommitmentDue(
 export async function createCommitment(
   input: CreateCommitmentRequest,
 ): Promise<CreateCommitmentResponse> {
-  const { userId, label, description, status, dueOn, ownedBy, assertedByKind } =
-    input;
+  const {
+    userId,
+    label,
+    description,
+    status,
+    dueOn,
+    dueTime,
+    timeZone,
+    ownedBy,
+    assertedByKind,
+  } = input;
   const db = await useDatabase();
 
   // Resolve the owner up-front: it yields a natural-language OWNED_BY statement
@@ -188,7 +236,7 @@ export async function createCommitment(
   // HAS_TASK_STATUS first so its claim id is index 0; DUE_ON and OWNED_BY are
   // appended only when supplied, and their positions are captured so we can map
   // createNode's ordered `initialClaimIds` back onto the response.
-  const initialClaims: CreateNodeInitialClaim[] = [
+  const initialClaims: CreateNodeInitialClaimInput[] = [
     {
       predicate: "HAS_TASK_STATUS",
       statement: `${label} is ${status}.`,
@@ -198,14 +246,23 @@ export async function createCommitment(
   ];
 
   let dueIndex: number | null = null;
+  let dueQualifier: {
+    metadata?: Record<string, unknown>;
+    objectInstant?: Date;
+  } = {};
   if (dueOn !== undefined) {
     const dueNodeId = await ensureDayNode(db, userId, parseISO(dueOn));
+    dueQualifier = resolveDueQualifier(dueOn, dueTime, timeZone);
     dueIndex =
       initialClaims.push({
         predicate: "DUE_ON",
-        statement: `${label} is due on ${dueOn}.`,
+        statement: dueQualifier.objectInstant
+          ? `${label} is due on ${dueOn} at ${dueTime} (${timeZone}).`
+          : `${label} is due on ${dueOn}.`,
         objectNodeId: dueNodeId,
         assertedByKind,
+        metadata: dueQualifier.metadata,
+        objectInstant: dueQualifier.objectInstant,
       }) - 1;
   }
 
@@ -241,6 +298,9 @@ export async function createCommitment(
     label: created.label,
     status,
     dueOn: dueOn ?? null,
+    dueTime: dueTime ?? null,
+    timeZone: timeZone ?? null,
+    dueAt: dueQualifier.objectInstant ?? null,
     owner:
       ownedBy !== undefined ? { nodeId: ownedBy, label: ownerLabel } : null,
     statusClaimId,

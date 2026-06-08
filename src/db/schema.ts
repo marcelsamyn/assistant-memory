@@ -109,6 +109,13 @@ export const claims = pgTable(
     statement: text().notNull(),
     description: text(),
     metadata: jsonb(),
+    /**
+     * Resolved UTC instant of a time-qualified temporal-object claim — currently
+     * a `DUE_ON` whose `metadata` carries a wall-clock `dueTime` + IANA `timeZone`.
+     * NULL for date-only and non-temporal claims. Denormalized from
+     * (day-node date, dueTime, timeZone) for indexed instant-range queries.
+     */
+    objectInstant: timestamp("object_instant", { withTimezone: true }),
     sourceId: typeId("source")
       .references(() => sources.id, {
         onDelete: "cascade",
@@ -203,6 +210,11 @@ export const claims = pgTable(
       )
       .where(
         sql`${table.status} = 'active' AND ${table.scope} = 'personal' AND ${table.predicate} IN ('OWNED_BY', 'DUE_ON') AND ${table.objectNodeId} IS NOT NULL`,
+      ),
+    index("claims_due_instant_idx")
+      .on(table.userId, table.objectInstant)
+      .where(
+        sql`${table.predicate} = 'DUE_ON' AND ${table.status} = 'active' AND ${table.scope} = 'personal' AND ${table.objectInstant} IS NOT NULL`,
       ),
     index("claims_source_id_idx").on(table.sourceId),
     check(

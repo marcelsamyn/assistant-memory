@@ -3,6 +3,7 @@ import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
 import { createCommitmentRequestSchema } from "~/lib/schemas/create-commitment";
+import { setCommitmentDueRequestSchema } from "~/lib/schemas/set-commitment-due";
 import { setCommitmentOwnerRequestSchema } from "~/lib/schemas/set-commitment-owner";
 import { setCommitmentStatusRequestSchema } from "~/lib/schemas/set-commitment-status";
 import { updateCommitmentRequestSchema } from "~/lib/schemas/update-commitment";
@@ -106,6 +107,7 @@ async function provisionSchema(client: Client): Promise<void> {
       "statement" text NOT NULL,
       "description" text,
       "metadata" jsonb,
+      "object_instant" timestamp with time zone,
       "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
       "scope" varchar(16) DEFAULT 'personal' NOT NULL,
       "asserted_by_kind" varchar(24) NOT NULL,
@@ -1179,5 +1181,170 @@ describeIfServer("updateCommitment", () => {
       vi.resetModules();
       await client.end();
     }
+  });
+});
+
+describeIfServer("commitment due time", () => {
+  const dbName = `memory_due_time_test_${Date.now()}_${Math.floor(
+    Math.random() * 1e6,
+  )}`;
+
+  beforeAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE "${dbName}"`);
+    await admin.end();
+  });
+
+  afterAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(
+      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+       WHERE datname = $1 AND pid <> pg_backend_pid()`,
+      [dbName],
+    );
+    await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+    await admin.end();
+  });
+
+  it("createCommitment stores dueTime + timeZone + object_instant and echoes them", async () => {
+    const userId = "user_due_time_create";
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await provisionSchema(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { createCommitment } = await import("./commitments");
+
+        const created = await createCommitment(
+          createCommitmentRequestSchema.parse({
+            userId,
+            label: "Call the bank",
+            dueOn: "2026-06-10",
+            dueTime: "17:00",
+            timeZone: "America/New_York",
+          }),
+        );
+        expect(created.dueOn).toBe("2026-06-10");
+        expect(created.dueTime).toBe("17:00");
+        expect(created.timeZone).toBe("America/New_York");
+        expect(created.dueAt?.toISOString()).toBe("2026-06-10T21:00:00.000Z"); // 17:00 EDT = 21:00Z
+
+        const { rows } = await client.query(
+          `SELECT metadata, object_instant FROM claims WHERE id = $1`,
+          [created.dueClaimId],
+        );
+        expect(rows[0].metadata).toEqual({
+          dueTime: "17:00",
+          timeZone: "America/New_York",
+        });
+        expect(new Date(rows[0].object_instant).toISOString()).toBe(
+          "2026-06-10T21:00:00.000Z",
+        );
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("setCommitmentDue sets a time, then a date-only call clears it", async () => {
+    const userId = "user_due_time_set";
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await provisionSchema(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { createCommitment, setCommitmentDue } = await import(
+          "./commitments"
+        );
+
+        const created = await createCommitment(
+          createCommitmentRequestSchema.parse({
+            userId,
+            label: "Ship it",
+            dueOn: "2026-06-10",
+          }),
+        );
+
+        const timed = await setCommitmentDue(
+          setCommitmentDueRequestSchema.parse({
+            userId,
+            taskId: created.taskId,
+            dueOn: "2026-06-10",
+            dueTime: "09:30",
+            timeZone: "Europe/Paris",
+          }),
+        );
+        expect(timed.dueTime).toBe("09:30");
+        expect(timed.timeZone).toBe("Europe/Paris");
+        expect(timed.dueAt?.toISOString()).toBe("2026-06-10T07:30:00.000Z"); // 09:30 CEST = 07:30Z
+
+        const cleared = await setCommitmentDue(
+          setCommitmentDueRequestSchema.parse({
+            userId,
+            taskId: created.taskId,
+            dueOn: "2026-06-10",
+          }),
+        );
+        expect(cleared.dueTime).toBeNull();
+        expect(cleared.timeZone).toBeNull();
+        expect(cleared.dueAt).toBeNull();
+
+        const { rows } = await client.query(
+          `SELECT metadata, object_instant FROM claims WHERE id = $1`,
+          [cleared.claimId],
+        );
+        expect(rows[0].metadata).toBeNull();
+        expect(rows[0].object_instant).toBeNull();
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("rejects dueTime without timeZone at the schema boundary", () => {
+    expect(
+      setCommitmentDueRequestSchema.safeParse({
+        userId: "u",
+        taskId: newTypeId("node"),
+        dueOn: "2026-06-10",
+        dueTime: "09:00",
+      }).success,
+    ).toBe(false);
   });
 });

@@ -11,6 +11,7 @@
  * `dismiss_commitment` tools, keyed by the task node id.
  */
 import type { ContextSectionCandidateCommitments } from "../types";
+import { formatDue } from "./open-commitments";
 import { getCandidateCommitments } from "~/lib/query/open-commitments";
 import type { OpenCommitment } from "~/lib/schemas/open-commitments";
 
@@ -26,9 +27,8 @@ function renderLine(commitment: OpenCommitment): string {
   if (commitment.owner !== null) {
     parts.push(`owner=${commitment.owner.label ?? "(unlabeled)"}`);
   }
-  if (commitment.dueOn !== null) {
-    parts.push(`due=${commitment.dueOn}`);
-  }
+  const due = formatDue(commitment);
+  if (due !== null) parts.push(due);
   return parts.join(" ");
 }
 

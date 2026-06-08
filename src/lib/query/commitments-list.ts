@@ -4,6 +4,7 @@
  * but selecting every status (not just open) and adding keyset pagination.
  * Common aliases: list tasks, list commitments, completed tasks, task history.
  */
+import { readDueQualifier } from "./due-qualifier";
 import {
   and,
   aliasedTable,
@@ -38,6 +39,8 @@ interface ListRow {
   ownerNodeId: TypeId<"node"> | null;
   ownerLabel: string | null;
   dueOn: string | null;
+  dueMetadata: unknown;
+  dueInstant: Date | null;
   statusChangedAt: Date;
   createdAt: Date;
   sourceId: TypeId<"source">;
@@ -46,8 +49,8 @@ interface ListRow {
 /**
  * Keyset cursor. `v` is the string-rendered sort value of the last row, `i`
  * its task id (the total-order tiebreaker). `n` flags whether that row's sort
- * value was null — only meaningful for the `dueOn` sort, where undated tasks
- * are pushed to the end regardless of `order`.
+ * value was null — only meaningful for the `dueOn`/`dueAt` sorts, where undated
+ * tasks are pushed to the end regardless of `order`.
  */
 interface ListCursor {
   v: string | null;
@@ -117,6 +120,8 @@ export async function listCommitments(
     unowned,
     dueBefore,
     dueAfter,
+    dueBeforeInstant,
+    dueAfterInstant,
     hasDueDate,
     search,
     sort,
@@ -139,10 +144,14 @@ export async function listCommitments(
     createdAt: sql`${nodes.createdAt}`,
     label: sql`${nodeMetadata.label}`,
     dueOn: sql`${dueMetadata.label}`,
+    dueAt: sql`${dueClaim.objectInstant}`,
   };
   const sortColumn = sortColumns[sort];
   const dir = order === "asc" ? asc : desc;
-  const nullFlag = sql<boolean>`(${dueMetadata.label} IS NULL)`;
+  const nullFlag =
+    sort === "dueAt"
+      ? sql<boolean>`(${dueClaim.objectInstant} IS NULL)`
+      : sql<boolean>`(${dueMetadata.label} IS NULL)`;
 
   const whereClauses: (SQL | undefined)[] = [
     eq(claims.userId, userId),
@@ -161,6 +170,12 @@ export async function listCommitments(
     dueAfter === undefined
       ? undefined
       : sql`${dueMetadata.label} >= ${dueAfter}`,
+    dueBeforeInstant === undefined
+      ? undefined
+      : sql`${dueClaim.objectInstant} <= ${dueBeforeInstant.toISOString()}`,
+    dueAfterInstant === undefined
+      ? undefined
+      : sql`${dueClaim.objectInstant} >= ${dueAfterInstant.toISOString()}`,
     hasDueDate === undefined
       ? undefined
       : hasDueDate
@@ -179,7 +194,7 @@ export async function listCommitments(
   // ORDER BY: for `dueOn`, push nulls last (independent of direction) before the
   // sort column, then the task id tiebreaker so the keyset is total.
   const orderBy: SQL[] =
-    sort === "dueOn"
+    sort === "dueOn" || sort === "dueAt"
       ? [asc(nullFlag), dir(sortColumn), dir(nodes.id)]
       : [dir(sortColumn), dir(nodes.id)];
 
@@ -191,6 +206,8 @@ export async function listCommitments(
       ownerNodeId: ownerClaim.objectNodeId,
       ownerLabel: ownerMetadata.label,
       dueOn: dueMetadata.label,
+      dueMetadata: dueClaim.metadata,
+      dueInstant: dueClaim.objectInstant,
       statusChangedAt: claims.statedAt,
       createdAt: nodes.createdAt,
       sourceId: claims.sourceId,
@@ -252,6 +269,7 @@ export async function listCommitments(
       );
       continue;
     }
+    const due = readDueQualifier(row.dueMetadata, row.dueInstant);
     commitments.push({
       taskId: row.taskId,
       label: row.label,
@@ -261,6 +279,9 @@ export async function listCommitments(
           ? null
           : { nodeId: row.ownerNodeId, label: row.ownerLabel },
       dueOn: row.dueOn,
+      dueTime: due.dueTime,
+      timeZone: due.timeZone,
+      dueAt: due.dueAt,
       statusChangedAt: row.statusChangedAt,
       createdAt: row.createdAt,
       sourceId: row.sourceId,
@@ -275,7 +296,9 @@ export async function listCommitments(
     nextCursor = encodeCursor({
       v: sortValueOf(sort, last),
       i: last.taskId,
-      n: sort === "dueOn" && last.dueOn === null,
+      n:
+        (sort === "dueOn" && last.dueOn === null) ||
+        (sort === "dueAt" && last.dueInstant === null),
     });
   }
 
@@ -293,14 +316,20 @@ function sortValueOf(sort: CommitmentSort, row: ListRow): string | null {
       return row.label;
     case "dueOn":
       return row.dueOn;
+    case "dueAt":
+      // `object_instant` is millisecond-or-coarser (it originates from
+      // `instantFromLocalTime` at HH:mm granularity), so this ISO string
+      // compares exactly against the timestamptz column in the keyset `=`
+      // tiebreak — no sub-millisecond precision is lost on the round-trip.
+      return row.dueInstant === null ? null : row.dueInstant.toISOString();
   }
 }
 
 /**
  * Build the keyset WHERE clause that resumes strictly *after* the cursor row,
- * given the sort direction. For `dueOn`, the leading `nulls last` ordering term
- * is encoded as the boundary flag `n`: once the cursor is past the dated rows
- * (`n === true`), only undated rows with a larger id remain.
+ * given the sort direction. For `dueOn`/`dueAt`, the leading `nulls last`
+ * ordering term is encoded as the boundary flag `n`: once the cursor is past the
+ * dated rows (`n === true`), only undated rows with a larger id remain.
  */
 function keysetClause(
   sort: CommitmentSort,
@@ -314,7 +343,7 @@ function keysetClause(
       ? sql`${nodes.id} > ${cursor.i}`
       : sql`${nodes.id} < ${cursor.i}`;
 
-  if (sort === "dueOn") {
+  if (sort === "dueOn" || sort === "dueAt") {
     if (cursor.n) {
       // Cursor sits in the trailing null block: only later null rows remain.
       return and(isNull(sortColumn), idCmp)!;

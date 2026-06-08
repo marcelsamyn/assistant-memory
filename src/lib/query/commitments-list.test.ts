@@ -37,6 +37,67 @@ async function isServerReachable(): Promise<boolean> {
 const SERVER_AVAILABLE = await isServerReachable();
 const describeIfServer = SERVER_AVAILABLE ? describe : describe.skip;
 
+async function seedTask(
+  client: import("pg").Client,
+  userId: string,
+  opts: {
+    label: string;
+    dueOn?: string;
+    dueTime?: string;
+    timeZone?: string;
+    dueAt?: string;
+  },
+): Promise<string> {
+  const taskId = newTypeId("node");
+  const sourceId = newTypeId("source");
+  await client.query(
+    `INSERT INTO "sources" ("id","user_id","type","external_id") VALUES ($1,$2,'manual',$3)`,
+    [sourceId, userId, `manual:${taskId}`],
+  );
+  await client.query(
+    `INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Task')`,
+    [taskId, userId],
+  );
+  await client.query(
+    `INSERT INTO "node_metadata" ("id","node_id","label","canonical_label") VALUES ($1,$2,$3,$3)`,
+    [newTypeId("node_metadata"), taskId, opts.label],
+  );
+  await client.query(
+    `INSERT INTO "claims" ("id","user_id","subject_node_id","object_value","predicate","statement","source_id","asserted_by_kind","stated_at","status")
+     VALUES ($1,$2,$3,'pending','HAS_TASK_STATUS','status',$4,'user',now(),'active')`,
+    [newTypeId("claim"), userId, taskId, sourceId],
+  );
+  if (opts.dueOn) {
+    const dayId = newTypeId("node");
+    await client.query(
+      `INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Temporal')`,
+      [dayId, userId],
+    );
+    await client.query(
+      `INSERT INTO "node_metadata" ("id","node_id","label","canonical_label") VALUES ($1,$2,$3,$3)`,
+      [newTypeId("node_metadata"), dayId, opts.dueOn],
+    );
+    const metadata =
+      opts.dueTime && opts.timeZone
+        ? JSON.stringify({ dueTime: opts.dueTime, timeZone: opts.timeZone })
+        : null;
+    await client.query(
+      `INSERT INTO "claims" ("id","user_id","subject_node_id","object_node_id","predicate","statement","source_id","asserted_by_kind","stated_at","status","metadata","object_instant")
+       VALUES ($1,$2,$3,$4,'DUE_ON','due',$5,'user',now(),'active',$6::jsonb,$7)`,
+      [
+        newTypeId("claim"),
+        userId,
+        taskId,
+        dayId,
+        sourceId,
+        metadata,
+        opts.dueAt ?? null,
+      ],
+    );
+  }
+  return taskId;
+}
+
 describeIfServer("listCommitments query", () => {
   const dbName = `memory_list_commitments_test_${Date.now()}_${Math.floor(
     Math.random() * 1e6,
@@ -135,6 +196,8 @@ describeIfServer("listCommitments query", () => {
           "subject_node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
           "object_node_id" text REFERENCES "nodes"("id") ON DELETE CASCADE,
           "object_value" text,
+          "metadata" jsonb,
+          "object_instant" timestamp with time zone,
           "predicate" varchar(80) NOT NULL,
           "statement" text NOT NULL,
           "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
@@ -628,6 +691,265 @@ describeIfServer("listCommitments query", () => {
       vi.doUnmock("~/utils/db");
       vi.resetModules();
       await client.end();
+    }
+  });
+
+  const CREATE_TABLES_SQL = `
+    CREATE TABLE "users" ("id" text PRIMARY KEY NOT NULL);
+    CREATE TABLE "nodes" (
+      "id" text PRIMARY KEY NOT NULL,
+      "user_id" text NOT NULL REFERENCES "users"("id"),
+      "node_type" varchar(50) NOT NULL,
+      "created_at" timestamp with time zone DEFAULT now() NOT NULL
+    );
+    CREATE TABLE "node_metadata" (
+      "id" text PRIMARY KEY NOT NULL,
+      "node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+      "label" text,
+      "canonical_label" text,
+      "description" text,
+      "additional_data" jsonb,
+      "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+      CONSTRAINT "node_metadata_node_id_unique" UNIQUE ("node_id")
+    );
+    CREATE TABLE "sources" (
+      "id" text PRIMARY KEY NOT NULL,
+      "user_id" text NOT NULL REFERENCES "users"("id"),
+      "type" varchar(50) NOT NULL,
+      "external_id" text NOT NULL,
+      "scope" varchar(16) DEFAULT 'personal' NOT NULL,
+      "status" varchar(20) DEFAULT 'completed',
+      "created_at" timestamp with time zone DEFAULT now() NOT NULL
+    );
+    CREATE TABLE "claims" (
+      "id" text PRIMARY KEY NOT NULL,
+      "user_id" text NOT NULL REFERENCES "users"("id"),
+      "subject_node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+      "object_node_id" text REFERENCES "nodes"("id") ON DELETE CASCADE,
+      "object_value" text,
+      "metadata" jsonb,
+      "object_instant" timestamp with time zone,
+      "predicate" varchar(80) NOT NULL,
+      "statement" text NOT NULL,
+      "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
+      "scope" varchar(16) DEFAULT 'personal' NOT NULL,
+      "asserted_by_kind" varchar(24) NOT NULL,
+      "stated_at" timestamp with time zone NOT NULL,
+      "status" varchar(30) DEFAULT 'active' NOT NULL,
+      "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+      "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+    );
+  `;
+
+  async function setupDueTest(
+    userId: string,
+  ): Promise<{ client: Client; cleanup: () => Promise<void> }> {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    const dueDbName = `memory_list_commitments_due_test_${Date.now()}_${Math.floor(
+      Math.random() * 1e6,
+    )}`;
+    await admin.query(`CREATE DATABASE "${dueDbName}"`);
+    await admin.end();
+
+    const client = new Client({ connectionString: dsnFor(dueDbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+    await client.query(CREATE_TABLES_SQL);
+    await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+
+    const cleanup = async (): Promise<void> => {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+      const dropAdmin = new Client({ connectionString: adminDsn() });
+      await dropAdmin.connect();
+      await dropAdmin.query(
+        `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+         WHERE datname = $1 AND pid <> pg_backend_pid()`,
+        [dueDbName],
+      );
+      await dropAdmin.query(`DROP DATABASE IF EXISTS "${dueDbName}"`);
+      await dropAdmin.end();
+    };
+
+    return { client, cleanup };
+  }
+
+  it("sorts by dueAt ascending with timed tasks first, nulls last", async () => {
+    const userId = "user_due_sort";
+    const { client, cleanup } = await setupDueTest(userId);
+    try {
+      await seedTask(client, userId, {
+        label: "A",
+        dueOn: "2026-06-10",
+        dueTime: "17:00",
+        timeZone: "America/New_York",
+        dueAt: "2026-06-10T21:00:00Z",
+      });
+      await seedTask(client, userId, {
+        label: "B",
+        dueOn: "2026-06-10",
+        dueTime: "09:00",
+        timeZone: "America/New_York",
+        dueAt: "2026-06-10T13:00:00Z",
+      });
+      await seedTask(client, userId, { label: "C", dueOn: "2026-06-11" }); // date-only, null instant
+      const { listCommitments } = await import("./commitments-list");
+      const { listCommitmentsRequestSchema } = await import(
+        "~/lib/schemas/list-commitments"
+      );
+      const page = await listCommitments(
+        listCommitmentsRequestSchema.parse({
+          userId,
+          sort: "dueAt",
+          order: "asc",
+          limit: 50,
+        }),
+      );
+      const labels = page.commitments.map((c) => c.label);
+      expect(labels.slice(0, 2)).toEqual(["B", "A"]); // 13:00Z before 21:00Z
+      expect(labels[2]).toBe("C"); // date-only (null instant) last
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("paginates dueAt keyset across the dated→null boundary", async () => {
+    const userId = "user_due_paginate";
+    const { client, cleanup } = await setupDueTest(userId);
+    try {
+      await seedTask(client, userId, {
+        label: "A",
+        dueOn: "2026-06-10",
+        dueTime: "17:00",
+        timeZone: "America/New_York",
+        dueAt: "2026-06-10T21:00:00Z",
+      });
+      await seedTask(client, userId, {
+        label: "B",
+        dueOn: "2026-06-10",
+        dueTime: "09:00",
+        timeZone: "America/New_York",
+        dueAt: "2026-06-10T13:00:00Z",
+      });
+      await seedTask(client, userId, { label: "C", dueOn: "2026-06-11" }); // date-only, null instant
+      await seedTask(client, userId, { label: "D", dueOn: "2026-06-12" }); // date-only, null instant
+      const { listCommitments } = await import("./commitments-list");
+      const { listCommitmentsRequestSchema } = await import(
+        "~/lib/schemas/list-commitments"
+      );
+
+      const unpaginated = await listCommitments(
+        listCommitmentsRequestSchema.parse({
+          userId,
+          sort: "dueAt",
+          order: "asc",
+          limit: 50,
+        }),
+      );
+
+      const collected: string[] = [];
+      let nextCursor: string | null = null;
+      do {
+        const page = await listCommitments(
+          listCommitmentsRequestSchema.parse({
+            userId,
+            sort: "dueAt",
+            order: "asc",
+            limit: 2,
+            ...(nextCursor === null ? {} : { cursor: nextCursor }),
+          }),
+        );
+        for (const c of page.commitments) collected.push(c.taskId);
+        nextCursor = page.nextCursor;
+      } while (nextCursor !== null);
+
+      // (a) keyset roundtrip matches the single-page order, no gaps/duplicates.
+      expect(collected).toEqual(unpaginated.commitments.map((c) => c.taskId));
+      expect(new Set(collected).size).toBe(collected.length);
+
+      // (b) every timed (non-null instant) task precedes every date-only one.
+      const timedIds = unpaginated.commitments
+        .filter((c) => c.dueAt !== null)
+        .map((c) => c.taskId);
+      const nullIds = unpaginated.commitments
+        .filter((c) => c.dueAt === null)
+        .map((c) => c.taskId);
+      for (const nid of nullIds) {
+        for (const tid of timedIds) {
+          expect(collected.indexOf(tid)).toBeLessThan(collected.indexOf(nid));
+        }
+      }
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("filters by dueBeforeInstant (timed tasks only)", async () => {
+    const userId = "user_due_filter";
+    const { client, cleanup } = await setupDueTest(userId);
+    try {
+      await seedTask(client, userId, {
+        label: "A",
+        dueOn: "2026-06-10",
+        dueTime: "17:00",
+        timeZone: "America/New_York",
+        dueAt: "2026-06-10T21:00:00Z",
+      });
+      await seedTask(client, userId, {
+        label: "B",
+        dueOn: "2026-06-10",
+        dueTime: "09:00",
+        timeZone: "America/New_York",
+        dueAt: "2026-06-10T13:00:00Z",
+      });
+      await seedTask(client, userId, { label: "C", dueOn: "2026-06-11" });
+      const { listCommitments } = await import("./commitments-list");
+      const { listCommitmentsRequestSchema } = await import(
+        "~/lib/schemas/list-commitments"
+      );
+      const page = await listCommitments(
+        listCommitmentsRequestSchema.parse({
+          userId,
+          dueBeforeInstant: "2026-06-10T15:00:00.000Z",
+          limit: 50,
+        }),
+      );
+      expect(page.commitments.map((c) => c.label)).toEqual(["B"]); // only 13:00Z ≤ 15:00Z; date-only excluded
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("includes dueTime/timeZone/dueAt on items", async () => {
+    const userId = "user_due_fields";
+    const { client, cleanup } = await setupDueTest(userId);
+    try {
+      await seedTask(client, userId, {
+        label: "A",
+        dueOn: "2026-06-10",
+        dueTime: "17:00",
+        timeZone: "America/New_York",
+        dueAt: "2026-06-10T21:00:00Z",
+      });
+      const { listCommitments } = await import("./commitments-list");
+      const { listCommitmentsRequestSchema } = await import(
+        "~/lib/schemas/list-commitments"
+      );
+      const page = await listCommitments(
+        listCommitmentsRequestSchema.parse({ userId, limit: 50 }),
+      );
+      const a = page.commitments.find((c) => c.label === "A")!;
+      expect(a).toMatchObject({
+        dueTime: "17:00",
+        timeZone: "America/New_York",
+      });
+      expect(a.dueAt?.toISOString()).toBe("2026-06-10T21:00:00.000Z");
+    } finally {
+      await cleanup();
     }
   });
 });
