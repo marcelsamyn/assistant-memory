@@ -294,7 +294,8 @@ ${
 - "user_confirmed" — the assistant said something and the user explicitly agreed (e.g., user replied "yes", "right", "exactly", "correct").
 - "assistant_inferred" — used ONLY if you decide to extract something that the assistant said and the user did NOT confirm. Prefer to NOT extract these at all; if you must, mark them with this kind so they are demoted later.
 - NEVER use "user" for an assistant-only statement.
-- Do NOT emit "participant" — multi-party transcript ingestion is not yet supported.`
+- Do NOT emit "participant" — multi-party transcript ingestion is not yet supported.
+- For a brand-new Task node, this same rule is strict: use "user"/"user_confirmed" only when the user actually committed, otherwise "assistant_inferred". See the assertionKind rules under "CURRENT OPEN TASKS".`
 }
 
 Few-shot examples:
@@ -450,6 +451,14 @@ ${
       )
     : [];
 
+  // Tasks freshly minted in this run, so the claim insert can keep new tasks
+  // out of the trusted commitment band when their provenance is unclear.
+  const newTaskNodeIds = new Set(
+    detailsOfNewlyCreatedNodes
+      .filter((node) => node.nodeType === "Task")
+      .map((node) => node.id),
+  );
+
   const insertedClaimRecords = await _processAndInsertLlmClaims(
     db,
     userId,
@@ -460,6 +469,7 @@ ${
     sourceRefMap,
     sourceType,
     speakerMap,
+    newTaskNodeIds,
   );
 
   await _processAndInsertLlmAliases(db, userId, uniqueParsedLlmAliases, idMap);
@@ -693,7 +703,17 @@ function _formatOpenCommitmentsSection(
 These are the user's currently open Task nodes. Each line lists the task's existing nodeId, label, current status, owner, and due date. RULES:
 - If the source mentions completing, abandoning, or progressing one of these tasks, emit an attribute claim with predicate \`HAS_TASK_STATUS\` (objectValue one of "pending", "in_progress", "done", "abandoned") whose subjectId is the task's existingNodeId shown below. DO NOT create a new Task node for it.
 - Only emit \`HAS_TASK_STATUS\`, \`OWNED_BY\`, or \`DUE_ON\` claims for these existing tasks if their status, owner, or due date has actually changed in the source. Tasks whose state is unchanged should NOT be re-emitted.
-- For brand-new tasks not in this list, create a new Task node with a temporary id (e.g. "temp_task_1") and emit \`HAS_TASK_STATUS=pending\` (and \`OWNED_BY\` / \`DUE_ON\` as applicable).`;
+- A "task" is a concrete, actionable item a specific person still has to DO. Only create one when the source establishes a real action item with a clear owner.
+- DO NOT manufacture tasks from any of the following:
+  - assistant suggestions, proposals, offers, or recommendations the user did not take up (e.g. "you could try…", "maybe set up a…", "we should…", "want me to…");
+  - recaps, summaries, or reflections about what already happened;
+  - general planning, brainstorming, venting, or discussion the user did not commit to acting on;
+  - the existence of the conversation itself — NEVER create a "check-in", "weekly planning", "review", or similar meta task that merely restates that this conversation took place.
+- A Task node's label must be a short imperative action (e.g. "Book Zouk social tickets"), NOT a topic, a date, or a description of the conversation. NEVER put a multi-point summary, recap, or transcript of the conversation into a Task node's label or description.
+- For a genuine brand-new task not in this list, create a new Task node with a temporary id (e.g. "temp_task_1") and emit \`HAS_TASK_STATUS=pending\` (and \`OWNED_BY\` / \`DUE_ON\` as applicable). Set its \`assertionKind\` by who actually committed to it:
+  - "user" ONLY when the user explicitly said they will do it (e.g. "I'll book the tickets", "I need to finish the deck by Friday");
+  - "user_confirmed" when the assistant proposed it and the user explicitly agreed;
+  - "assistant_inferred" for anything the assistant suggested, or that you inferred, without the user clearly committing. When in doubt, use "assistant_inferred" — a tentative task is cheap to confirm later, but a fabricated firm commitment is harmful.`;
 
   if (openCommitments.length === 0) {
     return `${header}
@@ -902,6 +922,7 @@ async function _processAndInsertLlmClaims(
   sourceRefMap: Map<string, SourceRef>,
   sourceType: SourceType,
   speakerMap: ExtractGraphSpeakerMap | undefined,
+  newTaskNodeIds: Set<TypeId<"node">>,
 ): Promise<Array<typeof claims.$inferSelect>> {
   const claimInserts: Array<typeof claims.$inferInsert> = [];
   const sourceScopeMap = await _fetchSourceScopeMap(
@@ -1016,6 +1037,25 @@ async function _processAndInsertLlmClaims(
       objectValue = coerced;
     }
 
+    // Safety net for brand-new tasks: when the model mints a Task node but
+    // leaves its provenance unspecified, `_resolveAssertedByKind` falls back to
+    // the generic "user" default, which would drop the task straight into the
+    // trusted commitment band. A task we surfaced without an explicit
+    // user/user-confirmed signal should be tentative instead, so the user can
+    // confirm it rather than discovering an unasked-for commitment. We only
+    // touch the omitted case — an explicit "user"/"user_confirmed" from the
+    // model is a genuine commitment and is left intact. Transcript mode resolves
+    // provenance from the speaker map (a stronger signal), so it's exempt.
+    let assertedByKind = provenance.kind;
+    if (
+      llmClaim.predicate === "HAS_TASK_STATUS" &&
+      newTaskNodeIds.has(subjectNodeId) &&
+      !llmClaim.assertionKind &&
+      !(speakerMap && speakerMap.size > 0)
+    ) {
+      assertedByKind = "assistant_inferred";
+    }
+
     claimInserts.push({
       userId,
       subjectNodeId,
@@ -1025,7 +1065,7 @@ async function _processAndInsertLlmClaims(
       description: llmClaim.statement,
       sourceId: claimSource.sourceId,
       scope,
-      assertedByKind: provenance.kind,
+      assertedByKind,
       assertedByNodeId: provenance.nodeId,
       statedAt: claimSource.statedAt,
       validFrom: _parseOptionalDate(llmClaim.validFrom),

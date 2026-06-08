@@ -21,4 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`docs/sdk/`** — initial SDK reference documentation set. `docs/sdk/README.md` covers client construction; `docs/sdk/commitments.md` is the full commitments reference (all eleven methods, request/response shapes, lifecycle semantics, and end-to-end flow examples).
 
+### Fixed
+
+- **Conversation ingestion no longer manufactures spurious tasks.** The graph-extraction prompt now explicitly forbids minting Task nodes from assistant suggestions, recaps/summaries, uncommitted planning, or the existence of the conversation itself (e.g. a "weekly check-in" task), and requires Task labels to be short imperative actions rather than conversation summaries. The prompt also pins the `assertionKind` for brand-new tasks to who actually committed (`user`/`user_confirmed` only on explicit commitment, else `assistant_inferred`). As a safety net, a newly minted task whose provenance the model leaves unspecified now defaults to the tentative (candidate) band instead of the trusted commitment band.
+
 [Unreleased]: https://github.com/your-org/assistant-memory/compare/v1.15.0...HEAD
