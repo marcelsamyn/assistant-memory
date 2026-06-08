@@ -901,7 +901,8 @@ describeIfServer("extractGraph claim-native insertion", () => {
                           subjectId: "temp_task_1",
                           predicate: "HAS_TASK_STATUS",
                           objectValue: "pending",
-                          statement: "User committed to filing taxes by Friday.",
+                          statement:
+                            "User committed to filing taxes by Friday.",
                           sourceRef: "msg_user_task",
                           statedAt: statedAt.toISOString(),
                           assertionKind: "user",
