@@ -16,6 +16,7 @@ import { z } from "zod";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 import { env } from "~/utils/env";
+import { modelForTask } from "~/utils/models";
 
 // Define connection options using environment variables
 export const redisConnection = new IORedis(env.REDIS_URL, {
@@ -288,7 +289,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
       } else if (job.name === "cleanup-graph") {
         const data = CleanupGraphJobInputSchema.parse({
           ...job.data,
-          llmModelId: env.MODEL_ID_GRAPH_EXTRACTION,
+          llmModelId: modelForTask("graph_cleanup"),
         });
         console.log(
           `Starting cleanup-graph job for user ${data.userId}, since ${data.since.toISOString()}`,

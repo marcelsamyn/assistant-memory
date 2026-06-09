@@ -6,7 +6,28 @@ const envSchema = z.object({
   MEMORY_OPENAI_API_KEY: z.string().min(1),
   MEMORY_OPENAI_API_BASE_URL: z.string().min(1),
 
+  // Base model. Every other task falls back to this when its own
+  // MODEL_ID_* override is unset, so the system behaves exactly as it did
+  // before tiering until a task is deliberately pointed at another model.
   MODEL_ID_GRAPH_EXTRACTION: z.string().min(1),
+
+  // Per-task model overrides (all optional). Set any of these to route that
+  // task to a cheaper/different model on OpenRouter; leave unset to inherit
+  // MODEL_ID_GRAPH_EXTRACTION. Resolved in src/utils/models.ts.
+  MODEL_ID_DOCUMENT_SPINE: z.string().min(1).optional(),
+  MODEL_ID_TRANSCRIPT_SEGMENTATION: z.string().min(1).optional(),
+  MODEL_ID_CONVERSATION_SUMMARY: z.string().min(1).optional(),
+  MODEL_ID_GRAPH_CLEANUP: z.string().min(1).optional(),
+  MODEL_ID_ATLAS: z.string().min(1).optional(),
+  MODEL_ID_PROFILE_SYNTHESIS: z.string().min(1).optional(),
+  MODEL_ID_DREAM: z.string().min(1).optional(),
+  MODEL_ID_DEEP_RESEARCH: z.string().min(1).optional(),
+
+  // Hard ceiling on output tokens per completion. Bounds a runaway
+  // generation (providers can emit up to 128k); set well above the observed
+  // average output (~850) so it effectively never truncates real work.
+  // Per-call overrides are allowed in code.
+  MODEL_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(16000),
 
   JINA_API_KEY: z.string().min(1),
 
@@ -58,9 +79,14 @@ const envSchema = z.object({
     .default(false)
     .describe("Enable debug logging"),
 
-  DREAM_PROBABILITY: z.coerce.number().default(0.1),
+  // Speculative background work. Both run with no user waiting on the
+  // result and each fans out into multiple LLM calls, so they are the
+  // cheapest spend to throttle. Deep research is disabled by default
+  // (set DEEP_RESEARCH_PROBABILITY > 0 to experiment); dreams are throttled
+  // down. Override via env to tune without a deploy.
+  DREAM_PROBABILITY: z.coerce.number().default(0.05),
   DREAM_SELECTION_PROBABILITY: z.coerce.number().default(0.4),
-  DEEP_RESEARCH_PROBABILITY: z.coerce.number().default(0.5),
+  DEEP_RESEARCH_PROBABILITY: z.coerce.number().default(0),
 
   // Identity resolution (signal 3 + 4) thresholds. Defaults are intentionally
   // conservative — false-positive merges are far worse than missed merges

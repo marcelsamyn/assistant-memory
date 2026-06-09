@@ -104,6 +104,7 @@ async function generateSearchQueries(
       userId,
       systemPrompt:
         "You are an imaginative research assistant generating tangential search queries.",
+      task: "deep_research",
       prompt: `<system:info>You are processing a conversation and want to find interesting background or related topics that are not necessarily direct continuations.</system:info>
 
 <conversation>
@@ -231,6 +232,7 @@ async function refineSearchResults(
     return await performStructuredAnalysis({
       userId,
       systemPrompt: "You refine background search results.",
+      task: "deep_research",
       prompt: `<conversation>
 ${messageContext}
 </conversation>

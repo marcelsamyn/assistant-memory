@@ -422,6 +422,7 @@ export async function runProfileSynthesis(
     userId,
     prompt,
     schema: ProfileSynthesisOutputSchema,
+    task: "profile_synthesis",
   });
 
   const description = z.string().parse(parsed["description"]).trim();

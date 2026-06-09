@@ -11,6 +11,7 @@
  * cleanup pipeline, cleanup prompt builder.
  */
 import { createCompletionClient, parseStructuredCompletion } from "../ai";
+import { MODEL_MAX_OUTPUT_TOKENS } from "~/utils/models";
 import { getConversationBootstrapContext } from "../context/assemble-bootstrap-context";
 import type { ContextBundle } from "../context/types";
 import { generateAndInsertNodeEmbeddings } from "../embeddings-util";
@@ -632,7 +633,9 @@ export async function proposeGraphCleanup(
   temp: TempSubgraph,
   modelId: string,
 ): Promise<CleanupOperations> {
-  const client = await createCompletionClient(userId);
+  const client = await createCompletionClient(userId, {
+    task: "graph_cleanup",
+  });
 
   // Bundle is the structured equivalent of the legacy "user atlas" string —
   // five sections (pinned, atlas, open_commitments, recent_supersessions,
@@ -644,6 +647,7 @@ export async function proposeGraphCleanup(
   const completion = await parseStructuredCompletion(client, {
     messages: [{ role: "user", content: prompt }],
     model: modelId,
+    max_tokens: MODEL_MAX_OUTPUT_TOKENS,
     response_format: zodResponseFormat(
       CleanupOperationsSchema,
       "CleanupOperations",

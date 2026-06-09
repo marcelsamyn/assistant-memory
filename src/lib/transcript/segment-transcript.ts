@@ -12,7 +12,7 @@
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
 import { z } from "zod";
 import { createCompletionClient, parseStructuredCompletion } from "~/lib/ai";
-import { env } from "~/utils/env";
+import { MODEL_MAX_OUTPUT_TOKENS, modelForTask } from "~/utils/models";
 
 export const segmentedUtteranceSchema = z.object({
   speakerLabel: z
@@ -71,7 +71,9 @@ export const defaultSegmentTranscriptClient: SegmentTranscriptClient = {
     rawContent,
     occurredAt,
   }: SegmentTranscriptInput): Promise<SegmentedUtterance[]> {
-    const client = await createCompletionClient(userId);
+    const client = await createCompletionClient(userId, {
+      task: "transcript_segmentation",
+    });
     const prompt = `Segment the following transcript by speaker turn.
 
 The transcript was recorded around ${occurredAt.toISOString()}. If individual utterance timestamps are visible, include them as ISO 8601; otherwise omit the timestamp field.
@@ -85,7 +87,8 @@ ${rawContent}
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: prompt },
       ],
-      model: env.MODEL_ID_GRAPH_EXTRACTION,
+      model: modelForTask("transcript_segmentation"),
+      max_tokens: MODEL_MAX_OUTPUT_TOKENS,
       response_format: zodResponseFormat(
         segmentationResponseSchema,
         "transcript_segmentation",
