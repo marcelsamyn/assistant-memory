@@ -387,12 +387,16 @@ ${
     : `Focus on extracting the most significant and meaningful information that the USER provided. Quality and accuracy are more important than quantity.`
 }`;
 
-  const completion = await parseStructuredCompletion(client, {
-    messages: [{ role: "user", content: prompt }],
-    model: modelForTask("graph_extraction"),
-    max_tokens: MODEL_MAX_OUTPUT_TOKENS,
-    response_format: zodResponseFormat(llmExtractionSchema, "subgraph"),
-  });
+  const completion = await parseStructuredCompletion(
+    client,
+    {
+      messages: [{ role: "user", content: prompt }],
+      model: modelForTask("graph_extraction"),
+      max_tokens: MODEL_MAX_OUTPUT_TOKENS,
+      response_format: zodResponseFormat(llmExtractionSchema, "subgraph"),
+    },
+    { task: "graph_extraction", userId },
+  );
 
   const parsedLlmOutput = completion.choices[0]?.message.parsed;
   if (!parsedLlmOutput) {

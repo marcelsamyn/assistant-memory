@@ -2,7 +2,6 @@ import { format } from "date-fns/format";
 import { DrizzleDB } from "~/db";
 import { fetchDailyConversationsList } from "~/lib/analysis/conversations";
 import { getAssistantAtlas, updateAssistantAtlas } from "~/lib/atlas";
-import { MODEL_MAX_OUTPUT_TOKENS, modelForTask } from "~/utils/models";
 
 /**
  * Job to process the assistant-specific Atlas:
@@ -67,18 +66,15 @@ ${convList}
 `;
 
   // 4. Call LLM
-  const { createCompletionClient } = await import("../ai");
-  const client = await createCompletionClient(userId, { task: "atlas" });
-  const completion = await client.chat.completions.create({
-    model: modelForTask("atlas"),
-    max_tokens: MODEL_MAX_OUTPUT_TOKENS,
-    messages: [
-      { role: "system", content: systemMsg },
-      { role: "user", content: userPrompt },
-    ],
-  });
-
-  const updated = completion.choices[0]?.message?.content?.trim();
+  const { crateTextCompletion } = await import("../ai");
+  const updated = (
+    await crateTextCompletion({
+      userId,
+      systemPrompt: systemMsg,
+      prompt: userPrompt,
+      task: "atlas",
+    })
+  ).trim();
   if (!updated) throw new Error("Failed to generate assistant dream atlas");
 
   // 5. Persist updated assistant atlas

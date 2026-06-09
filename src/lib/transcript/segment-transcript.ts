@@ -82,18 +82,22 @@ The transcript was recorded around ${occurredAt.toISOString()}. If individual ut
 ${rawContent}
 </transcript>`;
 
-    const completion = await parseStructuredCompletion(client, {
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: prompt },
-      ],
-      model: modelForTask("transcript_segmentation"),
-      max_tokens: MODEL_MAX_OUTPUT_TOKENS,
-      response_format: zodResponseFormat(
-        segmentationResponseSchema,
-        "transcript_segmentation",
-      ),
-    });
+    const completion = await parseStructuredCompletion(
+      client,
+      {
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: prompt },
+        ],
+        model: modelForTask("transcript_segmentation"),
+        max_tokens: MODEL_MAX_OUTPUT_TOKENS,
+        response_format: zodResponseFormat(
+          segmentationResponseSchema,
+          "transcript_segmentation",
+        ),
+      },
+      { task: "transcript_segmentation", userId },
+    );
 
     const parsed = completion.choices[0]?.message.parsed;
     if (!parsed) {

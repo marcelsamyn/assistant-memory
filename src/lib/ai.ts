@@ -7,6 +7,7 @@ import type {
 } from "openai/resources.mjs";
 import { z } from "zod";
 import { env } from "~/utils/env";
+import { normalizeUsage, recordLlmUsage } from "~/utils/llm-telemetry";
 import {
   MODEL_MAX_OUTPUT_TOKENS,
   modelForTask,
@@ -91,7 +92,15 @@ function isRetryableCompletionError(err: unknown): boolean {
  */
 export async function parseStructuredCompletion<
   Body extends ChatCompletionCreateParamsNonStreaming,
->(client: OpenAI, body: Body) {
+>(
+  client: OpenAI,
+  body: Body,
+  opts?: { task?: ModelTask | undefined; userId?: string | undefined },
+) {
+  // `user` is the OpenAI-standard, vendor-neutral per-request attribution
+  // field (passed through by OpenRouter); set it without disturbing the
+  // generic `Body` inference that keeps `.parsed` typed.
+  if (opts?.userId) body.user = opts.userId;
   let lastError: unknown;
   for (
     let attempt = 1;
@@ -99,7 +108,14 @@ export async function parseStructuredCompletion<
     attempt++
   ) {
     try {
-      return await client.chat.completions.parse(body);
+      const completion = await client.chat.completions.parse(body);
+      recordLlmUsage({
+        task: opts?.task ?? "unknown",
+        model: body.model,
+        userId: opts?.userId ?? "unknown",
+        ...normalizeUsage(completion.usage),
+      });
+      return completion;
     } catch (err) {
       lastError = isMalformedUpstreamCompletion(err)
         ? new MalformedUpstreamCompletionError({ cause: err })
@@ -164,6 +180,7 @@ export async function crateTextCompletion({
   task?: ModelTask;
   maxTokens?: number;
 }): Promise<string> {
+  const model = task ? modelForTask(task) : env.MODEL_ID_GRAPH_EXTRACTION;
   const client = await createCompletionClient(userId, { task });
   const completion = await client.chat.completions.create({
     messages: [
@@ -180,10 +197,17 @@ export async function crateTextCompletion({
         content: prompt,
       } satisfies ChatCompletionUserMessageParam,
     ],
-    model: task ? modelForTask(task) : env.MODEL_ID_GRAPH_EXTRACTION,
+    model,
     max_tokens: maxTokens ?? MODEL_MAX_OUTPUT_TOKENS,
+    user: userId,
   });
 
+  recordLlmUsage({
+    task: task ?? "unknown",
+    model,
+    userId,
+    ...normalizeUsage(completion.usage),
+  });
   return completion.choices[0]?.message.content ?? "";
 }
 
@@ -208,25 +232,29 @@ export async function performStructuredAnalysis<
   if (!schema.description) throw new Error("Schema must have a description");
 
   const client = await createCompletionClient(userId, { task });
-  const completion = await parseStructuredCompletion(client, {
-    messages: [
-      ...(systemPrompt
-        ? [
-            {
-              role: "system",
-              content: systemPrompt,
-            } satisfies ChatCompletionSystemMessageParam,
-          ]
-        : []),
-      {
-        role: "user",
-        content: prompt,
-      } satisfies ChatCompletionUserMessageParam,
-    ],
-    model: task ? modelForTask(task) : env.MODEL_ID_GRAPH_EXTRACTION,
-    max_tokens: maxTokens ?? MODEL_MAX_OUTPUT_TOKENS,
-    response_format: zodResponseFormat(schema, schema.description),
-  });
+  const completion = await parseStructuredCompletion(
+    client,
+    {
+      messages: [
+        ...(systemPrompt
+          ? [
+              {
+                role: "system",
+                content: systemPrompt,
+              } satisfies ChatCompletionSystemMessageParam,
+            ]
+          : []),
+        {
+          role: "user",
+          content: prompt,
+        } satisfies ChatCompletionUserMessageParam,
+      ],
+      model: task ? modelForTask(task) : env.MODEL_ID_GRAPH_EXTRACTION,
+      max_tokens: maxTokens ?? MODEL_MAX_OUTPUT_TOKENS,
+      response_format: zodResponseFormat(schema, schema.description),
+    },
+    { task, userId },
+  );
   const parsed = completion.choices[0]?.message.parsed;
   if (!parsed) throw new Error("Failed to parse response");
   return parsed;
