@@ -230,37 +230,16 @@ export async function extractGraph({
     task: "graph_extraction",
   });
 
-  const prompt = `You are a knowledge graph extraction expert. Your task is to analyze the following ${sourceType} and extract entities, concepts, events, and their relationships to create a knowledge graph.
+  // Static instruction block. Depends only on `sourceType` (and whether a
+  // speaker map is present), so it is byte-identical across every ingest of
+  // the same shape. Sent as the leading `system` message — i.e. the request
+  // prefix — so OpenRouter/OpenAI auto-cache it (the rule block is well over
+  // the ~1024-token minimum). The per-call dynamic payload goes in the
+  // trailing user message (below) so it never invalidates the cached prefix.
+  const systemPrompt = `You are a knowledge graph extraction expert. Your task is to analyze the provided ${sourceType} and extract entities, concepts, events, and their relationships to create a knowledge graph.
 
 IMPORTANT:
 - Do NOT respond to the content. Instead, analyze it and extract a structured graph representation.
-${
-  nodesForPromptFormatting.length > 0
-    ? `
-- Do NOT extract anything from the context—only from the ${sourceType} given at the end. The context is only provided to help you understand the ${sourceType} better.
-	- I've provided some existing nodes that may be relevant to this ${sourceType}. If any of these nodes match entities in the ${sourceType}, use their 'tempId' (e.g., existing_person_1) in your 'nodes' or 'relationshipClaims' if you refer to them. DO NOT create new nodes for these if they match.
-
-<context>
-${formatNodesForPrompt(nodesForPromptFormatting)}
-</context>
-`
-    : ""
-}
-
-${openCommitmentsPromptSection}
-
-${candidateCommitmentsPromptSection}
-
-${speakerMapPromptSection}
-
-Extract the graph from the following ${sourceType}:
-
-Allowed source refs:
-${sourceRefsForPrompt}
-${contentNote ? `\n${contentNote}\n` : ""}
-<${sourceType}>
-${content}
-</${sourceType}>
 
 CRITICAL EXTRACTION RULES - READ CAREFULLY:
 
@@ -355,7 +334,7 @@ For each element, create a node with:
 	- For a notable scalar property of an entity, prefer a HAS_ATTRIBUTE attribute claim (value in objectValue) over creating a node for the value.
 	- ONLY create claims for facts explicitly stated by the ${sourceType === "document" ? "document text" : "user"}, not your own interpretations or assumptions.
 	- In the claim statement, write one concise sentence that can stand alone as the sourced assertion.
-	- Every claim must include a sourceRef copied exactly from the token after "sourceRef:" in the allowed source refs above. Do not include statedAt text.
+	- Every claim must include a sourceRef copied exactly from the token after "sourceRef:" in the allowed source refs provided with the content below. Do not include statedAt text.
 	- Emit aliases when the source uses a nickname, abbreviation, alternate spelling, or shorter name for a node.
 	- Ideally, relationship claims link to already-existing nodes. If the node isn't existing, create it.
 
@@ -387,10 +366,42 @@ ${
     : `Focus on extracting the most significant and meaningful information that the USER provided. Quality and accuracy are more important than quantity.`
 }`;
 
+  // Dynamic payload: existing-node context, commitments, speaker map, source
+  // refs and the source content itself — varies every call, so it follows the
+  // cached static prefix above as the trailing user message.
+  const userPrompt = `${
+    nodesForPromptFormatting.length > 0
+      ? `- Do NOT extract anything from the context—only from the ${sourceType} given at the end. The context is only provided to help you understand the ${sourceType} better.
+	- I've provided some existing nodes that may be relevant to this ${sourceType}. If any of these nodes match entities in the ${sourceType}, use their 'tempId' (e.g., existing_person_1) in your 'nodes' or 'relationshipClaims' if you refer to them. DO NOT create new nodes for these if they match.
+
+<context>
+${formatNodesForPrompt(nodesForPromptFormatting)}
+</context>
+`
+      : ""
+  }
+${openCommitmentsPromptSection}
+
+${candidateCommitmentsPromptSection}
+
+${speakerMapPromptSection}
+
+Extract the graph from the following ${sourceType}:
+
+Allowed source refs:
+${sourceRefsForPrompt}
+${contentNote ? `\n${contentNote}\n` : ""}
+<${sourceType}>
+${content}
+</${sourceType}>`;
+
   const completion = await parseStructuredCompletion(
     client,
     {
-      messages: [{ role: "user", content: prompt }],
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
       model: modelForTask("graph_extraction"),
       max_tokens: MODEL_MAX_OUTPUT_TOKENS,
       response_format: zodResponseFormat(llmExtractionSchema, "subgraph"),
@@ -405,7 +416,10 @@ ${
 
   if (onLlmIO) {
     try {
-      await onLlmIO({ prompt, response: parsedLlmOutput });
+      await onLlmIO({
+        prompt: `${systemPrompt}\n\n${userPrompt}`,
+        response: parsedLlmOutput,
+      });
     } catch (hookError) {
       console.error("extract-graph: onLlmIO hook threw", hookError);
     }

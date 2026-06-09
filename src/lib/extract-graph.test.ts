@@ -191,7 +191,7 @@ describeIfServer("extractGraph claim-native insertion", () => {
         chat: {
           completions: {
             parse: async (input: { messages: Array<{ content: string }> }) => {
-              prompt = input.messages[0]?.content ?? "";
+              prompt = input.messages.map((m) => m.content).join("\n\n");
               return {
                 choices: [
                   {
@@ -464,7 +464,7 @@ describeIfServer("extractGraph claim-native insertion", () => {
         chat: {
           completions: {
             parse: async (input: { messages: Array<{ content: string }> }) => {
-              prompt = input.messages[0]?.content ?? "";
+              prompt = input.messages.map((m) => m.content).join("\n\n");
               return {
                 choices: [
                   {
@@ -647,7 +647,7 @@ describeIfServer("extractGraph claim-native insertion", () => {
         chat: {
           completions: {
             parse: async (input: { messages: Array<{ content: string }> }) => {
-              prompt = input.messages[0]?.content ?? "";
+              prompt = input.messages.map((m) => m.content).join("\n\n");
               return {
                 choices: [
                   {
@@ -1407,7 +1407,9 @@ describeIfServer("extractGraph claim-native insertion", () => {
         chat: {
           completions: {
             parse: async (input: { messages: Array<{ content: string }> }) => {
-              capturedPrompt = input.messages[0]?.content ?? "";
+              capturedPrompt = input.messages
+                .map((m) => m.content)
+                .join("\n\n");
               return {
                 choices: [{ message: { parsed: llmResponse } }],
               };
