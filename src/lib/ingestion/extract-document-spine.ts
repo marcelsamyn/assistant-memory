@@ -56,12 +56,16 @@ Guidance:
 ${condensed}
 </document>`;
 
-  const completion = await parseStructuredCompletion(client, {
-    messages: [{ role: "user", content: prompt }],
-    model: modelForTask("document_spine"),
-    max_tokens: MODEL_MAX_OUTPUT_TOKENS,
-    response_format: zodResponseFormat(documentSpineSchema, "document_spine"),
-  });
+  const completion = await parseStructuredCompletion(
+    client,
+    {
+      messages: [{ role: "user", content: prompt }],
+      model: modelForTask("document_spine"),
+      max_tokens: MODEL_MAX_OUTPUT_TOKENS,
+      response_format: zodResponseFormat(documentSpineSchema, "document_spine"),
+    },
+    { task: "document_spine", userId },
+  );
 
   const parsed = completion.choices[0]?.message.parsed;
   if (!parsed) throw new Error("Failed to parse document-spine response");

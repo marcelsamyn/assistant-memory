@@ -142,24 +142,28 @@ ${formatConversationAsXml(turns)}
 
     debug(`Summarize - prompt for source ${sourceId}:`, prompt);
     try {
-      const completion = await parseStructuredCompletion(client, {
-        messages: [{ role: "user", content: prompt }],
-        model: modelForTask("conversation_summary"),
-        max_tokens: MODEL_MAX_OUTPUT_TOKENS,
-        response_format: zodResponseFormat(
-          z.object({
-            title: z
-              .string()
-              .describe(
-                "A concise title for the summary, max length 255 characters",
-              ),
-            summary: z
-              .string()
-              .describe("A concise summary of the conversation"),
-          }),
-          "summary",
-        ),
-      });
+      const completion = await parseStructuredCompletion(
+        client,
+        {
+          messages: [{ role: "user", content: prompt }],
+          model: modelForTask("conversation_summary"),
+          max_tokens: MODEL_MAX_OUTPUT_TOKENS,
+          response_format: zodResponseFormat(
+            z.object({
+              title: z
+                .string()
+                .describe(
+                  "A concise title for the summary, max length 255 characters",
+                ),
+              summary: z
+                .string()
+                .describe("A concise summary of the conversation"),
+            }),
+            "summary",
+          ),
+        },
+        { task: "conversation_summary", userId },
+      );
 
       const parsed = completion.choices[0]?.message.parsed;
       debug(`Summarize - parsed result for source ${sourceId}:`, parsed);

@@ -11,7 +11,6 @@
  * cleanup pipeline, cleanup prompt builder.
  */
 import { createCompletionClient, parseStructuredCompletion } from "../ai";
-import { MODEL_MAX_OUTPUT_TOKENS } from "~/utils/models";
 import { getConversationBootstrapContext } from "../context/assemble-bootstrap-context";
 import type { ContextBundle } from "../context/types";
 import { generateAndInsertNodeEmbeddings } from "../embeddings-util";
@@ -37,6 +36,7 @@ import {
 import type { AssertedByKind, NodeType, Predicate, Scope } from "~/types/graph";
 import { TypeId, typeIdSchema } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
+import { MODEL_MAX_OUTPUT_TOKENS } from "~/utils/models";
 
 export const CleanupGraphJobInputSchema = z.object({
   userId: z.string(),
@@ -644,15 +644,19 @@ export async function proposeGraphCleanup(
 
   const prompt = buildCleanupPrompt(temp, bundle);
 
-  const completion = await parseStructuredCompletion(client, {
-    messages: [{ role: "user", content: prompt }],
-    model: modelId,
-    max_tokens: MODEL_MAX_OUTPUT_TOKENS,
-    response_format: zodResponseFormat(
-      CleanupOperationsSchema,
-      "CleanupOperations",
-    ),
-  });
+  const completion = await parseStructuredCompletion(
+    client,
+    {
+      messages: [{ role: "user", content: prompt }],
+      model: modelId,
+      max_tokens: MODEL_MAX_OUTPUT_TOKENS,
+      response_format: zodResponseFormat(
+        CleanupOperationsSchema,
+        "CleanupOperations",
+      ),
+    },
+    { task: "graph_cleanup", userId },
+  );
   const parsed = completion.choices[0]?.message.parsed;
   if (!parsed) throw new Error("Failed to parse cleanup operations");
   return parsed;
