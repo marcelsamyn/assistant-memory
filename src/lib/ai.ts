@@ -98,9 +98,12 @@ export async function parseStructuredCompletion<
   opts?: { task?: ModelTask | undefined; userId?: string | undefined },
 ) {
   // `user` is the OpenAI-standard, vendor-neutral per-request attribution
-  // field (passed through by OpenRouter); set it without disturbing the
-  // generic `Body` inference that keeps `.parsed` typed.
-  if (opts?.userId) body.user = opts.userId;
+  // field (passed through by OpenRouter). Copy rather than mutate the
+  // caller's body; the `as Body` cast keeps the generic inference that
+  // preserves `.parsed`'s type.
+  const finalBody = opts?.userId
+    ? ({ ...body, user: opts.userId } as Body)
+    : body;
   let lastError: unknown;
   for (
     let attempt = 1;
@@ -108,7 +111,7 @@ export async function parseStructuredCompletion<
     attempt++
   ) {
     try {
-      const completion = await client.chat.completions.parse(body);
+      const completion = await client.chat.completions.parse(finalBody);
       recordLlmUsage({
         task: opts?.task ?? "unknown",
         model: body.model,
