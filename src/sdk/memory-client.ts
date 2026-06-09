@@ -168,6 +168,11 @@ import {
   pruneOrphanNodesResponseSchema,
 } from "../lib/schemas/prune-orphan-nodes.js";
 import {
+  PruneStaleNodesRequest,
+  PruneStaleNodesResponse,
+  pruneStaleNodesResponseSchema,
+} from "../lib/schemas/prune-stale-nodes.js";
+import {
   QueryAtlasNodesRequest,
   QueryAtlasNodesResponse,
   queryAtlasNodesResponseSchema,
@@ -690,6 +695,32 @@ export class MemoryClient {
       "POST",
       "/maintenance/prune-orphan-nodes",
       pruneOrphanNodesResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Deterministic, preview-then-apply "garbage collect" sweep for accreted
+   * graph cruft. Scores every entity/task node on a staleness/weakness basis
+   * (age + connectivity + provenance + claim decay) and prunes the disposable
+   * tail. Tune aggressiveness with a single `aggressiveness` knob (0–1, higher
+   * prunes more) or pin an explicit `minScore`.
+   *
+   * Dry-run defaults to `true`: the preview returns the ranked `candidates`
+   * with per-node `reasons` and the full `candidateCount`. Re-call with the
+   * same thresholds and `dryRun: false` to delete (deletion cascades through
+   * claims, source links, aliases, and embeddings). Never prunes nodes active
+   * within `minIdleDays`, nodes with a currently-open task status, the user's
+   * self-identity node(s), or — unless `includeReference` — reference-scope
+   * nodes. Page through a large backlog by re-calling while `hasMore` is true.
+   */
+  async pruneStaleNodes(
+    payload: PruneStaleNodesRequest,
+  ): Promise<PruneStaleNodesResponse> {
+    return this._fetch(
+      "POST",
+      "/maintenance/prune-stale-nodes",
+      pruneStaleNodesResponseSchema,
       payload,
     );
   }

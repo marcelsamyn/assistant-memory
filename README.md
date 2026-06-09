@@ -258,7 +258,45 @@ The integration only works if these are true:
 - `POST /query/day` – get a quick summary of a particular day.
 - `POST /query/recent-changes` – "what's new in memory" feed over a time range: active claims and nodes added/updated since a `since` cursor, with labels and per-source provenance.
 - `POST /digest` – consolidated daily rollup for a "Today" view (see below).
+- `POST /maintenance/prune-stale-nodes` – deterministic, preview-then-apply "garbage collect" sweep (see below).
 - `GET /sse` and `POST /messages` – MCP over HTTP using Server‑Sent Events.
+
+### Pruning stale memory
+
+Over time a graph accretes cruft: nodes from old conversations that are weakly
+connected, backed only by assistant-inferred claims, or dominated by superseded
+facts. `POST /maintenance/prune-stale-nodes` is a deterministic (no-LLM) sweep
+that scores every entity/task node and prunes the disposable tail. The score is
+a transparent weighted sum so a host (e.g. a "clean up my memory" button) can
+preview exactly what would go and why:
+
+```text
+score = 0.40·staleness + 0.25·isolation + 0.20·weakProvenance + 0.15·claimDecay
+```
+
+It is **preview-then-apply**. `dryRun` defaults to `true` and returns the ranked
+candidates with per-node `reasons` plus the full `candidateCount`; re-call with
+the same thresholds and `dryRun: false` to delete (deletion cascades through
+claims, source links, aliases, and embeddings). Tune one knob — `aggressiveness`
+in `[0, 1]`, higher prunes more — or pin an explicit `minScore`.
+
+```json
+{
+  "userId": "user_123",
+  "aggressiveness": 0.6,
+  "minIdleDays": 30,
+  "includeReference": false,
+  "dryRun": true
+}
+```
+
+The sweep never prunes nodes active within `minIdleDays`, nodes with a
+currently-open task status, the user's self-identity node(s), or — unless
+`includeReference` is set — reference-scope nodes (books, articles, imported
+documents). Page through a large backlog by re-calling while `hasMore` is true.
+For the narrower deterministic cases there are also
+`POST /maintenance/prune-orphan-nodes` (evidence-free nodes) and
+`POST /cleanup/dedup-sweep` (exact-label duplicates).
 
 ### Daily digest
 
