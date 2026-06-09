@@ -4,9 +4,9 @@
  * The job first repairs source integrity by deleting blob-backed source rows
  * whose object is gone from storage. That cascades through claims/source_links
  * by FK, after which prunable orphan nodes are nodes with no claims as
- * subject/object/speaker, no source links, and no aliases. These rows are not
- * memory: they have no evidence and cannot be safely re-linked. The job
- * defaults to entity/task node types so generated/system nodes such as
+ * subject/object/speaker and no aliases. Source links alone are not graph
+ * evidence. These rows are not memory: they cannot be safely re-linked. The
+ * job defaults to entity/task node types so generated/system nodes such as
  * AssistantDream and Atlas are not swept accidentally.
  *
  * Common aliases: prune orphan nodes, orphan node cleanup, evidence-free nodes.
@@ -23,14 +23,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
-import {
-  aliases,
-  claims,
-  nodeMetadata,
-  nodes,
-  sourceLinks,
-  sources,
-} from "~/db/schema";
+import { aliases, claims, nodeMetadata, nodes, sources } from "~/db/schema";
 import { logEvent } from "~/lib/observability/log";
 import {
   pruneOrphanNodesRequestSchema,
@@ -104,10 +97,6 @@ function orphanEvidenceFreeCondition(userId: string): ReturnType<typeof and> {
           OR ${claims.objectNodeId} = ${nodes.id}
           OR ${claims.assertedByNodeId} = ${nodes.id}
         )
-    )`,
-    sql`NOT EXISTS (
-      SELECT 1 FROM ${sourceLinks}
-      WHERE ${sourceLinks.nodeId} = ${nodes.id}
     )`,
     sql`NOT EXISTS (
       SELECT 1 FROM ${aliases}

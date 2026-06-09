@@ -2,8 +2,7 @@
  * DB-integration tests for deterministic orphan node pruning.
  *
  * The job is intentionally not LLM-driven: evidence-free legacy nodes can be
- * deleted mechanically, while anything with claims/source links/aliases must
- * survive.
+ * deleted mechanically, while anything with claims or aliases must survive.
  */
 import "dotenv/config";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
@@ -259,7 +258,7 @@ describeIfServer("pruneOrphanNodes", () => {
     expect(remaining.rows[0]?.count).toBe("2");
   });
 
-  it("deletes true orphans and preserves nodes with evidence", async () => {
+  it("deletes source-only nodes and preserves nodes with graph evidence", async () => {
     const userId = "user_prune_delete";
     const orphanId = newTypeId("node");
     const claimNodeId = newTypeId("node");
@@ -315,17 +314,19 @@ describeIfServer("pruneOrphanNodes", () => {
       database,
     );
 
-    expect(result.candidateCount).toBe(1);
-    expect(result.deletedCount).toBe(1);
+    expect(result.candidateCount).toBe(2);
+    expect(result.deletedCount).toBe(2);
     expect(result.hasMore).toBe(false);
-    expect(result.candidates.map((node) => node.id)).toEqual([orphanId]);
+    expect(result.candidates.map((node) => node.id).sort()).toEqual(
+      [orphanId, sourceLinkedId].sort(),
+    );
 
     const remaining = await rootClient.query<{ id: string }>(
       `SELECT "id" FROM "nodes" WHERE "user_id" = $1 ORDER BY "id"`,
       [userId],
     );
     expect(remaining.rows.map((row) => row.id).sort()).toEqual(
-      [claimNodeId, sourceLinkedId, aliasNodeId, speakerNodeId].sort(),
+      [claimNodeId, aliasNodeId, speakerNodeId].sort(),
     );
   });
 
