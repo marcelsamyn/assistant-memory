@@ -15,7 +15,7 @@ import {
   type DocumentSpine,
   documentSpineSchema,
 } from "~/lib/schemas/document-spine";
-import { env } from "~/utils/env";
+import { MODEL_MAX_OUTPUT_TOKENS, modelForTask } from "~/utils/models";
 
 // Cap how much markdown we send to the spine LLM. Most documents fit, but
 // for very long inputs we keep the head + tail + a heading outline so the
@@ -35,7 +35,9 @@ export async function extractDocumentSpine(params: {
   const { createCompletionClient, parseStructuredCompletion } = await import(
     "~/lib/ai"
   );
-  const client = await createCompletionClient(userId);
+  const client = await createCompletionClient(userId, {
+    task: "document_spine",
+  });
 
   const prompt = `You are reading a document to summarize its high-level shape for a graph extractor.
 
@@ -56,7 +58,8 @@ ${condensed}
 
   const completion = await parseStructuredCompletion(client, {
     messages: [{ role: "user", content: prompt }],
-    model: env.MODEL_ID_GRAPH_EXTRACTION,
+    model: modelForTask("document_spine"),
+    max_tokens: MODEL_MAX_OUTPUT_TOKENS,
     response_format: zodResponseFormat(documentSpineSchema, "document_spine"),
   });
 

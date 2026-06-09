@@ -2,7 +2,7 @@ import { format } from "date-fns/format";
 import { DrizzleDB } from "~/db";
 import { fetchDailyConversationsList } from "~/lib/analysis/conversations";
 import { getAssistantAtlas, updateAssistantAtlas } from "~/lib/atlas";
-import { env } from "~/utils/env";
+import { MODEL_MAX_OUTPUT_TOKENS, modelForTask } from "~/utils/models";
 
 /**
  * Job to process the assistant-specific Atlas:
@@ -68,9 +68,10 @@ ${convList}
 
   // 4. Call LLM
   const { createCompletionClient } = await import("../ai");
-  const client = await createCompletionClient(userId);
+  const client = await createCompletionClient(userId, { task: "atlas" });
   const completion = await client.chat.completions.create({
-    model: env.MODEL_ID_GRAPH_EXTRACTION,
+    model: modelForTask("atlas"),
+    max_tokens: MODEL_MAX_OUTPUT_TOKENS,
     messages: [
       { role: "system", content: systemMsg },
       { role: "user", content: userPrompt },

@@ -40,7 +40,7 @@ import {
 } from "~/types/graph";
 import { type TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
-import { env } from "~/utils/env";
+import { MODEL_MAX_OUTPUT_TOKENS, modelForTask } from "~/utils/models";
 import { shouldSkipJobEnqueue } from "~/utils/test-overrides";
 
 type SourceRef = {
@@ -226,7 +226,9 @@ export async function extractGraph({
   const speakerMapPromptSection = _formatSpeakerMapSection(speakerMap);
 
   const { createCompletionClient } = await import("./ai");
-  const client = await createCompletionClient(userId);
+  const client = await createCompletionClient(userId, {
+    task: "graph_extraction",
+  });
 
   const prompt = `You are a knowledge graph extraction expert. Your task is to analyze the following ${sourceType} and extract entities, concepts, events, and their relationships to create a knowledge graph.
 
@@ -387,7 +389,8 @@ ${
 
   const completion = await parseStructuredCompletion(client, {
     messages: [{ role: "user", content: prompt }],
-    model: env.MODEL_ID_GRAPH_EXTRACTION,
+    model: modelForTask("graph_extraction"),
+    max_tokens: MODEL_MAX_OUTPUT_TOKENS,
     response_format: zodResponseFormat(llmExtractionSchema, "subgraph"),
   });
 

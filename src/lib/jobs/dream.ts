@@ -62,6 +62,7 @@ async function proposeTopics(
   const { topics } = await performStructuredAnalysis({
     userId,
     systemPrompt,
+    task: "dream",
     prompt: `<system:info>You are now in a "dream" state. This is space for you to have internal (hidden from any users) dreams, thoughts and insights. The past day is ${date}. </system:info>
 
 <context about="nodes from knowledge graph linked to today">
@@ -119,6 +120,7 @@ async function proposeQueries(
   const res = await performStructuredAnalysis({
     userId,
     systemPrompt,
+    task: "dream",
     prompt: `<system:info>You are now in a "dream" state. This is space for you to have internal (hidden from any users) dreams, thoughts and insights.</system:info>
 
 Previously, you chose the following to dream about:
@@ -162,6 +164,7 @@ async function generateDreamContent(
   return await crateTextCompletion({
     userId,
     systemPrompt,
+    task: "dream",
     prompt: `
 <system:info>
 You are now in a "dream" state. This is space for you to have internal (hidden from any users) dreams, thoughts and insights.
@@ -194,6 +197,7 @@ async function scoreDream(
   const res = await performStructuredAnalysis({
     userId,
     systemPrompt,
+    task: "dream",
     prompt: `
 <system:info>
 You are now in a "dream" state. This is space for you to have internal (hidden from any users) dreams, thoughts and insights.

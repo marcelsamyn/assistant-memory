@@ -9,7 +9,7 @@ import {
 } from "~/lib/conversation-store";
 import { debug } from "~/lib/debug-utils";
 import { formatConversationAsXml } from "~/lib/formatting";
-import { env } from "~/utils/env";
+import { MODEL_MAX_OUTPUT_TOKENS, modelForTask } from "~/utils/models";
 
 // Job input schema
 export const SummarizeConversationJobInputSchema = z.object({
@@ -83,7 +83,9 @@ export async function summarizeUserConversations(
     MalformedUpstreamCompletionError,
     parseStructuredCompletion,
   } = await import("../ai");
-  const client = await createCompletionClient(userId);
+  const client = await createCompletionClient(userId, {
+    task: "conversation_summary",
+  });
 
   for (const { sourceId, conversationNodeId } of convsToSummarize) {
     // load conversation turns
@@ -142,7 +144,8 @@ ${formatConversationAsXml(turns)}
     try {
       const completion = await parseStructuredCompletion(client, {
         messages: [{ role: "user", content: prompt }],
-        model: env.MODEL_ID_GRAPH_EXTRACTION,
+        model: modelForTask("conversation_summary"),
+        max_tokens: MODEL_MAX_OUTPUT_TOKENS,
         response_format: zodResponseFormat(
           z.object({
             title: z

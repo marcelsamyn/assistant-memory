@@ -386,6 +386,7 @@ export async function processAtlasJob(
       userId,
       prompt,
       schema: AtlasOutputSchema,
+      task: "atlas",
     });
     derivedAtlas = z.string().parse(parsed["atlas"]).trim();
   }

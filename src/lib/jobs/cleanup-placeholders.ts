@@ -17,7 +17,7 @@ import { z } from "zod";
 import { nodes, nodeMetadata } from "~/db/schema";
 import { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
-import { env } from "~/utils/env";
+import { modelForTask } from "~/utils/models";
 
 export const cleanupPlaceholdersInputSchema = z.object({
   userId: z.string().min(1),
@@ -184,7 +184,7 @@ export async function seedClaimsCleanupForPlaceholders(
       Date.now() - olderThanDays * 24 * 60 * 60 * 1000,
     ).toISOString(),
     seedIds,
-    llmModelId: env.MODEL_ID_GRAPH_EXTRACTION,
+    llmModelId: modelForTask("graph_cleanup"),
   });
 
   return { jobId: job.id ?? "", seedIds };

@@ -7,6 +7,11 @@ import type {
 } from "openai/resources.mjs";
 import { z } from "zod";
 import { env } from "~/utils/env";
+import {
+  MODEL_MAX_OUTPUT_TOKENS,
+  modelForTask,
+  type ModelTask,
+} from "~/utils/models";
 import { getExtractionClientOverride } from "~/utils/test-overrides";
 
 /**
@@ -119,7 +124,10 @@ export async function parseStructuredCompletion<
   throw lastError;
 }
 
-export async function createCompletionClient(userId: string): Promise<OpenAI> {
+export async function createCompletionClient(
+  userId: string,
+  opts?: { task?: ModelTask | undefined },
+): Promise<OpenAI> {
   const override = getExtractionClientOverride();
   if (override) return override as OpenAI;
   const { OpenAI } = await import("openai");
@@ -131,6 +139,9 @@ export async function createCompletionClient(userId: string): Promise<OpenAI> {
         ? {
             "Helicone-Auth": `Bearer ${env.HELICONE_API_KEY}`,
             "Helicone-User-Id": userId,
+            // Custom property → lets Helicone break spend down per task,
+            // even while several tasks still share one model.
+            ...(opts?.task ? { "Helicone-Property-Task": opts.task } : {}),
           }
         : {}),
       "HTTP-Referer": "https://github.com/iamarcel/assistant-memory",
@@ -143,12 +154,17 @@ export async function crateTextCompletion({
   userId,
   prompt,
   systemPrompt,
+  task,
+  maxTokens,
 }: {
   userId: string;
   prompt: string;
   systemPrompt?: string;
+  /** Routes the model (via {@link modelForTask}) and tags Helicone. */
+  task?: ModelTask;
+  maxTokens?: number;
 }): Promise<string> {
-  const client = await createCompletionClient(userId);
+  const client = await createCompletionClient(userId, { task });
   const completion = await client.chat.completions.create({
     messages: [
       ...(systemPrompt
@@ -164,7 +180,8 @@ export async function crateTextCompletion({
         content: prompt,
       } satisfies ChatCompletionUserMessageParam,
     ],
-    model: env.MODEL_ID_GRAPH_EXTRACTION,
+    model: task ? modelForTask(task) : env.MODEL_ID_GRAPH_EXTRACTION,
+    max_tokens: maxTokens ?? MODEL_MAX_OUTPUT_TOKENS,
   });
 
   return completion.choices[0]?.message.content ?? "";
@@ -177,15 +194,20 @@ export async function performStructuredAnalysis<
   prompt,
   systemPrompt,
   schema,
+  task,
+  maxTokens,
 }: {
   userId: string;
   prompt: string;
   systemPrompt?: string;
   schema: S;
+  /** Routes the model (via {@link modelForTask}) and tags Helicone. */
+  task?: ModelTask;
+  maxTokens?: number;
 }): Promise<z.infer<S>> {
   if (!schema.description) throw new Error("Schema must have a description");
 
-  const client = await createCompletionClient(userId);
+  const client = await createCompletionClient(userId, { task });
   const completion = await parseStructuredCompletion(client, {
     messages: [
       ...(systemPrompt
@@ -201,7 +223,8 @@ export async function performStructuredAnalysis<
         content: prompt,
       } satisfies ChatCompletionUserMessageParam,
     ],
-    model: env.MODEL_ID_GRAPH_EXTRACTION,
+    model: task ? modelForTask(task) : env.MODEL_ID_GRAPH_EXTRACTION,
+    max_tokens: maxTokens ?? MODEL_MAX_OUTPUT_TOKENS,
     response_format: zodResponseFormat(schema, schema.description),
   });
   const parsed = completion.choices[0]?.message.parsed;
