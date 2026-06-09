@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`pruneStaleNodes` — deterministic, preview-then-apply memory garbage collection.** A new `POST /maintenance/prune-stale-nodes` endpoint (and `MemoryClient.pruneStaleNodes`) scores every entity/task node on a transparent, LLM-free weighted sum — `0.40·staleness + 0.25·isolation + 0.20·weakProvenance + 0.15·claimDecay` — and prunes the disposable tail: old, weakly-connected, assistant-inferred-only, or superseded-dominated nodes. Tune with a single `aggressiveness` knob (`[0, 1]`, higher prunes more) or pin an explicit `minScore`. `dryRun` defaults to `true` and returns the ranked candidates with per-node `reasons` plus the full `candidateCount`; re-call with the same thresholds and `dryRun: false` to delete (cascades through claims, source links, aliases, and embeddings). The sweep never touches nodes active within `minIdleDays`, nodes with a currently-open task status, the user's self-identity node(s), or — unless `includeReference` is set — reference-scope nodes. Complements the narrower `pruneOrphanNodes` (evidence-free nodes) and `dedupSweep` (exact-label duplicates).
+
 ### Fixed
 
 - **Conversation/document ingestion no longer manufactures spurious or auto-trusted tasks.** The graph-extraction prompt now explicitly forbids minting Task nodes from assistant suggestions, recaps/summaries, uncommitted planning, or the existence of the conversation itself (e.g. a "weekly check-in" task), and requires Task labels to be short imperative actions rather than conversation summaries. Additionally, **every brand-new task created during ingestion is now recorded as tentative (the candidate band) deterministically** — the model no longer decides this, so a passive background ingest can never fabricate a firm commitment. Firm commitments arise only from explicit user action: the candidate-confirmation flow (a later status claim against the existing task) or the commitment write APIs.
