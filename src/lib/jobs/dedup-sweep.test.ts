@@ -400,6 +400,67 @@ describeIfServer("runDedupSweep", () => {
     }
   });
 
+  it("does not merge record/occurrence node types sharing a label", async () => {
+    // A daily task created for each day of the week, plus a recurring weekly
+    // event, all share an exact label with a same-typed sibling. These are
+    // distinct instances — merging by label would (e.g.) let completing one
+    // day's task complete the whole merged node. Only nominal entities dedupe.
+    const userId = "user_dedup_records";
+    const taskA = newTypeId("node");
+    const taskB = newTypeId("node");
+    const eventA = newTypeId("node");
+    const eventB = newTypeId("node");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    try {
+      await createDedupTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+
+      await seedNode(client, {
+        userId,
+        nodeId: taskA,
+        nodeType: "Task",
+        canonicalLabel: "buy groceries",
+      });
+      await seedNode(client, {
+        userId,
+        nodeId: taskB,
+        nodeType: "Task",
+        canonicalLabel: "buy groceries",
+      });
+      await seedNode(client, {
+        userId,
+        nodeId: eventA,
+        nodeType: "Event",
+        canonicalLabel: "weekly standup",
+      });
+      await seedNode(client, {
+        userId,
+        nodeId: eventB,
+        nodeType: "Event",
+        canonicalLabel: "weekly standup",
+      });
+
+      const result = await runDedupSweep(userId, database);
+      expect(result.mergedGroups).toBe(0);
+      expect(result.mergedNodes).toBe(0);
+      expect(result.crossScopeCollisionsSkipped).toBe(0);
+
+      const remaining = await client.query<{ id: string }>(
+        `SELECT "id" FROM "nodes" WHERE "user_id" = $1 ORDER BY "id"`,
+        [userId],
+      );
+      expect(remaining.rows.map((r) => r.id).sort()).toEqual(
+        [taskA, taskB, eventA, eventB].sort(),
+      );
+    } finally {
+      await client.end();
+    }
+  });
+
   it("dedupes identical claims keeping earliest createdAt", async () => {
     const userId = "user_dedup_D";
     const keepId = newTypeId("node");

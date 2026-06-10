@@ -47,6 +47,45 @@ export const ExtractionNodeTypeEnum = z.enum([
 
 export type ExtractionNodeType = z.infer<typeof ExtractionNodeTypeEnum>;
 
+/**
+ * Node types whose canonical label denotes a single real-world referent, so
+ * two same-typed nodes that share a label are safe to collapse automatically.
+ * Both automatic merge paths — the deterministic dedup-sweep and the
+ * operations applied by the LLM graph cleanup — consult this set before
+ * merging by label.
+ *
+ * Record / occurrence types are deliberately excluded: `Task`, `Event`,
+ * `Idea`, `Document`, `Conversation`, `AssistantDream`, `Feedback`, and
+ * `Atlas` nodes can legitimately recur with identical labels (a task created
+ * for each day of the week, a weekly standup `Event`, two distinct files named
+ * "notes.md"). Collapsing those by label alone destroys distinct instances —
+ * e.g. completing one daily task would complete the merged node for every day.
+ * Explicit, user-initiated merges (the `/node/merge` route) are not gated by
+ * this set; only the automatic paths are.
+ */
+export const LABEL_MERGEABLE_NODE_TYPES = [
+  "Person",
+  "Location",
+  "Object",
+  "Emotion",
+  "Concept",
+  "Media",
+  "Temporal",
+] as const satisfies readonly NodeType[];
+
+const labelMergeableNodeTypeSet: ReadonlySet<string> = new Set(
+  LABEL_MERGEABLE_NODE_TYPES,
+);
+
+/**
+ * Whether nodes of `nodeType` may be merged automatically when their canonical
+ * labels match. Returns `false` for unknown types so anything outside the
+ * vetted entity set is treated as a distinct record and left untouched.
+ */
+export function isLabelMergeableNodeType(nodeType: string): boolean {
+  return labelMergeableNodeTypeSet.has(nodeType);
+}
+
 // =============================================================
 // CLAIM PREDICATES & STATUS
 // =============================================================
