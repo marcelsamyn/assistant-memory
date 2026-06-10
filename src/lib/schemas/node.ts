@@ -85,7 +85,6 @@ export const getNodeSourcesRequestSchema = z.object({
 export const nodeSourceSchema = z.object({
   sourceId: z.string(),
   type: z.string(),
-  content: z.string().nullable(),
   timestamp: z.coerce.date().nullable(),
 });
 

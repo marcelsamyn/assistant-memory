@@ -1128,7 +1128,8 @@ export class MemoryClient {
   /**
    * Single-source lookup. Returns the same shape as `listSources` items so
    * the host can render an attached-source chip when only the `sourceId`
-   * is known.
+   * is known. Pass `includeContent: true` to also return memory's stored
+   * textual representation. Binary blobs are never returned or decoded.
    */
   async getSource(payload: GetSourceRequest): Promise<GetSourceResponse> {
     return this._fetch(

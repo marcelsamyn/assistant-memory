@@ -10,6 +10,18 @@ has the _what to change_.
 
 ---
 
+## SDK source content lookup and metadata-only node sources
+
+- `MemoryClient.getSource({ userId, sourceId, includeContent: true })` now
+  returns the source summary plus `content: { text, format } | null`.
+  `content` is omitted unless requested. The endpoint returns only memory's
+  stored textual representation; it never decodes or returns raw binary blobs.
+- `MemoryClient.getNodeSources(...)` no longer returns `content` or reads
+  source payloads. It returns linked-source metadata only. Call `getSource`
+  explicitly for the individual source whose content is needed.
+
+---
+
 ## SDK addition — commitment due-date lifecycle, write-time enums, atomic node bootstrap
 
 Driven by Petals integration feedback. Five changes; all additive, no breaking changes to existing endpoints.

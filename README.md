@@ -196,7 +196,7 @@ MCP connects over `GET /sse` and `POST /messages`. Most current tool names are h
 - `search memory`: calls the same search path as `POST /query/search`.
 - `retrieve memories relevant for today`: calls the same path as `POST /query/day`.
 - `list_open_commitments`: calls `POST /commitments/open` semantics and returns currently open tasks only. The model should call it before answering about outstanding, next, pending, follow-up, completed, or abandoned work unless an `open_commitments` section was rendered for this same model call.
-- `get node` and `get node sources`: raw inspection tools.
+- `get node` and `get node sources`: raw graph and linked-source metadata inspection tools.
 - `read scratchpad`, `write scratchpad`, `edit scratchpad`: scratchpad operations.
 - `update node`, `delete node`: raw edit tools; these should be gated by the host.
 
