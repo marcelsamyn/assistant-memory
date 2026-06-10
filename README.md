@@ -4,6 +4,13 @@ _Give all your AI assistants **combined, long-term** memory while keeping full c
 
 Assistant Memory is a lightweight memory service built around the **Model Context Protocol (MCP)**. It speaks MCP over HTTP today (stdio support is on the way) and also exposes classic REST endpoints. Store conversations and documents and let any MCP-enabled assistant recall them when needed.
 
+## Feeding it
+
+Anything can become memory. Tools that ingest into Assistant Memory:
+
+- **[screenpipe-distiller](https://github.com/marcelsamyn/screenpipe-distiller)** — distills your daily computer activity (via [Screenpipe](https://screenpi.pe)) into durable memory.
+- n8n workflows for meeting transcripts, handwritten notes, and health metrics _(examples coming — see issues)_.
+
 ## Model Context Protocol
 
 The integrated MCP server provides tools for saving memories, performing searches and retrieving day summaries. Because it follows the MCP standard, any compliant client can plug in and exchange messages seamlessly.
