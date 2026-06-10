@@ -1,9 +1,9 @@
-import { describe, expect, it } from "vitest";
 import {
   isLabelMergeableNodeType,
   LABEL_MERGEABLE_NODE_TYPES,
   NodeTypeEnum,
 } from "./graph";
+import { describe, expect, it } from "vitest";
 
 describe("isLabelMergeableNodeType", () => {
   it("treats nominal-entity types as mergeable by label", () => {
