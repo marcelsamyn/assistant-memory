@@ -3,11 +3,12 @@ import {
   getSourceRequestSchema,
   getSourceResponseSchema,
 } from "~/lib/schemas/sources";
+import { sourceService } from "~/lib/sources";
 import { getSourceSummary } from "~/lib/sources-read";
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const { userId, sourceId } = getSourceRequestSchema.parse(
+  const { userId, sourceId, includeContent } = getSourceRequestSchema.parse(
     await readBody(event),
   );
   const db = await useDatabase();
@@ -18,5 +19,21 @@ export default defineEventHandler(async (event) => {
       statusMessage: "Source not found",
     });
   }
-  return getSourceResponseSchema.parse({ source });
+
+  if (!includeContent) {
+    return getSourceResponseSchema.parse({ source });
+  }
+
+  const [raw] = await sourceService.fetchRaw(userId, [sourceId]);
+  const content =
+    raw?.kind === "inline"
+      ? {
+          text: raw.content,
+          format: source.type === "document" ? "markdown" : "text",
+        }
+      : null;
+
+  return getSourceResponseSchema.parse({
+    source: { ...source, content },
+  });
 });

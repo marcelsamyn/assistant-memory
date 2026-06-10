@@ -83,10 +83,25 @@ export type ListSourcesResponse = z.infer<typeof listSourcesResponseSchema>;
 export const getSourceRequestSchema = z.object({
   userId: z.string(),
   sourceId: typeIdSchema("source"),
+  /** Include the stored textual representation used by memory. */
+  includeContent: z.boolean().optional(),
 });
 export type GetSourceRequest = z.infer<typeof getSourceRequestSchema>;
 
+export const sourceContentSchema = z.object({
+  text: z.string(),
+  format: z.enum(["text", "markdown"]),
+});
+export type SourceContent = z.infer<typeof sourceContentSchema>;
+
 export const getSourceResponseSchema = z.object({
-  source: sourceSummarySchema,
+  source: sourceSummarySchema.extend({
+    /**
+     * Present only when `includeContent` is true. `null` means no stored
+     * textual representation is available; raw binary blobs are never
+     * decoded or returned by this endpoint.
+     */
+    content: sourceContentSchema.nullable().optional(),
+  }),
 });
 export type GetSourceResponse = z.infer<typeof getSourceResponseSchema>;

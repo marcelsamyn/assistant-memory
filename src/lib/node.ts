@@ -27,7 +27,7 @@ import { ensureUser } from "~/lib/ingestion/ensure-user";
 import { normalizeLabel } from "~/lib/label";
 import { writeNodeRedirects } from "~/lib/node-redirects";
 import { getEffectiveNodeScopes } from "~/lib/node-scope";
-import { ensureSystemSource, sourceService } from "~/lib/sources";
+import { ensureSystemSource } from "~/lib/sources";
 import { ensureDayNode } from "~/lib/temporal";
 import type { AssertedByKind, NodeType, Predicate, Scope } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
@@ -170,7 +170,7 @@ export async function getNodeById(
   };
 }
 
-/** Fetch raw source content linked to a node. */
+/** Fetch source metadata linked to a node. */
 export async function getNodeSources(
   userId: string,
   nodeId: TypeId<"node">,
@@ -191,7 +191,6 @@ export async function getNodeSources(
     .select({
       sourceId: sources.id,
       type: sources.type,
-      metadata: sources.metadata,
       timestamp: sources.lastIngestedAt,
     })
     .from(sourceLinks)
@@ -200,21 +199,10 @@ export async function getNodeSources(
 
   if (linkedSources.length === 0) return { sources: [] };
 
-  // Fetch raw content for each source
-  const sourceIds = linkedSources.map((s) => s.sourceId as TypeId<"source">);
-  const rawResults = await sourceService.fetchRaw(userId, sourceIds);
-  const contentMap = new Map(
-    rawResults.map((r) => [
-      r.sourceId,
-      r.kind === "inline" ? r.content : r.buffer.toString("utf-8"),
-    ]),
-  );
-
   return {
     sources: linkedSources.map((s) => ({
       sourceId: s.sourceId,
       type: s.type,
-      content: contentMap.get(s.sourceId) ?? null,
       timestamp: s.timestamp,
     })),
   };

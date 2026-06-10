@@ -743,7 +743,7 @@ server.tool(
   },
 );
 
-// Get raw source content for a node
+// Get source metadata linked to a node
 server.tool(
   "get node sources",
   getNodeSourcesRequestSchema.shape,
@@ -751,9 +751,7 @@ server.tool(
     const result = await getNodeSources(userId, nodeId);
     if (result.sources.length === 0) {
       return {
-        content: [
-          { type: "text", text: "No source content linked to this node" },
-        ],
+        content: [{ type: "text", text: "No sources linked to this node" }],
       };
     }
     return {
