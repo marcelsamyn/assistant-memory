@@ -519,6 +519,13 @@ export async function mergeNodesOp(
   // nominal-entity types (`LABEL_MERGEABLE_NODE_TYPES`) may be auto-merged.
   // Explicit user merges go through the `/node/merge` route, which calls
   // `mergeNodes` directly and is intentionally not gated.
+  //
+  // Read types via `useDatabase()` rather than the dispatcher's `database`
+  // context on purpose: `merge_nodes` runs outside the dispatcher transaction
+  // (see `applyCleanupOperations`) and `mergeNodes` itself reads/writes through
+  // the same root `useDatabase()` singleton. Gating against that same context
+  // keeps the type check and the merge consistent — a node the merge can't see
+  // is one this check can't see either, and `mergeNodes` then no-ops on it.
   const db = await useDatabase();
   const involvedIds = [keepId, ...removeIds];
   const typeRows = await db
