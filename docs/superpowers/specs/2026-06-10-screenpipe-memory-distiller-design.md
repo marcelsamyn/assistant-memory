@@ -151,7 +151,7 @@ All via env, Zod-validated in `config.ts` (see Component 1). Secrets (`SCREENPIP
 
 ## 9. Tracked follow-up — fix Screenpipe audio (separate workstream)
 
-Audio transcription has been dead since 2026-06-05: `/health` shows `audio_level_rms: 0.0`, `avg_speech_ratio: 0.0`, all chunks VAD-rejected, `db_inserted: 0`, ~900 pending segments. **Lead:** level `0.0` = capturing silence → almost certainly a **device-selection** issue (listening to "Scarlett 2i2 USB" with no live signal), not a model/VAD bug. Until fixed, the distiller's *People & conversations* dimension stays empty; the health-check surfaces the stall. Tracked in memory `screenpipe-audio-transcription-broken`. Fix = a small Screenpipe config task, sequenced after the distiller MVP.
+Audio transcription has been dead since 2026-06-05: `/health` shows `audio_level_rms: 0.0`, `avg_speech_ratio: 0.0`, all chunks VAD-rejected, `db_inserted: 0`, ~900 pending segments. **Lead:** level `0.0` = capturing silence → almost certainly a **device-selection** issue (listening to "Scarlett 2i2 USB" with no live signal), not a model/VAD bug. Until fixed, the distiller's *People & conversations* dimension stays empty; the health-check surfaces the stall. Tracked in memory `screenpipe-audio-transcription-broken`. Fix = a small Screenpipe config task, sequenced after the distiller MVP. **Note (2026-06-10):** recording autostart now runs under launchd with `--disable-audio` (the launchd binary has no Microphone TCC grant, so audio-enabled record crash-loops). Re-enabling audio additionally requires granting mic access to the launchd binary in System Settings → Privacy and removing `--disable-audio` from the record plist.
 
 ## 10. Testing
 
