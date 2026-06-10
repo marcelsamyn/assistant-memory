@@ -12,7 +12,7 @@
  * retract_claim, contradict_claim, merge_nodes, add_claim, add_alias.
  */
 import { CrossScopeMergeError, mergeNodes } from "../node";
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DrizzleDB } from "~/db";
 import {
@@ -32,6 +32,7 @@ import { logEvent } from "~/lib/observability/log";
 import type { TemporaryIdMapper } from "~/lib/temporary-id-mapper";
 import {
   AttributePredicateEnum,
+  isLabelMergeableNodeType,
   NodeTypeEnum,
   RelationshipPredicateEnum,
 } from "~/types/graph";
@@ -511,6 +512,33 @@ export async function mergeNodesOp(
     removeIds.push(id);
   }
   if (removeIds.length === 0) return null;
+
+  // Gate automatic merges by node type: record / occurrence types (Task,
+  // Event, Document, …) can legitimately share a label, so the LLM is not
+  // permitted to collapse them here even if it judged them duplicates. Only
+  // nominal-entity types (`LABEL_MERGEABLE_NODE_TYPES`) may be auto-merged.
+  // Explicit user merges go through the `/node/merge` route, which calls
+  // `mergeNodes` directly and is intentionally not gated.
+  const db = await useDatabase();
+  const involvedIds = [keepId, ...removeIds];
+  const typeRows = await db
+    .select({ id: nodes.id, nodeType: nodes.nodeType })
+    .from(nodes)
+    .where(and(eq(nodes.userId, userId), inArray(nodes.id, involvedIds)));
+  const protectedTypes = [
+    ...new Set(
+      typeRows
+        .map((row) => row.nodeType)
+        .filter((nodeType) => !isLabelMergeableNodeType(nodeType)),
+    ),
+  ];
+  if (protectedTypes.length > 0) {
+    console.warn(
+      `merge_nodes: refusing auto-merge of non-mergeable node type(s) ` +
+        `[${protectedTypes.join(", ")}] user=${userId}; skipping`,
+    );
+    return null;
+  }
 
   // mergeNodes' first arg is the survivor.
   await mergeNodes(userId, [keepId, ...removeIds]);

@@ -1,5 +1,10 @@
 /** Deterministic dedup sweep: finds exact-label duplicate nodes and merges them.
  *
+ * Type-bounded: only nominal-entity node types (`LABEL_MERGEABLE_NODE_TYPES`)
+ * are considered. Record / occurrence types — Task, Event, Document, … — can
+ * legitimately recur with identical labels (a task per day of the week, a
+ * weekly standup event), so they are never collapsed by label here.
+ *
  * Scope-bounded: nodes with the same canonical label but different effective
  * scope (`personal` vs `reference`) are not merged. Such collisions are logged
  * and counted under `crossScopeCollisionsSkipped`.
@@ -9,10 +14,10 @@ import {
   rewireSourceLinks,
   deleteNode,
 } from "./cleanup-graph";
-import { and, eq, sql, isNotNull } from "drizzle-orm";
+import { and, eq, sql, isNotNull, inArray } from "drizzle-orm";
 import { DrizzleDB } from "~/db";
 import { nodes, nodeMetadata, claims, sourceLinks, sources } from "~/db/schema";
-import type { Scope } from "~/types/graph";
+import { LABEL_MERGEABLE_NODE_TYPES, type Scope } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -60,6 +65,11 @@ async function findDuplicateGroupingsByScope(
   // placeholders with the same label "Alex" from different transcripts often
   // refer to different real people, so collapsing them by label alone would
   // destroy distinct identities ("speaker placeholder explosion" trap).
+  //
+  // Only `LABEL_MERGEABLE_NODE_TYPES` (nominal entities) are considered.
+  // Record / occurrence types — Task, Event, Document, Conversation, … — can
+  // legitimately recur with identical labels (e.g. a task per day of the
+  // week), so collapsing them by label would fuse distinct instances.
   const scopeRows = await db
     .select({
       nodeId: nodes.id,
@@ -92,6 +102,7 @@ async function findDuplicateGroupingsByScope(
     .where(
       and(
         eq(nodes.userId, userId),
+        inArray(nodes.nodeType, [...LABEL_MERGEABLE_NODE_TYPES]),
         isNotNull(nodeMetadata.canonicalLabel),
         sql`trim(${nodeMetadata.canonicalLabel}) != ''`,
         sql`(${nodeMetadata.additionalData} ->> 'unresolvedSpeaker') IS DISTINCT FROM 'true'`,
