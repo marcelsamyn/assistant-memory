@@ -218,6 +218,11 @@ import {
   type ResolveCitationsResponse,
 } from "../lib/schemas/resolve-citations.js";
 import {
+  rollupResponseSchema,
+  type RollupRequest,
+  type RollupResponse,
+} from "../lib/schemas/rollup.js";
+import {
   ScratchpadReadRequest,
   ScratchpadWriteRequest,
   ScratchpadEditRequest,
@@ -646,6 +651,15 @@ export class MemoryClient {
 
   async summarize(payload: SummarizeRequest): Promise<SummarizeResponse> {
     return this._fetch("POST", "/summarize", summarizeResponseSchema, payload);
+  }
+
+  /**
+   * Trigger a temporal-rollup catch-up sweep (day/week/month/year summary
+   * nodes). Fire-and-forget; `maxLlmCalls` caps the sweep's LLM spend and
+   * `startDate` floors how far back history is summarized.
+   */
+  async rollup(payload: RollupRequest): Promise<RollupResponse> {
+    return this._fetch("POST", "/rollup", rollupResponseSchema, payload);
   }
 
   async cleanup(payload: CleanupRequest): Promise<CleanupResponse> {
