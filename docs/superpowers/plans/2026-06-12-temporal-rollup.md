@@ -11,6 +11,7 @@
 **Tech Stack:** Nitro/h3, Drizzle + Postgres, BullMQ, OpenAI SDK (`parseStructuredCompletion` + `zodResponseFormat`), date-fns, Zod v4, vitest (test Postgres on port **5431**; CI does NOT run vitest — run tests locally).
 
 **Conventions that apply to every task:**
+
 - Package manager: `pnpm`. Run `pnpm run test -- <file> --run` (vitest), `pnpm run build:check` (tsc + structured-output check), `pnpm run lint`, `pnpm run format`.
 - Commit messages: `<emoji> <type>(<scope>): <subject>` (✨ feat, ✅ test, ♻️ refactor, 📚 docs). Stage explicit paths only — never `git add -A` or `.`.
 - Imports use the `~` alias for `src` (e.g. `~/db/schema`). Within `src/lib/**`, relative imports of siblings are the norm (see existing files).
@@ -19,27 +20,28 @@
 
 ## File structure
 
-| File | Responsibility |
-| --- | --- |
-| `src/lib/rollup/period.ts` (+ `.test.ts`) | Pure period-key math: levels, parents/children, completeness, ordering |
-| `src/lib/rollup/collect.ts` (+ `.test.ts`) | Deterministic input assembly + compaction (pure builders), sha256 fingerprint, defensive `additionalData.rollup` reader, thin DB fetchers |
-| `src/lib/rollup/source.ts` (+ `.test.ts`) | Per-user synthetic `"rollup"` source (for `PART_OF` claims' NOT NULL `sourceId`) |
-| `src/lib/rollup/summarize-period.ts` (+ `.test.ts`) | One period: collect → ensure node → ensure `PART_OF` claims → fingerprint check → one LLM call → write description + re-embed |
-| `src/lib/jobs/rollup.ts` (+ `.test.ts`) | The sweep: discovery, work-set expansion, startDate/completeness filtering, budgeted bottom-up processing, state commit |
-| `src/lib/temporal.ts` | Generalize: add `ensurePeriodNode`, make `ensureDayNode` delegate |
-| `src/lib/schemas/rollup.ts` | Request/response Zod schemas |
-| `src/routes/rollup.post.ts` (+ `src/rollup-route.test.ts`) | HTTP trigger w/ jobId dedup |
-| `src/db/schema.ts` + `drizzle/` migration | `rollup_state` table |
-| `src/types/graph.ts` | Add `"rollup"` to `SourceType` |
-| `src/utils/models.ts`, `src/utils/env.ts` | `temporal_summary` ModelTask + `MODEL_ID_TEMPORAL_SUMMARY` |
-| `src/lib/queues.ts` | `ROLLUP_JOB_OPTIONS` + `"rollup"` worker branch |
-| `src/sdk/memory-client.ts`, `src/sdk/index.ts` | `rollup()` method + schema export |
+| File                                                       | Responsibility                                                                                                                            |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/lib/rollup/period.ts` (+ `.test.ts`)                  | Pure period-key math: levels, parents/children, completeness, ordering                                                                    |
+| `src/lib/rollup/collect.ts` (+ `.test.ts`)                 | Deterministic input assembly + compaction (pure builders), sha256 fingerprint, defensive `additionalData.rollup` reader, thin DB fetchers |
+| `src/lib/rollup/source.ts` (+ `.test.ts`)                  | Per-user synthetic `"rollup"` source (for `PART_OF` claims' NOT NULL `sourceId`)                                                          |
+| `src/lib/rollup/summarize-period.ts` (+ `.test.ts`)        | One period: collect → ensure node → ensure `PART_OF` claims → fingerprint check → one LLM call → write description + re-embed             |
+| `src/lib/jobs/rollup.ts` (+ `.test.ts`)                    | The sweep: discovery, work-set expansion, startDate/completeness filtering, budgeted bottom-up processing, state commit                   |
+| `src/lib/temporal.ts`                                      | Generalize: add `ensurePeriodNode`, make `ensureDayNode` delegate                                                                         |
+| `src/lib/schemas/rollup.ts`                                | Request/response Zod schemas                                                                                                              |
+| `src/routes/rollup.post.ts` (+ `src/rollup-route.test.ts`) | HTTP trigger w/ jobId dedup                                                                                                               |
+| `src/db/schema.ts` + `drizzle/` migration                  | `rollup_state` table                                                                                                                      |
+| `src/types/graph.ts`                                       | Add `"rollup"` to `SourceType`                                                                                                            |
+| `src/utils/models.ts`, `src/utils/env.ts`                  | `temporal_summary` ModelTask + `MODEL_ID_TEMPORAL_SUMMARY`                                                                                |
+| `src/lib/queues.ts`                                        | `ROLLUP_JOB_OPTIONS` + `"rollup"` worker branch                                                                                           |
+| `src/sdk/memory-client.ts`, `src/sdk/index.ts`             | `rollup()` method + schema export                                                                                                         |
 
 ---
 
 ### Task 1: Period math module (pure)
 
 **Files:**
+
 - Create: `src/lib/rollup/period.ts`
 - Test: `src/lib/rollup/period.test.ts`
 
@@ -343,9 +345,7 @@ export function weeksOverlappingMonth(monthKey: string): WeekInMonth[] {
   let weekKey = weekKeyForDay(firstDayKey);
   for (;;) {
     const days = weekDayKeys(weekKey);
-    const dayKeysInMonth = days.filter(
-      (d) => monthKeyForDay(d) === monthKey,
-    );
+    const dayKeysInMonth = days.filter((d) => monthKeyForDay(d) === monthKey);
     result.push({ weekKey, dayKeysInMonth });
     const sunday = days[6]!;
     if (sunday >= lastDayKey) break;
@@ -395,7 +395,8 @@ const LEVEL_ORDER: Record<PeriodLevel, number> = {
 /** Bottom-up (day→week→month→year), oldest-first within each level. */
 export function sortForProcessing(keys: string[]): string[] {
   return [...keys].sort((a, b) => {
-    const levelDiff = LEVEL_ORDER[periodLevelOf(a)] - LEVEL_ORDER[periodLevelOf(b)];
+    const levelDiff =
+      LEVEL_ORDER[periodLevelOf(a)] - LEVEL_ORDER[periodLevelOf(b)];
     if (levelDiff !== 0) return levelDiff;
     return a < b ? -1 : a > b ? 1 : 0;
   });
@@ -417,6 +418,7 @@ git commit -m "✨ feat(rollup): pure period-key math for temporal hierarchy"
 ### Task 2: Schema groundwork — `rollup_state` table, `"rollup"` SourceType, `temporal_summary` ModelTask
 
 **Files:**
+
 - Modify: `src/db/schema.ts` (append after the `scratchpads` table + its relations)
 - Modify: `src/types/graph.ts` (the `SourceType` union)
 - Modify: `src/utils/models.ts` (ModelTask union + overrides map)
@@ -537,6 +539,7 @@ git commit -m "✨ feat(rollup): rollup_state table, rollup source type, tempora
 ### Task 3: Per-user synthetic rollup source
 
 **Files:**
+
 - Create: `src/lib/rollup/source.ts`
 - Test: `src/lib/rollup/source.test.ts`
 
@@ -721,6 +724,7 @@ git commit -m "✨ feat(rollup): per-user synthetic rollup source"
 ### Task 4: `ensurePeriodNode` (generalize `ensureDayNode`)
 
 **Files:**
+
 - Modify: `src/lib/temporal.ts`
 - Test: `src/lib/temporal.test.ts` (new)
 
@@ -1027,6 +1031,7 @@ git commit -m "♻️ refactor(temporal): generalize ensureDayNode into ensurePe
 ### Task 5: Input builders, compaction, fingerprint (pure) + DB fetchers
 
 **Files:**
+
 - Create: `src/lib/rollup/collect.ts`
 - Test: `src/lib/rollup/collect.test.ts` (pure builders only — the DB fetchers are exercised by Tasks 6–7's integration tests)
 
@@ -1086,7 +1091,12 @@ describe("buildDayInputText", () => {
     expect(buildDayInputText("2026-06-08", [])).toBeNull();
     expect(
       buildDayInputText("2026-06-08", [
-        { nodeType: "Event", label: null, description: null, createdAt: new Date(0) },
+        {
+          nodeType: "Event",
+          label: null,
+          description: null,
+          createdAt: new Date(0),
+        },
       ]),
     ).toBeNull();
   });
@@ -1223,11 +1233,7 @@ Create `src/lib/rollup/collect.ts`:
  * Aliases for search: rollup input collection, compaction, period
  * fingerprint, day entries.
  */
-import {
-  monthKeysOfYear,
-  weekDayKeys,
-  weeksOverlappingMonth,
-} from "./period";
+import { monthKeysOfYear, weekDayKeys, weeksOverlappingMonth } from "./period";
 import { and, eq, inArray } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import type { DrizzleDB } from "~/db";
@@ -1407,7 +1413,9 @@ export async function fetchTemporalNodesByLabels(
  * A child period's summary counts only when the rollup marker is present —
  * `description` alone may be the "Represents the …" boilerplate.
  */
-function summarizedDescriptionOf(row: TemporalNodeRow | undefined): string | null {
+function summarizedDescriptionOf(
+  row: TemporalNodeRow | undefined,
+): string | null {
   if (!row) return null;
   return readRollupMeta(row.additionalData) ? row.description : null;
 }
@@ -1542,6 +1550,7 @@ git commit -m "✨ feat(rollup): deterministic input builders, compaction, finge
 ### Task 6: `summarizePeriod` — one period, one LLM call
 
 **Files:**
+
 - Create: `src/lib/rollup/summarize-period.ts`
 - Test: `src/lib/rollup/summarize-period.test.ts`
 
@@ -1672,9 +1681,7 @@ export function stubLlm(): {
   const client = {
     chat: {
       completions: {
-        parse: async (body: {
-          messages: Array<{ content: string }>;
-        }) => {
+        parse: async (body: { messages: Array<{ content: string }> }) => {
           const prompt = body.messages.map((m) => m.content).join("\n");
           calls.push(prompt);
           return {
@@ -1795,7 +1802,9 @@ describeIfServer("summarizePeriod", () => {
       [dayNodeId],
     );
     expect(meta.rows[0].description).toBe("LLM summary #1");
-    expect(meta.rows[0].additional_data.rollup.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(meta.rows[0].additional_data.rollup.fingerprint).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
 
     // Unchanged input → no second LLM call.
     expect(await summarizePeriod(params)).toBe("skipped-unchanged");
@@ -1875,11 +1884,7 @@ Create `src/lib/rollup/summarize-period.ts`:
  * node's `nodeMetadata.description` (+ `additionalData.rollup` marker) →
  * embedding refresh → idempotent PART_OF containment claims.
  */
-import {
-  collectPeriodInput,
-  fingerprintOf,
-  readRollupMeta,
-} from "./collect";
+import { collectPeriodInput, fingerprintOf, readRollupMeta } from "./collect";
 import { periodLevelOf, type PeriodLevel } from "./period";
 import { and, eq, inArray } from "drizzle-orm";
 import type OpenAI from "openai";
@@ -2097,6 +2102,7 @@ git commit -m "✨ feat(rollup): per-period summarization with fingerprint gate 
 ### Task 7: The sweep job (`runRollup`)
 
 **Files:**
+
 - Create: `src/lib/jobs/rollup.ts`
 - Create: `src/lib/schemas/rollup.ts`
 - Test: `src/lib/jobs/rollup.test.ts`
@@ -2145,11 +2151,11 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
-import { ensurePeriodNode } from "~/lib/temporal";
 import {
   ROLLUP_TEST_TABLES_SQL,
   stubLlm,
 } from "~/lib/rollup/summarize-period.test";
+import { ensurePeriodNode } from "~/lib/temporal";
 import { newTypeId } from "~/types/typeid";
 import {
   resetTestOverrides,
@@ -2267,7 +2273,10 @@ describeIfServer("runRollup", () => {
     return rows.rows[0]?.pending_periods ?? [];
   }
 
-  async function summaryOf(userId: string, label: string): Promise<string | null> {
+  async function summaryOf(
+    userId: string,
+    label: string,
+  ): Promise<string | null> {
     const rows = await client.query(
       `SELECT m."description" FROM "node_metadata" m
        JOIN "nodes" n ON n."id" = m."node_id"
@@ -2652,6 +2661,7 @@ git commit -m "✨ feat(rollup): catch-up sweep job with watermark, budget, and 
 ### Task 8: Queue registration + `POST /rollup` route
 
 **Files:**
+
 - Modify: `src/lib/queues.ts`
 - Create: `src/routes/rollup.post.ts`
 - Test: `src/rollup-route.test.ts` (route tests live at `src/` top level, e.g. `src/query-recent-changes-route.test.ts`)
@@ -2879,6 +2889,7 @@ git commit -m "✨ feat(rollup): POST /rollup route and BullMQ job registration"
 ### Task 9: SDK method
 
 **Files:**
+
 - Modify: `src/sdk/memory-client.ts`
 - Modify: `src/sdk/index.ts`
 
@@ -2968,8 +2979,3 @@ git commit -m "📚 docs(rollup): mark temporal rollup spec implemented"
 - **Don't touch** `pendingPeriods` semantics casually: the watermark always advances; pending is the only carrier of deferred work. Both tests in Task 7 encode this.
 - **`runRollup` accepts `maxLlmCalls: 0`** at the function level (used by tests to force-defer); the HTTP schema floor is 1 — that difference is intentional.
 - The `summarize-period.test.ts` file deliberately exports `ROLLUP_TEST_TABLES_SQL` and `stubLlm` for reuse by `rollup.test.ts`.
-
-
-
-
-

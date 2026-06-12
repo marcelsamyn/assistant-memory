@@ -1,7 +1,7 @@
 # Temporal Rollup: Multi-Layer Summarization (Day → Week → Month → Year)
 
 **Date:** 2026-06-12
-**Status:** Approved design, pending implementation plan
+**Status:** Implemented — plan at docs/superpowers/plans/2026-06-12-temporal-rollup.md
 
 ## Problem
 
@@ -96,12 +96,12 @@ no DB migration) and idempotently ensure one synthetic source per user
 
 New table `rollup_state`:
 
-| Column           | Type                     | Notes                                  |
-| ---------------- | ------------------------ | -------------------------------------- |
-| `userId`         | text PK, FK → users      | one row per user                       |
-| `watermark`      | timestamptz, nullable    | max `claims.createdAt` fully processed |
-| `pendingPeriods` | jsonb (string[])         | period keys awaiting summarization     |
-| `updatedAt`      | timestamptz              |                                        |
+| Column           | Type                  | Notes                                  |
+| ---------------- | --------------------- | -------------------------------------- |
+| `userId`         | text PK, FK → users   | one row per user                       |
+| `watermark`      | timestamptz, nullable | max `claims.createdAt` fully processed |
+| `pendingPeriods` | jsonb (string[])      | period keys awaiting summarization     |
+| `updatedAt`      | timestamptz           |                                        |
 
 ## Sweep algorithm
 
@@ -115,7 +115,7 @@ Runs as one BullMQ job per trigger. Inputs: `userId`, `maxLlmCalls`,
 2. **Expand.** Work set = touched days ∪ their ancestor weeks/months/years ∪
    `pendingPeriods`.
 3. **Filter.** Drop periods whose end < `startDate` (when given) — removed
-   from the work set *and* purged from `pendingPeriods` (excluded, not
+   from the work set _and_ purged from `pendingPeriods` (excluded, not
    deferred). Periods not yet complete move to `pendingPeriods` (deferred —
    this is what makes "user goes quiet mid-week" safe: the week sits in
    pending until a later sweep finds it complete, even if no new claims ever
@@ -138,8 +138,8 @@ Runs as one BullMQ job per trigger. Inputs: `userId`, `maxLlmCalls`,
    deferred/over-budget/failed work is carried by `pendingPeriods`, never by
    holding the watermark back). Persist `pendingPeriods`.
 
-Backfill works without ingestion changes: importing old content creates *new*
-claims (fresh `createdAt`) pointing at *old* day nodes, so the old day
+Backfill works without ingestion changes: importing old content creates _new_
+claims (fresh `createdAt`) pointing at _old_ day nodes, so the old day
 re-enters the work set, its summary changes, the week's input fingerprint
 changes, and the change cascades up. If the day's effective input is
 unchanged, every level fingerprint-skips at zero LLM cost.
@@ -170,7 +170,9 @@ constraints: `.nullish()` over `.optional()`, no `.transform()`):
 z.object({
   summary: z
     .string()
-    .describe("Narrative summary of the period; concrete, specific, past tense"),
+    .describe(
+      "Narrative summary of the period; concrete, specific, past tense",
+    ),
 });
 ```
 
@@ -220,19 +222,19 @@ levels; Helicone breaks down spend by task.
 
 ## New/changed files
 
-| File                                   | Change                                                     |
-| -------------------------------------- | ---------------------------------------------------------- |
-| `src/lib/rollup/period.ts`             | new — pure period math: keys, ancestors, ranges, completeness |
-| `src/lib/rollup/collect.ts`            | new — input collection, compaction, fingerprinting          |
-| `src/lib/jobs/rollup.ts`               | new — the sweep job                                         |
-| `src/lib/schemas/rollup.ts`            | new — request/response Zod schemas                          |
-| `src/routes/rollup.post.ts`            | new — HTTP trigger                                          |
-| `src/lib/temporal.ts`                  | generalize `ensureDayNode` → add `ensurePeriodNode`         |
-| `src/db/schema.ts`                     | add `rollup_state` table (+ drizzle migration)              |
-| `src/types/graph.ts`                   | add `"rollup"` to `SourceType`                              |
-| `src/utils/models.ts`, `src/utils/env.ts` | add `temporal_summary` task + env override               |
-| `src/lib/queues.ts`                    | register `"rollup"` job + options                           |
-| `src/sdk/memory-client.ts`             | add `rollup()` method                                       |
+| File                                      | Change                                                        |
+| ----------------------------------------- | ------------------------------------------------------------- |
+| `src/lib/rollup/period.ts`                | new — pure period math: keys, ancestors, ranges, completeness |
+| `src/lib/rollup/collect.ts`               | new — input collection, compaction, fingerprinting            |
+| `src/lib/jobs/rollup.ts`                  | new — the sweep job                                           |
+| `src/lib/schemas/rollup.ts`               | new — request/response Zod schemas                            |
+| `src/routes/rollup.post.ts`               | new — HTTP trigger                                            |
+| `src/lib/temporal.ts`                     | generalize `ensureDayNode` → add `ensurePeriodNode`           |
+| `src/db/schema.ts`                        | add `rollup_state` table (+ drizzle migration)                |
+| `src/types/graph.ts`                      | add `"rollup"` to `SourceType`                                |
+| `src/utils/models.ts`, `src/utils/env.ts` | add `temporal_summary` task + env override                    |
+| `src/lib/queues.ts`                       | register `"rollup"` job + options                             |
+| `src/sdk/memory-client.ts`                | add `rollup()` method                                         |
 
 ## Testing
 
