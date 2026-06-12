@@ -1,4 +1,5 @@
 import { generateEmbeddings } from "./embeddings";
+import { periodLevelOf, type PeriodLevel } from "./rollup/period";
 import { format } from "date-fns";
 import { and, eq } from "drizzle-orm";
 import { type NodePgDatabase } from "drizzle-orm/node-postgres";
@@ -10,26 +11,42 @@ import { shouldSkipEmbeddingPersistence } from "~/utils/test-overrides";
 
 type Database = NodePgDatabase<typeof schema>;
 
+const PERIOD_DESCRIPTION: Record<PeriodLevel, (key: string) => string> = {
+  day: (key) => `Represents the day ${key}`,
+  week: (key) => `Represents the week ${key}`,
+  month: (key) => `Represents the month ${key}`,
+  year: (key) => `Represents the year ${key}`,
+};
+
 /**
  * Ensures a Temporal node representing the given date exists for the user,
  * creating one if necessary.
- * Finds the node based on the metadata label (YYYY-MM-DD) for robustness.
  *
- * @param db The Drizzle database instance.
- * @param userId The ID of the user.
- * @param targetDate The date for which to ensure a node exists (defaults to today).
  * @returns The TypeId of the existing or newly created day node.
- * @throws Error if embedding generation fails or database insertion fails.
  */
 export async function ensureDayNode(
   db: Database,
   userId: string,
   targetDate: Date = new Date(),
 ): Promise<TypeId<"node">> {
-  const dateLabel = format(targetDate, "yyyy-MM-dd");
+  return ensurePeriodNode(db, userId, format(targetDate, "yyyy-MM-dd"));
+}
 
-  // --- Find existing day node by LABEL, not just timestamp ---
-  const [existingDayNode] = await db
+/**
+ * Ensures a Temporal node for any rollup period key (day `yyyy-MM-dd`,
+ * week `yyyy-Www`, month `yyyy-MM`, year `yyyy`) exists for the user.
+ * Lookup is by `nodeMetadata.label` — the period key IS the label.
+ *
+ * @throws Error on a malformed key, embedding failure, or insert failure.
+ */
+export async function ensurePeriodNode(
+  db: Database,
+  userId: string,
+  periodKey: string,
+): Promise<TypeId<"node">> {
+  const level = periodLevelOf(periodKey);
+
+  const [existingNode] = await db
     .select({ id: nodes.id })
     .from(nodes)
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
@@ -37,22 +54,21 @@ export async function ensureDayNode(
       and(
         eq(nodes.userId, userId),
         eq(nodes.nodeType, NodeTypeEnum.enum.Temporal),
-        eq(nodeMetadata.label, dateLabel),
+        eq(nodeMetadata.label, periodKey),
       ),
     )
     .limit(1);
-  // --- End Label-based check ---
 
-  if (existingDayNode) {
-    return existingDayNode.id;
+  if (existingNode) {
+    return existingNode.id;
   }
 
-  const nodeDescription = `Represents the day ${dateLabel}`;
+  const nodeDescription = PERIOD_DESCRIPTION[level](periodKey);
   const skipEmbedding = shouldSkipEmbeddingPersistence();
 
   const nodeEmbedding = skipEmbedding
     ? null
-    : await generateDayNodeEmbedding(dateLabel, nodeDescription);
+    : await generatePeriodNodeEmbedding(periodKey, nodeDescription);
 
   try {
     const [insertedNode] = await db
@@ -65,7 +81,7 @@ export async function ensureDayNode(
 
     if (!insertedNode) {
       throw new Error(
-        `Failed to retrieve ID after inserting day node: ${dateLabel}`,
+        `Failed to retrieve ID after inserting period node: ${periodKey}`,
       );
     }
 
@@ -74,7 +90,7 @@ export async function ensureDayNode(
     await db.transaction(async (tx) => {
       await tx.insert(nodeMetadata).values({
         nodeId: actualNodeId,
-        label: dateLabel,
+        label: periodKey,
         description: nodeDescription,
       });
       if (nodeEmbedding) {
@@ -88,16 +104,16 @@ export async function ensureDayNode(
 
     return actualNodeId;
   } catch (error) {
-    console.error(`Failed to create day node ${dateLabel}:`, error);
-    throw new Error(`Database operation failed for day node ${dateLabel}`);
+    console.error(`Failed to create period node ${periodKey}:`, error);
+    throw new Error(`Database operation failed for period node ${periodKey}`);
   }
 }
 
-async function generateDayNodeEmbedding(
-  dateLabel: string,
+async function generatePeriodNodeEmbedding(
+  periodKey: string,
   nodeDescription: string,
 ): Promise<number[]> {
-  const embeddingContent = `${dateLabel}: ${nodeDescription}`;
+  const embeddingContent = `${periodKey}: ${nodeDescription}`;
   const embeddingsResult = await generateEmbeddings({
     input: [embeddingContent],
     model: "jina-embeddings-v3",
@@ -107,7 +123,7 @@ async function generateDayNodeEmbedding(
   const embedding = embeddingsResult?.data?.[0]?.embedding;
   if (!embedding) {
     throw new Error(
-      `Failed to generate valid embedding for day node: ${dateLabel}`,
+      `Failed to generate valid embedding for period node: ${periodKey}`,
     );
   }
   return embedding;
