@@ -15,7 +15,7 @@ export const rollupRequestSchema = z.object({
     .optional(),
 });
 
-export type RollupRequest = z.infer<typeof rollupRequestSchema>;
+export type RollupRequest = z.input<typeof rollupRequestSchema>;
 
 export const rollupResponseSchema = z.object({
   message: z.string(),

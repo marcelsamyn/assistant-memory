@@ -1,5 +1,6 @@
 import {
   ancestorKeysForDay,
+  ancestorKeysOf,
   isPeriodComplete,
   monthKeyForDay,
   monthKeysForWeek,
@@ -115,6 +116,25 @@ describe("ancestorKeysForDay", () => {
       "2026",
       "2027",
     ]);
+  });
+});
+
+describe("ancestorKeysOf", () => {
+  it("returns transitive ancestors for any period level", () => {
+    expect(ancestorKeysOf("2026-06-08")).toEqual([
+      "2026-W24",
+      "2026-06",
+      "2026",
+    ]);
+    expect(ancestorKeysOf("2026-W24")).toEqual(["2026-06", "2026"]);
+    expect(ancestorKeysOf("2026-W53")).toEqual([
+      "2026-12",
+      "2027-01",
+      "2026",
+      "2027",
+    ]);
+    expect(ancestorKeysOf("2026-06")).toEqual(["2026"]);
+    expect(ancestorKeysOf("2026")).toEqual([]);
   });
 });
 

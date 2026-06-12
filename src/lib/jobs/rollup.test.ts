@@ -14,6 +14,7 @@ import {
   resetTestOverrides,
   setExtractionClientOverride,
   setSkipEmbeddingPersistence,
+  type StubCompletionClient,
 } from "~/utils/test-overrides";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -137,6 +138,42 @@ describeIfServer("runRollup", () => {
       [userId, label],
     );
     return rows.rows[0]?.description ?? null;
+  }
+
+  /** Like stubLlm, but throws AFTER recording any call whose prompt contains the marker. */
+  function poisonLlm(poisonMarker: string): {
+    client: StubCompletionClient;
+    calls: string[];
+  } {
+    const calls: string[] = [];
+    const client = {
+      chat: {
+        completions: {
+          parse: async (body: { messages: Array<{ content: string }> }) => {
+            const prompt = body.messages.map((m) => m.content).join("\n");
+            calls.push(prompt);
+            if (prompt.includes(poisonMarker)) {
+              throw new Error("poisoned completion");
+            }
+            return {
+              choices: [
+                {
+                  message: {
+                    parsed: { summary: `LLM summary #${calls.length}` },
+                  },
+                },
+              ],
+              usage: {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+              },
+            };
+          },
+        },
+      },
+    } as unknown as StubCompletionClient;
+    return { client, calls };
   }
 
   it("builds the full hierarchy bottom-up and defers the open year", async () => {
@@ -307,5 +344,65 @@ describeIfServer("runRollup", () => {
     expect(await summaryOf(userId, "2025-12-15")).toBeNull();
     expect(await summaryOf(userId, "2025-12")).toBeNull();
     expect(await pendingOf(userId)).toEqual(["2026"]);
+  });
+
+  it("re-summarizes ancestors after a failed period recovers", async () => {
+    const userId = "u_poison";
+    await seedUser(userId);
+    // W06 2026 = Feb 2–8; both days in the same week/month.
+    await seedContent(userId, "2026-02-02", "Solid");
+    await seedContent(userId, "2026-02-03", "Poison");
+
+    // Sweep 1: the poison day's LLM call throws after being made. The rest
+    // of the sweep continues: week + month summarize WITHOUT the poison day.
+    const { client: flaky, calls: flakyCalls } = poisonLlm("Poison");
+    setExtractionClientOverride(flaky);
+    const first = await runRollup({
+      db,
+      userId,
+      maxLlmCalls: 50,
+      todayKey: TODAY,
+    });
+    expect(first).toMatchObject({ summarized: 3, failed: 1 });
+    expect(flakyCalls).toHaveLength(4); // 2 days + week + month
+    expect(await pendingOf(userId)).toContain("2026-02-03");
+
+    // Sweep 2 (healthy): the recovered day re-stales its week and month.
+    const { client: healthy, calls: healthyCalls } = stubLlm();
+    setExtractionClientOverride(healthy);
+    const second = await runRollup({
+      db,
+      userId,
+      maxLlmCalls: 50,
+      todayKey: TODAY,
+    });
+    expect(second).toMatchObject({ summarized: 3, failed: 0 });
+    expect(healthyCalls).toHaveLength(3); // day + week + month re-run
+    expect(await summaryOf(userId, "2026-02-03")).toMatch(/^LLM summary/);
+    expect(await pendingOf(userId)).toEqual(["2026"]);
+  });
+
+  it("counts failed LLM calls against the budget", async () => {
+    const userId = "u_cap";
+    await seedUser(userId);
+    // W10 2026 = Mar 2–8; the poison day sorts first.
+    await seedContent(userId, "2026-03-02", "Poison");
+    await seedContent(userId, "2026-03-03", "Solid");
+
+    const { client: flaky, calls } = poisonLlm("Poison");
+    setExtractionClientOverride(flaky);
+    const result = await runRollup({
+      db,
+      userId,
+      maxLlmCalls: 1,
+      todayKey: TODAY,
+    });
+
+    // The poison day's call failed but still consumed the only budget slot.
+    expect(calls).toHaveLength(1);
+    expect(result).toMatchObject({ summarized: 0, failed: 1 });
+    const pending = await pendingOf(userId);
+    expect(pending).toContain("2026-03-02");
+    expect(pending).toContain("2026-03-03");
   });
 });
