@@ -1,0 +1,1 @@
+CREATE INDEX "claims_occurred_on_discovery_idx" ON "claims" USING btree ("user_id","created_at") WHERE "claims"."predicate" = 'OCCURRED_ON' AND "claims"."status" = 'active';

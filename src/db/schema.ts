@@ -217,6 +217,14 @@ export const claims = pgTable(
       .where(
         sql`${table.predicate} = 'DUE_ON' AND ${table.status} = 'active' AND ${table.scope} = 'personal' AND ${table.objectInstant} IS NOT NULL`,
       ),
+    // Rollup discovery sweep (src/lib/jobs/rollup.ts): active OCCURRED_ON
+    // claims past the per-user watermark, without heap-filtering a heavy
+    // user's full claim history on a first sweep.
+    index("claims_occurred_on_discovery_idx")
+      .on(table.userId, table.createdAt)
+      .where(
+        sql`${table.predicate} = 'OCCURRED_ON' AND ${table.status} = 'active'`,
+      ),
     index("claims_source_id_idx").on(table.sourceId),
     check(
       "claims_object_shape_xor_ck",

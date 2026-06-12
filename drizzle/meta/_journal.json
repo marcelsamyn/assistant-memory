@@ -155,6 +155,13 @@
       "when": 1781255958048,
       "tag": "0021_colorful_miss_america",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1781264303934,
+      "tag": "0022_last_patch",
+      "breakpoints": true
     }
   ]
 }
