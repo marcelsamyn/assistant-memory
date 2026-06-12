@@ -11,6 +11,7 @@
 **Reference spec:** `~/code/assistant-memory/docs/superpowers/specs/2026-06-10-screenpipe-memory-distiller-design.md`
 
 **Ground-truth facts (verified 2026-06-10):**
+
 - Screenpipe `/search` requires `Authorization: Bearer <token>`; token via `screenpipe auth token`. Response envelope: `{ "data": [ { "type": "OCR"|"Audio"|"Input", "content": {...} } ], "pagination": {...} }`. Valid `content_type` values: `ocr | audio | input | accessibility | all`.
 - OCR `content`: `app_name, window_name, browser_url, text, timestamp, focused, frame_id, …`. Audio `content`: `transcription, text, speaker_label, timestamp, …`. Input `content`: `app_name, window_title, browser_url, text_content, event_type, timestamp, …`.
 - Petals proxy: `POST https://petals.chat/api/memory/ingest/document`, header `x-api-key: petals-…`, body `{ document: { id, content, contentType, scope, title, timestamp } }` (no `userId` — Petals injects it). Response `{ message, jobId }`. Idempotent on `document.id`.
@@ -23,6 +24,7 @@
 ### Task 1: Initialize the repo
 
 **Files:**
+
 - Create: `~/code/screenpipe-distiller/package.json`
 - Create: `~/code/screenpipe-distiller/tsconfig.json`
 - Create: `~/code/screenpipe-distiller/.gitignore`
@@ -123,6 +125,7 @@ activity document and ingests it into Assistant Memory via the hosted Petals
 proxy. See the design spec in `assistant-memory/docs/superpowers/specs/`.
 
 ## Usage
+
 - `bun run distill [--date YYYY-MM-DD]` — distill a day (default: yesterday).
 - `bun run health-check` — check Screenpipe recording health; notify if down.
 
@@ -150,6 +153,7 @@ git commit -m "🔧 chore: scaffold screenpipe-distiller (bun + ts)"
 ### Task 2: Re-own `screenpipe record` via launchd
 
 **Files:**
+
 - Create: `~/code/screenpipe-distiller/launchd/com.marcel.screenpipe.record.plist`
 - Create: `~/code/screenpipe-distiller/scripts/install-record-autostart.sh`
 
@@ -246,6 +250,7 @@ git commit -m "✨ feat: re-own screenpipe record autostart via launchd"
 ### Task 3: `config.ts` — validated env at the boundary
 
 **Files:**
+
 - Create: `~/code/screenpipe-distiller/src/config.ts`
 - Test: `~/code/screenpipe-distiller/src/config.test.ts`
 
@@ -254,8 +259,8 @@ git commit -m "✨ feat: re-own screenpipe record autostart via launchd"
 `src/config.test.ts`:
 
 ```ts
-import { describe, expect, test } from "bun:test";
 import { loadConfig } from "./config";
+import { describe, expect, test } from "bun:test";
 
 const base = {
   SCREENPIPE_API_KEY: "sp-key",
@@ -273,7 +278,9 @@ describe("loadConfig", () => {
   });
 
   test("throws when a required secret is missing", () => {
-    expect(() => loadConfig({ SCREENPIPE_API_KEY: "x", PETALS_API_KEY: "y" })).toThrow();
+    expect(() =>
+      loadConfig({ SCREENPIPE_API_KEY: "x", PETALS_API_KEY: "y" }),
+    ).toThrow();
   });
 });
 ```
@@ -304,7 +311,9 @@ const configSchema = z.object({
 
 export type Config = z.infer<typeof configSchema>;
 
-export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
+export function loadConfig(
+  env: Record<string, string | undefined> = process.env,
+): Config {
   return configSchema.parse(env);
 }
 ```
@@ -325,6 +334,7 @@ git commit -m "✨ feat: config loader with zod-validated env"
 ### Task 4: `date-utils.ts` — day keys + UTC day windows
 
 **Files:**
+
 - Create: `~/code/screenpipe-distiller/src/date-utils.ts`
 - Test: `~/code/screenpipe-distiller/src/date-utils.test.ts`
 
@@ -333,17 +343,21 @@ git commit -m "✨ feat: config loader with zod-validated env"
 `src/date-utils.test.ts`:
 
 ```ts
-import { describe, expect, test } from "bun:test";
 import { dayKeyFor, yesterdayKey, dayWindowUtc } from "./date-utils";
+import { describe, expect, test } from "bun:test";
 
 describe("date-utils", () => {
   test("dayKeyFor formats local day in tz", () => {
     // 2026-06-09T23:30:00Z is 2026-06-10 01:30 in Brussels (+02:00)
-    expect(dayKeyFor(new Date("2026-06-09T23:30:00Z"), "Europe/Brussels")).toBe("2026-06-10");
+    expect(dayKeyFor(new Date("2026-06-09T23:30:00Z"), "Europe/Brussels")).toBe(
+      "2026-06-10",
+    );
   });
 
   test("yesterdayKey is the local day before now", () => {
-    expect(yesterdayKey(new Date("2026-06-10T08:00:00Z"), "Europe/Brussels")).toBe("2026-06-09");
+    expect(
+      yesterdayKey(new Date("2026-06-10T08:00:00Z"), "Europe/Brussels"),
+    ).toBe("2026-06-09");
   });
 
   test("dayWindowUtc returns local-midnight bounds in UTC", () => {
@@ -422,7 +436,10 @@ function nextDayKey(dayKey: DayKey): DayKey {
   return next.toISOString().slice(0, 10);
 }
 
-export function dayWindowUtc(dayKey: DayKey, timeZone: string): { startIso: string; endIso: string } {
+export function dayWindowUtc(
+  dayKey: DayKey,
+  timeZone: string,
+): { startIso: string; endIso: string } {
   return {
     startIso: localMidnightUtcIso(dayKey, timeZone),
     endIso: localMidnightUtcIso(nextDayKey(dayKey), timeZone),
@@ -446,6 +463,7 @@ git commit -m "✨ feat: tz-aware day keys and utc day windows"
 ### Task 5: `types.ts` — shared digest/doc types
 
 **Files:**
+
 - Create: `~/code/screenpipe-distiller/src/types.ts`
 
 - [ ] **Step 1: Write `src/types.ts`** (no test — pure type declarations)
@@ -497,6 +515,7 @@ git commit -m "✨ feat: shared digest and document types"
 ### Task 6: `screenpipe.ts` — REST client (search + pagination)
 
 **Files:**
+
 - Create: `~/code/screenpipe-distiller/src/screenpipe.ts`
 - Test: `~/code/screenpipe-distiller/src/screenpipe.client.test.ts`
 
@@ -505,31 +524,57 @@ git commit -m "✨ feat: shared digest and document types"
 `src/screenpipe.client.test.ts`:
 
 ```ts
-import { describe, expect, test } from "bun:test";
 import { ScreenpipeClient, ScreenpipeError } from "./screenpipe";
+import { describe, expect, test } from "bun:test";
 
 function fakeFetch(pages: unknown[][]): typeof fetch {
   let i = 0;
   return (async () => {
     const data = pages[i++] ?? [];
-    return new Response(JSON.stringify({ data, pagination: { total: 0 } }), { status: 200 });
+    return new Response(JSON.stringify({ data, pagination: { total: 0 } }), {
+      status: 200,
+    });
   }) as unknown as typeof fetch;
 }
 
 describe("ScreenpipeClient", () => {
   test("parses items and stops when a page is short", async () => {
-    const item = { type: "OCR", content: { text: "hello", app_name: "Chrome", timestamp: "2026-06-09T10:00:00Z" } };
-    const client = new ScreenpipeClient("http://localhost:3030", "tok", fakeFetch([[item]]));
-    const items = await client.searchAll({ contentType: "ocr", startIso: "a", endIso: "b" });
+    const item = {
+      type: "OCR",
+      content: {
+        text: "hello",
+        app_name: "Chrome",
+        timestamp: "2026-06-09T10:00:00Z",
+      },
+    };
+    const client = new ScreenpipeClient(
+      "http://localhost:3030",
+      "tok",
+      fakeFetch([[item]]),
+    );
+    const items = await client.searchAll({
+      contentType: "ocr",
+      startIso: "a",
+      endIso: "b",
+    });
     expect(items.length).toBe(1);
     expect(items[0]?.type).toBe("OCR");
     expect(items[0]?.content.app_name).toBe("Chrome");
   });
 
   test("throws ScreenpipeError on non-200", async () => {
-    const f = (async () => new Response("nope", { status: 401 })) as unknown as typeof fetch;
+    const f = (async () =>
+      new Response("nope", { status: 401 })) as unknown as typeof fetch;
     const client = new ScreenpipeClient("http://localhost:3030", "tok", f);
-    await expect(client.search({ contentType: "ocr", startIso: "a", endIso: "b", limit: 10, offset: 0 })).rejects.toBeInstanceOf(ScreenpipeError);
+    await expect(
+      client.search({
+        contentType: "ocr",
+        startIso: "a",
+        endIso: "b",
+        limit: 10,
+        offset: 0,
+      }),
+    ).rejects.toBeInstanceOf(ScreenpipeError);
   });
 });
 ```
@@ -546,9 +591,9 @@ Expected: FAIL — cannot find module `./screenpipe`.
  * Screenpipe local REST client + day condenser.
  * Aliases: screenpipe search, activity digest, /search client.
  */
-import { z } from "zod";
-import type { DayDigest } from "./types";
 import { dayWindowUtc } from "./date-utils";
+import type { DayDigest } from "./types";
+import { z } from "zod";
 
 export class ScreenpipeError extends Error {}
 
@@ -600,16 +645,23 @@ export class ScreenpipeClient {
     url.searchParams.set("end_time", params.endIso);
     url.searchParams.set("limit", String(params.limit));
     url.searchParams.set("offset", String(params.offset));
-    if (params.minLength != null) url.searchParams.set("min_length", String(params.minLength));
+    if (params.minLength != null)
+      url.searchParams.set("min_length", String(params.minLength));
 
-    const res = await this.fetchImpl(url, { headers: { Authorization: `Bearer ${this.apiKey}` } });
+    const res = await this.fetchImpl(url, {
+      headers: { Authorization: `Bearer ${this.apiKey}` },
+    });
     if (!res.ok) {
-      throw new ScreenpipeError(`screenpipe /search ${params.contentType} failed: ${res.status} ${await res.text()}`);
+      throw new ScreenpipeError(
+        `screenpipe /search ${params.contentType} failed: ${res.status} ${await res.text()}`,
+      );
     }
     return searchResponseSchema.parse(await res.json()).data;
   }
 
-  async searchAll(params: Omit<SearchParams, "limit" | "offset">): Promise<SearchItem[]> {
+  async searchAll(
+    params: Omit<SearchParams, "limit" | "offset">,
+  ): Promise<SearchItem[]> {
     const limit = 500;
     const out: SearchItem[] = [];
     for (let offset = 0; offset <= 20_000; offset += limit) {
@@ -638,6 +690,7 @@ git commit -m "✨ feat: screenpipe search client with pagination"
 ### Task 7: condenser — `condenseItems()` (the deterministic heart)
 
 **Files:**
+
 - Modify: `~/code/screenpipe-distiller/src/screenpipe.ts` (append)
 - Test: `~/code/screenpipe-distiller/src/screenpipe.condense.test.ts`
 
@@ -646,28 +699,67 @@ git commit -m "✨ feat: screenpipe search client with pagination"
 `src/screenpipe.condense.test.ts`:
 
 ```ts
-import { describe, expect, test } from "bun:test";
 import { condenseItems, type SearchItem } from "./screenpipe";
+import { describe, expect, test } from "bun:test";
 
-const ocr = (app: string, text: string, ts: string, url?: string, window?: string): SearchItem => ({
+const ocr = (
+  app: string,
+  text: string,
+  ts: string,
+  url?: string,
+  window?: string,
+): SearchItem => ({
   type: "OCR",
-  content: { app_name: app, text, timestamp: ts, browser_url: url, window_name: window },
+  content: {
+    app_name: app,
+    text,
+    timestamp: ts,
+    browser_url: url,
+    window_name: window,
+  },
 });
 
 describe("condenseItems", () => {
   test("groups by app, dedupes windows/urls/text, counts frames", () => {
     const items: SearchItem[] = [
-      ocr("Chrome", "GitHub - foo/bar", "2026-06-09T09:00:00Z", "https://github.com/foo/bar", "foo/bar"),
-      ocr("Chrome", "GitHub - foo/bar", "2026-06-09T09:01:00Z", "https://github.com/foo/bar", "foo/bar"),
-      ocr("Chrome", "Pull requests", "2026-06-09T09:05:00Z", "https://github.com/foo/bar/pulls", "foo/bar"),
-      ocr("Ghostty", "$ bun test", "2026-06-09T10:00:00Z", undefined, "marcel — zsh"),
+      ocr(
+        "Chrome",
+        "GitHub - foo/bar",
+        "2026-06-09T09:00:00Z",
+        "https://github.com/foo/bar",
+        "foo/bar",
+      ),
+      ocr(
+        "Chrome",
+        "GitHub - foo/bar",
+        "2026-06-09T09:01:00Z",
+        "https://github.com/foo/bar",
+        "foo/bar",
+      ),
+      ocr(
+        "Chrome",
+        "Pull requests",
+        "2026-06-09T09:05:00Z",
+        "https://github.com/foo/bar/pulls",
+        "foo/bar",
+      ),
+      ocr(
+        "Ghostty",
+        "$ bun test",
+        "2026-06-09T10:00:00Z",
+        undefined,
+        "marcel — zsh",
+      ),
     ];
     const digest = condenseItems(items, "2026-06-09");
     expect(digest.isEmpty).toBe(false);
     expect(digest.totalFrames).toBe(4);
     const chrome = digest.apps.find((a) => a.app === "Chrome");
     expect(chrome?.frames).toBe(3);
-    expect(chrome?.urls).toEqual(["https://github.com/foo/bar", "https://github.com/foo/bar/pulls"]);
+    expect(chrome?.urls).toEqual([
+      "https://github.com/foo/bar",
+      "https://github.com/foo/bar/pulls",
+    ]);
     expect(chrome?.windows).toEqual(["foo/bar"]);
     expect(chrome?.sampleText).toContain("GitHub - foo/bar");
     expect(chrome?.firstSeen).toBe("2026-06-09T09:00:00Z");
@@ -678,12 +770,30 @@ describe("condenseItems", () => {
 
   test("maps audio to snippets and ignores empty transcriptions", () => {
     const items: SearchItem[] = [
-      { type: "Audio", content: { transcription: "let's ship it", speaker_label: "Marcel", timestamp: "2026-06-09T11:00:00Z" } },
-      { type: "Audio", content: { transcription: "", speaker_label: "Marcel", timestamp: "2026-06-09T11:01:00Z" } },
+      {
+        type: "Audio",
+        content: {
+          transcription: "let's ship it",
+          speaker_label: "Marcel",
+          timestamp: "2026-06-09T11:00:00Z",
+        },
+      },
+      {
+        type: "Audio",
+        content: {
+          transcription: "",
+          speaker_label: "Marcel",
+          timestamp: "2026-06-09T11:01:00Z",
+        },
+      },
     ];
     const digest = condenseItems(items, "2026-06-09");
     expect(digest.audio.length).toBe(1);
-    expect(digest.audio[0]).toEqual({ speaker: "Marcel", text: "let's ship it", timestamp: "2026-06-09T11:00:00Z" });
+    expect(digest.audio[0]).toEqual({
+      speaker: "Marcel",
+      text: "let's ship it",
+      timestamp: "2026-06-09T11:00:00Z",
+    });
   });
 
   test("empty input yields isEmpty digest", () => {
@@ -727,7 +837,12 @@ export function condenseItems(items: SearchItem[], dayKey: string): DayDigest {
     const c = item.content;
     if (item.type === "Audio") {
       const text = (c.transcription ?? c.text ?? "").trim();
-      if (text) audio.push({ speaker: c.speaker_label ?? null, text, timestamp: c.timestamp });
+      if (text)
+        audio.push({
+          speaker: c.speaker_label ?? null,
+          text,
+          timestamp: c.timestamp,
+        });
       continue;
     }
     const app = (c.app_name ?? "Unknown").trim() || "Unknown";
@@ -740,11 +855,16 @@ export function condenseItems(items: SearchItem[], dayKey: string): DayDigest {
     const text = c.text ?? c.text_content;
     if (text && text.trim()) {
       const snippet = truncate(text, MAX_TEXT_LEN);
-      if (snippet && acc.sampleText.length < MAX_SAMPLE_TEXT_PER_APP && !acc.sampleText.includes(snippet)) {
+      if (
+        snippet &&
+        acc.sampleText.length < MAX_SAMPLE_TEXT_PER_APP &&
+        !acc.sampleText.includes(snippet)
+      ) {
         acc.sampleText.push(snippet);
       }
     }
-    if (!acc.firstSeen || c.timestamp < acc.firstSeen) acc.firstSeen = c.timestamp;
+    if (!acc.firstSeen || c.timestamp < acc.firstSeen)
+      acc.firstSeen = c.timestamp;
     if (!acc.lastSeen || c.timestamp > acc.lastSeen) acc.lastSeen = c.timestamp;
   }
 
@@ -761,7 +881,13 @@ export function condenseItems(items: SearchItem[], dayKey: string): DayDigest {
     .sort((x, y) => y.frames - x.frames)
     .slice(0, MAX_APPS);
 
-  return { dayKey, apps, audio, totalFrames, isEmpty: apps.length === 0 && audio.length === 0 };
+  return {
+    dayKey,
+    apps,
+    audio,
+    totalFrames,
+    isEmpty: apps.length === 0 && audio.length === 0,
+  };
 }
 
 interface AppActivityAcc {
@@ -774,7 +900,14 @@ interface AppActivityAcc {
 }
 
 function newAcc(): AppActivityAcc {
-  return { windows: [], urls: [], sampleText: [], firstSeen: null, lastSeen: null, frames: 0 };
+  return {
+    windows: [],
+    urls: [],
+    sampleText: [],
+    firstSeen: null,
+    lastSeen: null,
+    frames: 0,
+  };
 }
 ```
 
@@ -800,6 +933,7 @@ git commit -m "✨ feat: deterministic day condenser"
 ### Task 8: `fetchDayActivity()` — wire client + condenser
 
 **Files:**
+
 - Modify: `~/code/screenpipe-distiller/src/screenpipe.ts` (append)
 - Test: `~/code/screenpipe-distiller/src/screenpipe.fetch.test.ts`
 
@@ -808,8 +942,8 @@ git commit -m "✨ feat: deterministic day condenser"
 `src/screenpipe.fetch.test.ts`:
 
 ```ts
-import { describe, expect, test } from "bun:test";
 import { fetchDayActivity, ScreenpipeClient } from "./screenpipe";
+import { describe, expect, test } from "bun:test";
 
 describe("fetchDayActivity", () => {
   test("queries the three content types over the day window and condenses", async () => {
@@ -819,13 +953,28 @@ describe("fetchDayActivity", () => {
       seen.push(ct);
       const data =
         ct === "ocr"
-          ? [{ type: "OCR", content: { app_name: "Chrome", text: "hi", timestamp: "2026-06-09T10:00:00Z" } }]
+          ? [
+              {
+                type: "OCR",
+                content: {
+                  app_name: "Chrome",
+                  text: "hi",
+                  timestamp: "2026-06-09T10:00:00Z",
+                },
+              },
+            ]
           : [];
-      return new Response(JSON.stringify({ data, pagination: {} }), { status: 200 });
+      return new Response(JSON.stringify({ data, pagination: {} }), {
+        status: 200,
+      });
     }) as unknown as typeof fetch;
 
     const client = new ScreenpipeClient("http://localhost:3030", "tok", f);
-    const digest = await fetchDayActivity(client, "2026-06-09", "Europe/Brussels");
+    const digest = await fetchDayActivity(
+      client,
+      "2026-06-09",
+      "Europe/Brussels",
+    );
     expect(seen.sort()).toEqual(["audio", "input", "ocr"]);
     expect(digest.apps[0]?.app).toBe("Chrome");
   });
@@ -875,6 +1024,7 @@ git commit -m "✨ feat: fetchDayActivity orchestration"
 ### Task 9: `curation-prompt.ts` — the contract + user-prompt renderer
 
 **Files:**
+
 - Create: `~/code/screenpipe-distiller/src/curation-prompt.ts`
 - Test: `~/code/screenpipe-distiller/src/curation-prompt.test.ts`
 
@@ -883,14 +1033,30 @@ git commit -m "✨ feat: fetchDayActivity orchestration"
 `src/curation-prompt.test.ts`:
 
 ```ts
-import { describe, expect, test } from "bun:test";
 import { CURATION_SYSTEM_PROMPT, buildUserPrompt } from "./curation-prompt";
 import type { DayDigest } from "./types";
+import { describe, expect, test } from "bun:test";
 
 const digest: DayDigest = {
   dayKey: "2026-06-09",
-  apps: [{ app: "Ghostty", windows: ["zsh"], urls: [], sampleText: ["$ bun test"], firstSeen: "2026-06-09T10:00:00Z", lastSeen: "2026-06-09T11:00:00Z", frames: 12 }],
-  audio: [{ speaker: "Marcel", text: "let's ship it", timestamp: "2026-06-09T11:00:00Z" }],
+  apps: [
+    {
+      app: "Ghostty",
+      windows: ["zsh"],
+      urls: [],
+      sampleText: ["$ bun test"],
+      firstSeen: "2026-06-09T10:00:00Z",
+      lastSeen: "2026-06-09T11:00:00Z",
+      frames: 12,
+    },
+  ],
+  audio: [
+    {
+      speaker: "Marcel",
+      text: "let's ship it",
+      timestamp: "2026-06-09T11:00:00Z",
+    },
+  ],
   totalFrames: 12,
   isEmpty: false,
 };
@@ -948,16 +1114,25 @@ Output ONLY the Markdown document, using exactly these section headers (omit a s
 ## Notes`;
 
 export function buildUserPrompt(digest: DayDigest): string {
-  const lines: string[] = [`Date: ${digest.dayKey}`, `Total screen frames: ${digest.totalFrames}`, "", "## Apps"];
+  const lines: string[] = [
+    `Date: ${digest.dayKey}`,
+    `Total screen frames: ${digest.totalFrames}`,
+    "",
+    "## Apps",
+  ];
   for (const a of digest.apps) {
-    lines.push(`### ${a.app} (${a.frames} frames, ${a.firstSeen.slice(11, 16)}–${a.lastSeen.slice(11, 16)} UTC)`);
-    if (a.windows.length) lines.push(`- windows: ${a.windows.slice(0, 6).join(" | ")}`);
+    lines.push(
+      `### ${a.app} (${a.frames} frames, ${a.firstSeen.slice(11, 16)}–${a.lastSeen.slice(11, 16)} UTC)`,
+    );
+    if (a.windows.length)
+      lines.push(`- windows: ${a.windows.slice(0, 6).join(" | ")}`);
     if (a.urls.length) lines.push(`- urls: ${a.urls.slice(0, 10).join(" , ")}`);
     for (const t of a.sampleText) lines.push(`- text: ${t}`);
   }
   if (digest.audio.length) {
     lines.push("", "## Audio");
-    for (const s of digest.audio) lines.push(`- ${s.speaker ?? "?"}: ${s.text}`);
+    for (const s of digest.audio)
+      lines.push(`- ${s.speaker ?? "?"}: ${s.text}`);
   }
   return lines.join("\n");
 }
@@ -979,6 +1154,7 @@ git commit -m "✨ feat: curation contract prompt + digest renderer"
 ### Task 10: `curate.ts` — OpenRouter call (LLM mocked in tests)
 
 **Files:**
+
 - Create: `~/code/screenpipe-distiller/src/curate.ts`
 - Test: `~/code/screenpipe-distiller/src/curate.test.ts`
 
@@ -987,16 +1163,29 @@ git commit -m "✨ feat: curation contract prompt + digest renderer"
 `src/curate.test.ts`:
 
 ```ts
-import { describe, expect, test } from "bun:test";
-import { curateDigest, type ChatClient } from "./curate";
 import type { Config } from "./config";
+import { curateDigest, type ChatClient } from "./curate";
 import type { DayDigest } from "./types";
+import { describe, expect, test } from "bun:test";
 
-const config = { CURATION_MODEL: "test/model", OPENROUTER_API_KEY: "k" } as Config;
+const config = {
+  CURATION_MODEL: "test/model",
+  OPENROUTER_API_KEY: "k",
+} as Config;
 
 const nonEmpty: DayDigest = {
   dayKey: "2026-06-09",
-  apps: [{ app: "Ghostty", windows: [], urls: [], sampleText: ["x"], firstSeen: "2026-06-09T10:00:00Z", lastSeen: "2026-06-09T11:00:00Z", frames: 3 }],
+  apps: [
+    {
+      app: "Ghostty",
+      windows: [],
+      urls: [],
+      sampleText: ["x"],
+      firstSeen: "2026-06-09T10:00:00Z",
+      lastSeen: "2026-06-09T11:00:00Z",
+      frames: 3,
+    },
+  ],
   audio: [],
   totalFrames: 3,
   isEmpty: false,
@@ -1005,8 +1194,19 @@ const nonEmpty: DayDigest = {
 describe("curateDigest", () => {
   test("short-circuits an empty day without calling the LLM", async () => {
     let called = false;
-    const client: ChatClient = { create: async () => { called = true; return { content: "x" }; } };
-    const empty: DayDigest = { dayKey: "2026-06-09", apps: [], audio: [], totalFrames: 0, isEmpty: true };
+    const client: ChatClient = {
+      create: async () => {
+        called = true;
+        return { content: "x" };
+      },
+    };
+    const empty: DayDigest = {
+      dayKey: "2026-06-09",
+      apps: [],
+      audio: [],
+      totalFrames: 0,
+      isEmpty: true,
+    };
     const doc = await curateDigest(empty, config, client);
     expect(called).toBe(false);
     expect(doc.isEmptyDay).toBe(true);
@@ -1017,8 +1217,15 @@ describe("curateDigest", () => {
     let captured: { model: string; system: string; user: string } | null = null;
     const client: ChatClient = {
       create: async ({ model, messages }) => {
-        captured = { model, system: messages[0]!.content, user: messages[1]!.content };
-        return { content: "# Computer activity — 2026-06-09\n\n## What I worked on\n- stuff" };
+        captured = {
+          model,
+          system: messages[0]!.content,
+          user: messages[1]!.content,
+        };
+        return {
+          content:
+            "# Computer activity — 2026-06-09\n\n## What I worked on\n- stuff",
+        };
       },
     };
     const doc = await curateDigest(nonEmpty, config, client);
@@ -1043,10 +1250,10 @@ Expected: FAIL — cannot find module `./curate`.
  * Curates a day digest into a Markdown activity document via OpenRouter.
  * The OpenAI client is injectable so tests mock only the external AI.
  */
-import OpenAI from "openai";
 import type { Config } from "./config";
-import type { CuratedDoc, DayDigest } from "./types";
 import { CURATION_SYSTEM_PROMPT, buildUserPrompt } from "./curation-prompt";
+import type { CuratedDoc, DayDigest } from "./types";
+import OpenAI from "openai";
 
 export class CurationError extends Error {}
 
@@ -1057,14 +1264,24 @@ export interface ChatMessage {
 
 /** Minimal seam over the OpenAI chat API so tests can inject a fake. */
 export interface ChatClient {
-  create(args: { model: string; messages: ChatMessage[] }): Promise<{ content: string | null }>;
+  create(args: {
+    model: string;
+    messages: ChatMessage[];
+  }): Promise<{ content: string | null }>;
 }
 
 function openRouterClient(config: Config): ChatClient {
-  const openai = new OpenAI({ baseURL: "https://openrouter.ai/api/v1", apiKey: config.OPENROUTER_API_KEY });
+  const openai = new OpenAI({
+    baseURL: "https://openrouter.ai/api/v1",
+    apiKey: config.OPENROUTER_API_KEY,
+  });
   return {
     create: async ({ model, messages }) => {
-      const completion = await openai.chat.completions.create({ model, messages, temperature: 0.2 });
+      const completion = await openai.chat.completions.create({
+        model,
+        messages,
+        temperature: 0.2,
+      });
       return { content: completion.choices[0]?.message?.content ?? null };
     },
   };
@@ -1074,8 +1291,13 @@ function emptyDayMarkdown(dayKey: string): string {
   return `# Computer activity — ${dayKey}\n\n## Notes\nMinimal or no recorded computer activity for this day.`;
 }
 
-export async function curateDigest(digest: DayDigest, config: Config, client?: ChatClient): Promise<CuratedDoc> {
-  if (digest.isEmpty) return { markdown: emptyDayMarkdown(digest.dayKey), isEmptyDay: true };
+export async function curateDigest(
+  digest: DayDigest,
+  config: Config,
+  client?: ChatClient,
+): Promise<CuratedDoc> {
+  if (digest.isEmpty)
+    return { markdown: emptyDayMarkdown(digest.dayKey), isEmptyDay: true };
   const chat = client ?? openRouterClient(config);
   const { content } = await chat.create({
     model: config.CURATION_MODEL,
@@ -1110,6 +1332,7 @@ git commit -m "✨ feat: curate day digest via openrouter (injectable client)"
 ### Task 11: `upload.ts` — Petals document ingest with retry
 
 **Files:**
+
 - Create: `~/code/screenpipe-distiller/src/upload.ts`
 - Test: `~/code/screenpipe-distiller/src/upload.test.ts`
 
@@ -1118,12 +1341,20 @@ git commit -m "✨ feat: curate day digest via openrouter (injectable client)"
 `src/upload.test.ts`:
 
 ```ts
-import { describe, expect, test } from "bun:test";
-import { buildDocumentBody, uploadDocument, UploadError } from "./upload";
 import type { Config } from "./config";
+import { buildDocumentBody, uploadDocument, UploadError } from "./upload";
+import { describe, expect, test } from "bun:test";
 
-const config = { PETALS_BASE_URL: "https://petals.chat", PETALS_API_KEY: "petals-k" } as Config;
-const doc = { id: "screenpipe-activity-2026-06-09", content: "# x", title: "Computer activity — 2026-06-09", timestampIso: "2026-06-09T12:00:00Z" };
+const config = {
+  PETALS_BASE_URL: "https://petals.chat",
+  PETALS_API_KEY: "petals-k",
+} as Config;
+const doc = {
+  id: "screenpipe-activity-2026-06-09",
+  content: "# x",
+  title: "Computer activity — 2026-06-09",
+  timestampIso: "2026-06-09T12:00:00Z",
+};
 
 describe("upload", () => {
   test("buildDocumentBody produces a personal-scope markdown document", () => {
@@ -1138,17 +1369,27 @@ describe("upload", () => {
     let headerSeen = "";
     const f = (async (_url: string, init: RequestInit) => {
       headerSeen = new Headers(init.headers).get("x-api-key") ?? "";
-      return new Response(JSON.stringify({ message: "ok", jobId: "job_1" }), { status: 200 });
+      return new Response(JSON.stringify({ message: "ok", jobId: "job_1" }), {
+        status: 200,
+      });
     }) as unknown as typeof fetch;
-    const res = await uploadDocument(doc, config, { fetchImpl: f, sleep: async () => {} });
+    const res = await uploadDocument(doc, config, {
+      fetchImpl: f,
+      sleep: async () => {},
+    });
     expect(res.jobId).toBe("job_1");
     expect(headerSeen).toBe("petals-k");
   });
 
   test("throws UploadError on 4xx without retrying", async () => {
     let calls = 0;
-    const f = (async () => { calls++; return new Response("bad", { status: 400 }); }) as unknown as typeof fetch;
-    await expect(uploadDocument(doc, config, { fetchImpl: f, sleep: async () => {} })).rejects.toBeInstanceOf(UploadError);
+    const f = (async () => {
+      calls++;
+      return new Response("bad", { status: 400 });
+    }) as unknown as typeof fetch;
+    await expect(
+      uploadDocument(doc, config, { fetchImpl: f, sleep: async () => {} }),
+    ).rejects.toBeInstanceOf(UploadError);
     expect(calls).toBe(1);
   });
 
@@ -1156,9 +1397,16 @@ describe("upload", () => {
     let calls = 0;
     const f = (async () => {
       calls++;
-      return calls < 2 ? new Response("err", { status: 503 }) : new Response(JSON.stringify({ message: "ok", jobId: "job_2" }), { status: 200 });
+      return calls < 2
+        ? new Response("err", { status: 503 })
+        : new Response(JSON.stringify({ message: "ok", jobId: "job_2" }), {
+            status: 200,
+          });
     }) as unknown as typeof fetch;
-    const res = await uploadDocument(doc, config, { fetchImpl: f, sleep: async () => {} });
+    const res = await uploadDocument(doc, config, {
+      fetchImpl: f,
+      sleep: async () => {},
+    });
     expect(res.jobId).toBe("job_2");
     expect(calls).toBe(2);
   });
@@ -1177,8 +1425,8 @@ Expected: FAIL — cannot find module `./upload`.
  * Uploads a curated activity document to Assistant Memory via the hosted
  * Petals proxy. Idempotent on document.id; retries network/5xx with backoff.
  */
-import { z } from "zod";
 import type { Config } from "./config";
+import { z } from "zod";
 
 export class UploadError extends Error {}
 
@@ -1189,7 +1437,9 @@ export interface DocPayload {
   timestampIso: string;
 }
 
-const uploadResponseSchema = z.object({ message: z.string(), jobId: z.string() }).passthrough();
+const uploadResponseSchema = z
+  .object({ message: z.string(), jobId: z.string() })
+  .passthrough();
 
 export function buildDocumentBody(p: DocPayload) {
   return {
@@ -1209,13 +1459,20 @@ interface UploadDeps {
   sleep?: (ms: number) => Promise<void>;
 }
 
-export async function uploadDocument(p: DocPayload, config: Config, deps: UploadDeps = {}): Promise<{ jobId: string }> {
+export async function uploadDocument(
+  p: DocPayload,
+  config: Config,
+  deps: UploadDeps = {},
+): Promise<{ jobId: string }> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const url = `${config.PETALS_BASE_URL}/api/memory/ingest/document`;
   const init: RequestInit = {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": config.PETALS_API_KEY },
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": config.PETALS_API_KEY,
+    },
     body: JSON.stringify(buildDocumentBody(p)),
   };
 
@@ -1229,7 +1486,8 @@ export async function uploadDocument(p: DocPayload, config: Config, deps: Upload
       lastErr = e; // network error → retry
     }
     if (res) {
-      if (res.ok) return { jobId: uploadResponseSchema.parse(await res.json()).jobId };
+      if (res.ok)
+        return { jobId: uploadResponseSchema.parse(await res.json()).jobId };
       const text = await res.text();
       if (res.status >= 400 && res.status < 500) {
         throw new UploadError(`Petals rejected upload ${res.status}: ${text}`);
@@ -1238,7 +1496,9 @@ export async function uploadDocument(p: DocPayload, config: Config, deps: Upload
     }
     if (attempt < maxAttempts) await sleep(250 * 2 ** attempt);
   }
-  throw lastErr instanceof Error ? lastErr : new UploadError("upload failed after retries");
+  throw lastErr instanceof Error
+    ? lastErr
+    : new UploadError("upload failed after retries");
 }
 ```
 
@@ -1262,6 +1522,7 @@ git commit -m "✨ feat: petals document upload with retry/backoff"
 ### Task 12: `distill.ts` — `runDistill()` wiring
 
 **Files:**
+
 - Create: `~/code/screenpipe-distiller/src/distill.ts`
 - Test: `~/code/screenpipe-distiller/src/distill.test.ts`
 
@@ -1270,21 +1531,40 @@ git commit -m "✨ feat: petals document upload with retry/backoff"
 `src/distill.test.ts`:
 
 ```ts
-import { describe, expect, test } from "bun:test";
-import { runDistill, type DistillDeps } from "./distill";
 import type { Config } from "./config";
+import { runDistill, type DistillDeps } from "./distill";
 import type { DayDigest } from "./types";
+import { describe, expect, test } from "bun:test";
 
 const config = { USER_TIMEZONE: "Europe/Brussels" } as Config;
 
 describe("runDistill", () => {
   test("fetch → curate → upload, returning the jobId", async () => {
-    const digest: DayDigest = { dayKey: "2026-06-09", apps: [{ app: "Ghostty", windows: [], urls: [], sampleText: [], firstSeen: "", lastSeen: "", frames: 1 }], audio: [], totalFrames: 1, isEmpty: false };
+    const digest: DayDigest = {
+      dayKey: "2026-06-09",
+      apps: [
+        {
+          app: "Ghostty",
+          windows: [],
+          urls: [],
+          sampleText: [],
+          firstSeen: "",
+          lastSeen: "",
+          frames: 1,
+        },
+      ],
+      audio: [],
+      totalFrames: 1,
+      isEmpty: false,
+    };
     let uploadedId = "";
     const deps: DistillDeps = {
       fetchDay: async () => digest,
       curate: async () => ({ markdown: "# doc", isEmptyDay: false }),
-      upload: async (p) => { uploadedId = p.id; return { jobId: "job_9" }; },
+      upload: async (p) => {
+        uploadedId = p.id;
+        return { jobId: "job_9" };
+      },
     };
     const res = await runDistill("2026-06-09", config, deps);
     expect(res.jobId).toBe("job_9");
@@ -1306,9 +1586,9 @@ Expected: FAIL — cannot find module `./distill`.
  * Seams are injectable for testing; defaults wire the real implementations.
  */
 import type { Config } from "./config";
-import type { CuratedDoc, DayDigest } from "./types";
-import { ScreenpipeClient, fetchDayActivity } from "./screenpipe";
 import { curateDigest } from "./curate";
+import { ScreenpipeClient, fetchDayActivity } from "./screenpipe";
+import type { CuratedDoc, DayDigest } from "./types";
 import { uploadDocument, type DocPayload } from "./upload";
 
 export interface DistillDeps {
@@ -1318,9 +1598,13 @@ export interface DistillDeps {
 }
 
 function defaultDeps(config: Config): DistillDeps {
-  const client = new ScreenpipeClient(config.SCREENPIPE_API_URL, config.SCREENPIPE_API_KEY);
+  const client = new ScreenpipeClient(
+    config.SCREENPIPE_API_URL,
+    config.SCREENPIPE_API_KEY,
+  );
   return {
-    fetchDay: (dayKey) => fetchDayActivity(client, dayKey, config.USER_TIMEZONE),
+    fetchDay: (dayKey) =>
+      fetchDayActivity(client, dayKey, config.USER_TIMEZONE),
     curate: (digest) => curateDigest(digest, config),
     upload: (p) => uploadDocument(p, config),
   };
@@ -1359,6 +1643,7 @@ git commit -m "✨ feat: runDistill orchestrator"
 ### Task 13: `main.ts` — CLI entry
 
 **Files:**
+
 - Create: `~/code/screenpipe-distiller/src/main.ts`
 
 - [ ] **Step 1: Write `src/main.ts`** (thin entry; logic is tested in distill.test.ts)
@@ -1366,14 +1651,15 @@ git commit -m "✨ feat: runDistill orchestrator"
 ```ts
 /** CLI: `bun run distill [--date YYYY-MM-DD]` (default: yesterday). */
 import { loadConfig } from "./config";
-import { runDistill } from "./distill";
 import { yesterdayKey } from "./date-utils";
+import { runDistill } from "./distill";
 
 function parseDateArg(argv: string[], timeZone: string): string {
   const idx = argv.indexOf("--date");
   if (idx !== -1) {
     const value = argv[idx + 1];
-    if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error("--date must be YYYY-MM-DD");
+    if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value))
+      throw new Error("--date must be YYYY-MM-DD");
     return value;
   }
   return yesterdayKey(new Date(), timeZone);
@@ -1384,7 +1670,9 @@ async function main(): Promise<void> {
   const dayKey = parseDateArg(process.argv.slice(2), config.USER_TIMEZONE);
   console.log(`[distill] day=${dayKey} tz=${config.USER_TIMEZONE}`);
   const { jobId, isEmptyDay } = await runDistill(dayKey, config);
-  console.log(`[distill] uploaded day=${dayKey} jobId=${jobId} emptyDay=${isEmptyDay}`);
+  console.log(
+    `[distill] uploaded day=${dayKey} jobId=${jobId} emptyDay=${isEmptyDay}`,
+  );
 }
 
 main().catch((err) => {
@@ -1418,6 +1706,7 @@ git commit -m "✨ feat: distill CLI entry"
 ### Task 14: `health.ts` — recording-health nudge
 
 **Files:**
+
 - Create: `~/code/screenpipe-distiller/src/health.ts`
 - Test: `~/code/screenpipe-distiller/src/health.test.ts`
 
@@ -1426,8 +1715,8 @@ git commit -m "✨ feat: distill CLI entry"
 `src/health.test.ts`:
 
 ```ts
-import { describe, expect, test } from "bun:test";
 import { evaluateHealth } from "./health";
+import { describe, expect, test } from "bun:test";
 
 describe("evaluateHealth", () => {
   test("flags audio stall and frame staleness", () => {
@@ -1444,7 +1733,11 @@ describe("evaluateHealth", () => {
 
   test("healthy when recording fresh and audio fine", () => {
     const now = new Date("2026-06-10T12:00:00Z");
-    const r = evaluateHealth({ status: "healthy", audio_db_write_stalled: false }, "2026-06-10T11:58:00Z", now);
+    const r = evaluateHealth(
+      { status: "healthy", audio_db_write_stalled: false },
+      "2026-06-10T11:58:00Z",
+      now,
+    );
     expect(r.ok).toBe(true);
     expect(r.problems).toEqual([]);
   });
@@ -1463,14 +1756,17 @@ Expected: FAIL — cannot find module `./health`.
  * Checks Screenpipe recording health and notifies (macOS) when it is down,
  * stale, or audio transcription has stalled. Read-only; no memory writes.
  */
-import { z } from "zod";
 import { loadConfig, type Config } from "./config";
 import { ScreenpipeClient } from "./screenpipe";
+import { z } from "zod";
 
 const STALE_FRAMES_MINUTES = 30;
 
 const healthSchema = z
-  .object({ status: z.string().nullish(), audio_db_write_stalled: z.boolean().nullish() })
+  .object({
+    status: z.string().nullish(),
+    audio_db_write_stalled: z.boolean().nullish(),
+  })
   .passthrough();
 
 export interface HealthResult {
@@ -1484,20 +1780,33 @@ export function evaluateHealth(
   now: Date,
 ): HealthResult {
   const problems: string[] = [];
-  if (health.status && health.status !== "healthy") problems.push(`recording status: ${health.status}`);
-  if (health.audio_db_write_stalled) problems.push("audio transcription stalled");
+  if (health.status && health.status !== "healthy")
+    problems.push(`recording status: ${health.status}`);
+  if (health.audio_db_write_stalled)
+    problems.push("audio transcription stalled");
   if (!newestFrameIso) {
     problems.push("no recent frames found");
   } else {
-    const ageMin = (now.getTime() - new Date(newestFrameIso).getTime()) / 60_000;
-    if (ageMin > STALE_FRAMES_MINUTES) problems.push(`screen capture stale (${Math.round(ageMin)}m old)`);
+    const ageMin =
+      (now.getTime() - new Date(newestFrameIso).getTime()) / 60_000;
+    if (ageMin > STALE_FRAMES_MINUTES)
+      problems.push(`screen capture stale (${Math.round(ageMin)}m old)`);
   }
   return { ok: problems.length === 0, problems };
 }
 
-async function newestFrameIso(client: ScreenpipeClient, now: Date): Promise<string | null> {
+async function newestFrameIso(
+  client: ScreenpipeClient,
+  now: Date,
+): Promise<string | null> {
   const since = new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString();
-  const items = await client.search({ contentType: "ocr", startIso: since, endIso: now.toISOString(), limit: 1, offset: 0 });
+  const items = await client.search({
+    contentType: "ocr",
+    startIso: since,
+    endIso: now.toISOString(),
+    limit: 1,
+    offset: 0,
+  });
   return items[0]?.content.timestamp ?? null;
 }
 
@@ -1511,7 +1820,10 @@ async function main(): Promise<void> {
   const now = new Date();
   const res = await fetch(`${config.SCREENPIPE_API_URL}/health`);
   const health = healthSchema.parse(await res.json());
-  const client = new ScreenpipeClient(config.SCREENPIPE_API_URL, config.SCREENPIPE_API_KEY);
+  const client = new ScreenpipeClient(
+    config.SCREENPIPE_API_URL,
+    config.SCREENPIPE_API_KEY,
+  );
   const newest = await newestFrameIso(client, now).catch(() => null);
   const result = evaluateHealth(health, newest, now);
   if (!result.ok) {
@@ -1550,6 +1862,7 @@ git commit -m "✨ feat: screenpipe recording health-check + macos notify"
 ### Task 15: launchd plists, install script, and a real distill run
 
 **Files:**
+
 - Create: `~/code/screenpipe-distiller/launchd/com.marcel.screenpipe-distiller.daily.plist`
 - Create: `~/code/screenpipe-distiller/launchd/com.marcel.screenpipe-distiller.health.plist`
 - Create: `~/code/screenpipe-distiller/scripts/install-schedules.sh`
@@ -1591,7 +1904,7 @@ git commit -m "✨ feat: screenpipe recording health-check + macos notify"
 </plist>
 ```
 
-Note: Bun auto-loads `.env` from `WorkingDirectory`, so secrets stay in the gitignored `.env`, not the plist. Targeting *yesterday* + idempotent `document.id` makes the exact fire time irrelevant; launchd also runs a missed 08:00 job once on the next wake/boot.
+Note: Bun auto-loads `.env` from `WorkingDirectory`, so secrets stay in the gitignored `.env`, not the plist. Targeting _yesterday_ + idempotent `document.id` makes the exact fire time irrelevant; launchd also runs a missed 08:00 job once on the next wake/boot.
 
 - [ ] **Step 2: Write the health-check plist** (twice daily: 12:00 and 20:00)
 
@@ -1661,6 +1974,7 @@ cp -n .env.example .env
 # Then run a recent, data-rich day (2026-06-05 had ~2700 frames):
 bun run distill --date 2026-06-05
 ```
+
 Expected: logs `[distill] uploaded day=2026-06-05 jobId=… emptyDay=false`. If the day is empty, try `2026-06-05`/`2026-06-06`.
 
 - [ ] **Step 5: Verify the document landed in memory and reads cleanly**
