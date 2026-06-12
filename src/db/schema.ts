@@ -517,6 +517,33 @@ export const scratchpadsRelations = relations(scratchpads, ({ one }) => ({
   }),
 }));
 
+/**
+ * Per-user temporal-rollup sweep state (see
+ * docs/superpowers/specs/2026-06-12-temporal-rollup-design.md).
+ *
+ * `watermark`: max `claims.createdAt` whose OCCURRED_ON claims have been
+ * incorporated into the work set. Always advances; deferred work is
+ * carried by `pendingPeriods`, never by holding the watermark back.
+ * `pendingPeriods`: period keys (day/week/month/year) awaiting
+ * summarization — incomplete periods, over-budget leftovers, failures.
+ */
+export const rollupState = pgTable("rollup_state", {
+  userId: text()
+    .primaryKey()
+    .notNull()
+    .references(() => users.id),
+  watermark: timestamp({ withTimezone: true }),
+  pendingPeriods: jsonb().$type<string[]>().notNull().default([]),
+  updatedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+});
+
+export const rollupStateRelations = relations(rollupState, ({ one }) => ({
+  user: one(users, {
+    fields: [rollupState.userId],
+    references: [users.id],
+  }),
+}));
+
 // --- Metrics ---
 
 export const metricDefinitions = pgTable(

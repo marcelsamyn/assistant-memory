@@ -180,7 +180,8 @@ export type SourceType =
   | "meeting_transcript"
   | "external_conversation"
   | "metric_push"
-  | "metric_manual";
+  | "metric_manual"
+  | "rollup";
 
 export type SourceStatus =
   | "pending"
