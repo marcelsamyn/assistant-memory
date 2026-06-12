@@ -10,6 +10,7 @@ import { IngestTranscriptJobInputSchema } from "./jobs/ingest-transcript";
 import { ProfileSynthesisJobInputSchema } from "./jobs/profile-synthesis";
 import { summarizeUserConversations } from "./jobs/summarize-conversation";
 import { DeepResearchJobInputSchema } from "./schemas/deep-research";
+import { rollupRequestSchema } from "./schemas/rollup";
 import { FlowProducer, Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
 import { z } from "zod";
@@ -42,6 +43,21 @@ export const batchQueue = new Queue("batchProcessing", {
 export const SUMMARIZE_JOB_OPTIONS = {
   attempts: 3,
   backoff: { type: "exponential", delay: 1_000 },
+} as const;
+
+/**
+ * Retry profile for the temporal-rollup sweep. The sweep is idempotent
+ * (watermark + per-period fingerprints), so a BullMQ retry after a partial
+ * failure only re-pays for periods that were never written. `removeOnFail`
+ * keeps a short failure history without blocking the deterministic
+ * `rollup:<userId>` jobId from being re-enqueued later (the route removes
+ * finished/failed jobs before re-adding).
+ */
+export const ROLLUP_JOB_OPTIONS = {
+  attempts: 3,
+  backoff: { type: "exponential", delay: 1_000 },
+  removeOnComplete: true,
+  removeOnFail: 100,
 } as const;
 
 /**
@@ -100,6 +116,21 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         });
         console.log(
           `Summarized ${summaryResult.summarizedCount} conversations for user ${userId}.`,
+        );
+      } else if (job.name === "rollup") {
+        const { userId, maxLlmCalls, startDate } = rollupRequestSchema.parse(
+          job.data,
+        );
+        console.log(`Starting rollup job for user ${userId}`);
+        const { runRollup } = await import("./jobs/rollup");
+        const result = await runRollup({
+          db,
+          userId,
+          maxLlmCalls,
+          ...(startDate !== undefined ? { startDate } : {}),
+        });
+        console.log(
+          `Rollup for user ${userId}: ${result.summarized} summarized, ${result.skippedUnchanged} unchanged, ${result.skippedEmpty} empty, ${result.failed} failed, ${result.deferred} deferred.`,
         );
       } else if (job.name === "dream") {
         const { userId, assistantId, assistantDescription } =
