@@ -9,11 +9,7 @@
  * Aliases for search: rollup input collection, compaction, period
  * fingerprint, day entries.
  */
-import {
-  monthKeysOfYear,
-  weekDayKeys,
-  weeksOverlappingMonth,
-} from "./period";
+import { monthKeysOfYear, weekDayKeys, weeksOverlappingMonth } from "./period";
 import { and, eq, inArray } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import type { DrizzleDB } from "~/db";
@@ -193,7 +189,9 @@ export async function fetchTemporalNodesByLabels(
  * A child period's summary counts only when the rollup marker is present —
  * `description` alone may be the "Represents the …" boilerplate.
  */
-function summarizedDescriptionOf(row: TemporalNodeRow | undefined): string | null {
+function summarizedDescriptionOf(
+  row: TemporalNodeRow | undefined,
+): string | null {
   if (!row) return null;
   return readRollupMeta(row.additionalData) ? row.description : null;
 }
@@ -204,28 +202,30 @@ export async function fetchDayEntries(
   userId: string,
   dayNodeId: TypeId<"node">,
 ): Promise<DayEntry[]> {
-  return db
-    .select({
-      nodeType: nodes.nodeType,
-      label: nodeMetadata.label,
-      description: nodeMetadata.description,
-      createdAt: nodes.createdAt,
-    })
-    .from(claims)
-    .innerJoin(nodes, eq(nodes.id, claims.subjectNodeId))
-    .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-    .where(
-      and(
-        eq(claims.userId, userId),
-        eq(claims.objectNodeId, dayNodeId),
-        eq(claims.predicate, "OCCURRED_ON"),
-        eq(claims.status, "active"),
-      ),
-    )
-    // Stable order even for same-millisecond rows: createdAt ties would
-    // otherwise flip with heap order and churn the input fingerprint,
-    // causing spurious paid LLM re-summarizations.
-    .orderBy(nodes.createdAt, nodes.id);
+  return (
+    db
+      .select({
+        nodeType: nodes.nodeType,
+        label: nodeMetadata.label,
+        description: nodeMetadata.description,
+        createdAt: nodes.createdAt,
+      })
+      .from(claims)
+      .innerJoin(nodes, eq(nodes.id, claims.subjectNodeId))
+      .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
+      .where(
+        and(
+          eq(claims.userId, userId),
+          eq(claims.objectNodeId, dayNodeId),
+          eq(claims.predicate, "OCCURRED_ON"),
+          eq(claims.status, "active"),
+        ),
+      )
+      // Stable order even for same-millisecond rows: createdAt ties would
+      // otherwise flip with heap order and churn the input fingerprint,
+      // causing spurious paid LLM re-summarizations.
+      .orderBy(nodes.createdAt, nodes.id)
+  );
 }
 
 export interface CollectedInput {

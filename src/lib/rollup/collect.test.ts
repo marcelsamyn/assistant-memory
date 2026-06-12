@@ -49,7 +49,12 @@ describe("buildDayInputText", () => {
     expect(buildDayInputText("2026-06-08", [])).toBeNull();
     expect(
       buildDayInputText("2026-06-08", [
-        { nodeType: "Event", label: null, description: null, createdAt: new Date(0) },
+        {
+          nodeType: "Event",
+          label: null,
+          description: null,
+          createdAt: new Date(0),
+        },
       ]),
     ).toBeNull();
   });

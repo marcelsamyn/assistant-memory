@@ -82,7 +82,10 @@ export async function runRollup({
   let watermark = state?.watermark ?? null;
   const touchedDayKeys = new Set<string>();
   for (const row of touched) {
-    if (row.maxClaimCreatedAt && (!watermark || row.maxClaimCreatedAt > watermark)) {
+    if (
+      row.maxClaimCreatedAt &&
+      (!watermark || row.maxClaimCreatedAt > watermark)
+    ) {
       watermark = row.maxClaimCreatedAt;
     }
     if (row.dayLabel && isDayKey(row.dayLabel)) {

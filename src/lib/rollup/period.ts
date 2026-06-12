@@ -120,9 +120,7 @@ export function weeksOverlappingMonth(monthKey: string): WeekInMonth[] {
   let weekKey = weekKeyForDay(firstDayKey);
   for (;;) {
     const days = weekDayKeys(weekKey);
-    const dayKeysInMonth = days.filter(
-      (d) => monthKeyForDay(d) === monthKey,
-    );
+    const dayKeysInMonth = days.filter((d) => monthKeyForDay(d) === monthKey);
     result.push({ weekKey, dayKeysInMonth });
     const sunday = days[6]!;
     if (sunday >= lastDayKey) break;
@@ -172,7 +170,8 @@ const LEVEL_ORDER: Record<PeriodLevel, number> = {
 /** Bottom-up (day→week→month→year), oldest-first within each level. */
 export function sortForProcessing(keys: string[]): string[] {
   return [...keys].sort((a, b) => {
-    const levelDiff = LEVEL_ORDER[periodLevelOf(a)] - LEVEL_ORDER[periodLevelOf(b)];
+    const levelDiff =
+      LEVEL_ORDER[periodLevelOf(a)] - LEVEL_ORDER[periodLevelOf(b)];
     if (levelDiff !== 0) return levelDiff;
     return a < b ? -1 : a > b ? 1 : 0;
   });
