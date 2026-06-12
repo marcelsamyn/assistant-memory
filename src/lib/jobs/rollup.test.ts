@@ -4,10 +4,7 @@ import { Client } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { DrizzleDB } from "~/db";
 import * as schema from "~/db/schema";
-import {
-  ROLLUP_TEST_TABLES_SQL,
-  stubLlm,
-} from "~/lib/rollup/summarize-period.test";
+import { ROLLUP_TEST_TABLES_SQL, stubLlm } from "~/lib/rollup/test-helpers";
 import { ensurePeriodNode } from "~/lib/temporal";
 import { newTypeId } from "~/types/typeid";
 import {
