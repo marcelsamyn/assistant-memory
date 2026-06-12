@@ -116,9 +116,7 @@ export function stubLlm(): {
   const client = {
     chat: {
       completions: {
-        parse: async (body: {
-          messages: Array<{ content: string }>;
-        }) => {
+        parse: async (body: { messages: Array<{ content: string }> }) => {
           const prompt = body.messages.map((m) => m.content).join("\n");
           calls.push(prompt);
           return {
@@ -239,7 +237,9 @@ describeIfServer("summarizePeriod", () => {
       [dayNodeId],
     );
     expect(meta.rows[0].description).toBe("LLM summary #1");
-    expect(meta.rows[0].additional_data.rollup.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(meta.rows[0].additional_data.rollup.fingerprint).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
 
     // Unchanged input → no second LLM call.
     expect(await summarizePeriod(params)).toBe("skipped-unchanged");

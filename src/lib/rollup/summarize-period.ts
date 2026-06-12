@@ -6,11 +6,7 @@
  * `nodeMetadata.description` (+ `additionalData.rollup` marker) and the
  * refreshed embedding.
  */
-import {
-  collectPeriodInput,
-  fingerprintOf,
-  readRollupMeta,
-} from "./collect";
+import { collectPeriodInput, fingerprintOf, readRollupMeta } from "./collect";
 import { periodLevelOf, type PeriodLevel } from "./period";
 import { and, eq, inArray } from "drizzle-orm";
 import type OpenAI from "openai";
@@ -159,9 +155,7 @@ export async function summarizePeriod({
       })
       .where(eq(nodeMetadata.nodeId, nodeId));
     if (embedding) {
-      await tx
-        .delete(nodeEmbeddings)
-        .where(eq(nodeEmbeddings.nodeId, nodeId));
+      await tx.delete(nodeEmbeddings).where(eq(nodeEmbeddings.nodeId, nodeId));
       await tx.insert(nodeEmbeddings).values({
         nodeId,
         embedding,

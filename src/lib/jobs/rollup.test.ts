@@ -4,11 +4,11 @@ import { Client } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { DrizzleDB } from "~/db";
 import * as schema from "~/db/schema";
-import { ensurePeriodNode } from "~/lib/temporal";
 import {
   ROLLUP_TEST_TABLES_SQL,
   stubLlm,
 } from "~/lib/rollup/summarize-period.test";
+import { ensurePeriodNode } from "~/lib/temporal";
 import { newTypeId } from "~/types/typeid";
 import {
   resetTestOverrides,
@@ -126,7 +126,10 @@ describeIfServer("runRollup", () => {
     return rows.rows[0]?.pending_periods ?? [];
   }
 
-  async function summaryOf(userId: string, label: string): Promise<string | null> {
+  async function summaryOf(
+    userId: string,
+    label: string,
+  ): Promise<string | null> {
     const rows = await client.query(
       `SELECT m."description" FROM "node_metadata" m
        JOIN "nodes" n ON n."id" = m."node_id"
