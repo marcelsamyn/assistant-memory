@@ -141,6 +141,29 @@ export function ancestorKeysForDay(dayKey: string): string[] {
   return [weekKey, ...monthKeys, ...yearKeys];
 }
 
+/**
+ * Ancestors of any period key, transitively up the hierarchy: a day's
+ * week/months/years, a week's months and their years, a month's year.
+ * Lets the sweep re-stale ancestors whenever a period (re-)runs, so
+ * recovered failures and deferred work cascade upward exactly like
+ * fresh claims.
+ */
+export function ancestorKeysOf(key: string): string[] {
+  switch (periodLevelOf(key)) {
+    case "day":
+      return ancestorKeysForDay(key);
+    case "week": {
+      const monthKeys = monthKeysForWeek(key);
+      const yearKeys = [...new Set(monthKeys.map(yearKeyForMonth))];
+      return [...monthKeys, ...yearKeys];
+    }
+    case "month":
+      return [yearKeyForMonth(key)];
+    case "year":
+      return [];
+  }
+}
+
 export function periodEndDayKey(key: string): string {
   const level = periodLevelOf(key);
   switch (level) {

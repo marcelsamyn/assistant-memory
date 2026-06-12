@@ -8,7 +8,7 @@
  * budget. Never scheduled internally — triggered via POST /rollup.
  */
 import {
-  ancestorKeysForDay,
+  ancestorKeysOf,
   dayKeyOf,
   isDayKey,
   isPeriodComplete,
@@ -66,6 +66,11 @@ export async function runRollup({
   if (state?.watermark) {
     conditions.push(gt(claims.createdAt, state.watermark));
   }
+  // Known limitation: createdAt is assigned at INSERT but only becomes
+  // visible at COMMIT. A claim whose transaction commits after this query
+  // with a createdAt at or below the new watermark is missed until a later
+  // claim touches the same day. Acceptable: sweeps are caller-triggered
+  // and ingestion typically completes before the caller triggers one.
   // Aggregated per day label: a heavy day (hundreds of claims) must not
   // materialize one row per claim on a first, watermark-less sweep.
   const touched = await db
@@ -93,11 +98,16 @@ export async function runRollup({
     }
   }
 
-  // 2. Expand to ancestors; union the carried-over pending set.
+  // 2. Union touched days with the carried-over pending set, then expand
+  //    ancestors for EVERY key — including pending ones — so a period that
+  //    recovers from a failure or deferral re-stales its week/month/year.
+  //    Over-inclusion is free: unchanged ancestors fingerprint-skip.
   const workSet = new Set<string>(state?.pendingPeriods ?? []);
   for (const dayKey of touchedDayKeys) {
     workSet.add(dayKey);
-    for (const ancestor of ancestorKeysForDay(dayKey)) {
+  }
+  for (const key of [...workSet]) {
+    for (const ancestor of ancestorKeysOf(key)) {
       workSet.add(ancestor);
     }
   }
@@ -135,6 +145,10 @@ export async function runRollup({
       pending.add(periodKey);
       continue;
     }
+    // Pessimistic charge: the paid LLM call happens mid-summarizePeriod,
+    // and a failure after that call must still count against the cap.
+    // Skip outcomes never reach the LLM, so they refund the charge.
+    budget -= 1;
     try {
       const outcome = await summarizePeriod({
         db,
@@ -144,11 +158,12 @@ export async function runRollup({
         rollupSourceId,
       });
       if (outcome === "summarized") {
-        budget -= 1;
         result.summarized += 1;
       } else if (outcome === "skipped-unchanged") {
+        budget += 1;
         result.skippedUnchanged += 1;
       } else {
+        budget += 1;
         result.skippedEmpty += 1;
       }
     } catch (error) {
