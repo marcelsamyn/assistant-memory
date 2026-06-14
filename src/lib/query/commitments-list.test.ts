@@ -188,6 +188,16 @@ describeIfServer("listCommitments query", () => {
           "external_id" text NOT NULL,
           "scope" varchar(16) DEFAULT 'personal' NOT NULL,
           "status" varchar(20) DEFAULT 'completed',
+          "metadata" jsonb,
+          "last_ingested_at" timestamp with time zone,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL
+        );
+        CREATE TABLE "commitment_presentations" (
+          "task_id" text PRIMARY KEY NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
+          "excerpt" text,
+          "why" text,
           "created_at" timestamp with time zone DEFAULT now() NOT NULL
         );
         CREATE TABLE "claims" (
@@ -719,6 +729,16 @@ describeIfServer("listCommitments query", () => {
       "external_id" text NOT NULL,
       "scope" varchar(16) DEFAULT 'personal' NOT NULL,
       "status" varchar(20) DEFAULT 'completed',
+      "metadata" jsonb,
+      "last_ingested_at" timestamp with time zone,
+      "created_at" timestamp with time zone DEFAULT now() NOT NULL
+    );
+    CREATE TABLE "commitment_presentations" (
+      "task_id" text PRIMARY KEY NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+      "user_id" text NOT NULL REFERENCES "users"("id"),
+      "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
+      "excerpt" text,
+      "why" text,
       "created_at" timestamp with time zone DEFAULT now() NOT NULL
     );
     CREATE TABLE "claims" (

@@ -2,6 +2,21 @@ import { TaskStatusEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
 import { z } from "zod";
 
+export const presentationSourceSchema = z.object({
+  sourceId: typeIdSchema("source"),
+  title: z.string().nullable(),
+  overheardAt: z.coerce.date().nullable(),
+});
+
+export const commitmentPresentationSchema = z.object({
+  source: presentationSourceSchema.nullable(),
+  excerpt: z.string().nullable(),
+  why: z.string().nullable(),
+});
+export type CommitmentPresentation = z.infer<
+  typeof commitmentPresentationSchema
+>;
+
 /** Sort key for `listCommitments`. */
 export const commitmentSortEnum = z.enum([
   "statusChangedAt",
@@ -83,6 +98,8 @@ export const commitmentListItemSchema = z.object({
   statusChangedAt: z.coerce.date(),
   createdAt: z.coerce.date(),
   sourceId: typeIdSchema("source"),
+  /** Inline evidence for the inbox card. Null when no source resolves. */
+  presentation: commitmentPresentationSchema.nullable(),
 });
 
 export const listCommitmentsResponseSchema = z.object({
