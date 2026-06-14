@@ -2,6 +2,10 @@ import { parseStructuredCompletion } from "./ai";
 import { createAlias, normalizeAliasText } from "./alias";
 import { applyClaimLifecycle, fetchClaimsByIds } from "./claims/lifecycle";
 import { coerceTaskStatus } from "./claims/task-status";
+import {
+  generateCommitmentPresentation,
+  upsertCommitmentPresentation,
+} from "./commitment-presentation";
 import { debugGraph } from "./debug-utils";
 import {
   generateAndInsertNodeEmbeddings,
@@ -534,6 +538,35 @@ ${content}
     generateAndInsertClaimEmbeddings(db, claimsToEmbed),
     generateAndInsertNodeEmbeddings(db, detailsOfNewlyCreatedNodes),
   ]);
+
+  // Honest presentation evidence for each freshly-inferred commitment, using
+  // the source text we still hold in memory. Best-effort: never let it break
+  // ingestion (the pass is itself fail-soft; we also guard the upsert).
+  const newTaskNodes = detailsOfNewlyCreatedNodes.filter(
+    (node) => node.nodeType === "Task",
+  );
+  for (const task of newTaskNodes) {
+    try {
+      const { excerpt, why } = await generateCommitmentPresentation({
+        userId,
+        content,
+        taskLabel: task.label,
+      });
+      if (excerpt !== null || why !== null) {
+        await upsertCommitmentPresentation(db, {
+          taskId: task.id,
+          userId,
+          sourceId,
+          excerpt,
+          why,
+        });
+      }
+    } catch (error) {
+      console.warn(
+        `commitment presentation upsert failed for ${task.id}: ${String(error)}`,
+      );
+    }
+  }
 
   // Enqueue profile synthesis for each subject whose active claim set may have
   // changed: any subject of an inserted claim, or of a claim removed by the
