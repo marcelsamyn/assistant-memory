@@ -23,6 +23,7 @@ const envSchema = z.object({
   MODEL_ID_DREAM: z.string().min(1).optional(),
   MODEL_ID_DEEP_RESEARCH: z.string().min(1).optional(),
   MODEL_ID_TEMPORAL_SUMMARY: z.string().min(1).optional(),
+  MODEL_ID_COMMITMENT_PRESENTATION: z.string().min(1).optional(),
 
   // Hard ceiling on output tokens per completion. Bounds a runaway
   // generation (providers can emit up to 128k); set well above the observed

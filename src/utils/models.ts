@@ -18,7 +18,8 @@ export type ModelTask =
   | "profile_synthesis"
   | "dream"
   | "deep_research"
-  | "temporal_summary";
+  | "temporal_summary"
+  | "commitment_presentation";
 
 /**
  * Per-task overrides. An undefined entry (the default for every task) means
@@ -35,6 +36,7 @@ const TASK_MODEL_OVERRIDES: Record<ModelTask, string | undefined> = {
   dream: env.MODEL_ID_DREAM,
   deep_research: env.MODEL_ID_DEEP_RESEARCH,
   temporal_summary: env.MODEL_ID_TEMPORAL_SUMMARY,
+  commitment_presentation: env.MODEL_ID_COMMITMENT_PRESENTATION,
 };
 
 /**
