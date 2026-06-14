@@ -552,6 +552,33 @@ export const rollupStateRelations = relations(rollupState, ({ one }) => ({
   }),
 }));
 
+/**
+ * Per-commitment presentation evidence (1:1 with a Task node): a verbatim
+ * `excerpt` and a generated `why`, produced when the Task is first inferred.
+ * Provenance (source title + timestamp) is NOT stored here — it is joined from
+ * `sources` via the commitment's active status-claim `sourceId` at read time.
+ * Decoupled from claims so it never rides a superseded status claim.
+ */
+export const commitmentPresentations = pgTable(
+  "commitment_presentations",
+  {
+    taskId: typeIdNoDefault("node")
+      .references(() => nodes.id, { onDelete: "cascade" })
+      .primaryKey()
+      .notNull(),
+    userId: text()
+      .references(() => users.id)
+      .notNull(),
+    sourceId: typeIdNoDefault("source")
+      .references(() => sources.id, { onDelete: "cascade" })
+      .notNull(),
+    excerpt: text(),
+    why: text(),
+    createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("commitment_presentations_user_id_idx").on(table.userId)],
+);
+
 // --- Metrics ---
 
 export const metricDefinitions = pgTable(

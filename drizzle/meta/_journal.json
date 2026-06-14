@@ -162,6 +162,13 @@
       "when": 1781264303934,
       "tag": "0022_last_patch",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1781443080497,
+      "tag": "0023_cynical_tigra",
+      "breakpoints": true
     }
   ]
 }
