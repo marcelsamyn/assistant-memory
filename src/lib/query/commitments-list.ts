@@ -20,15 +20,23 @@ import {
   sql,
   type SQL,
 } from "drizzle-orm";
-import { claims, nodeMetadata, nodes } from "~/db/schema";
+import {
+  claims,
+  commitmentPresentations,
+  nodeMetadata,
+  nodes,
+  sources,
+} from "~/db/schema";
 import { coerceTaskStatus } from "~/lib/claims/task-status";
 import type {
   CommitmentListItem,
+  CommitmentPresentation,
   CommitmentProvenance,
   CommitmentSort,
   ListCommitmentsRequest,
   ListCommitmentsResponse,
 } from "~/lib/schemas/list-commitments";
+import { deriveTitle } from "~/lib/sources-read";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -44,6 +52,11 @@ interface ListRow {
   statusChangedAt: Date;
   createdAt: Date;
   sourceId: TypeId<"source">;
+  sourceMetadata: unknown;
+  sourceCreatedAt: Date | null;
+  sourceLastIngestedAt: Date | null;
+  presentationExcerpt: string | null;
+  presentationWhy: string | null;
 }
 
 /**
@@ -107,6 +120,34 @@ function subJoinProvenanceFilter(
 /** Escape `%`, `_`, and backslash so a search term is treated as a literal. */
 function escapeLike(term: string): string {
   return term.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+/**
+ * Assemble the inbox card's inline evidence: provenance from the joined source
+ * (present for every commitment with a resolvable source), plus the verbatim
+ * excerpt + why when a `commitment_presentations` row exists.
+ */
+function buildPresentation(row: {
+  sourceId: TypeId<"source">;
+  sourceMetadata: unknown;
+  sourceCreatedAt: Date | null;
+  sourceLastIngestedAt: Date | null;
+  presentationExcerpt: string | null;
+  presentationWhy: string | null;
+}): CommitmentPresentation {
+  const source =
+    row.sourceCreatedAt === null
+      ? null
+      : {
+          sourceId: row.sourceId,
+          title: deriveTitle(row.sourceMetadata),
+          overheardAt: row.sourceLastIngestedAt ?? row.sourceCreatedAt,
+        };
+  return {
+    source,
+    excerpt: row.presentationExcerpt,
+    why: row.presentationWhy,
+  };
 }
 
 export async function listCommitments(
@@ -211,6 +252,11 @@ export async function listCommitments(
       statusChangedAt: claims.statedAt,
       createdAt: nodes.createdAt,
       sourceId: claims.sourceId,
+      sourceMetadata: sources.metadata,
+      sourceCreatedAt: sources.createdAt,
+      sourceLastIngestedAt: sources.lastIngestedAt,
+      presentationExcerpt: commitmentPresentations.excerpt,
+      presentationWhy: commitmentPresentations.why,
     })
     .from(claims)
     .innerJoin(
@@ -248,6 +294,11 @@ export async function listCommitments(
       ),
     )
     .leftJoin(dueMetadata, eq(dueMetadata.nodeId, dueClaim.objectNodeId))
+    .leftJoin(sources, eq(sources.id, claims.sourceId))
+    .leftJoin(
+      commitmentPresentations,
+      eq(commitmentPresentations.taskId, nodes.id),
+    )
     .where(and(...whereClauses.filter((c): c is SQL => c !== undefined)))
     .orderBy(...orderBy)
     .limit(limit + 1);
@@ -285,6 +336,7 @@ export async function listCommitments(
       statusChangedAt: row.statusChangedAt,
       createdAt: row.createdAt,
       sourceId: row.sourceId,
+      presentation: buildPresentation(row),
     });
   }
 
