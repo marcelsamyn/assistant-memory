@@ -52,7 +52,7 @@ function decodeCursor(raw: string): ListCursor | null {
   }
 }
 
-function deriveTitle(metadata: unknown): string | null {
+export function deriveTitle(metadata: unknown): string | null {
   const parsed = sourceMetadataSchema.safeParse(metadata ?? {});
   if (!parsed.success) return null;
   if (parsed.data.title) return parsed.data.title;
