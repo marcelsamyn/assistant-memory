@@ -1,3 +1,4 @@
+import { commitmentPresentationLlmSchema } from "../src/lib/schemas/commitment-presentation";
 import { documentSpineSchema } from "../src/lib/schemas/document-spine";
 import { llmExtractionSchema } from "../src/lib/schemas/llm-extraction";
 import {
@@ -16,6 +17,13 @@ const structuredOutputSchemas = [
     name: "document_spine",
     schema: zodResponseFormat(documentSpineSchema, "document_spine").json_schema
       .schema,
+  },
+  {
+    name: "commitment_presentation",
+    schema: zodResponseFormat(
+      commitmentPresentationLlmSchema,
+      "commitment_presentation",
+    ).json_schema.schema,
   },
 ] satisfies ReadonlyArray<StructuredOutputSchemaValidationInput>;
 
