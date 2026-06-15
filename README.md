@@ -253,7 +253,7 @@ The integration only works if these are true:
 - **Stable source IDs**: conversation and document IDs are stable. Otherwise ingestion is not idempotent.
 - **Async freshness is understood**: a just-queued ingestion job may not be visible to the next search. The host should not assume read-after-write unless it waits for the job pipeline.
 - **Reference isolation is complete**: default personal memory must exclude reference claims and reference-derived node cards. The current graph search path scope-bounds claims, one-hop traversal, and node similarity; the target card-shaped `search_memory` must preserve that behavior.
-- **Lifecycle drives commitments**: open tasks must come from latest `HAS_TASK_STATUS`, not from old search hits. Otherwise completed work will resurface as pending.
+- **Lifecycle drives commitments**: open tasks must come from latest `HAS_TASK_STATUS`, not from old search hits. Otherwise completed work will resurface as pending. The corollary invariant: every `Task` node carries exactly one active `HAS_TASK_STATUS` claim unless it was deliberately dismissed (status retracted, awaiting pruning). The ingestion and `createNode` paths synthesize a default candidate-band status when one would otherwise be missing, so a Task can't be minted statusless — a statusless Task is a bug (invisible to every commitment surface yet present in node/type/search), repaired by `POST /maintenance/recover-statusless-commitments`.
 - **Tool descriptions are part of behavior**: MCP descriptions must tell the model when to use `search_memory` vs. `search_reference` vs. `list_open_commitments`, and those descriptions need snapshot tests.
 - **Raw edit tools are gated**: node/claim merge, update, and delete operations need a user-confirmed workflow, not free autonomous model access.
 
@@ -266,6 +266,7 @@ The integration only works if these are true:
 - `POST /query/recent-changes` – "what's new in memory" feed over a time range: active claims and nodes added/updated since a `since` cursor, with labels and per-source provenance.
 - `POST /digest` – consolidated daily rollup for a "Today" view (see below).
 - `POST /maintenance/prune-stale-nodes` – deterministic, preview-then-apply "garbage collect" sweep (see below).
+- `POST /maintenance/recover-statusless-commitments` – preview-then-apply repair that gives `Task` nodes missing a `HAS_TASK_STATUS` claim a default candidate-band status, so they stop being invisible to the commitment views (see below).
 - `GET /sse` and `POST /messages` – MCP over HTTP using Server‑Sent Events.
 
 ### Pruning stale memory
@@ -304,6 +305,25 @@ documents). Page through a large backlog by re-calling while `hasMore` is true.
 For the narrower deterministic cases there are also
 `POST /maintenance/prune-orphan-nodes` (evidence-free nodes) and
 `POST /cleanup/dedup-sweep` (exact-label duplicates).
+
+### Recovering statusless commitments
+
+A `Task` node's commitment-ness is carried entirely by its `HAS_TASK_STATUS`
+claim — every commitment read model anchors on it — so a Task with no status
+claim is invisible to the open/candidate/list views even though it still appears
+in node-type, search, and graph queries. Tasks minted before the write-time
+guards, or whose only extracted status was dropped as off-vocabulary, can be in
+exactly that state.
+
+`POST /maintenance/recover-statusless-commitments` finds Task nodes with **no**
+`HAS_TASK_STATUS` claim in any lifecycle state and gives them a default
+candidate-band status (`pending` / `assistant_inferred`), so they resurface as
+candidates the user can confirm or dismiss. Anchoring on "any state" is the
+deliberate carve-out that **excludes deliberately-dismissed tasks** (whose status
+was retracted) — those are left to orphan pruning, not resurrected. It is
+`dryRun`-by-default (preview the count and a sample, then re-call with
+`dryRun: false`), additive (never deletes), and idempotent, so it serves as both
+a one-time backfill and an ongoing self-heal sweep.
 
 ### Daily digest
 
