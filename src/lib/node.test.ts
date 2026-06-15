@@ -846,4 +846,68 @@ describeIfServer("node operations", () => {
       await client.end();
     }
   });
+
+  it("injects a default candidate-band HAS_TASK_STATUS when a Task is created without one", async () => {
+    // Invariant guard: a Task created via the raw path (no initialClaims) must
+    // not be minted statusless, or it is invisible to every commitment surface.
+    const userId = "user_create_task_default_status";
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+
+    try {
+      await ensureMergeTables(client);
+      await client.query(`
+        ALTER TABLE "sources"
+          ADD COLUMN IF NOT EXISTS "parent_source" text,
+          ADD COLUMN IF NOT EXISTS "metadata" jsonb,
+          ADD COLUMN IF NOT EXISTS "last_ingested_at" timestamp with time zone,
+          ADD COLUMN IF NOT EXISTS "deleted_at" timestamp with time zone,
+          ADD COLUMN IF NOT EXISTS "content_type" varchar(100),
+          ADD COLUMN IF NOT EXISTS "content_length" integer;
+      `);
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { createNode } = await import("./node");
+        const created = await createNode(userId, "Task", "Buy milk");
+
+        const statusRows = await client.query<{
+          object_value: string;
+          asserted_by_kind: string;
+          status: string;
+          scope: string;
+        }>(
+          `SELECT "object_value", "asserted_by_kind", "status", "scope"
+           FROM "claims"
+           WHERE "user_id" = $1 AND "subject_node_id" = $2
+             AND "predicate" = 'HAS_TASK_STATUS'`,
+          [userId, created.id],
+        );
+        expect(statusRows.rows).toHaveLength(1);
+        expect(statusRows.rows[0]).toMatchObject({
+          object_value: "pending",
+          asserted_by_kind: "assistant_inferred",
+          status: "active",
+          scope: "personal",
+        });
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
 });
