@@ -66,6 +66,19 @@ describe("queryTimelineRequestSchema", () => {
       }),
     ).toThrow();
   });
+
+  it("allows omitting includePeriods", () => {
+    const parsed = queryTimelineRequestSchema.parse({ userId: "user_123" });
+    expect(parsed.includePeriods).toBeUndefined();
+  });
+
+  it("accepts includePeriods true", () => {
+    const parsed = queryTimelineRequestSchema.parse({
+      userId: "user_123",
+      includePeriods: true,
+    });
+    expect(parsed.includePeriods).toBe(true);
+  });
 });
 
 describe("queryTimelineResponseSchema", () => {
@@ -108,5 +121,39 @@ describe("queryTimelineResponseSchema", () => {
     expect(parsed.days).toEqual([]);
     expect(parsed.totalDays).toBe(0);
     expect(parsed.hasMore).toBe(false);
+  });
+
+  it("defaults periods to an empty array when omitted", () => {
+    const parsed = queryTimelineResponseSchema.parse({
+      days: [],
+      totalDays: 0,
+      hasMore: false,
+    });
+    expect(parsed.periods).toEqual([]);
+  });
+
+  it("validates periods entries including a null summary", () => {
+    const parsed = queryTimelineResponseSchema.parse({
+      days: [],
+      totalDays: 0,
+      hasMore: false,
+      periods: [
+        {
+          key: "2026-W24",
+          granularity: "week",
+          summary: "A busy week.",
+          temporalNodeId: "node_01234567890123456789abcdef",
+        },
+        {
+          key: "2026",
+          granularity: "year",
+          summary: null,
+          temporalNodeId: "node_abcdefghijklmnopqrstuvwxyz",
+        },
+      ],
+    });
+    expect(parsed.periods).toHaveLength(2);
+    expect(parsed.periods[0]!.granularity).toBe("week");
+    expect(parsed.periods[1]!.summary).toBeNull();
   });
 });

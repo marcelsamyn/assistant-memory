@@ -43,7 +43,7 @@ export function isDayKey(key: string): boolean {
   return DAY_KEY_RE.test(key);
 }
 
-function dayDate(dayKey: string): Date {
+export function dayDate(dayKey: string): Date {
   return parse(dayKey, "yyyy-MM-dd", REFERENCE_DATE);
 }
 

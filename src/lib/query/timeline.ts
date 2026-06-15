@@ -2,6 +2,7 @@ import {
   QueryTimelineRequest,
   QueryTimelineResponse,
 } from "../schemas/query-timeline";
+import { loadTimelinePeriods } from "./timeline-periods";
 import { format, subDays } from "date-fns";
 import { and, eq, or, gte, lte, desc, inArray, sql, count } from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
@@ -20,7 +21,7 @@ import { useDatabase } from "~/utils/db";
 export async function queryTimeline(
   params: QueryTimelineRequest,
 ): Promise<QueryTimelineResponse> {
-  const { userId, limit = 30, offset = 0, nodeTypes } = params;
+  const { userId, limit = 30, offset = 0, nodeTypes, includePeriods } = params;
 
   const today = format(new Date(), "yyyy-MM-dd");
   const ninetyDaysAgo = format(subDays(new Date(), 90), "yyyy-MM-dd");
@@ -33,10 +34,15 @@ export async function queryTimeline(
 
   const db = await useDatabase();
 
+  const periods = includePeriods
+    ? await loadTimelinePeriods(db, userId, rangeMin, rangeMax)
+    : [];
+
   // Shared WHERE clause for day-node lookups
   const dayNodeWhere = and(
     eq(nodes.userId, userId),
     eq(nodes.nodeType, NodeTypeEnum.enum.Temporal),
+    sql`${nodeMetadata.label} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`,
     gte(nodeMetadata.label, rangeMin),
     lte(nodeMetadata.label, rangeMax),
   );
@@ -55,6 +61,7 @@ export async function queryTimeline(
       days: [],
       totalDays,
       hasMore: false,
+      periods,
     };
   }
 
@@ -77,6 +84,7 @@ export async function queryTimeline(
       days: [],
       totalDays,
       hasMore: false,
+      periods,
     };
   }
 
@@ -194,5 +202,6 @@ export async function queryTimeline(
     days,
     totalDays,
     hasMore: offset + limit < totalDays,
+    periods,
   };
 }
