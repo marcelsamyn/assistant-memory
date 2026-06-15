@@ -17,6 +17,7 @@ export const queryTimelineRequestSchema = z.object({
   limit: z.number().int().min(1).max(100).default(30),
   offset: z.number().int().min(0).default(0),
   nodeTypes: z.array(NodeTypeEnum).optional(),
+  includePeriods: z.boolean().optional(),
 });
 
 export const queryTimelineNodeSchema = z.object({
@@ -35,11 +36,20 @@ export const queryTimelineDaySchema = z.object({
   nodes: z.array(queryTimelineNodeSchema),
 });
 
+export const queryTimelinePeriodSchema = z.object({
+  key: z.string(),
+  granularity: z.enum(["week", "month", "year"]),
+  summary: z.string().nullable(),
+  temporalNodeId: typeIdSchema("node"),
+});
+
 export const queryTimelineResponseSchema = z.object({
   days: z.array(queryTimelineDaySchema),
   totalDays: z.number(),
   hasMore: z.boolean(),
+  periods: z.array(queryTimelinePeriodSchema).default([]),
 });
 
 export type QueryTimelineRequest = z.infer<typeof queryTimelineRequestSchema>;
 export type QueryTimelineResponse = z.infer<typeof queryTimelineResponseSchema>;
+export type QueryTimelinePeriod = z.infer<typeof queryTimelinePeriodSchema>;
