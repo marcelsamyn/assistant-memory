@@ -326,6 +326,24 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
           `Starting cleanup-graph job for user ${data.userId}, since ${data.since.toISOString()}`,
         );
 
+        // Repair the Task⟺status invariant BEFORE orphan-prune: a statusless
+        // Task gets a default candidate-band status, so it's rescued into the
+        // candidate view rather than deleted as evidence-free. Additive,
+        // idempotent, and non-destructive; deliberately-dismissed tasks are
+        // skipped (and so still fall through to pruning).
+        if (data.recoverStatuslessCommitments) {
+          const { recoverStatuslessCommitments } = await import(
+            "./jobs/recover-statusless-commitments"
+          );
+          const recoverResult = await recoverStatuslessCommitments({
+            userId: data.userId,
+            dryRun: false,
+          });
+          console.log(
+            `Statusless-commitment recovery: gave ${recoverResult.recoveredCount}/${recoverResult.candidateCount} task(s) a default status, hasMore=${recoverResult.hasMore.toString()}`,
+          );
+        }
+
         if (data.pruneOrphanNodes) {
           const { pruneOrphanNodes } = await import(
             "./jobs/prune-orphan-nodes"
