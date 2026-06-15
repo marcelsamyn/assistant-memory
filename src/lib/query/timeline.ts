@@ -2,13 +2,13 @@ import {
   QueryTimelineRequest,
   QueryTimelineResponse,
 } from "../schemas/query-timeline";
+import { loadTimelinePeriods } from "./timeline-periods";
 import { format, subDays } from "date-fns";
 import { and, eq, or, gte, lte, desc, inArray, sql, count } from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
 import { NodeTypeEnum } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
-import { loadTimelinePeriods } from "./timeline-periods";
 
 /**
  * Query a timeline of memories grouped by date.

@@ -168,7 +168,10 @@ describeIfServer("queryTimeline", () => {
           label: "2026-06",
           description: "June summary",
           additionalData: {
-            rollup: { fingerprint: "f1", summarizedAt: "2026-06-15T00:00:00.000Z" },
+            rollup: {
+              fingerprint: "f1",
+              summarizedAt: "2026-06-15T00:00:00.000Z",
+            },
           },
         },
         {
@@ -177,7 +180,10 @@ describeIfServer("queryTimeline", () => {
           label: "2026-W24",
           description: "Week 24 summary",
           additionalData: {
-            rollup: { fingerprint: "f2", summarizedAt: "2026-06-15T00:00:00.000Z" },
+            rollup: {
+              fingerprint: "f2",
+              summarizedAt: "2026-06-15T00:00:00.000Z",
+            },
           },
         },
         {
@@ -216,7 +222,10 @@ describeIfServer("queryTimeline", () => {
           }),
         ),
       );
-      expect(base.days.map((d) => d.date)).toEqual(["2026-06-11", "2026-06-10"]);
+      expect(base.days.map((d) => d.date)).toEqual([
+        "2026-06-11",
+        "2026-06-10",
+      ]);
       expect(base.days.map((d) => d.date)).not.toContain("2026-06");
       expect(base.totalDays).toBe(2);
       expect(base.hasMore).toBe(false);
@@ -242,10 +251,12 @@ describeIfServer("queryTimeline", () => {
         "2026-06",
         "2026-W24",
       ]);
-      expect(withPeriods.periods.find((p) => p.key === "2026")!.summary).toBeNull();
-      expect(withPeriods.periods.find((p) => p.key === "2026-06")!.summary).toBe(
-        "June summary",
-      );
+      expect(
+        withPeriods.periods.find((p) => p.key === "2026")!.summary,
+      ).toBeNull();
+      expect(
+        withPeriods.periods.find((p) => p.key === "2026-06")!.summary,
+      ).toBe("June summary");
     } finally {
       vi.doUnmock("~/utils/db");
       vi.resetModules();

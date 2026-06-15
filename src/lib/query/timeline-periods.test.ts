@@ -1,9 +1,9 @@
+import { loadTimelinePeriods, periodKeysForWindow } from "./timeline-periods";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
 import { newTypeId } from "~/types/typeid";
-import { loadTimelinePeriods, periodKeysForWindow } from "./timeline-periods";
 
 describe("periodKeysForWindow", () => {
   // June 1 2026 is a Monday (ISO 2026-W23); June 29 2026 is a Monday (2026-W27).
@@ -129,7 +129,10 @@ describeIfServer("loadTimelinePeriods", () => {
           label: "2026-W24",
           description: "Week 24 summary",
           additionalData: {
-            rollup: { fingerprint: "f1", summarizedAt: "2026-06-15T00:00:00.000Z" },
+            rollup: {
+              fingerprint: "f1",
+              summarizedAt: "2026-06-15T00:00:00.000Z",
+            },
           },
         },
         {
@@ -138,7 +141,10 @@ describeIfServer("loadTimelinePeriods", () => {
           label: "2026-06",
           description: "June summary",
           additionalData: {
-            rollup: { fingerprint: "f2", summarizedAt: "2026-06-15T00:00:00.000Z" },
+            rollup: {
+              fingerprint: "f2",
+              summarizedAt: "2026-06-15T00:00:00.000Z",
+            },
           },
         },
         {
@@ -154,7 +160,10 @@ describeIfServer("loadTimelinePeriods", () => {
           label: "2026-05",
           description: "May summary",
           additionalData: {
-            rollup: { fingerprint: "f3", summarizedAt: "2026-06-15T00:00:00.000Z" },
+            rollup: {
+              fingerprint: "f3",
+              summarizedAt: "2026-06-15T00:00:00.000Z",
+            },
           },
         },
       ]);
@@ -167,7 +176,11 @@ describeIfServer("loadTimelinePeriods", () => {
       );
 
       // Ordered by label ascending: "2026" < "2026-06" < "2026-W24".
-      expect(periods.map((p) => p.key)).toEqual(["2026", "2026-06", "2026-W24"]);
+      expect(periods.map((p) => p.key)).toEqual([
+        "2026",
+        "2026-06",
+        "2026-W24",
+      ]);
       expect(periods.map((p) => p.granularity)).toEqual([
         "year",
         "month",
@@ -185,7 +198,12 @@ describeIfServer("loadTimelinePeriods", () => {
       expect(periods.map((p) => p.key)).not.toContain("2026-05");
 
       expect(
-        await loadTimelinePeriods(database, "nobody", "2026-06-01", "2026-06-30"),
+        await loadTimelinePeriods(
+          database,
+          "nobody",
+          "2026-06-01",
+          "2026-06-30",
+        ),
       ).toEqual([]);
     } finally {
       await client.end();
