@@ -16,6 +16,11 @@ import {
 } from "~/db/schema";
 import { listAliasesForNodeIds } from "~/lib/alias";
 import { createClaim } from "~/lib/claim";
+import {
+  DEFAULT_TASK_STATUS,
+  DEFAULT_TASK_STATUS_KIND,
+  defaultTaskStatusStatement,
+} from "~/lib/claims/default-task-status";
 import { generateEmbeddings } from "~/lib/embeddings";
 import { generateAndInsertNodeEmbeddings } from "~/lib/embeddings-util";
 import {
@@ -475,10 +480,34 @@ export async function createNode(
     });
   }
 
+  // Invariant guard: a Task is never observable without a `HAS_TASK_STATUS`
+  // claim, or it is invisible to every commitment surface (see
+  // open-commitments.ts). `createCommitment` always supplies one explicitly;
+  // any other caller (e.g. the raw `/node/create` route) gets a default
+  // candidate-band status injected here so a Task can never be minted
+  // statusless. See src/lib/claims/default-task-status.ts.
+  let effectiveInitialClaims = initialClaims;
+  if (
+    nodeType === "Task" &&
+    !(initialClaims ?? []).some(
+      (claim) => claim.predicate === "HAS_TASK_STATUS",
+    )
+  ) {
+    effectiveInitialClaims = [
+      ...(initialClaims ?? []),
+      {
+        predicate: "HAS_TASK_STATUS",
+        statement: defaultTaskStatusStatement(label),
+        objectValue: DEFAULT_TASK_STATUS,
+        assertedByKind: DEFAULT_TASK_STATUS_KIND,
+      },
+    ];
+  }
+
   const initialClaimIds: TypeId<"claim">[] = [];
-  if (initialClaims && initialClaims.length > 0) {
+  if (effectiveInitialClaims && effectiveInitialClaims.length > 0) {
     try {
-      for (const claim of initialClaims) {
+      for (const claim of effectiveInitialClaims) {
         const created = await createClaim({
           userId,
           subjectNodeId: inserted.id,

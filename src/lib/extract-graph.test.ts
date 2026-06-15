@@ -978,6 +978,284 @@ describeIfServer("extractGraph claim-native insertion", () => {
     }
   });
 
+  it("synthesizes a default candidate status when the model mints a Task with no status claim", async () => {
+    const userId = "user_new_task_no_status";
+    const conversationNodeId = newTypeId("node");
+    const parentSourceId = newTypeId("source");
+    const messageSourceId = newTypeId("source");
+    const statedAt = new Date("2026-05-03T10:00:00.000Z");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+    vi.doMock("./graph", () => ({
+      findSimilarNodes: async () => [],
+      findOneHopNodes: async () => [],
+      findNodesByType: async () => [],
+    }));
+    vi.doMock("./embeddings-util", () => ({
+      generateAndInsertClaimEmbeddings: async () => undefined,
+      generateAndInsertNodeEmbeddings: async () => undefined,
+    }));
+    vi.doMock("./debug-utils", () => ({
+      debugGraph: () => undefined,
+    }));
+    vi.doMock("./ai", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./ai")>()),
+      createCompletionClient: async () => ({
+        chat: {
+          completions: {
+            parse: async () => ({
+              choices: [
+                {
+                  message: {
+                    parsed: {
+                      // A Task node with NO HAS_TASK_STATUS attribute claim —
+                      // the birth defect that previously produced a statusless
+                      // node invisible to every commitment surface.
+                      nodes: [
+                        {
+                          id: "temp_task_1",
+                          type: "Task",
+                          label: "Renew passport",
+                          description: null,
+                        },
+                      ],
+                      relationshipClaims: [],
+                      attributeClaims: [],
+                      aliases: [],
+                    },
+                  },
+                },
+              ],
+            }),
+          },
+        },
+      }),
+    }));
+
+    try {
+      await createExtractionTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Conversation')`,
+        [conversationNodeId, userId],
+      );
+      await client.query(
+        `
+          INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label", "description")
+            VALUES ($1, $2, 'Conversation', 'conversation', null)
+        `,
+        [newTypeId("node_metadata"), conversationNodeId],
+      );
+      await client.query(
+        `
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+            VALUES
+              ($1, $3, 'conversation', 'conv_no_status', 'completed'),
+              ($2, $3, 'conversation_message', 'msg_no_status', 'completed')
+        `,
+        [parentSourceId, messageSourceId, userId],
+      );
+
+      const { extractGraph } = await import("./extract-graph");
+      await extractGraph({
+        userId,
+        sourceType: "conversation",
+        sourceId: parentSourceId,
+        statedAt,
+        linkedNodeId: conversationNodeId,
+        sourceRefs: [
+          { externalId: "msg_no_status", sourceId: messageSourceId, statedAt },
+        ],
+        content:
+          '<message id="msg_no_status" role="user">I really need to renew my passport.</message>',
+      });
+
+      // A default pending/assistant_inferred status was synthesized, so the
+      // Task is not statusless.
+      const claimRows = await client.query<{
+        object_value: string;
+        asserted_by_kind: string;
+        status: string;
+        scope: string;
+      }>(
+        `
+          SELECT "object_value", "asserted_by_kind", "status", "scope"
+          FROM "claims"
+          WHERE "user_id" = $1 AND "predicate" = 'HAS_TASK_STATUS'
+        `,
+        [userId],
+      );
+      expect(claimRows.rows).toHaveLength(1);
+      expect(claimRows.rows[0]).toMatchObject({
+        object_value: "pending",
+        asserted_by_kind: "assistant_inferred",
+        status: "active",
+        scope: "personal",
+      });
+
+      // End-to-end: it now surfaces as a candidate commitment.
+      const { getCandidateCommitments } = await import(
+        "./query/open-commitments"
+      );
+      const candidates = await getCandidateCommitments({ userId });
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]).toMatchObject({
+        label: "Renew passport",
+        status: "pending",
+      });
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.doUnmock("./graph");
+      vi.doUnmock("./embeddings-util");
+      vi.doUnmock("./debug-utils");
+      vi.doUnmock("./ai");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("synthesizes a default candidate status when the model's task status is off-vocabulary", async () => {
+    const userId = "user_new_task_offvocab_status";
+    const conversationNodeId = newTypeId("node");
+    const parentSourceId = newTypeId("source");
+    const messageSourceId = newTypeId("source");
+    const statedAt = new Date("2026-05-04T10:00:00.000Z");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+    vi.doMock("./graph", () => ({
+      findSimilarNodes: async () => [],
+      findOneHopNodes: async () => [],
+      findNodesByType: async () => [],
+    }));
+    vi.doMock("./embeddings-util", () => ({
+      generateAndInsertClaimEmbeddings: async () => undefined,
+      generateAndInsertNodeEmbeddings: async () => undefined,
+    }));
+    vi.doMock("./debug-utils", () => ({
+      debugGraph: () => undefined,
+    }));
+    vi.doMock("./ai", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./ai")>()),
+      createCompletionClient: async () => ({
+        chat: {
+          completions: {
+            parse: async () => ({
+              choices: [
+                {
+                  message: {
+                    parsed: {
+                      nodes: [
+                        {
+                          id: "temp_task_1",
+                          type: "Task",
+                          label: "Unblock the deploy",
+                          description: null,
+                        },
+                      ],
+                      relationshipClaims: [],
+                      attributeClaims: [
+                        {
+                          subjectId: "temp_task_1",
+                          predicate: "HAS_TASK_STATUS",
+                          // Off-vocabulary: coerceTaskStatus can't map "blocked",
+                          // so the extracted status is dropped and the Task would
+                          // be statusless without the synthesis repair.
+                          objectValue: "blocked",
+                          statement: "The deploy is blocked.",
+                          sourceRef: "msg_offvocab",
+                          statedAt: statedAt.toISOString(),
+                          assertionKind: "user",
+                        },
+                      ],
+                      aliases: [],
+                    },
+                  },
+                },
+              ],
+            }),
+          },
+        },
+      }),
+    }));
+
+    try {
+      await createExtractionTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Conversation')`,
+        [conversationNodeId, userId],
+      );
+      await client.query(
+        `
+          INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label", "description")
+            VALUES ($1, $2, 'Conversation', 'conversation', null)
+        `,
+        [newTypeId("node_metadata"), conversationNodeId],
+      );
+      await client.query(
+        `
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+            VALUES
+              ($1, $3, 'conversation', 'conv_offvocab', 'completed'),
+              ($2, $3, 'conversation_message', 'msg_offvocab', 'completed')
+        `,
+        [parentSourceId, messageSourceId, userId],
+      );
+
+      const { extractGraph } = await import("./extract-graph");
+      await extractGraph({
+        userId,
+        sourceType: "conversation",
+        sourceId: parentSourceId,
+        statedAt,
+        linkedNodeId: conversationNodeId,
+        sourceRefs: [
+          { externalId: "msg_offvocab", sourceId: messageSourceId, statedAt },
+        ],
+        content:
+          '<message id="msg_offvocab" role="user">The deploy is blocked and I have to unblock it.</message>',
+      });
+
+      const claimRows = await client.query<{
+        object_value: string;
+        asserted_by_kind: string;
+      }>(
+        `
+          SELECT "object_value", "asserted_by_kind" FROM "claims"
+          WHERE "user_id" = $1 AND "predicate" = 'HAS_TASK_STATUS'
+        `,
+        [userId],
+      );
+      expect(claimRows.rows).toHaveLength(1);
+      expect(claimRows.rows[0]).toMatchObject({
+        object_value: "pending",
+        asserted_by_kind: "assistant_inferred",
+      });
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.doUnmock("./graph");
+      vi.doUnmock("./embeddings-util");
+      vi.doUnmock("./debug-utils");
+      vi.doUnmock("./ai");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
   it("reactivates the previous status when reprocessing removes the active source claim", async () => {
     const userId = "user_B";
     const aliceNodeId = newTypeId("node");

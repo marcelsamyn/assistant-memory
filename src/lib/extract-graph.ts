@@ -1,5 +1,10 @@
 import { parseStructuredCompletion } from "./ai";
 import { createAlias, normalizeAliasText } from "./alias";
+import {
+  DEFAULT_TASK_STATUS,
+  DEFAULT_TASK_STATUS_KIND,
+  defaultTaskStatusStatement,
+} from "./claims/default-task-status";
 import { applyClaimLifecycle, fetchClaimsByIds } from "./claims/lifecycle";
 import { coerceTaskStatus } from "./claims/task-status";
 import {
@@ -497,6 +502,26 @@ ${content}
     newTaskNodeIds,
   );
 
+  // Invariant repair: a Task the extractor minted without a usable
+  // HAS_TASK_STATUS (the LLM omitted the status claim, or emitted an
+  // off-vocabulary value that `coerceTaskStatus` dropped above) would be a
+  // statusless node — invisible to every commitment surface. Synthesize a
+  // default candidate-band status for those so they surface as candidates
+  // instead of vanishing. See src/lib/claims/default-task-status.ts.
+  const synthesizedStatusRecords = await _synthesizeMissingTaskStatuses(
+    db,
+    userId,
+    detailsOfNewlyCreatedNodes,
+    insertedClaimRecords,
+    sourceId,
+    parentSourceScope,
+    statedAt,
+  );
+  const allInsertedClaimRecords =
+    synthesizedStatusRecords.length > 0
+      ? [...insertedClaimRecords, ...synthesizedStatusRecords]
+      : insertedClaimRecords;
+
   await _processAndInsertLlmAliases(db, userId, uniqueParsedLlmAliases, idMap);
   await _processAndRecordLlmMetrics({
     userId,
@@ -510,7 +535,7 @@ ${content}
   const lifecycleStartedAt = new Date();
   await applyClaimLifecycle(db, [
     ...deletedClaimRecords,
-    ...insertedClaimRecords,
+    ...allInsertedClaimRecords,
   ]);
   // Guarded so a standalone extraction probe never loads `./queues` (which
   // starts a BullMQ worker on import); the regression harness and production
@@ -523,7 +548,7 @@ ${content}
   }
   const finalizedClaimRecords = await fetchClaimsByIds(
     db,
-    insertedClaimRecords.map((claim) => claim.id),
+    allInsertedClaimRecords.map((claim) => claim.id),
   );
 
   const claimsToEmbed = finalizedClaimRecords.map((claimRecord) => ({
@@ -579,7 +604,7 @@ ${content}
   // the reeval worker is guaranteed to see the new embedding for nodes that
   // were just created here.
   const affectedSubjectNodeIds = _collectAffectedSubjectNodeIds(
-    insertedClaimRecords,
+    allInsertedClaimRecords,
     deletedClaimRecords,
   );
   // Profile synthesis is the expensive trigger (one LLM call per node), so we
@@ -588,7 +613,7 @@ ${content}
   // changes still trigger identity-reeval (cheap, SQL/pgvector only).
   const attributeAffectedSubjectNodeIds =
     _collectAttributeAffectedSubjectNodeIds(
-      insertedClaimRecords,
+      allInsertedClaimRecords,
       deletedClaimRecords,
     );
   if (
@@ -1133,6 +1158,65 @@ async function _processAndInsertLlmClaims(
     .returning();
 
   return insertedClaimRecords;
+}
+
+/**
+ * Synthesize a default candidate-band `HAS_TASK_STATUS` for any Task node
+ * created in this run that did not receive a usable status claim — the LLM
+ * either omitted it or emitted an off-vocabulary value that `coerceTaskStatus`
+ * dropped. Without this, the Task would be a statusless node: invisible to every
+ * commitment surface (which all anchor on HAS_TASK_STATUS) yet present in
+ * node/type/search queries. Scoped to brand-new tasks only; existing tasks
+ * (including ones whose status is legitimately being changed elsewhere) are
+ * never touched. Returns the inserted claim records so the caller threads them
+ * through lifecycle + embeddings exactly like extracted claims.
+ */
+async function _synthesizeMissingTaskStatuses(
+  db: DrizzleDB,
+  userId: string,
+  newlyCreatedNodes: ProcessedNode[],
+  insertedClaimRecords: Array<typeof claims.$inferSelect>,
+  sourceId: TypeId<"source">,
+  scope: Scope,
+  statedAt: Date,
+): Promise<Array<typeof claims.$inferSelect>> {
+  const newTaskNodes = newlyCreatedNodes.filter(
+    (node) => node.nodeType === "Task",
+  );
+  if (newTaskNodes.length === 0) return [];
+
+  const tasksWithStatus = new Set(
+    insertedClaimRecords
+      .filter((claim) => claim.predicate === "HAS_TASK_STATUS")
+      .map((claim) => claim.subjectNodeId),
+  );
+  const missing = newTaskNodes.filter((task) => !tasksWithStatus.has(task.id));
+  if (missing.length === 0) return [];
+
+  console.warn(
+    `extract-graph: synthesizing default '${DEFAULT_TASK_STATUS}' HAS_TASK_STATUS for ${missing.length} Task node(s) the extractor left statusless: ${missing
+      .map((task) => task.id)
+      .join(", ")}`,
+  );
+
+  return db
+    .insert(claims)
+    .values(
+      missing.map((task) => ({
+        userId,
+        subjectNodeId: task.id,
+        objectValue: DEFAULT_TASK_STATUS,
+        predicate: "HAS_TASK_STATUS" as const,
+        statement: defaultTaskStatusStatement(task.label),
+        description: defaultTaskStatusStatement(task.label),
+        sourceId,
+        scope,
+        assertedByKind: DEFAULT_TASK_STATUS_KIND,
+        statedAt,
+        status: "active" as const,
+      })),
+    )
+    .returning();
 }
 
 async function _fetchSourceScopeMap(
