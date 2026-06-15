@@ -9,6 +9,7 @@ Assistant Memory is a lightweight memory service built around the **Model Contex
 Anything can become memory. Tools that ingest into Assistant Memory:
 
 - **[screenpipe-distiller](https://github.com/marcelsamyn/screenpipe-distiller)** — distills your daily computer activity (via [Screenpipe](https://screenpi.pe)) into durable memory.
+- **[Google AI Studio importer](scripts/import-aistudio.ts)** — imports a [Google AI Studio](https://aistudio.google.com) conversation export as a speaker-attributed transcript. Drops pasted attachments and the model's internal reasoning, and re-runs incrementally (a watermark sends only new turns). Works against a direct Memory host or a Petals proxy. Try it: `pnpm run tsx scripts/import-aistudio.ts --file chat.json --dry-run`.
 - n8n workflows for meeting transcripts, handwritten notes, and health metrics _(examples coming — see issues)_.
 
 ## Model Context Protocol
