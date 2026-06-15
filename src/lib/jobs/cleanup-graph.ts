@@ -46,6 +46,10 @@ export const CleanupGraphJobInputSchema = z.object({
   graphHopDepth: z.union([z.literal(1), z.literal(2)]).default(2),
   maxSubgraphNodes: z.number().int().positive().default(100),
   maxSubgraphClaims: z.number().int().positive().default(150),
+  // Deterministic, non-destructive repair: give any statusless Task a default
+  // candidate-band status before orphan-prune runs (so it's rescued, not
+  // pruned). See src/lib/jobs/recover-statusless-commitments.ts.
+  recoverStatuslessCommitments: z.boolean().default(true),
   pruneOrphanNodes: z.boolean().default(true),
   orphanPruneOlderThanDays: z.number().int().nonnegative().default(7),
   orphanPruneLimit: z.number().int().positive().max(10_000).default(10_000),

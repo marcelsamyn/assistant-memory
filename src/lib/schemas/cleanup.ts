@@ -12,6 +12,7 @@ export const cleanupRequestSchema = z.object({
   graphHopDepth: z.union([z.literal(1), z.literal(2)]).default(2),
   maxSubgraphNodes: z.number().int().positive().default(200),
   maxSubgraphClaims: z.number().int().positive().default(200),
+  recoverStatuslessCommitments: z.boolean().default(true),
   pruneOrphanNodes: z.boolean().default(true),
   orphanPruneOlderThanDays: z.number().int().nonnegative().default(7),
   orphanPruneLimit: z.number().int().positive().max(10_000).default(10_000),

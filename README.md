@@ -325,6 +325,13 @@ was retracted) — those are left to orphan pruning, not resurrected. It is
 `dryRun: false`), additive (never deletes), and idempotent, so it serves as both
 a one-time backfill and an ongoing self-heal sweep.
 
+Because it is non-destructive, it also runs automatically inside the
+`cleanup-graph` maintenance pass (`POST /cleanup`), **before** orphan pruning, so
+a statusless Task is rescued into the candidate view rather than deleted as
+evidence-free. The invariant therefore self-heals on your normal cleanup
+cadence; pass `recoverStatuslessCommitments: false` to `POST /cleanup` to opt
+out.
+
 ### Daily digest
 
 `POST /digest` bundles everything a "daily digest" / "Today" surface needs into a single call, so consumers don't fan out across `commitments/open`, `metrics/summaries`, `query/recent-changes`, and `context/bootstrap`:
