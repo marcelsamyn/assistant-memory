@@ -68,6 +68,7 @@ describeIfServer("queryTimeline", () => {
     const monthN = newTypeId("node"); // 2026-06 rollup — must NOT appear as a day
     const weekN = newTypeId("node"); // 2026-W24 rollup
     const yearN = newTypeId("node"); // 2026 rollup (unsummarized)
+    const monthJul = newTypeId("node"); // 2026-07 rollup — leaks into days w/o the guard
     const src = newTypeId("source");
     const claim1 = newTypeId("claim");
 
@@ -156,6 +157,7 @@ describeIfServer("queryTimeline", () => {
         { id: monthN, userId, nodeType: "Temporal" },
         { id: weekN, userId, nodeType: "Temporal" },
         { id: yearN, userId, nodeType: "Temporal" },
+        { id: monthJul, userId, nodeType: "Temporal" },
       ]);
 
       await database.insert(schema.nodeMetadata).values([
@@ -192,6 +194,18 @@ describeIfServer("queryTimeline", () => {
           label: "2026",
           description: "Represents the year 2026",
           additionalData: null,
+        },
+        {
+          id: newTypeId("node_metadata"),
+          nodeId: monthJul,
+          label: "2026-07",
+          description: "July summary",
+          additionalData: {
+            rollup: {
+              fingerprint: "f4",
+              summarizedAt: "2026-06-15T00:00:00.000Z",
+            },
+          },
         },
       ]);
 
@@ -257,6 +271,26 @@ describeIfServer("queryTimeline", () => {
       expect(
         withPeriods.periods.find((p) => p.key === "2026-06")!.summary,
       ).toBe("June summary");
+
+      // Day-feed guard: a 2026-07 month rollup node sorts INSIDE a window that
+      // extends into July, so without the `~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`
+      // guard it would leak into `days`. Only the seeded June day nodes should
+      // appear (no July day nodes exist).
+      const spanning = queryTimelineResponseSchema.parse(
+        await queryTimeline(
+          queryTimelineRequestSchema.parse({
+            userId,
+            startDate: "2026-07-31",
+            endDate: "2026-06-01",
+          }),
+        ),
+      );
+      expect(spanning.days.map((d) => d.date)).toEqual([
+        "2026-06-11",
+        "2026-06-10",
+      ]);
+      expect(spanning.days.map((d) => d.date)).not.toContain("2026-07");
+      expect(spanning.days.map((d) => d.date)).not.toContain("2026-06");
     } finally {
       vi.doUnmock("~/utils/db");
       vi.resetModules();
