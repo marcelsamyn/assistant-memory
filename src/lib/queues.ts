@@ -317,6 +317,17 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         console.log(
           `Identity reeval for user ${userId} node ${nodeId}: ${result.status}`,
         );
+      } else if (job.name === "generate-source-title") {
+        const { userId, sourceId } = z
+          .object({ userId: z.string().min(1), sourceId: z.string().min(1) })
+          .parse(job.data);
+        const { generateSourceTitle } = await import(
+          "./jobs/generate-source-title"
+        );
+        await generateSourceTitle(db, {
+          userId,
+          sourceId: sourceId as never,
+        });
       } else if (job.name === "cleanup-graph") {
         const data = CleanupGraphJobInputSchema.parse({
           ...job.data,

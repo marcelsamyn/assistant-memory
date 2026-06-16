@@ -100,5 +100,20 @@ export async function insertNewSources(params: {
     ...(row.lastIngestedAt !== null ? { statedAt: row.lastIngestedAt } : {}),
   }));
 
+  // Best-effort, fire-and-forget container titling. Guarded inside the job, so
+  // enqueuing unconditionally is safe and idempotent. Dynamic import avoids a
+  // queues ⇄ ingestion import cycle.
+  const { batchQueue } = await import("../queues");
+  await batchQueue.add(
+    "generate-source-title",
+    { userId, sourceId: parentSource.id },
+    {
+      attempts: 2,
+      backoff: { type: "exponential", delay: 1_000 },
+      removeOnComplete: true,
+      removeOnFail: 20,
+    },
+  );
+
   return { sourceId: parentSource.id, newSourceSourceIds, sourceRefs };
 }
