@@ -1,9 +1,9 @@
 import { and, eq, sql } from "drizzle-orm";
 import { DrizzleDB } from "~/db";
 import { sources } from "~/db/schema";
+import { generateTitleFromContent } from "~/lib/source-title";
 import { sourceMetadataSchema, sourceService } from "~/lib/sources";
 import { deriveTitle } from "~/lib/sources-read";
-import { generateTitleFromContent } from "~/lib/source-title";
 import { type TypeId } from "~/types/typeid";
 
 const PREVIEW_MAX_CHARS = 2000;

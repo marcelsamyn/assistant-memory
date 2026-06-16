@@ -1,9 +1,9 @@
+import { eq } from "drizzle-orm";
 import { drizzle, NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
 import { sources } from "~/db/schema";
-import { eq } from "drizzle-orm";
 import { newTypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -102,7 +102,10 @@ describeIfServer("generateSourceTitle", () => {
 
   it("generates and stores a title for an untitled conversation", async () => {
     const userId = "user_title_test";
-    await pgClient.query(`INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`, [userId]);
+    await pgClient.query(
+      `INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`,
+      [userId],
+    );
 
     const parentId = newTypeId("source");
     const childId = newTypeId("source");
@@ -113,7 +116,12 @@ describeIfServer("generateSourceTitle", () => {
     );
     await pgClient.query(
       `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "scope", "parent_source", "metadata") VALUES ($1, $2, 'conversation_message', 'msg-1', 'personal', $3, $4)`,
-      [childId, userId, parentId, JSON.stringify({ rawContent: "Let's plan the Q3 offsite in Lisbon" })],
+      [
+        childId,
+        userId,
+        parentId,
+        JSON.stringify({ rawContent: "Let's plan the Q3 offsite in Lisbon" }),
+      ],
     );
 
     vi.resetModules();
@@ -137,20 +145,31 @@ describeIfServer("generateSourceTitle", () => {
     try {
       // Set the extraction override AFTER resetModules so it lands in the fresh
       // module graph that generateSourceTitle will see.
-      const { setExtractionClientOverride } = await import("~/utils/test-overrides");
+      const { setExtractionClientOverride } = await import(
+        "~/utils/test-overrides"
+      );
       setExtractionClientOverride({
         chat: {
           completions: {
             parse: async () => ({
-              choices: [{ message: { parsed: { title: "Q3 offsite planning" } } }],
-              usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+              choices: [
+                { message: { parsed: { title: "Q3 offsite planning" } } },
+              ],
+              usage: {
+                prompt_tokens: 10,
+                completion_tokens: 4,
+                total_tokens: 14,
+              },
             }),
           },
         },
       } as never);
 
       const { generateSourceTitle } = await import("./generate-source-title");
-      const result = await generateSourceTitle(db, { userId, sourceId: parentId });
+      const result = await generateSourceTitle(db, {
+        userId,
+        sourceId: parentId,
+      });
 
       expect(result.generated).toBe(true);
 
@@ -162,7 +181,9 @@ describeIfServer("generateSourceTitle", () => {
         "Q3 offsite planning",
       );
     } finally {
-      const { setExtractionClientOverride: clear } = await import("~/utils/test-overrides");
+      const { setExtractionClientOverride: clear } = await import(
+        "~/utils/test-overrides"
+      );
       clear(null);
       vi.doUnmock("~/utils/db");
       vi.doUnmock("~/lib/sources");
@@ -172,7 +193,10 @@ describeIfServer("generateSourceTitle", () => {
 
   it("is a no-op when the source already has a title", async () => {
     const userId = "user_title_noop_test";
-    await pgClient.query(`INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`, [userId]);
+    await pgClient.query(
+      `INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`,
+      [userId],
+    );
 
     const sourceId = newTypeId("source");
     await pgClient.query(
@@ -195,7 +219,9 @@ describeIfServer("generateSourceTitle", () => {
         .select({ metadata: sources.metadata })
         .from(sources)
         .where(eq(sources.id, sourceId));
-      expect((row!.metadata as { title?: string }).title).toBe("Existing title");
+      expect((row!.metadata as { title?: string }).title).toBe(
+        "Existing title",
+      );
     } finally {
       vi.doUnmock("~/utils/db");
       vi.resetModules();
