@@ -21,21 +21,12 @@ import {
 import { reciprocalRankFusion } from "./fusion";
 import { sources } from "~/db/schema";
 import { useDatabase } from "~/utils/db";
-import type { NodeType, Scope, SourceType } from "~/types/graph";
-import type { SearchHit, SearchResponse } from "~/lib/schemas/search";
+import type { SourceType } from "~/types/graph";
+import type { SearchHit, SearchRequest, SearchResponse } from "~/lib/schemas/search";
 import type { TypeId } from "~/types/typeid";
 import { z } from "zod";
 
-export interface ExplicitSearchParams {
-  userId: string;
-  query: string;
-  limit: number;
-  scope: Scope;
-  filters?: {
-    entityTypes?: NodeType[];
-    statedBetween?: { from?: Date; to?: Date };
-  };
-}
+export type ExplicitSearchParams = SearchRequest;
 
 interface HitSource {
   sourceId: string;

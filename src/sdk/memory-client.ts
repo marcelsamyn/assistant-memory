@@ -49,7 +49,7 @@ import {
 } from "../lib/schemas/context.js";
 import {
   searchResponseSchema,
-  type SearchRequest,
+  type SearchRequestInput,
   type SearchResponse,
 } from "../lib/schemas/search.js";
 import {
@@ -483,7 +483,7 @@ export class MemoryClient {
    * the assistant deliberately looking something up) — not for automatic
    * conversation context, which is `contextSearch`.
    */
-  async search(payload: SearchRequest): Promise<SearchResponse> {
+  async search(payload: SearchRequestInput): Promise<SearchResponse> {
     return this._fetch("POST", "/search", searchResponseSchema, payload);
   }
 

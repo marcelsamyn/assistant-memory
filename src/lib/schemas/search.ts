@@ -28,6 +28,8 @@ export const searchRequestSchema = z.object({
     .optional(),
 });
 export type SearchRequest = z.infer<typeof searchRequestSchema>;
+/** Caller-facing input type: fields with schema defaults (limit, scope) are optional. */
+export type SearchRequestInput = z.input<typeof searchRequestSchema>;
 
 const sourceTypeEnum = z.enum([
   "conversation",

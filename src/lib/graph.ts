@@ -113,7 +113,7 @@ export type FindSimilarClaimsOptions = SimilaritySearchBase & {
   statuses?: ClaimStatus[];
   asOf?: Date;
   /** Restrict to claims whose stated_at falls in this (inclusive) range. */
-  statedBetween?: { from?: Date; to?: Date };
+  statedBetween?: { from?: Date | undefined; to?: Date | undefined };
   includeReference?: boolean;
   /** When set, restrict to exactly this scope (takes precedence over includeReference). */
   scope?: Scope;
@@ -157,7 +157,7 @@ export interface NodeLexicalParams extends LexicalSearchParams {
 export interface ClaimLexicalParams extends LexicalSearchParams {
   statuses?: ClaimStatus[];
   asOf?: Date;
-  statedBetween?: { from?: Date; to?: Date };
+  statedBetween?: { from?: Date | undefined; to?: Date | undefined };
   includeAssistantInferred?: boolean;
 }
 
