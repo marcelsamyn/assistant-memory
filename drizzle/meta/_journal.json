@@ -169,6 +169,13 @@
       "when": 1781443080497,
       "tag": "0023_cynical_tigra",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1781610361896,
+      "tag": "0024_hybrid_search_indexes",
+      "breakpoints": true
     }
   ]
 }
