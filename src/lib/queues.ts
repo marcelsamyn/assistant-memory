@@ -326,7 +326,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         );
         await generateSourceTitle(db, {
           userId,
-          sourceId: sourceId as never,
+          sourceId: sourceId as TypeId<"source">,
         });
       } else if (job.name === "cleanup-graph") {
         const data = CleanupGraphJobInputSchema.parse({

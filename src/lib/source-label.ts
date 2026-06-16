@@ -1,11 +1,14 @@
 import { z } from "zod";
 
+// Allow any string here (no `.min(1)`): an empty `title: ""` must not fail the
+// whole parse, or we'd discard valid fallbacks like `filename`. Trimming and
+// non-empty checks live in the resolver below.
 const labelMetaSchema = z
   .object({
-    title: z.string().min(1).optional(),
-    filename: z.string().min(1).optional(),
+    title: z.string().optional(),
+    filename: z.string().optional(),
     rawContent: z.string().optional(),
-    role: z.string().min(1).optional(),
+    role: z.string().optional(),
   })
   .catchall(z.unknown());
 
@@ -31,8 +34,12 @@ export function deriveSourceLabel({
 }): string | null {
   const parsed = labelMetaSchema.safeParse(metadata ?? {});
   if (!parsed.success) return null;
-  if (parsed.data.title) return parsed.data.title;
-  if (parsed.data.filename) return parsed.data.filename;
+
+  const title = parsed.data.title?.trim();
+  if (title) return title;
+
+  const filename = parsed.data.filename?.trim();
+  if (filename) return filename;
 
   if (type === "conversation_message") {
     const raw = parsed.data.rawContent;
@@ -40,7 +47,7 @@ export function deriveSourceLabel({
     const line = firstNonEmptyLine(raw);
     if (!line) return null;
     const snippet = line.slice(0, MAX_SNIPPET);
-    const role = parsed.data.role;
+    const role = parsed.data.role?.trim();
     return role
       ? `${role[0]!.toUpperCase()}${role.slice(1)}: ${snippet}`
       : snippet;

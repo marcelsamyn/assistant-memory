@@ -17,6 +17,15 @@ describe("deriveSourceLabel", () => {
     ).toBe("notes.md");
   });
 
+  it("falls back to filename when title is an empty/whitespace string", () => {
+    expect(
+      deriveSourceLabel({
+        type: "document",
+        metadata: { title: "  ", filename: "notes.md" },
+      }),
+    ).toBe("notes.md");
+  });
+
   it("labels a chat message with role + first line", () => {
     expect(
       deriveSourceLabel({

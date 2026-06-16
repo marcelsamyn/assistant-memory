@@ -13,6 +13,7 @@
 **Commands:** `pnpm build:check` or `pnpm typecheck` (match package.json), `pnpm test` / `pnpm test --run`, `pnpm lint`. Run a single test file: `pnpm test <file>`.
 
 **Key facts from recon (cite, don't re-derive):**
+
 - `sources.ts:118` `inlineThreshold = 1024`; text docs >1KB become MinIO blobs.
 - `sources.ts:86-89` `RawResult = { kind:"inline"; content } | { kind:"blob"; buffer; contentType }`.
 - `routes/sources/get.post.ts:26-37` builds `content` and returns `null` for every blob.
@@ -33,6 +34,7 @@
 ### Task 1: `sourceContentFromRaw` helper + wire into `/sources/get`
 
 **Files:**
+
 - Create: `src/lib/source-content.ts`
 - Test: `src/lib/source-content.test.ts`
 - Modify: `src/routes/sources/get.post.ts`
@@ -233,6 +235,7 @@ git commit -m "✨ feat(sources): decode text/markdown blobs in source detail (2
 ### Task 2: `deriveSourceLabel` for chat messages + use in summaries
 
 **Files:**
+
 - Create: `src/lib/source-label.ts`
 - Test: `src/lib/source-label.test.ts`
 - Modify: `src/lib/sources-read.ts` (both summary builders)
@@ -256,7 +259,10 @@ describe("deriveSourceLabel", () => {
 
   it("falls back to filename when no title", () => {
     expect(
-      deriveSourceLabel({ type: "document", metadata: { filename: "notes.md" } }),
+      deriveSourceLabel({
+        type: "document",
+        metadata: { filename: "notes.md" },
+      }),
     ).toBe("notes.md");
   });
 
@@ -264,7 +270,10 @@ describe("deriveSourceLabel", () => {
     expect(
       deriveSourceLabel({
         type: "conversation_message",
-        metadata: { rawContent: "I'll send the report Friday\n(more)", role: "user" },
+        metadata: {
+          rawContent: "I'll send the report Friday\n(more)",
+          role: "user",
+        },
       }),
     ).toBe("User: I'll send the report Friday");
   });
@@ -279,12 +288,17 @@ describe("deriveSourceLabel", () => {
   });
 
   it("returns null for a container source with no title", () => {
-    expect(deriveSourceLabel({ type: "conversation", metadata: {} })).toBeNull();
+    expect(
+      deriveSourceLabel({ type: "conversation", metadata: {} }),
+    ).toBeNull();
   });
 
   it("returns null for a message with empty content", () => {
     expect(
-      deriveSourceLabel({ type: "conversation_message", metadata: { rawContent: "   " } }),
+      deriveSourceLabel({
+        type: "conversation_message",
+        metadata: { rawContent: "   " },
+      }),
     ).toBeNull();
   });
 });
@@ -392,6 +406,7 @@ git commit -m "✨ feat(sources): derive Role:first-line labels for chat-message
 ### Task 3: register the `source_title` model task
 
 **Files:**
+
 - Modify: `src/utils/models.ts` (ModelTask union + TASK_MODEL_OVERRIDES map)
 - Modify: `src/utils/env.ts` (add `MODEL_ID_SOURCE_TITLE`)
 
@@ -444,6 +459,7 @@ git commit -m "🔧 chore(models): add source_title model task"
 ### Task 4: title generation (prompt + LLM call + DB orchestration)
 
 **Files:**
+
 - Create: `src/lib/source-title.ts` (env-free top level: pure prompt + LLM-call helper using dynamic imports)
 - Test: `src/lib/source-title.test.ts` (unit-tests the pure prompt builder)
 - Create: `src/lib/jobs/generate-source-title.ts` (DB/queue orchestration)
@@ -554,13 +570,13 @@ Expected: PASS (1 test).
 Create `src/lib/jobs/generate-source-title.ts`:
 
 ```ts
-import type { DrizzleDB } from "~/utils/db";
-import type { TypeId } from "typeid-js";
 import { and, asc, eq, sql } from "drizzle-orm";
+import type { TypeId } from "typeid-js";
 import { sources } from "~/db/schema";
-import { deriveTitle } from "~/lib/sources-read";
-import { sourceMetadataSchema, sourceService } from "~/lib/sources";
 import { generateTitleFromContent } from "~/lib/source-title";
+import { sourceMetadataSchema, sourceService } from "~/lib/sources";
+import { deriveTitle } from "~/lib/sources-read";
+import type { DrizzleDB } from "~/utils/db";
 
 const PREVIEW_MAX_CHARS = 2000;
 const MAX_CHILDREN = 40;
@@ -670,7 +686,10 @@ it("generates and stores a title for an untitled conversation", async () => {
     // with metadata.rawContent (use insertNewSources or direct inserts).
     // Act:
     const { generateSourceTitle } = await import("./generate-source-title");
-    const result = await generateSourceTitle(db, { userId, sourceId: parentId });
+    const result = await generateSourceTitle(db, {
+      userId,
+      sourceId: parentId,
+    });
     // Assert:
     expect(result.generated).toBe(true);
     const [row] = await db
@@ -708,6 +727,7 @@ git commit -m "✨ feat(sources): LLM title generation for container sources"
 ### Task 5: enqueue title-gen on container ingestion + worker handler
 
 **Files:**
+
 - Modify: `src/lib/queues.ts` (add `generate-source-title` worker branch)
 - Modify: `src/lib/ingestion/insert-new-sources.ts` (enqueue after parent+children inserted)
 
@@ -736,20 +756,20 @@ Ensure `z` is imported at the top of `queues.ts` (it likely already is; if not, 
 In `src/lib/ingestion/insert-new-sources.ts`, immediately **before** the function's `return { sourceId, … }` statement (where `sourceId` is the parent container source id), add:
 
 ```ts
-  // Best-effort, fire-and-forget container titling. Guarded inside the job, so
-  // enqueuing unconditionally is safe and idempotent. Dynamic import avoids a
-  // queues ⇄ ingestion import cycle.
-  const { batchQueue } = await import("../queues");
-  await batchQueue.add(
-    "generate-source-title",
-    { userId, sourceId },
-    {
-      attempts: 2,
-      backoff: { type: "exponential", delay: 1_000 },
-      removeOnComplete: true,
-      removeOnFail: 20,
-    },
-  );
+// Best-effort, fire-and-forget container titling. Guarded inside the job, so
+// enqueuing unconditionally is safe and idempotent. Dynamic import avoids a
+// queues ⇄ ingestion import cycle.
+const { batchQueue } = await import("../queues");
+await batchQueue.add(
+  "generate-source-title",
+  { userId, sourceId },
+  {
+    attempts: 2,
+    backoff: { type: "exponential", delay: 1_000 },
+    removeOnComplete: true,
+    removeOnFail: 20,
+  },
+);
 ```
 
 Confirm by reading the file that the parent id variable is named `sourceId` (per the function's `{ sourceId, newSourceSourceIds, sourceRefs }` return) and that `userId` is in scope. This covers all containers — conversation, meeting_transcript, external_conversation — in one place.
@@ -768,6 +788,7 @@ git commit -m "✨ feat(sources): enqueue title-gen on container ingestion"
 ### Task 6: backfill endpoint for existing untitled containers
 
 **Files:**
+
 - Create: `src/routes/maintenance/backfill-source-titles.post.ts`
 
 - [ ] **Step 1: Create the route**
