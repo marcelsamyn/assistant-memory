@@ -638,7 +638,10 @@ export async function findNodesByLexical(
 
   const tsq = sql`websearch_to_tsquery('english', ${query})`;
   const rank = sql<number>`ts_rank_cd(${nodeMetadata.searchTsv}, ${tsq})`;
-  const matched = sql`(${nodeMetadata.searchTsv} @@ ${tsq} OR similarity(${nodeMetadata.label}, ${query}) > 0.2)`;
+  // word_similarity (not similarity): matches the query against the best-matching
+  // word in the label, so a short typo ("Boux") still matches a long label
+  // ("Boox Note Air 4C"). Full-string similarity() would score near-zero there.
+  const matched = sql`(${nodeMetadata.searchTsv} @@ ${tsq} OR word_similarity(${query}, ${nodeMetadata.label}) > 0.3)`;
   const highlight = sql<string>`ts_headline('english', coalesce(${nodeMetadata.label}, '') || ' ' || coalesce(${nodeMetadata.description}, ''), ${tsq}, 'StartSel=<mark>, StopSel=</mark>, MaxFragments=1')`;
 
   let where = and(
@@ -698,7 +701,9 @@ export async function findClaimsByLexical(
 
   const tsq = sql`websearch_to_tsquery('english', ${query})`;
   const rank = sql<number>`ts_rank_cd(${claims.searchTsv}, ${tsq})`;
-  const matched = sql`(${claims.searchTsv} @@ ${tsq} OR similarity(${claims.statement}, ${query}) > 0.2)`;
+  // word_similarity matches the query against the best-matching word in the
+  // statement (handles typos against long statements; see findNodesByLexical).
+  const matched = sql`(${claims.searchTsv} @@ ${tsq} OR word_similarity(${query}, ${claims.statement}) > 0.3)`;
   const highlight = sql<string>`ts_headline('english', coalesce(${claims.statement}, '') || ' ' || coalesce(${claims.description}, ''), ${tsq}, 'StartSel=<mark>, StopSel=</mark>, MaxFragments=1')`;
 
   const subjectNodeMetadata = aliasedTable(nodeMetadata, "subjectNodeMetadata");
