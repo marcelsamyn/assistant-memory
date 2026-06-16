@@ -90,6 +90,31 @@ describe("POST /sources/get", () => {
 
     expect(response.source.content).toBeNull();
   });
+
+  it("decodes a text/markdown blob into content", async () => {
+    const source = makeSourceSummary("document");
+    vi.stubGlobal("readBody", async () => ({
+      userId: "user_source",
+      sourceId: source.sourceId,
+      includeContent: true,
+    }));
+    mocks.getSourceSummary.mockResolvedValue(source);
+    mocks.fetchRaw.mockResolvedValue([
+      {
+        kind: "blob",
+        sourceId: source.sourceId,
+        buffer: Buffer.from("# Notes\nbody", "utf-8"),
+        contentType: "text/markdown",
+      },
+    ]);
+
+    const response = await handler({} as H3Event);
+
+    expect(response.source.content).toEqual({
+      text: "# Notes\nbody",
+      format: "markdown",
+    });
+  });
 });
 
 function makeSourceSummary(type: SourceSummary["type"]): SourceSummary {

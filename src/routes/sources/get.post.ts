@@ -3,6 +3,7 @@ import {
   getSourceRequestSchema,
   getSourceResponseSchema,
 } from "~/lib/schemas/sources";
+import { sourceContentFromRaw } from "~/lib/source-content";
 import { sourceService } from "~/lib/sources";
 import { getSourceSummary } from "~/lib/sources-read";
 import { useDatabase } from "~/utils/db";
@@ -25,13 +26,7 @@ export default defineEventHandler(async (event) => {
   }
 
   const [raw] = await sourceService.fetchRaw(userId, [sourceId]);
-  const content =
-    raw?.kind === "inline"
-      ? {
-          text: raw.content,
-          format: source.type === "document" ? "markdown" : "text",
-        }
-      : null;
+  const content = sourceContentFromRaw(raw, source.type);
 
   return getSourceResponseSchema.parse({
     source: { ...source, content },
