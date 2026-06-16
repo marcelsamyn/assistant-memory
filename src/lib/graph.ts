@@ -400,12 +400,17 @@ async function findSimilarNodesViaSubstring(
     limit = 10,
     excludeNodeTypes,
     includeReference = false,
+    scope,
   } = opts;
   const db = await useDatabase();
 
   let where = and(
     eq(nodes.userId, userId),
-    includeReference ? undefined : nodeHasScopeSupport(userId, "personal"),
+    scope
+      ? nodeHasScopeSupport(userId, scope)
+      : includeReference
+        ? undefined
+        : nodeHasScopeSupport(userId, "personal"),
     sql`lower(${nodeMetadata.label}) LIKE ${`%${query.toLowerCase()}%`}`,
   );
   if (excludeNodeTypes && excludeNodeTypes.length > 0) {
@@ -444,6 +449,7 @@ async function findSimilarClaimsViaSubstring(
     statuses = ["active"],
     asOf = new Date(),
     includeReference = false,
+    scope,
     includeAssistantInferred = false,
   } = opts;
   const db = await useDatabase();
@@ -453,7 +459,11 @@ async function findSimilarClaimsViaSubstring(
 
   const where = and(
     eq(claims.userId, userId),
-    includeReference ? undefined : eq(claims.scope, "personal"),
+    scope
+      ? eq(claims.scope, scope)
+      : includeReference
+        ? undefined
+        : eq(claims.scope, "personal"),
     includeAssistantInferred
       ? undefined
       : ne(claims.assertedByKind, "assistant_inferred"),
