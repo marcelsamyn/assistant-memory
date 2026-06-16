@@ -182,12 +182,17 @@ Scope is a hard boundary as elsewhere: a `personal` request never surfaces
 `reference` material and vice versa. The time-range filter is a small addition
 to the claim query (today only an `asOf` cutoff exists, no range).
 
-**Time range and node hits.** `statedBetween` filters claim hits directly by
-`claims.stated_at`. Nodes have no intrinsic time, so when a range is set a node
-hit is kept only if the node has at least one active claim with `stated_at` in
-range (an `EXISTS` subquery, same shape as the existing `nodeHasScopeSupport`
-predicate). With no range set, node lexical/vector hits are unconstrained by
-time.
+**Time range and node hits.** `statedBetween` filters **claim** hits directly
+by `claims.stated_at`. Nodes (entities) have no intrinsic time and are treated
+as timeless: in v1 a time range narrows the claim hits but does not drop entity
+hits (you still want the "Boox" entity itself to surface for "Boox in May").
+Entity-level time gating is deferred.
+
+**Scope is single-valued and exact.** `scope: "personal"` returns only personal
+material; `scope: "reference"` returns only reference. This requires an explicit
+`scope` filter on the retrieval functions — the existing `includeReference`
+boolean means "personal OR both", which would blend scopes and is not used on
+this path.
 
 ## Surfaces & downstream consumers
 
