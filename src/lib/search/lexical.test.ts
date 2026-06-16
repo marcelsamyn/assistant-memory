@@ -1,10 +1,10 @@
+import { createMigratedTestDb, isServerReachable } from "./test-db";
+import type { MigratedTestDb } from "./test-db";
 import "dotenv/config";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createMigratedTestDb, isServerReachable } from "./test-db";
-import { findClaimsByLexical, findNodesByLexical } from "~/lib/graph";
 import { nodes, nodeMetadata, claims, sources, users } from "~/db/schema";
+import { findClaimsByLexical, findNodesByLexical } from "~/lib/graph";
 import { newTypeId } from "~/types/typeid";
-import type { MigratedTestDb } from "./test-db";
 
 const SERVER = await isServerReachable();
 const d = SERVER ? describe : describe.skip;
@@ -66,7 +66,11 @@ d("lexical retrieval", () => {
   });
 
   it("matches an exact keyword and returns a highlight", async () => {
-    const rows = await findClaimsByLexical({ userId, query: "Boox", limit: 10 });
+    const rows = await findClaimsByLexical({
+      userId,
+      query: "Boox",
+      limit: 10,
+    });
     expect(rows.length).toBeGreaterThan(0);
     expect(rows[0]!.statement).toContain("Boox");
     expect(rows[0]!.highlight).toMatch(/<mark>|Boox/);
@@ -81,13 +85,19 @@ d("lexical retrieval", () => {
     const inRange = await findClaimsByLexical({
       userId,
       query: "Boox",
-      statedBetween: { from: new Date("2026-05-01Z"), to: new Date("2026-05-31Z") },
+      statedBetween: {
+        from: new Date("2026-05-01Z"),
+        to: new Date("2026-05-31Z"),
+      },
     });
     expect(inRange.length).toBeGreaterThan(0);
     const outOfRange = await findClaimsByLexical({
       userId,
       query: "Boox",
-      statedBetween: { from: new Date("2026-01-01Z"), to: new Date("2026-02-01Z") },
+      statedBetween: {
+        from: new Date("2026-01-01Z"),
+        to: new Date("2026-02-01Z"),
+      },
     });
     expect(outOfRange.length).toBe(0);
   });

@@ -1,13 +1,12 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import handler from "./routes/search.post";
 import type { H3Event } from "h3";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { searchResponseSchema } from "~/lib/schemas/search";
 
 const mocks = vi.hoisted(() => ({ explicitSearch: vi.fn() }));
 vi.mock("~/lib/search/explicit-search", () => ({
   explicitSearch: mocks.explicitSearch,
 }));
-
-import handler from "./routes/search.post";
-import { searchResponseSchema } from "~/lib/schemas/search";
 
 describe("POST /search", () => {
   afterEach(() => {
@@ -36,7 +35,12 @@ describe("POST /search", () => {
     const response = searchResponseSchema.parse(await handler({} as H3Event));
     expect(response.hits).toHaveLength(1);
     expect(mocks.explicitSearch).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: "u", query: "Boox", limit: 20, scope: "personal" }),
+      expect.objectContaining({
+        userId: "u",
+        query: "Boox",
+        limit: 20,
+        scope: "personal",
+      }),
     );
   });
 

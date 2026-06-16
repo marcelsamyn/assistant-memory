@@ -48,11 +48,6 @@ import {
   bootstrapMemoryRequestSchema,
 } from "../lib/schemas/context.js";
 import {
-  searchResponseSchema,
-  type SearchRequestInput,
-  type SearchResponse,
-} from "../lib/schemas/search.js";
-import {
   CreateCommitmentRequest,
   CreateCommitmentResponse,
   createCommitmentResponseSchema,
@@ -236,6 +231,11 @@ import {
   scratchpadResponseSchema,
   scratchpadEditResponseSchema,
 } from "../lib/schemas/scratchpad.js";
+import {
+  searchResponseSchema,
+  type SearchRequestInput,
+  type SearchResponse,
+} from "../lib/schemas/search.js";
 import {
   SetCommitmentDueRequest,
   SetCommitmentDueResponse,

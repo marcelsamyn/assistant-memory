@@ -6,12 +6,12 @@
  * Common aliases: createMigratedTestDb, search test database, hybrid search
  * test setup.
  */
-import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
+import pg from "pg";
+import type { DrizzleDB } from "~/db";
 import * as schema from "~/db/schema";
 import { setTestDatabase } from "~/utils/db";
-import type { DrizzleDB } from "~/db";
 
 const HOST = process.env["TEST_PG_HOST"] ?? "localhost";
 const PORT = Number(process.env["TEST_PG_PORT"] ?? 5431);

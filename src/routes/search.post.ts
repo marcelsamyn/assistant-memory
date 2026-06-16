@@ -12,11 +12,11 @@
 // `readBody` is deliberately NOT imported: Nitro auto-imports it globally,
 // which is what lets the route test stub it via vi.stubGlobal.
 import { defineEventHandler } from "h3";
-import { explicitSearch } from "~/lib/search/explicit-search";
 import {
   searchRequestSchema,
   searchResponseSchema,
 } from "~/lib/schemas/search";
+import { explicitSearch } from "~/lib/search/explicit-search";
 
 export default defineEventHandler(async (event) => {
   const { userId, query, limit, scope, filters } = searchRequestSchema.parse(

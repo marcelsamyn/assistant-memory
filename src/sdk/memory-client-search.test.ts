@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryClient } from "./memory-client";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 describe("MemoryClient.search", () => {
   afterEach(() => vi.unstubAllGlobals());
