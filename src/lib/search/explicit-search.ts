@@ -140,9 +140,14 @@ export async function explicitSearch(
   for (const c of lexClaims) claimById.set(c.id, c);
   const claimHighlight = new Map(lexClaims.map((c) => [c.id, c.highlight]));
 
-  const claimSourceIds = claimFusion
-    .map((f) => claimById.get(f.id)?.sourceId)
-    .filter((s): s is TypeId<"source"> => Boolean(s));
+  // Dedupe: many claims can share one source, and hydrate() queries by id.
+  const claimSourceIds = Array.from(
+    new Set(
+      claimFusion
+        .map((f) => claimById.get(f.id)?.sourceId)
+        .filter((s): s is TypeId<"source"> => Boolean(s)),
+    ),
+  );
   const sourceMap = await hydrate(claimSourceIds);
 
   const nodeHits: SearchHit[] = nodeFusion.flatMap((f) => {
@@ -185,8 +190,15 @@ export async function explicitSearch(
     ];
   });
 
+  // Deterministic tie-break (claims can share a subject nodeId, so fall through
+  // to claimId) keeps ordering stable across runs when fused scores collide.
   const hits = [...nodeHits, ...claimHits]
-    .sort((a, b) => b.score - a.score)
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        a.nodeId.localeCompare(b.nodeId) ||
+        (a.claimId ?? "").localeCompare(b.claimId ?? ""),
+    )
     .slice(0, limit);
 
   return { query, hits };

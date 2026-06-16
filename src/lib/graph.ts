@@ -732,10 +732,14 @@ export async function findNodesByLexical(
   // declared on the Drizzle schema (so the ORM never enumerates it in
   // select/returning). Reference it by raw, table-qualified name.
   const rank = sql<number>`ts_rank_cd(node_metadata.search_tsv, ${tsq})`;
-  // word_similarity (not similarity): matches the query against the best-matching
-  // word in the label, so a short typo ("Boux") still matches a long label
-  // ("Boox Note Air 4C"). Full-string similarity() would score near-zero there.
-  const matched = sql`(node_metadata.search_tsv @@ ${tsq} OR word_similarity(${query}, ${nodeMetadata.label}) > 0.3)`;
+  // Fuzzy fallback via the `<%` (word_similarity) operator: matches the query
+  // against the best-matching word in the label, so a short typo ("Boux") still
+  // matches a long label ("Boox Note Air 4C"). Using the operator (not a bare
+  // `word_similarity(...) > 0.3` call) keeps the clause index-eligible — a
+  // non-indexable function in this OR would force a seq scan for the whole
+  // predicate, de-optimizing the tsvector path too. The threshold comes from
+  // the pg_trgm.word_similarity_threshold GUC, set per-transaction below.
+  const matched = sql`(node_metadata.search_tsv @@ ${tsq} OR ${query} <% ${nodeMetadata.label})`;
   const highlight = sql<string>`ts_headline('english', coalesce(${nodeMetadata.label}, '') || ' ' || coalesce(${nodeMetadata.description}, ''), ${tsq}, 'StartSel=<mark>, StopSel=</mark>, MaxFragments=1')`;
 
   let where = and(
@@ -749,23 +753,28 @@ export async function findNodesByLexical(
     where = and(where, notInArray(nodes.nodeType, excludeNodeTypes));
   }
 
-  const rows = await db
-    .select({
-      id: nodes.id,
-      type: nodes.nodeType,
-      label: nodeMetadata.label,
-      description: nodeMetadata.description,
-      timestamp: nodes.createdAt,
-      rank,
-      highlight,
-    })
-    .from(nodes)
-    .innerJoin(nodeMetadata, eq(nodes.id, nodeMetadata.nodeId))
-    .where(where)
-    .orderBy(desc(rank))
-    .limit(limit);
-
-  return rows.map((r) => ({ ...r, similarity: r.rank }));
+  // SET LOCAL is transaction-scoped, so lowering the word-similarity threshold
+  // to 0.3 (from the 0.6 default) for the `<%` operator never leaks across the
+  // pooled connection.
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL pg_trgm.word_similarity_threshold = 0.3`);
+    const rows = await tx
+      .select({
+        id: nodes.id,
+        type: nodes.nodeType,
+        label: nodeMetadata.label,
+        description: nodeMetadata.description,
+        timestamp: nodes.createdAt,
+        rank,
+        highlight,
+      })
+      .from(nodes)
+      .innerJoin(nodeMetadata, eq(nodes.id, nodeMetadata.nodeId))
+      .where(where)
+      .orderBy(desc(rank))
+      .limit(limit);
+    return rows.map((r) => ({ ...r, similarity: r.rank }));
+  });
 }
 
 /**
@@ -792,9 +801,10 @@ export async function findClaimsByLexical(
   const tsq = sql`websearch_to_tsquery('english', ${query})`;
   // search_tsv is a migration-managed generated column (see findNodesByLexical).
   const rank = sql<number>`ts_rank_cd(claims.search_tsv, ${tsq})`;
-  // word_similarity matches the query against the best-matching word in the
-  // statement (handles typos against long statements; see findNodesByLexical).
-  const matched = sql`(claims.search_tsv @@ ${tsq} OR word_similarity(${query}, ${claims.statement}) > 0.3)`;
+  // Fuzzy fallback via the `<%` (word_similarity) operator against the best
+  // word in the statement (index-eligible; threshold from the GUC set below).
+  // See findNodesByLexical for the rationale.
+  const matched = sql`(claims.search_tsv @@ ${tsq} OR ${query} <% ${claims.statement})`;
   const highlight = sql<string>`ts_headline('english', coalesce(${claims.statement}, '') || ' ' || coalesce(${claims.description}, ''), ${tsq}, 'StartSel=<mark>, StopSel=</mark>, MaxFragments=1')`;
 
   const subjectNodeMetadata = aliasedTable(nodeMetadata, "subjectNodeMetadata");
@@ -817,39 +827,43 @@ export async function findClaimsByLexical(
     where = and(where, sql`${claims.statedAt} <= ${statedBetween.to}`);
   }
 
-  const rows = await db
-    .select({
-      id: claims.id,
-      subjectNodeId: claims.subjectNodeId,
-      objectNodeId: claims.objectNodeId,
-      objectValue: claims.objectValue,
-      subjectLabel: subjectNodeMetadata.label,
-      objectLabel: objectNodeMetadata.label,
-      predicate: claims.predicate,
-      statement: claims.statement,
-      description: claims.description,
-      sourceId: claims.sourceId,
-      scope: claims.scope,
-      assertedByKind: claims.assertedByKind,
-      assertedByNodeId: claims.assertedByNodeId,
-      status: claims.status,
-      statedAt: claims.statedAt,
-      timestamp: claims.createdAt,
-      rank,
-      highlight,
-    })
-    .from(claims)
-    .leftJoin(
-      subjectNodeMetadata,
-      eq(subjectNodeMetadata.nodeId, claims.subjectNodeId),
-    )
-    .leftJoin(
-      objectNodeMetadata,
-      eq(objectNodeMetadata.nodeId, claims.objectNodeId),
-    )
-    .where(where)
-    .orderBy(desc(rank))
-    .limit(limit);
-
-  return rows.map((r) => ({ ...r, similarity: r.rank }));
+  // SET LOCAL keeps the lowered word-similarity threshold scoped to this
+  // transaction (see findNodesByLexical).
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL pg_trgm.word_similarity_threshold = 0.3`);
+    const rows = await tx
+      .select({
+        id: claims.id,
+        subjectNodeId: claims.subjectNodeId,
+        objectNodeId: claims.objectNodeId,
+        objectValue: claims.objectValue,
+        subjectLabel: subjectNodeMetadata.label,
+        objectLabel: objectNodeMetadata.label,
+        predicate: claims.predicate,
+        statement: claims.statement,
+        description: claims.description,
+        sourceId: claims.sourceId,
+        scope: claims.scope,
+        assertedByKind: claims.assertedByKind,
+        assertedByNodeId: claims.assertedByNodeId,
+        status: claims.status,
+        statedAt: claims.statedAt,
+        timestamp: claims.createdAt,
+        rank,
+        highlight,
+      })
+      .from(claims)
+      .leftJoin(
+        subjectNodeMetadata,
+        eq(subjectNodeMetadata.nodeId, claims.subjectNodeId),
+      )
+      .leftJoin(
+        objectNodeMetadata,
+        eq(objectNodeMetadata.nodeId, claims.objectNodeId),
+      )
+      .where(where)
+      .orderBy(desc(rank))
+      .limit(limit);
+    return rows.map((r) => ({ ...r, similarity: r.rank }));
+  });
 }

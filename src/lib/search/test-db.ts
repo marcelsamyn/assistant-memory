@@ -6,6 +6,10 @@
  * Common aliases: createMigratedTestDb, search test database, hybrid search
  * test setup.
  */
+// Load .env before importing ~/utils/db, which parses env eagerly at module
+// load. Without this, running a search DB test in isolation fails env
+// validation (it otherwise only worked when another suite loaded env first).
+import "dotenv/config";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
