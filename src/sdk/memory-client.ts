@@ -48,6 +48,11 @@ import {
   bootstrapMemoryRequestSchema,
 } from "../lib/schemas/context.js";
 import {
+  searchResponseSchema,
+  type SearchRequest,
+  type SearchResponse,
+} from "../lib/schemas/search.js";
+import {
   CreateCommitmentRequest,
   CreateCommitmentResponse,
   createCommitmentResponseSchema,
@@ -470,6 +475,16 @@ export class MemoryClient {
       contextSearchResponseSchema,
       payload,
     );
+  }
+
+  /**
+   * Hybrid explicit search: lexical + vector retrieval fused with RRF, returning
+   * ranked hits with highlights. Use for intentional lookups (a search box, or
+   * the assistant deliberately looking something up) — not for automatic
+   * conversation context, which is `contextSearch`.
+   */
+  async search(payload: SearchRequest): Promise<SearchResponse> {
+    return this._fetch("POST", "/search", searchResponseSchema, payload);
   }
 
   async queryAtlas(payload: QueryAtlasRequest): Promise<QueryAtlasResponse> {
