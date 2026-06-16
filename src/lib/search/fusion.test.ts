@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
 import { reciprocalRankFusion, RRF_K } from "./fusion";
+import { describe, expect, it } from "vitest";
 
 describe("reciprocalRankFusion", () => {
   it("sums 1/(k+rank) across rankings and sorts descending", () => {

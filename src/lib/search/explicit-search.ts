@@ -6,7 +6,10 @@
  *
  * Common aliases: hybrid search, explicit search, search pipeline, runSearch.
  */
+import { reciprocalRankFusion } from "./fusion";
 import { inArray } from "drizzle-orm";
+import { z } from "zod";
+import { sources } from "~/db/schema";
 import {
   generateTextEmbedding,
   findSimilarNodes,
@@ -18,13 +21,14 @@ import {
   type NodeSearchResult,
   type ClaimSearchResult,
 } from "~/lib/graph";
-import { reciprocalRankFusion } from "./fusion";
-import { sources } from "~/db/schema";
-import { useDatabase } from "~/utils/db";
+import type {
+  SearchHit,
+  SearchRequest,
+  SearchResponse,
+} from "~/lib/schemas/search";
 import type { SourceType } from "~/types/graph";
-import type { SearchHit, SearchRequest, SearchResponse } from "~/lib/schemas/search";
 import type { TypeId } from "~/types/typeid";
-import { z } from "zod";
+import { useDatabase } from "~/utils/db";
 
 export type ExplicitSearchParams = SearchRequest;
 

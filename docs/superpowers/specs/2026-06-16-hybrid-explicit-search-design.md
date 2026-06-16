@@ -18,16 +18,16 @@ looking something up:
 - Exact / rare tokens fail to rank: project codenames, acronyms, IDs, people's
   names, exact phrases. Embeddings smear these into nearest neighbours.
 - The `0.4` floor silently drops weak-but-only matches. Someone who types
-  "Boox" expects *everything* mentioning Boox, ranked — not "top-k above a
+  "Boox" expects _everything_ mentioning Boox, ranked — not "top-k above a
   magic cosine threshold".
 - No substring / prefix / typo tolerance, so type-ahead and half-remembered
   words don't work.
 - No facets. The graph is rich (entity type, time, source, scope) but search
   exposes almost none of it.
 
-Semantic recall is exactly right for the *background* context the system
+Semantic recall is exactly right for the _background_ context the system
 injects automatically each turn. It is wrong for retrieval a user or assistant
-asks for *on purpose*. This design adds a dedicated hybrid (lexical + vector)
+asks for _on purpose_. This design adds a dedicated hybrid (lexical + vector)
 explicit-search surface and draws a clear boundary between the two intents.
 
 ## Decisions (settled during brainstorming)
@@ -46,7 +46,7 @@ explicit-search surface and draws a clear boundary between the two intents.
    ranking, `pg_trgm` for fuzzy/typo/prefix. No ParadeDB / external search
    engine. `pgvector` is already present; only `pg_trgm` is newly required.
 4. **Ranked hits with highlights** as the result shape (not cards, not raw
-   graph). An ordered list of hits, each showing *why* it matched.
+   graph). An ordered list of hits, each showing _why_ it matched.
 5. **Reciprocal Rank Fusion (RRF)** to merge the lexical and vector rankings —
    no cross-engine score normalisation.
 6. **v1 facets: entity type + time range.** Scope stays single-valued (default
@@ -59,11 +59,11 @@ explicit-search surface and draws a clear boundary between the two intents.
 
 Three retrieval intents, separated by endpoint:
 
-| Intent | Endpoint | Engine | Result shape |
-| ------ | -------- | ------ | ------------ |
-| Background context (auto-injected each turn) | `POST /context/search` | semantic only | cards (`NodeCard[]` + evidence) — unchanged |
-| **Explicit search** (human types, or assistant looks up) | **`POST /search`** (new) | **hybrid** (lexical + vector, RRF) | ranked `SearchHit[]` + highlights |
-| Graph visualization | `POST /query/search` (legacy) | semantic | raw graph — unchanged |
+| Intent                                                   | Endpoint                      | Engine                             | Result shape                                |
+| -------------------------------------------------------- | ----------------------------- | ---------------------------------- | ------------------------------------------- |
+| Background context (auto-injected each turn)             | `POST /context/search`        | semantic only                      | cards (`NodeCard[]` + evidence) — unchanged |
+| **Explicit search** (human types, or assistant looks up) | **`POST /search`** (new)      | **hybrid** (lexical + vector, RRF) | ranked `SearchHit[]` + highlights           |
+| Graph visualization                                      | `POST /query/search` (legacy) | semantic                           | raw graph — unchanged                       |
 
 ## Data model & indexes
 
@@ -79,11 +79,15 @@ with the source text:
 - `node_metadata.search_tsv` = `to_tsvector('english', coalesce(label,'') || ' ' || coalesce(description,''))`,
   `STORED GENERATED`, GIN-indexed.
 
-Drizzle lacks first-class generated-`tsvector` support; the generated columns
-and GIN indexes are declared via `sql` in the migration and represented in
-`schema.ts` with `.generatedAlwaysAs(sql\`...\`)` where expressible, otherwise
-as a raw migration step with a matching column declaration for typing. (The
-plan resolves the exact Drizzle representation against the installed version.)
+**`search_tsv` is a migration-managed shadow column, intentionally NOT declared
+in `schema.ts`.** Declaring it on the Drizzle table would make Drizzle enumerate
+it in every `select`/`returning`, which breaks the many existing tests that
+build their DB from hand-written `CREATE TABLE` DDL (that DDL has no
+`search_tsv`). Instead the column + GIN indexes live only in a hand-written
+(`drizzle-kit generate --custom`) migration, and the lexical functions reference
+`search_tsv` via raw, table-qualified SQL. The ORM stays unaware of it; existing
+hand-rolled test schemas are unaffected. This is the standard Drizzle pattern for
+generated FTS columns.
 
 ### Fuzzy / prefix (pg_trgm + GIN)
 
@@ -108,8 +112,9 @@ they compose:
 
 - `findNodesByLexical(db, params)` — `websearch_to_tsquery('english', query)`
   against `node_metadata.search_tsv`, ranked by `ts_rank_cd`, unioned with a
-  `pg_trgm` `similarity()` match on `label` for fuzzy/prefix. Applies the same
-  SQL filters (`userId`, scope, `notInArray(nodeType, …)`).
+  `pg_trgm` `word_similarity(query, label) > 0.3` fuzzy match (word_similarity,
+  not similarity, so a short typo matches the best word in a long label).
+  Applies the same SQL filters (`userId`, scope, entity-type).
 - `findClaimsByLexical(db, params)` — same against `claims.search_tsv` /
   `claims.statement`, with the existing claim filters (status, validity,
   asserted-by-kind) plus the new time-range filter.
@@ -212,7 +217,7 @@ this path.
 
 The assistant currently has the MCP `search_memory` tool → `/context/search`
 (semantic cards) for "tell me about this entity". That stays. **Recommendation:**
-add a *second* MCP tool, `search_text` (working name), → `/search`, described
+add a _second_ MCP tool, `search_text` (working name), → `/search`, described
 for exact / keyword / "find where I mentioned X" lookups. Two tools with
 distinct intents rather than repointing the pinned `search_memory` contract
 (whose card shape suits entity recall and whose description is snapshot-pinned

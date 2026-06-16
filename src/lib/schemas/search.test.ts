@@ -1,12 +1,14 @@
-import { describe, expect, it } from "vitest";
 import { searchRequestSchema, searchResponseSchema } from "./search";
+import { describe, expect, it } from "vitest";
 
 describe("search schemas", () => {
   it("applies defaults and rejects empty query", () => {
     const parsed = searchRequestSchema.parse({ userId: "u", query: "boox" });
     expect(parsed.limit).toBe(20);
     expect(parsed.scope).toBe("personal");
-    expect(() => searchRequestSchema.parse({ userId: "u", query: "" })).toThrow();
+    expect(() =>
+      searchRequestSchema.parse({ userId: "u", query: "" }),
+    ).toThrow();
   });
 
   it("accepts entityTypes and statedBetween filters", () => {

@@ -718,11 +718,14 @@ export async function findNodesByLexical(
   const db = await useDatabase();
 
   const tsq = sql`websearch_to_tsquery('english', ${query})`;
-  const rank = sql<number>`ts_rank_cd(${nodeMetadata.searchTsv}, ${tsq})`;
+  // search_tsv is a migration-managed generated column, intentionally not
+  // declared on the Drizzle schema (so the ORM never enumerates it in
+  // select/returning). Reference it by raw, table-qualified name.
+  const rank = sql<number>`ts_rank_cd(node_metadata.search_tsv, ${tsq})`;
   // word_similarity (not similarity): matches the query against the best-matching
   // word in the label, so a short typo ("Boux") still matches a long label
   // ("Boox Note Air 4C"). Full-string similarity() would score near-zero there.
-  const matched = sql`(${nodeMetadata.searchTsv} @@ ${tsq} OR word_similarity(${query}, ${nodeMetadata.label}) > 0.3)`;
+  const matched = sql`(node_metadata.search_tsv @@ ${tsq} OR word_similarity(${query}, ${nodeMetadata.label}) > 0.3)`;
   const highlight = sql<string>`ts_headline('english', coalesce(${nodeMetadata.label}, '') || ' ' || coalesce(${nodeMetadata.description}, ''), ${tsq}, 'StartSel=<mark>, StopSel=</mark>, MaxFragments=1')`;
 
   let where = and(
@@ -777,10 +780,11 @@ export async function findClaimsByLexical(
   const db = await useDatabase();
 
   const tsq = sql`websearch_to_tsquery('english', ${query})`;
-  const rank = sql<number>`ts_rank_cd(${claims.searchTsv}, ${tsq})`;
+  // search_tsv is a migration-managed generated column (see findNodesByLexical).
+  const rank = sql<number>`ts_rank_cd(claims.search_tsv, ${tsq})`;
   // word_similarity matches the query against the best-matching word in the
   // statement (handles typos against long statements; see findNodesByLexical).
-  const matched = sql`(${claims.searchTsv} @@ ${tsq} OR word_similarity(${query}, ${claims.statement}) > 0.3)`;
+  const matched = sql`(claims.search_tsv @@ ${tsq} OR word_similarity(${query}, ${claims.statement}) > 0.3)`;
   const highlight = sql<string>`ts_headline('english', coalesce(${claims.statement}, '') || ' ' || coalesce(${claims.description}, ''), ${tsq}, 'StartSel=<mark>, StopSel=</mark>, MaxFragments=1')`;
 
   const subjectNodeMetadata = aliasedTable(nodeMetadata, "subjectNodeMetadata");

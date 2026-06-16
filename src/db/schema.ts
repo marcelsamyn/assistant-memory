@@ -2,7 +2,6 @@ import { typeId, typeIdNoDefault } from "./typeid";
 import { relations, sql } from "drizzle-orm";
 import {
   check,
-  customType,
   pgTable,
   varchar,
   timestamp,
@@ -25,17 +24,6 @@ import {
   SourceStatus,
   SourceType,
 } from "~/types/graph";
-
-/**
- * Postgres `tsvector` column type for full-text search. Drizzle has no native
- * tsvector type; this customType lets us declare GENERATED ALWAYS AS (...)
- * STORED columns and GIN-index them.
- */
-const tsvector = customType<{ data: string }>({
-  dataType() {
-    return "tsvector";
-  },
-});
 
 // --- Core Ontology & Structure ---
 
@@ -83,9 +71,6 @@ export const nodeMetadata = pgTable(
     label: text(),
     canonicalLabel: text("canonical_label"),
     description: text(),
-    searchTsv: tsvector("search_tsv").generatedAlwaysAs(
-      sql`to_tsvector('english', coalesce(label, '') || ' ' || coalesce(description, ''))`,
-    ),
     additionalData: jsonb(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -95,11 +80,6 @@ export const nodeMetadata = pgTable(
     index("node_metadata_node_id_idx").on(table.nodeId),
     index("node_metadata_canonical_label_idx").on(table.canonicalLabel),
     unique().on(table.nodeId),
-    index("node_metadata_search_tsv_idx").using("gin", table.searchTsv),
-    index("node_metadata_label_trgm_idx").using(
-      "gin",
-      table.label.op("gin_trgm_ops"),
-    ),
   ],
 );
 
@@ -129,9 +109,6 @@ export const claims = pgTable(
       .$type<Predicate>(),
     statement: text().notNull(),
     description: text(),
-    searchTsv: tsvector("search_tsv").generatedAlwaysAs(
-      sql`to_tsvector('english', coalesce(statement, '') || ' ' || coalesce(description, ''))`,
-    ),
     metadata: jsonb(),
     /**
      * Resolved UTC instant of a time-qualified temporal-object claim — currently
@@ -249,11 +226,6 @@ export const claims = pgTable(
         sql`${table.predicate} = 'OCCURRED_ON' AND ${table.status} = 'active'`,
       ),
     index("claims_source_id_idx").on(table.sourceId),
-    index("claims_search_tsv_idx").using("gin", table.searchTsv),
-    index("claims_statement_trgm_idx").using(
-      "gin",
-      table.statement.op("gin_trgm_ops"),
-    ),
     check(
       "claims_object_shape_xor_ck",
       sql`(("object_node_id" IS NOT NULL AND "object_value" IS NULL) OR ("object_node_id" IS NULL AND "object_value" IS NOT NULL))`,

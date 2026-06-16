@@ -1,4 +1,5 @@
 // src/lib/search/explicit-search.test.ts
+import { explicitSearch } from "./explicit-search";
 import "dotenv/config";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -18,8 +19,6 @@ vi.mock("~/lib/graph", () => ({
   findClaimsByLexical: mocks.findClaimsByLexical,
 }));
 
-import { explicitSearch } from "./explicit-search";
-
 // Stub hydrator: maps src_1 -> a manual source. Injected so the pipeline never
 // touches the DB in this unit test.
 const stubHydrate = async (ids: string[]) =>
@@ -31,19 +30,46 @@ describe("explicitSearch", () => {
   it("fuses legs, builds hits, and orders by fused score", async () => {
     mocks.generateTextEmbedding.mockResolvedValue([0.1, 0.2]);
     mocks.findSimilarNodes.mockResolvedValue([
-      { id: "node_1", type: "Object", label: "Boox", description: null, timestamp: new Date(), similarity: 0.9 },
+      {
+        id: "node_1",
+        type: "Object",
+        label: "Boox",
+        description: null,
+        timestamp: new Date(),
+        similarity: 0.9,
+      },
     ]);
     mocks.findNodesByLexical.mockResolvedValue([
-      { id: "node_1", type: "Object", label: "Boox", description: null, timestamp: new Date(), similarity: 1, highlight: "<mark>Boox</mark>" },
+      {
+        id: "node_1",
+        type: "Object",
+        label: "Boox",
+        description: null,
+        timestamp: new Date(),
+        similarity: 1,
+        highlight: "<mark>Boox</mark>",
+      },
     ]);
     mocks.findSimilarClaims.mockResolvedValue([]);
     mocks.findClaimsByLexical.mockResolvedValue([
       {
-        id: "claim_1", subjectNodeId: "node_1", objectNodeId: null, objectValue: "v",
-        subjectLabel: "Boox", objectLabel: null, predicate: "HAS_ATTRIBUTE",
-        statement: "Boox syncs", description: null, sourceId: "src_1", scope: "personal",
-        assertedByKind: "user", assertedByNodeId: null, status: "active",
-        statedAt: new Date("2026-05-10Z"), timestamp: new Date(), similarity: 1,
+        id: "claim_1",
+        subjectNodeId: "node_1",
+        objectNodeId: null,
+        objectValue: "v",
+        subjectLabel: "Boox",
+        objectLabel: null,
+        predicate: "HAS_ATTRIBUTE",
+        statement: "Boox syncs",
+        description: null,
+        sourceId: "src_1",
+        scope: "personal",
+        assertedByKind: "user",
+        assertedByNodeId: null,
+        status: "active",
+        statedAt: new Date("2026-05-10Z"),
+        timestamp: new Date(),
+        similarity: 1,
         highlight: "<mark>Boox</mark> syncs",
       },
     ]);

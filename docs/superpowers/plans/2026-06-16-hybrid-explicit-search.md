@@ -15,6 +15,7 @@
 ## File Structure
 
 **Memory repo (this plan):**
+
 - `src/db/schema.ts` — MODIFY: add a `tsvector` customType, generated `search_tsv` columns on `claims` + `node_metadata`, GIN (tsvector) + GIN (trgm) indexes.
 - `drizzle/0024_hybrid_search_indexes.sql` — CREATE: migration (generated + extension prepended).
 - `src/lib/search/fusion.ts` — CREATE: pure RRF.
@@ -38,6 +39,7 @@
 Start with the pure function — no DB, no network.
 
 **Files:**
+
 - Create: `src/lib/search/fusion.ts`
 - Test: `src/lib/search/fusion.test.ts`
 
@@ -45,8 +47,8 @@ Start with the pure function — no DB, no network.
 
 ```typescript
 // src/lib/search/fusion.test.ts
-import { describe, expect, it } from "vitest";
 import { reciprocalRankFusion, RRF_K } from "./fusion";
+import { describe, expect, it } from "vitest";
 
 describe("reciprocalRankFusion", () => {
   it("sums 1/(k+rank) across rankings and sorts descending", () => {
@@ -150,6 +152,7 @@ git commit -m "✨ feat(search): reciprocal rank fusion helper"
 Declare the lexical indexes in the schema, generate the migration, and prepend the extension.
 
 **Files:**
+
 - Modify: `src/db/schema.ts` (imports; `claims` and `nodeMetadata` table bodies)
 - Create: `drizzle/0024_hybrid_search_indexes.sql`
 
@@ -242,11 +245,13 @@ Expected: PASS (tsc clean — confirms the schema typechecks with the new column
 Then sanity-apply against a throwaway DB:
 
 Run:
+
 ```bash
 psql "postgres://postgres:postgres@localhost:5431/postgres" -c 'CREATE DATABASE mig_smoke_0024;'
 RUN_MIGRATIONS=true DATABASE_URL="postgres://postgres:postgres@localhost:5431/mig_smoke_0024" pnpm tsx -e "import('./src/utils/db').then(m=>m.useDatabase()).then(()=>{console.log('migrated ok');process.exit(0)})"
 psql "postgres://postgres:postgres@localhost:5431/postgres" -c 'DROP DATABASE mig_smoke_0024;'
 ```
+
 Expected: prints `migrated ok` with no error.
 
 - [ ] **Step 7: Commit**
@@ -263,6 +268,7 @@ git commit -m "✨ feat(search): tsvector + pg_trgm indexes for hybrid search"
 A reusable helper that creates a fresh DB, runs all migrations (so `search_tsv` + `pg_trgm` exist), and wires it into `useDatabase()` via the existing `setTestDatabase` seam.
 
 **Files:**
+
 - Create: `src/lib/search/test-db.ts`
 
 - [ ] **Step 1: Write the helper**
@@ -277,12 +283,12 @@ A reusable helper that creates a fresh DB, runs all migrations (so `search_tsv` 
  * Common aliases: createMigratedTestDb, search test database, hybrid search
  * test setup.
  */
-import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
+import pg from "pg";
+import type { DrizzleDB } from "~/db";
 import * as schema from "~/db/schema";
 import { setTestDatabase } from "~/utils/db";
-import type { DrizzleDB } from "~/db";
 
 const HOST = process.env["TEST_PG_HOST"] ?? "localhost";
 const PORT = Number(process.env["TEST_PG_PORT"] ?? 5431);
@@ -366,6 +372,7 @@ git commit -m "✅ test(search): migrated test-db helper"
 Add lexical node/claim retrieval to `graph.ts`, plus the two new filters the facets need (`includeNodeTypes`, `statedBetween`). Export `generateTextEmbedding` for the pipeline.
 
 **Files:**
+
 - Modify: `src/lib/graph.ts`
 - Test: `src/lib/search/lexical.test.ts`
 
@@ -373,12 +380,12 @@ Add lexical node/claim retrieval to `graph.ts`, plus the two new filters the fac
 
 ```typescript
 // src/lib/search/lexical.test.ts
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createMigratedTestDb, isServerReachable } from "./test-db";
-import { findClaimsByLexical, findNodesByLexical } from "~/lib/graph";
-import { nodes, nodeMetadata, claims, sources, users } from "~/db/schema";
-import { newTypeId } from "~/types/typeid";
 import type { MigratedTestDb } from "./test-db";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { nodes, nodeMetadata, claims, sources, users } from "~/db/schema";
+import { findClaimsByLexical, findNodesByLexical } from "~/lib/graph";
+import { newTypeId } from "~/types/typeid";
 
 const SERVER = await isServerReachable();
 const d = SERVER ? describe : describe.skip;
@@ -440,7 +447,11 @@ d("lexical retrieval", () => {
   });
 
   it("matches an exact keyword and returns a highlight", async () => {
-    const rows = await findClaimsByLexical({ userId, query: "Boox", limit: 10 });
+    const rows = await findClaimsByLexical({
+      userId,
+      query: "Boox",
+      limit: 10,
+    });
     expect(rows.length).toBeGreaterThan(0);
     expect(rows[0]!.statement).toContain("Boox");
     expect(rows[0]!.highlight).toMatch(/<mark>|Boox/);
@@ -455,13 +466,19 @@ d("lexical retrieval", () => {
     const inRange = await findClaimsByLexical({
       userId,
       query: "Boox",
-      statedBetween: { from: new Date("2026-05-01Z"), to: new Date("2026-05-31Z") },
+      statedBetween: {
+        from: new Date("2026-05-01Z"),
+        to: new Date("2026-05-31Z"),
+      },
     });
     expect(inRange.length).toBeGreaterThan(0);
     const outOfRange = await findClaimsByLexical({
       userId,
       query: "Boox",
-      statedBetween: { from: new Date("2026-01-01Z"), to: new Date("2026-02-01Z") },
+      statedBetween: {
+        from: new Date("2026-01-01Z"),
+        to: new Date("2026-02-01Z"),
+      },
     });
     expect(outOfRange.length).toBe(0);
   });
@@ -570,12 +587,12 @@ with one that honours an explicit single scope (takes precedence):
 Then after the existing `excludeNodeTypes` block, add the include-filter:
 
 ```typescript
-  if (includeNodeTypes && includeNodeTypes.length > 0) {
-    whereCondition = and(
-      whereCondition,
-      inArray(nodes.nodeType, includeNodeTypes),
-    );
-  }
+if (includeNodeTypes && includeNodeTypes.length > 0) {
+  whereCondition = and(
+    whereCondition,
+    inArray(nodes.nodeType, includeNodeTypes),
+  );
+}
 ```
 
 **`findSimilarClaims`** — also destructure `statedBetween` and `scope` from opts.
@@ -599,18 +616,18 @@ Then, after the `inArray(claims.status, statuses)` / validity conditions are
 built, add the range filter:
 
 ```typescript
-  if (statedBetween?.from) {
-    whereCondition = and(
-      whereCondition,
-      sql`${claims.statedAt} >= ${statedBetween.from}`,
-    );
-  }
-  if (statedBetween?.to) {
-    whereCondition = and(
-      whereCondition,
-      sql`${claims.statedAt} <= ${statedBetween.to}`,
-    );
-  }
+if (statedBetween?.from) {
+  whereCondition = and(
+    whereCondition,
+    sql`${claims.statedAt} >= ${statedBetween.from}`,
+  );
+}
+if (statedBetween?.to) {
+  whereCondition = and(
+    whereCondition,
+    sql`${claims.statedAt} <= ${statedBetween.to}`,
+  );
+}
 ```
 
 - [ ] **Step 6: Implement `findNodesByLexical`**
@@ -781,21 +798,24 @@ git commit -m "✨ feat(search): lexical node/claim retrieval with facet filters
 ## Task 5: Search schemas
 
 **Files:**
+
 - Create: `src/lib/schemas/search.ts`
 
 - [ ] **Step 1: Write the failing test**
 
 ```typescript
 // src/lib/schemas/search.test.ts
-import { describe, expect, it } from "vitest";
 import { searchRequestSchema, searchResponseSchema } from "./search";
+import { describe, expect, it } from "vitest";
 
 describe("search schemas", () => {
   it("applies defaults and rejects empty query", () => {
     const parsed = searchRequestSchema.parse({ userId: "u", query: "boox" });
     expect(parsed.limit).toBe(20);
     expect(parsed.scope).toBe("personal");
-    expect(() => searchRequestSchema.parse({ userId: "u", query: "" })).toThrow();
+    expect(() =>
+      searchRequestSchema.parse({ userId: "u", query: "" }),
+    ).toThrow();
   });
 
   it("accepts entityTypes and statedBetween filters", () => {
@@ -928,6 +948,7 @@ git commit -m "✨ feat(search): request/response schemas for /search"
 Assemble the two legs (vector + lexical) for nodes and claims, fuse per id space, merge into one ranked `SearchHit[]`, and hydrate source provenance.
 
 **Files:**
+
 - Create: `src/lib/search/explicit-search.ts`
 - Test: `src/lib/search/explicit-search.test.ts`
 
@@ -937,6 +958,7 @@ This test mocks the four retrieval functions and the embedding call (so it needs
 
 ```typescript
 // src/lib/search/explicit-search.test.ts
+import { explicitSearch } from "./explicit-search";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -955,8 +977,6 @@ vi.mock("~/lib/graph", () => ({
   findClaimsByLexical: mocks.findClaimsByLexical,
 }));
 
-import { explicitSearch } from "./explicit-search";
-
 // Stub hydrator: maps src_1 -> a manual source. Injected so the pipeline never
 // touches the DB in this unit test.
 const stubHydrate = async (ids: string[]) =>
@@ -968,19 +988,46 @@ describe("explicitSearch", () => {
   it("fuses legs, builds hits, and orders by fused score", async () => {
     mocks.generateTextEmbedding.mockResolvedValue([0.1, 0.2]);
     mocks.findSimilarNodes.mockResolvedValue([
-      { id: "node_1", type: "Object", label: "Boox", description: null, timestamp: new Date(), similarity: 0.9 },
+      {
+        id: "node_1",
+        type: "Object",
+        label: "Boox",
+        description: null,
+        timestamp: new Date(),
+        similarity: 0.9,
+      },
     ]);
     mocks.findNodesByLexical.mockResolvedValue([
-      { id: "node_1", type: "Object", label: "Boox", description: null, timestamp: new Date(), similarity: 1, highlight: "<mark>Boox</mark>" },
+      {
+        id: "node_1",
+        type: "Object",
+        label: "Boox",
+        description: null,
+        timestamp: new Date(),
+        similarity: 1,
+        highlight: "<mark>Boox</mark>",
+      },
     ]);
     mocks.findSimilarClaims.mockResolvedValue([]);
     mocks.findClaimsByLexical.mockResolvedValue([
       {
-        id: "claim_1", subjectNodeId: "node_1", objectNodeId: null, objectValue: "v",
-        subjectLabel: "Boox", objectLabel: null, predicate: "HAS_ATTRIBUTE",
-        statement: "Boox syncs", description: null, sourceId: "src_1", scope: "personal",
-        assertedByKind: "user", assertedByNodeId: null, status: "active",
-        statedAt: new Date("2026-05-10Z"), timestamp: new Date(), similarity: 1,
+        id: "claim_1",
+        subjectNodeId: "node_1",
+        objectNodeId: null,
+        objectValue: "v",
+        subjectLabel: "Boox",
+        objectLabel: null,
+        predicate: "HAS_ATTRIBUTE",
+        statement: "Boox syncs",
+        description: null,
+        sourceId: "src_1",
+        scope: "personal",
+        assertedByKind: "user",
+        assertedByNodeId: null,
+        status: "active",
+        statedAt: new Date("2026-05-10Z"),
+        timestamp: new Date(),
+        similarity: 1,
         highlight: "<mark>Boox</mark> syncs",
       },
     ]);
@@ -1041,7 +1088,10 @@ Source hydration needs the DB. To keep the unit test hermetic, the pipeline acce
  *
  * Common aliases: hybrid search, explicit search, search pipeline, runSearch.
  */
+import { reciprocalRankFusion } from "./fusion";
 import { inArray } from "drizzle-orm";
+import { z } from "zod";
+import { sources } from "~/db/schema";
 import {
   generateTextEmbedding,
   findSimilarNodes,
@@ -1053,13 +1103,10 @@ import {
   type NodeSearchResult,
   type ClaimSearchResult,
 } from "~/lib/graph";
-import { reciprocalRankFusion } from "./fusion";
-import { sources } from "~/db/schema";
-import { useDatabase } from "~/utils/db";
-import type { NodeType, Scope, SourceType } from "~/types/graph";
 import type { SearchHit, SearchResponse } from "~/lib/schemas/search";
+import type { NodeType, Scope, SourceType } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
-import { z } from "zod";
+import { useDatabase } from "~/utils/db";
 
 export interface ExplicitSearchParams {
   userId: string;
@@ -1252,6 +1299,7 @@ git commit -m "✨ feat(search): hybrid retrieval pipeline with RRF and hit hydr
 ## Task 7: The `POST /search` route
 
 **Files:**
+
 - Create: `src/routes/search.post.ts`
 - Test: `src/search-route.test.ts`
 
@@ -1259,16 +1307,15 @@ git commit -m "✨ feat(search): hybrid retrieval pipeline with RRF and hit hydr
 
 ```typescript
 // src/search-route.test.ts
-import { afterEach, describe, expect, it, vi } from "vitest";
+import handler from "./routes/search.post";
 import type { H3Event } from "h3";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { searchResponseSchema } from "~/lib/schemas/search";
 
 const mocks = vi.hoisted(() => ({ explicitSearch: vi.fn() }));
 vi.mock("~/lib/search/explicit-search", () => ({
   explicitSearch: mocks.explicitSearch,
 }));
-
-import handler from "./routes/search.post";
-import { searchResponseSchema } from "~/lib/schemas/search";
 
 describe("POST /search", () => {
   afterEach(() => {
@@ -1298,7 +1345,12 @@ describe("POST /search", () => {
     expect(response.hits).toHaveLength(1);
     // Defaults applied by the request schema reached the pipeline.
     expect(mocks.explicitSearch).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: "u", query: "Boox", limit: 20, scope: "personal" }),
+      expect.objectContaining({
+        userId: "u",
+        query: "Boox",
+        limit: 20,
+        scope: "personal",
+      }),
     );
   });
 
@@ -1329,11 +1381,11 @@ Expected: FAIL — cannot find module `./routes/search.post`.
  * background context) and the legacy `POST /query/search` (raw graph for
  * visualization). See docs/superpowers/specs/2026-06-16-hybrid-explicit-search-design.md.
  */
-import { explicitSearch } from "~/lib/search/explicit-search";
 import {
   searchRequestSchema,
   searchResponseSchema,
 } from "~/lib/schemas/search";
+import { explicitSearch } from "~/lib/search/explicit-search";
 
 export default defineEventHandler(async (event) => {
   const { userId, query, limit, scope, filters } = searchRequestSchema.parse(
@@ -1363,14 +1415,15 @@ git commit -m "✨ feat(search): POST /search hybrid explicit-search route"
 ## Task 8: SDK `search()` method
 
 **Files:**
+
 - Modify: `src/sdk/memory-client.ts`
 
 - [ ] **Step 1: Write the failing test**
 
 ```typescript
 // src/sdk/memory-client-search.test.ts
-import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryClient } from "./memory-client";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 describe("MemoryClient.search", () => {
   afterEach(() => vi.unstubAllGlobals());
