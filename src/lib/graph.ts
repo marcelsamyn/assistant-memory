@@ -100,16 +100,23 @@ export type SimilaritySearchBase = (
 
 /** Options for semantic search */
 export type FindSimilarNodesOptions = SimilaritySearchBase & {
-  /** Optional list of node types to exclude from the search results */
   excludeNodeTypes?: NodeType[];
+  /** When set, restrict to these node types (takes precedence over exclude). */
+  includeNodeTypes?: NodeType[];
   includeReference?: boolean;
+  /** When set, restrict to exactly this scope (takes precedence over includeReference). */
+  scope?: Scope;
 };
 
 /** Options for semantic search on claims */
 export type FindSimilarClaimsOptions = SimilaritySearchBase & {
   statuses?: ClaimStatus[];
   asOf?: Date;
+  /** Restrict to claims whose stated_at falls in this (inclusive) range. */
+  statedBetween?: { from?: Date; to?: Date };
   includeReference?: boolean;
+  /** When set, restrict to exactly this scope (takes precedence over includeReference). */
+  scope?: Scope;
   includeAssistantInferred?: boolean;
 };
 
@@ -134,7 +141,36 @@ export interface ClaimSearchResult {
   timestamp: Date;
 }
 
-async function generateTextEmbedding(text: string): Promise<number[]> {
+export interface LexicalSearchParams {
+  userId: string;
+  query: string;
+  limit?: number;
+  /** Single scope to restrict to. Defaults to "personal"; never blends. */
+  scope?: Scope;
+}
+
+export interface NodeLexicalParams extends LexicalSearchParams {
+  excludeNodeTypes?: NodeType[];
+  includeNodeTypes?: NodeType[];
+}
+
+export interface ClaimLexicalParams extends LexicalSearchParams {
+  statuses?: ClaimStatus[];
+  asOf?: Date;
+  statedBetween?: { from?: Date; to?: Date };
+  includeAssistantInferred?: boolean;
+}
+
+export interface NodeLexicalResult extends NodeSearchResult {
+  /** ts_headline snippet over the matched text. */
+  highlight: string;
+}
+
+export interface ClaimLexicalResult extends ClaimSearchResult {
+  highlight: string;
+}
+
+export async function generateTextEmbedding(text: string): Promise<number[]> {
   const res = await generateEmbeddings({
     model: "jina-embeddings-v3",
     task: "retrieval.query",
@@ -184,7 +220,9 @@ export async function findSimilarNodes(
     limit = 10,
     minimumSimilarity,
     excludeNodeTypes,
+    includeNodeTypes,
     includeReference = false,
+    scope,
   } = opts;
 
   const emb =
@@ -197,7 +235,11 @@ export async function findSimilarNodes(
   // Base conditions
   let whereCondition = and(
     eq(nodes.userId, userId),
-    includeReference ? undefined : nodeHasScopeSupport(userId, "personal"),
+    scope
+      ? nodeHasScopeSupport(userId, scope)
+      : includeReference
+        ? undefined
+        : nodeHasScopeSupport(userId, "personal"),
     sql`${similarity} IS NOT NULL`,
   );
 
@@ -214,6 +256,13 @@ export async function findSimilarNodes(
     whereCondition = and(
       whereCondition,
       notInArray(nodes.nodeType, excludeNodeTypes),
+    );
+  }
+
+  if (includeNodeTypes && includeNodeTypes.length > 0) {
+    whereCondition = and(
+      whereCondition,
+      inArray(nodes.nodeType, includeNodeTypes),
     );
   }
 
@@ -248,7 +297,9 @@ export async function findSimilarClaims(
     minimumSimilarity,
     statuses = ["active"],
     asOf = new Date(),
+    statedBetween,
     includeReference = false,
+    scope,
     includeAssistantInferred = false,
   } = opts;
 
@@ -262,7 +313,11 @@ export async function findSimilarClaims(
   // Base conditions
   let whereCondition = and(
     eq(claims.userId, userId),
-    includeReference ? undefined : eq(claims.scope, "personal"),
+    scope
+      ? eq(claims.scope, scope)
+      : includeReference
+        ? undefined
+        : eq(claims.scope, "personal"),
     includeAssistantInferred
       ? undefined
       : ne(claims.assertedByKind, "assistant_inferred"),
@@ -276,6 +331,19 @@ export async function findSimilarClaims(
     whereCondition = and(
       whereCondition,
       sql`${similarity} >= ${minimumSimilarity}`,
+    );
+  }
+
+  if (statedBetween?.from) {
+    whereCondition = and(
+      whereCondition,
+      sql`${claims.statedAt} >= ${statedBetween.from}`,
+    );
+  }
+  if (statedBetween?.to) {
+    whereCondition = and(
+      whereCondition,
+      sql`${claims.statedAt} <= ${statedBetween.to}`,
     );
   }
 
@@ -629,4 +697,145 @@ export async function fetchClaimsBetweenNodeIds(
         isNotNull(tgt.label),
       ),
     );
+}
+
+/**
+ * Lexical node retrieval: full-text match on the generated tsvector plus a
+ * pg_trgm fuzzy match on the label, ranked by ts_rank_cd. Used by the hybrid
+ * explicit-search pipeline (NOT background context injection).
+ */
+export async function findNodesByLexical(
+  params: NodeLexicalParams,
+): Promise<NodeLexicalResult[]> {
+  const {
+    userId,
+    query,
+    limit = 10,
+    scope = "personal",
+    excludeNodeTypes,
+    includeNodeTypes,
+  } = params;
+  const db = await useDatabase();
+
+  const tsq = sql`websearch_to_tsquery('english', ${query})`;
+  const rank = sql<number>`ts_rank_cd(${nodeMetadata.searchTsv}, ${tsq})`;
+  // word_similarity (not similarity): matches the query against the best-matching
+  // word in the label, so a short typo ("Boux") still matches a long label
+  // ("Boox Note Air 4C"). Full-string similarity() would score near-zero there.
+  const matched = sql`(${nodeMetadata.searchTsv} @@ ${tsq} OR word_similarity(${query}, ${nodeMetadata.label}) > 0.3)`;
+  const highlight = sql<string>`ts_headline('english', coalesce(${nodeMetadata.label}, '') || ' ' || coalesce(${nodeMetadata.description}, ''), ${tsq}, 'StartSel=<mark>, StopSel=</mark>, MaxFragments=1')`;
+
+  let where = and(
+    eq(nodes.userId, userId),
+    nodeHasScopeSupport(userId, scope),
+    matched,
+  );
+  if (includeNodeTypes && includeNodeTypes.length > 0) {
+    where = and(where, inArray(nodes.nodeType, includeNodeTypes));
+  } else if (excludeNodeTypes && excludeNodeTypes.length > 0) {
+    where = and(where, notInArray(nodes.nodeType, excludeNodeTypes));
+  }
+
+  const rows = await db
+    .select({
+      id: nodes.id,
+      type: nodes.nodeType,
+      label: nodeMetadata.label,
+      description: nodeMetadata.description,
+      timestamp: nodes.createdAt,
+      rank,
+      highlight,
+    })
+    .from(nodes)
+    .innerJoin(nodeMetadata, eq(nodes.id, nodeMetadata.nodeId))
+    .where(where)
+    .orderBy(desc(rank))
+    .limit(limit);
+
+  return rows.map((r) => ({ ...r, similarity: r.rank }));
+}
+
+/**
+ * Lexical claim retrieval: full-text match on the generated tsvector plus a
+ * pg_trgm fuzzy match on the statement, ranked by ts_rank_cd. Honours the same
+ * status/validity/scope filters as findSimilarClaims, plus an optional
+ * stated_at range.
+ */
+export async function findClaimsByLexical(
+  params: ClaimLexicalParams,
+): Promise<ClaimLexicalResult[]> {
+  const {
+    userId,
+    query,
+    limit = 10,
+    scope = "personal",
+    statuses = ["active"],
+    asOf = new Date(),
+    statedBetween,
+    includeAssistantInferred = false,
+  } = params;
+  const db = await useDatabase();
+
+  const tsq = sql`websearch_to_tsquery('english', ${query})`;
+  const rank = sql<number>`ts_rank_cd(${claims.searchTsv}, ${tsq})`;
+  // word_similarity matches the query against the best-matching word in the
+  // statement (handles typos against long statements; see findNodesByLexical).
+  const matched = sql`(${claims.searchTsv} @@ ${tsq} OR word_similarity(${query}, ${claims.statement}) > 0.3)`;
+  const highlight = sql<string>`ts_headline('english', coalesce(${claims.statement}, '') || ' ' || coalesce(${claims.description}, ''), ${tsq}, 'StartSel=<mark>, StopSel=</mark>, MaxFragments=1')`;
+
+  const subjectNodeMetadata = aliasedTable(nodeMetadata, "subjectNodeMetadata");
+  const objectNodeMetadata = aliasedTable(nodeMetadata, "objectNodeMetadata");
+
+  let where = and(
+    eq(claims.userId, userId),
+    eq(claims.scope, scope),
+    includeAssistantInferred
+      ? undefined
+      : ne(claims.assertedByKind, "assistant_inferred"),
+    inArray(claims.status, statuses),
+    or(isNull(claims.validTo), gt(claims.validTo, asOf)),
+    matched,
+  );
+  if (statedBetween?.from) {
+    where = and(where, sql`${claims.statedAt} >= ${statedBetween.from}`);
+  }
+  if (statedBetween?.to) {
+    where = and(where, sql`${claims.statedAt} <= ${statedBetween.to}`);
+  }
+
+  const rows = await db
+    .select({
+      id: claims.id,
+      subjectNodeId: claims.subjectNodeId,
+      objectNodeId: claims.objectNodeId,
+      objectValue: claims.objectValue,
+      subjectLabel: subjectNodeMetadata.label,
+      objectLabel: objectNodeMetadata.label,
+      predicate: claims.predicate,
+      statement: claims.statement,
+      description: claims.description,
+      sourceId: claims.sourceId,
+      scope: claims.scope,
+      assertedByKind: claims.assertedByKind,
+      assertedByNodeId: claims.assertedByNodeId,
+      status: claims.status,
+      statedAt: claims.statedAt,
+      timestamp: claims.createdAt,
+      rank,
+      highlight,
+    })
+    .from(claims)
+    .leftJoin(
+      subjectNodeMetadata,
+      eq(subjectNodeMetadata.nodeId, claims.subjectNodeId),
+    )
+    .leftJoin(
+      objectNodeMetadata,
+      eq(objectNodeMetadata.nodeId, claims.objectNodeId),
+    )
+    .where(where)
+    .orderBy(desc(rank))
+    .limit(limit);
+
+  return rows.map((r) => ({ ...r, similarity: r.rank }));
 }
