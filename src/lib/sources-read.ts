@@ -21,6 +21,7 @@ import {
   sourceListableTypeEnum,
   type SourceSummary,
 } from "~/lib/schemas/sources";
+import { deriveSourceLabel } from "~/lib/source-label";
 import { sourceMetadataSchema } from "~/lib/sources";
 import type { TypeId } from "~/types/typeid";
 
@@ -136,7 +137,7 @@ export async function listSourcesPage(params: ListParams): Promise<{
   const summaries: SourceSummary[] = page.map((row) => ({
     sourceId: row.id,
     type: row.type as SourceListableType,
-    title: deriveTitle(row.metadata),
+    title: deriveSourceLabel({ type: row.type, metadata: row.metadata }),
     author: deriveAuthor(row.metadata),
     status: row.status ?? "pending",
     scope: row.scope,
@@ -189,7 +190,7 @@ export async function getSourceSummary(
   return {
     sourceId: row.id,
     type: row.type as SourceListableType,
-    title: deriveTitle(row.metadata),
+    title: deriveSourceLabel({ type: row.type, metadata: row.metadata }),
     author: deriveAuthor(row.metadata),
     status: row.status ?? "pending",
     scope: row.scope,
