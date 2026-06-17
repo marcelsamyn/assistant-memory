@@ -308,6 +308,27 @@ export class AttributeClaimObjectReattributionError extends Error {
   }
 }
 
+/**
+ * Thrown when a re-attribution targets a claim that is no longer active
+ * (retracted/superseded/contradicted). Reattributing such a claim would
+ * redundantly re-retract dead history AND mint a fresh active claim,
+ * resurrecting an assertion the lifecycle already settled. Routes translate
+ * this into a 409 (state conflict, same family as {@link CrossScopeMergeError})
+ * so callers get a structured error instead of string-matching the message.
+ */
+export class InactiveClaimReattributionError extends Error {
+  readonly claimId: TypeId<"claim">;
+  readonly status: ClaimStatus;
+  constructor(claimId: TypeId<"claim">, status: ClaimStatus) {
+    super(
+      `Claim ${claimId} is ${status}, not active; only active claims can be reattributed`,
+    );
+    this.name = "InactiveClaimReattributionError";
+    this.claimId = claimId;
+    this.status = status;
+  }
+}
+
 export type ReattributeClaimInput = {
   userId: string;
   claimId: TypeId<"claim">;
@@ -331,6 +352,10 @@ export type ReattributeClaimInput = {
  * resulting (subject, object) scope pair must be uniform — a personal/reference
  * mix is refused with {@link CrossScopeMergeError}, the same guard merge uses.
  *
+ * Only active originals are eligible: a non-active claim
+ * (retracted/superseded/contradicted) is rejected with
+ * {@link InactiveClaimReattributionError} rather than re-retracted and cloned.
+ *
  * Returns the newly created claim in the same shape as {@link createClaim};
  * resolves `null` when the original claim does not exist for the user.
  */
@@ -346,6 +371,13 @@ export async function reattributeClaim(
     .limit(1);
 
   if (!original) return null;
+
+  // Only active claims may be reattributed. Reattributing a non-active claim
+  // would re-retract dead history and mint a new active claim, resurrecting an
+  // assertion the lifecycle already settled.
+  if (original.status !== "active") {
+    throw new InactiveClaimReattributionError(original.id, original.status);
+  }
 
   if (input.replace === "object" && original.objectNodeId === null) {
     throw new AttributeClaimObjectReattributionError(

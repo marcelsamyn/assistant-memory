@@ -256,6 +256,14 @@ Write a concise 1–3 sentence, third-person summary of "${label}" grounded ONLY
 }
 
 /**
+ * Upper bound on how many active claims feed the summary prompt. A node can
+ * accumulate hundreds of claims; formatting them all would overflow the context
+ * window and inflate cost. We keep the most recent {@link MAX_CLAIMS_FOR_SUMMARY}
+ * (by `statedAt`), which carry the freshest signal for a node description.
+ */
+const MAX_CLAIMS_FOR_SUMMARY = 100;
+
+/**
  * Re-derive a concise summary for a single node from its own active claims,
  * via the cheap `conversation_summary` model. Pure read: the proposed text is
  * RETURNED, never persisted — callers decide whether to write it back through
@@ -266,6 +274,8 @@ Write a concise 1–3 sentence, third-person summary of "${label}" grounded ONLY
  *   {@link getNodeById} / {@link updateNode}; the route maps that to a 404.
  * - Returns `{ summary: "" }` when the node has no active claims, short-
  *   circuiting before the LLM call (nothing to ground a summary in).
+ * - Caps the grounding set at the {@link MAX_CLAIMS_FOR_SUMMARY} most recent
+ *   claims (by `statedAt`) so high-claim nodes don't overflow the prompt.
  *
  * The LLM seam mirrors `source-title.ts` (dynamic `createCompletionClient` +
  * `parseStructuredCompletion`) so the harness's extraction-client override
@@ -285,7 +295,14 @@ export async function summarizeNode({
   // set we want.
   if (result.claims.length === 0) return { summary: "" };
 
-  const factLines = result.claims.map(formatClaimForSummary).join("\n");
+  // Cap the prompt at the most recent claims: sort by `statedAt` desc (the
+  // codebase's most-recent-first convention) THEN slice, so the kept set is
+  // genuinely the freshest, not an arbitrary prefix of unsorted rows.
+  const recentClaims = [...result.claims]
+    .sort((a, b) => b.statedAt.getTime() - a.statedAt.getTime())
+    .slice(0, MAX_CLAIMS_FOR_SUMMARY);
+
+  const factLines = recentClaims.map(formatClaimForSummary).join("\n");
 
   const { createCompletionClient, parseStructuredCompletion } = await import(
     "./ai"
