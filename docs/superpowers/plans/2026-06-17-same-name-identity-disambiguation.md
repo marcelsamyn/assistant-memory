@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Stop the knowledge graph from attributing the user's own statements (and other people's) to the wrong same-named node by giving the user-self node a distinguishing identity, wiring transcript speakers in as claim *subjects*, and making the resolver refuse to guess on ambiguous name ties.
+**Goal:** Stop the knowledge graph from attributing the user's own statements (and other people's) to the wrong same-named node by giving the user-self node a distinguishing identity, wiring transcript speakers in as claim _subjects_, and making the resolver refuse to guess on ambiguous name ties.
 
-**Architecture:** Four components in leverage order. (1) **Self-node hygiene** — a new `src/lib/user-self-identity.ts` module names the self node with the user's full name and seeds only multi-token aliases; called from both the config endpoint and transcript ingest. (2) **Subject-wiring** — `extractGraph` registers transcript speaker nodes into `idMap` and the prompt tells the model to use the user-self speaker's nodeId as the subject of first-person claims. (3) **Resolver never guesses** — `resolveIdentity` resolves only on a *unique* canonical/alias match; >1 match splits + logs `identity.ambiguous_skip`. (4) **Prompt insurance** — inject "who the user is" into document/conversation prompts and add a static anti-conflation rule.
+**Architecture:** Four components in leverage order. (1) **Self-node hygiene** — a new `src/lib/user-self-identity.ts` module names the self node with the user's full name and seeds only multi-token aliases; called from both the config endpoint and transcript ingest. (2) **Subject-wiring** — `extractGraph` registers transcript speaker nodes into `idMap` and the prompt tells the model to use the user-self speaker's nodeId as the subject of first-person claims. (3) **Resolver never guesses** — `resolveIdentity` resolves only on a _unique_ canonical/alias match; >1 match splits + logs `identity.ambiguous_skip`. (4) **Prompt insurance** — inject "who the user is" into document/conversation prompts and add a static anti-conflation rule.
 
 **Tech Stack:** TypeScript (strict, `exactOptionalPropertyTypes`), Drizzle ORM, Postgres (+pgvector), Zod, h3/Nitro file-based routes, Vitest (real-Postgres integration tests on port **5431**). Spec: `docs/superpowers/specs/2026-06-17-same-name-identity-disambiguation-design.md`.
 
@@ -14,28 +14,28 @@
 
 **New files**
 
-| File | Responsibility |
-| --- | --- |
-| `src/lib/user-self-identity.ts` | User-self Person node identity: lazy creation, primary-label selection, distinguishing-alias seeding, `buildUserIdentityNote`. Pure helpers + DB helpers. |
-| `src/lib/user-self-identity.test.ts` | Unit tests: pure helpers (no DB) + `ensureUserSelfIdentity` (DB). |
-| `src/lib/jobs/backfill-user-self-identity.ts` | One-off maintenance: bring an existing self node to the new contract; remove bare self alias. |
-| `src/lib/schemas/backfill-user-self-identity.ts` | Request/response Zod schemas for the backfill route. |
-| `src/routes/maintenance/backfill-user-self-identity.post.ts` | HTTP trigger for the backfill job (Nitro auto-routed). |
+| File                                                         | Responsibility                                                                                                                                            |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/lib/user-self-identity.ts`                              | User-self Person node identity: lazy creation, primary-label selection, distinguishing-alias seeding, `buildUserIdentityNote`. Pure helpers + DB helpers. |
+| `src/lib/user-self-identity.test.ts`                         | Unit tests: pure helpers (no DB) + `ensureUserSelfIdentity` (DB).                                                                                         |
+| `src/lib/jobs/backfill-user-self-identity.ts`                | One-off maintenance: bring an existing self node to the new contract; remove bare self alias.                                                             |
+| `src/lib/schemas/backfill-user-self-identity.ts`             | Request/response Zod schemas for the backfill route.                                                                                                      |
+| `src/routes/maintenance/backfill-user-self-identity.post.ts` | HTTP trigger for the backfill job (Nitro auto-routed).                                                                                                    |
 
 **Modified files**
 
-| File | Change |
-| --- | --- |
-| `src/lib/transcript/resolve-speakers.ts` | Import `ensureUserSelfPersonNode` from the new module; delete the local copy; stop writing the bare self alias; drop now-unused `sql` import. |
-| `src/lib/user-profile.ts` | `setUserSelfAliases` calls `ensureUserSelfIdentity` after persisting. |
-| `src/lib/jobs/ingest-transcript.ts` | Call `ensureUserSelfIdentity` with the effective alias list before resolving speakers. |
-| `src/lib/extract-graph.ts` | Register speaker nodes into `idMap`; subject-wiring in `_formatSpeakerMapSection` + static few-shot; static anti-conflation rule; new `userIdentityNote` param + render. |
-| `src/lib/identity-resolution.ts` | Unique-match-wins; `ambiguous` trace field; `identity.ambiguous_skip` log. |
-| `src/lib/jobs/ingest-conversation.ts` | Build + pass `userIdentityNote`. |
-| `src/lib/ingestion/extract-document-graph.ts` | Build + pass `userIdentityNote`. |
-| `src/lib/ingestion/chunked-extract.ts` | Thread `userIdentityNote` through to each `extractGraph` call. |
-| `src/lib/identity-resolution.test.ts` | Ambiguity tests + self-by-full-name vs bare-name test. |
-| `src/lib/jobs/ingest-transcript.test.ts` | Subject-wiring integration test. |
+| File                                          | Change                                                                                                                                                                   |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/lib/transcript/resolve-speakers.ts`      | Import `ensureUserSelfPersonNode` from the new module; delete the local copy; stop writing the bare self alias; drop now-unused `sql` import.                            |
+| `src/lib/user-profile.ts`                     | `setUserSelfAliases` calls `ensureUserSelfIdentity` after persisting.                                                                                                    |
+| `src/lib/jobs/ingest-transcript.ts`           | Call `ensureUserSelfIdentity` with the effective alias list before resolving speakers.                                                                                   |
+| `src/lib/extract-graph.ts`                    | Register speaker nodes into `idMap`; subject-wiring in `_formatSpeakerMapSection` + static few-shot; static anti-conflation rule; new `userIdentityNote` param + render. |
+| `src/lib/identity-resolution.ts`              | Unique-match-wins; `ambiguous` trace field; `identity.ambiguous_skip` log.                                                                                               |
+| `src/lib/jobs/ingest-conversation.ts`         | Build + pass `userIdentityNote`.                                                                                                                                         |
+| `src/lib/ingestion/extract-document-graph.ts` | Build + pass `userIdentityNote`.                                                                                                                                         |
+| `src/lib/ingestion/chunked-extract.ts`        | Thread `userIdentityNote` through to each `extractGraph` call.                                                                                                           |
+| `src/lib/identity-resolution.test.ts`         | Ambiguity tests + self-by-full-name vs bare-name test.                                                                                                                   |
+| `src/lib/jobs/ingest-transcript.test.ts`      | Subject-wiring integration test.                                                                                                                                         |
 
 **Build order:** Tasks 1→6 deliver Component 1 (kills the reported bug at the source). Tasks 7–8 = Component 2. Task 9 = Component 3. Tasks 10–11 = Component 4. Task 12 = full verification.
 
@@ -47,6 +47,7 @@
 ## Task 1: New module `user-self-identity.ts` + pure-helper tests
 
 **Files:**
+
 - Create: `src/lib/user-self-identity.ts`
 - Test: `src/lib/user-self-identity.test.ts`
 
@@ -55,12 +56,12 @@
 Create `src/lib/user-self-identity.test.ts` with ONLY the pure-helper suite for now (the DB suite is added in Task 5):
 
 ```ts
-import { describe, expect, it } from "vitest";
 import {
   buildUserIdentityNote,
   distinguishingAliases,
   selectPrimarySelfLabel,
 } from "./user-self-identity";
+import { describe, expect, it } from "vitest";
 
 describe("selectPrimarySelfLabel", () => {
   it("picks the alias with the most tokens", () => {
@@ -318,15 +319,19 @@ git commit -m "✨ feat(identity): user-self identity module (label + distinguis
 ## Task 2: Rewire `resolve-speakers.ts` to the shared self-node helper
 
 **Files:**
+
 - Modify: `src/lib/transcript/resolve-speakers.ts`
 
 - [ ] **Step 1: Replace the drizzle import (drop `sql`)**
 
 Find:
+
 ```ts
 import { and, eq, inArray, sql } from "drizzle-orm";
 ```
+
 Replace with:
+
 ```ts
 import { and, eq, inArray } from "drizzle-orm";
 ```
@@ -334,10 +339,13 @@ import { and, eq, inArray } from "drizzle-orm";
 - [ ] **Step 2: Import the shared helper**
 
 Find:
+
 ```ts
 import { normalizeLabel } from "~/lib/label";
 ```
+
 Replace with:
+
 ```ts
 import { normalizeLabel } from "~/lib/label";
 import { ensureUserSelfPersonNode } from "~/lib/user-self-identity";
@@ -346,6 +354,7 @@ import { ensureUserSelfPersonNode } from "~/lib/user-self-identity";
 - [ ] **Step 3: Stop writing the bare self alias in the user-self branch**
 
 Find:
+
 ```ts
     // 1. user-self
     if (userSelfNormalized.has(normalized)) {
@@ -361,7 +370,9 @@ Find:
       continue;
     }
 ```
+
 Replace with:
+
 ```ts
     // 1. user-self. Resolution matches against the `userSelfAliases` config
     // set directly, so we deliberately do NOT write the (often bare,
@@ -378,11 +389,13 @@ Replace with:
 - [ ] **Step 4: Delete the local `ensureUserSelfPersonNode`**
 
 Delete the entire local function and its doc comment — the block that begins:
+
 ```ts
 /**
  * Ensure the user's own Person node exists. Looked up by
  * `nodeMetadata.additionalData.isUserSelf = true` for the user's Person nodes;
 ```
+
 …through the closing brace of `ensureUserSelfPersonNode` (the `return newNode.id;\n  });\n}` right before `async function createPlaceholderPersonNode(`). The closure `ensureUserSelfNode` near the top of `resolveSpeakers` still calls `ensureUserSelfPersonNode(db, userId)` — it now resolves to the imported version. Leave `createPlaceholderPersonNode` intact.
 
 - [ ] **Step 5: Typecheck**
@@ -407,23 +420,28 @@ git commit -m "♻️ refactor(transcript): use shared self-node helper; stop se
 ## Task 3: `setUserSelfAliases` ensures self identity
 
 **Files:**
+
 - Modify: `src/lib/user-profile.ts`
 
 - [ ] **Step 1: Import the helper**
 
 Find:
+
 ```ts
 import { newTypeId } from "~/types/typeid";
 ```
+
 Replace with:
+
 ```ts
-import { newTypeId } from "~/types/typeid";
 import { ensureUserSelfIdentity } from "~/lib/user-self-identity";
+import { newTypeId } from "~/types/typeid";
 ```
 
 - [ ] **Step 2: Call `ensureUserSelfIdentity` after persisting**
 
 Find:
+
 ```ts
   const existing = await readMetadata(db, userId);
   if (existing === null) {
@@ -448,7 +466,9 @@ Find:
 
   return { aliases: nextAliases };
 ```
+
 Replace with:
+
 ```ts
   const existing = await readMetadata(db, userId);
   if (existing === null) {
@@ -493,15 +513,19 @@ git commit -m "✨ feat(identity): setUserSelfAliases names the self node + seed
 ## Task 4: Transcript ingest ensures self identity with effective aliases
 
 **Files:**
+
 - Modify: `src/lib/jobs/ingest-transcript.ts`
 
 - [ ] **Step 1: Import the helper**
 
 Find:
+
 ```ts
 import { getUserSelfAliases } from "~/lib/user-profile";
 ```
+
 Replace with:
+
 ```ts
 import { getUserSelfAliases } from "~/lib/user-profile";
 import { ensureUserSelfIdentity } from "~/lib/user-self-identity";
@@ -510,24 +534,27 @@ import { ensureUserSelfIdentity } from "~/lib/user-self-identity";
 - [ ] **Step 2: Ensure self identity before resolving speakers**
 
 Find:
-```ts
-  const userSelfAliases =
-    userSelfAliasesOverride ?? (await getUserSelfAliases(db, userId));
 
-  const speakerLabels = utterances.map((u) => u.speakerLabel);
+```ts
+const userSelfAliases =
+  userSelfAliasesOverride ?? (await getUserSelfAliases(db, userId));
+
+const speakerLabels = utterances.map((u) => u.speakerLabel);
 ```
+
 Replace with:
+
 ```ts
-  const userSelfAliases =
-    userSelfAliasesOverride ?? (await getUserSelfAliases(db, userId));
+const userSelfAliases =
+  userSelfAliasesOverride ?? (await getUserSelfAliases(db, userId));
 
-  // WhatsApp (and other transcript hosts) send `userSelfAliasesOverride` per
-  // request and never call /user/self-aliases, so the stored list may be
-  // empty. Use the EFFECTIVE list so the self node still gets a distinguishing
-  // label + aliases on the real ingestion path.
-  await ensureUserSelfIdentity(db, userId, userSelfAliases);
+// WhatsApp (and other transcript hosts) send `userSelfAliasesOverride` per
+// request and never call /user/self-aliases, so the stored list may be
+// empty. Use the EFFECTIVE list so the self node still gets a distinguishing
+// label + aliases on the real ingestion path.
+await ensureUserSelfIdentity(db, userId, userSelfAliases);
 
-  const speakerLabels = utterances.map((u) => u.speakerLabel);
+const speakerLabels = utterances.map((u) => u.speakerLabel);
 ```
 
 - [ ] **Step 3: Typecheck**
@@ -552,6 +579,7 @@ git commit -m "✨ feat(transcript): ensure user-self identity from effective al
 ## Task 5: DB test for `ensureUserSelfIdentity`
 
 **Files:**
+
 - Modify: `src/lib/user-self-identity.test.ts`
 
 - [ ] **Step 1: Add the DB-integration suite**
@@ -750,6 +778,7 @@ git commit -m "✅ test(identity): ensureUserSelfIdentity names node + seeds mul
 ## Task 6: Self-node backfill (job + schema + route)
 
 **Files:**
+
 - Create: `src/lib/jobs/backfill-user-self-identity.ts`
 - Create: `src/lib/schemas/backfill-user-self-identity.ts`
 - Create: `src/routes/maintenance/backfill-user-self-identity.post.ts`
@@ -895,33 +924,38 @@ git commit -m "✨ feat(maintenance): backfill route to repair existing user-sel
 ## Task 7: Component 2 — register speaker nodes as subjects + prompt wiring
 
 **Files:**
+
 - Modify: `src/lib/extract-graph.ts`
 
 - [ ] **Step 1: Register speaker nodes into `idMap`**
 
 Find:
-```ts
-  const { nodesForPromptFormatting, idMap, nodeLabels } =
-    _prepareInitialNodeMappings(cappedNodes);
-```
-Replace with:
-```ts
-  const { nodesForPromptFormatting, idMap, nodeLabels } =
-    _prepareInitialNodeMappings(cappedNodes);
 
-  // Register every resolved speaker node so the LLM can use its real id as a
-  // claim subjectId (e.g. the user-self speaker's first-person statements).
-  // Unconditional — speaker subjects must not be dropped by the 150-node cap.
-  if (speakerMap) {
-    for (const entry of speakerMap.values()) {
-      idMap.set(entry.nodeId.toString(), entry.nodeId);
-    }
+```ts
+const { nodesForPromptFormatting, idMap, nodeLabels } =
+  _prepareInitialNodeMappings(cappedNodes);
+```
+
+Replace with:
+
+```ts
+const { nodesForPromptFormatting, idMap, nodeLabels } =
+  _prepareInitialNodeMappings(cappedNodes);
+
+// Register every resolved speaker node so the LLM can use its real id as a
+// claim subjectId (e.g. the user-self speaker's first-person statements).
+// Unconditional — speaker subjects must not be dropped by the 150-node cap.
+if (speakerMap) {
+  for (const entry of speakerMap.values()) {
+    idMap.set(entry.nodeId.toString(), entry.nodeId);
   }
+}
 ```
 
 - [ ] **Step 2: Make the speaker section teach subject-wiring**
 
 Find the whole `_formatSpeakerMapSection` function:
+
 ```ts
 function _formatSpeakerMapSection(
   speakerMap: ExtractGraphSpeakerMap | undefined,
@@ -936,7 +970,9 @@ For each claim, set "assertedBySpeakerLabel" to the speaker who said it, using t
 ${lines.join("\n")}`;
 }
 ```
+
 Replace with:
+
 ```ts
 function _formatSpeakerMapSection(
   speakerMap: ExtractGraphSpeakerMap | undefined,
@@ -958,10 +994,13 @@ ${lines.join("\n")}`;
 - [ ] **Step 3: Demonstrate subject-wiring in the static transcript few-shot**
 
 Find:
+
 ```ts
 - Speaker "Alice" (user-self) says "I shipped the spec." → assertionKind: "user", assertedBySpeakerLabel: "Alice".
 ```
+
 Replace with:
+
 ```ts
 - Speaker "Alice" (user-self) says "I live in Lisbon." → create the (LIVES_IN, Lisbon) claim with subjectId set to Alice's nodeId from "Speakers in this transcript" (do NOT mint a new "Alice" node), assertionKind: "user", assertedBySpeakerLabel: "Alice".
 ```
@@ -988,6 +1027,7 @@ git commit -m "✨ feat(transcript): wire user-self speaker as claim subject in 
 ## Task 8: Component 2 — transcript subject-wiring integration test
 
 **Files:**
+
 - Modify: `src/lib/jobs/ingest-transcript.test.ts`
 
 - [ ] **Step 1: Add the integration test**
@@ -995,109 +1035,107 @@ git commit -m "✨ feat(transcript): wire user-self speaker as claim subject in 
 Insert this `it(...)` block inside the `describeIfServer("ingestTranscript", () => { ... })` block, after the last existing `it(...)` (i.e. just before the closing `});` of the describe at the end of the file):
 
 ```ts
-  it("attributes a user-self first-person claim to the self node, not a same-named participant", async () => {
-    const userId = "user_transcript_subject";
-    const transcriptId = "trans_subject_1";
-    const occurredAt = new Date("2026-05-01T10:00:00.000Z");
+it("attributes a user-self first-person claim to the self node, not a same-named participant", async () => {
+  const userId = "user_transcript_subject";
+  const transcriptId = "trans_subject_1";
+  const occurredAt = new Date("2026-05-01T10:00:00.000Z");
 
-    const client = new Client({ connectionString: dsnFor(dbName) });
-    await client.connect();
-    const database = drizzle(client, { schema, casing: "snake_case" });
+  const client = new Client({ connectionString: dsnFor(dbName) });
+  await client.connect();
+  const database = drizzle(client, { schema, casing: "snake_case" });
 
-    // Captured so the LLM stub can emit the real self node id as subjectId.
-    let selfNodeIdForStub = "";
+  // Captured so the LLM stub can emit the real self node id as subjectId.
+  let selfNodeIdForStub = "";
 
-    applyCommonMocks(database);
-    vi.doMock("../ai", async (importOriginal) => ({
-      ...(await importOriginal<typeof import("../ai")>()),
-      createCompletionClient: async () => ({
-        chat: {
-          completions: {
-            parse: async () => ({
-              choices: [
-                {
-                  message: {
-                    parsed: {
-                      nodes: [
-                        { id: "loc_1", type: "Location", label: "Lisbon" },
-                      ],
-                      relationshipClaims: [
-                        {
-                          subjectId: selfNodeIdForStub,
-                          objectId: "loc_1",
-                          predicate: "LIVES_IN",
-                          statement: "Marcel lives in Lisbon.",
-                          sourceRef: `${transcriptId}:0`,
-                          assertionKind: "user",
-                          assertedBySpeakerLabel: "Marcel",
-                        },
-                      ],
-                      attributeClaims: [],
-                      aliases: [],
-                    },
+  applyCommonMocks(database);
+  vi.doMock("../ai", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../ai")>()),
+    createCompletionClient: async () => ({
+      chat: {
+        completions: {
+          parse: async () => ({
+            choices: [
+              {
+                message: {
+                  parsed: {
+                    nodes: [{ id: "loc_1", type: "Location", label: "Lisbon" }],
+                    relationshipClaims: [
+                      {
+                        subjectId: selfNodeIdForStub,
+                        objectId: "loc_1",
+                        predicate: "LIVES_IN",
+                        statement: "Marcel lives in Lisbon.",
+                        sourceRef: `${transcriptId}:0`,
+                        assertionKind: "user",
+                        assertedBySpeakerLabel: "Marcel",
+                      },
+                    ],
+                    attributeClaims: [],
+                    aliases: [],
                   },
                 },
-              ],
-            }),
-          },
+              },
+            ],
+          }),
         },
-      }),
-    }));
+      },
+    }),
+  }));
 
-    try {
-      await createTranscriptTables(client);
-      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+  try {
+    await createTranscriptTables(client);
+    await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
 
-      // A different, same-first-name person already in the graph.
-      const otherMarcelId = newTypeId("node");
-      await client.query(
-        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Person')`,
-        [otherMarcelId, userId],
-      );
-      await client.query(
-        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label") VALUES ($1, $2, 'Marcel', 'marcel')`,
-        [newTypeId("node_metadata"), otherMarcelId],
-      );
+    // A different, same-first-name person already in the graph.
+    const otherMarcelId = newTypeId("node");
+    await client.query(
+      `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Person')`,
+      [otherMarcelId, userId],
+    );
+    await client.query(
+      `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label") VALUES ($1, $2, 'Marcel', 'marcel')`,
+      [newTypeId("node_metadata"), otherMarcelId],
+    );
 
-      const { ensureUserSelfIdentity } = await import("../user-self-identity");
-      const selfNodeId = await ensureUserSelfIdentity(database, userId, [
-        "Marcel",
-        "Marcel Samyn",
-      ]);
-      selfNodeIdForStub = selfNodeId;
+    const { ensureUserSelfIdentity } = await import("../user-self-identity");
+    const selfNodeId = await ensureUserSelfIdentity(database, userId, [
+      "Marcel",
+      "Marcel Samyn",
+    ]);
+    selfNodeIdForStub = selfNodeId;
 
-      const { ingestTranscript } = await import("./ingest-transcript");
-      await ingestTranscript({
-        db: database,
-        userId,
-        transcriptId,
-        scope: "personal",
-        occurredAt,
-        content: {
-          kind: "segmented",
-          utterances: [
-            { speakerLabel: "Marcel", content: "I live in Lisbon now." },
-          ],
-        },
-        userSelfAliasesOverride: ["Marcel", "Marcel Samyn"],
-      });
+    const { ingestTranscript } = await import("./ingest-transcript");
+    await ingestTranscript({
+      db: database,
+      userId,
+      transcriptId,
+      scope: "personal",
+      occurredAt,
+      content: {
+        kind: "segmented",
+        utterances: [
+          { speakerLabel: "Marcel", content: "I live in Lisbon now." },
+        ],
+      },
+      userSelfAliasesOverride: ["Marcel", "Marcel Samyn"],
+    });
 
-      const livesIn = await client.query<{
-        subject_node_id: string;
-        asserted_by_kind: string;
-      }>(
-        `SELECT subject_node_id, asserted_by_kind FROM claims WHERE user_id = $1 AND predicate = 'LIVES_IN'`,
-        [userId],
-      );
-      expect(livesIn.rows).toHaveLength(1);
-      expect(livesIn.rows[0]?.subject_node_id).toBe(selfNodeId);
-      expect(livesIn.rows[0]?.subject_node_id).not.toBe(otherMarcelId);
-      expect(livesIn.rows[0]?.asserted_by_kind).toBe("user");
-    } finally {
-      unmockCommon();
-      await client.end();
-    }
-  });
+    const livesIn = await client.query<{
+      subject_node_id: string;
+      asserted_by_kind: string;
+    }>(
+      `SELECT subject_node_id, asserted_by_kind FROM claims WHERE user_id = $1 AND predicate = 'LIVES_IN'`,
+      [userId],
+    );
+    expect(livesIn.rows).toHaveLength(1);
+    expect(livesIn.rows[0]?.subject_node_id).toBe(selfNodeId);
+    expect(livesIn.rows[0]?.subject_node_id).not.toBe(otherMarcelId);
+    expect(livesIn.rows[0]?.asserted_by_kind).toBe("user");
+  } finally {
+    unmockCommon();
+    await client.end();
+  }
+});
 ```
 
 - [ ] **Step 2: Run the transcript tests**
@@ -1117,6 +1155,7 @@ git commit -m "✅ test(transcript): user-self first-person claim attaches to se
 ## Task 9: Component 3 — resolver never guesses on a tie
 
 **Files:**
+
 - Modify: `src/lib/identity-resolution.ts`
 - Modify: `src/lib/identity-resolution.test.ts`
 
@@ -1125,138 +1164,52 @@ git commit -m "✅ test(transcript): user-self first-person claim attaches to se
 Insert these two `it(...)` blocks inside the `describeIfServer("resolveIdentity", () => { ... })` block in `src/lib/identity-resolution.test.ts`, after the last existing `it(...)` (just before the describe's closing `});`):
 
 ```ts
-  it("signal 1 — multiple same-scope canonical matches do not resolve (ambiguous)", async () => {
-    await withDb(async (client) => {
-      const userId = "user_ambiguous";
-      const marcelA = newTypeId("node");
-      const marcelB = newTypeId("node");
-      const sourceId = newTypeId("source");
-      await createIdentityTables(client);
-      await client.query(`INSERT INTO "users"("id") VALUES ($1)`, [userId]);
-      await client.query(
-        `INSERT INTO "sources"("id","user_id","type","external_id","scope")
+it("signal 1 — multiple same-scope canonical matches do not resolve (ambiguous)", async () => {
+  await withDb(async (client) => {
+    const userId = "user_ambiguous";
+    const marcelA = newTypeId("node");
+    const marcelB = newTypeId("node");
+    const sourceId = newTypeId("source");
+    await createIdentityTables(client);
+    await client.query(`INSERT INTO "users"("id") VALUES ($1)`, [userId]);
+    await client.query(
+      `INSERT INTO "sources"("id","user_id","type","external_id","scope")
            VALUES ($1,$2,'document','p1','personal')`,
-        [sourceId, userId],
-      );
-      await client.query(
-        `INSERT INTO "nodes"("id","user_id","node_type")
+      [sourceId, userId],
+    );
+    await client.query(
+      `INSERT INTO "nodes"("id","user_id","node_type")
            VALUES ($1,$3,'Person'),($2,$3,'Person')`,
-        [marcelA, marcelB, userId],
-      );
-      await client.query(
-        `INSERT INTO "node_metadata"("id","node_id","label","canonical_label")
+      [marcelA, marcelB, userId],
+    );
+    await client.query(
+      `INSERT INTO "node_metadata"("id","node_id","label","canonical_label")
            VALUES ($1,$3,'Marcel','marcel'),($2,$4,'Marcel','marcel')`,
-        [
-          newTypeId("node_metadata"),
-          newTypeId("node_metadata"),
-          marcelA,
-          marcelB,
-        ],
-      );
-      await client.query(
-        `INSERT INTO "source_links"("id","source_id","node_id")
+      [
+        newTypeId("node_metadata"),
+        newTypeId("node_metadata"),
+        marcelA,
+        marcelB,
+      ],
+    );
+    await client.query(
+      `INSERT INTO "source_links"("id","source_id","node_id")
            VALUES ($1,$3,$4),($2,$3,$5)`,
-        [
-          newTypeId("source_link"),
-          newTypeId("source_link"),
-          sourceId,
-          marcelA,
-          marcelB,
-        ],
-      );
+      [
+        newTypeId("source_link"),
+        newTypeId("source_link"),
+        sourceId,
+        marcelA,
+        marcelB,
+      ],
+    );
 
-      const { resolveIdentity } = await import("./identity-resolution");
-      const { setLogSink } = await import("~/lib/observability/log");
-      const captured: Array<Record<string, unknown>> = [];
-      setLogSink((event) => captured.push(event));
-      try {
-        const resolution = await resolveIdentity({
-          userId,
-          candidate: {
-            proposedLabel: "Marcel",
-            normalizedLabel: "marcel",
-            nodeType: "Person",
-            scope: "personal",
-          },
-        });
-        expect(resolution.resolvedNodeId).toBeNull();
-        expect(resolution.decision.signal).toBe("none");
-        const canonical = resolution.decision.trace.find(
-          (t) => t.signal === "canonical_label",
-        );
-        expect(canonical?.fired).toBe(true);
-        expect(canonical?.candidates).toHaveLength(2);
-        expect(
-          canonical?.signal === "canonical_label" && canonical.ambiguous,
-        ).toMatchObject({
-          candidateNodeIds: expect.arrayContaining([marcelA, marcelB]),
-        });
-        const skip = captured.find(
-          (e) => e["event"] === "identity.ambiguous_skip",
-        );
-        expect(skip).toMatchObject({
-          event: "identity.ambiguous_skip",
-          userId,
-          normalizedLabel: "marcel",
-          signal: "canonical_label",
-          candidateCount: 2,
-        });
-      } finally {
-        setLogSink();
-      }
-    });
-  });
-
-  it("self resolves by full name; a bare same-first-name does not merge into self", async () => {
-    await withDb(async (client) => {
-      const userId = "user_self_fullname";
-      await createIdentityTables(client);
-      await client.query(`INSERT INTO "users"("id") VALUES ($1)`, [userId]);
-
-      const { useDatabase } = await import("~/utils/db");
-      const db = await useDatabase();
-      const { ensureUserSelfIdentity } = await import("./user-self-identity");
-      const selfNodeId = await ensureUserSelfIdentity(db, userId, [
-        "Marcel",
-        "Marcel Samyn",
-      ]);
-
-      // A separate third-party "Marcel" with personal-scope support.
-      const otherMarcel = newTypeId("node");
-      const sourceId = newTypeId("source");
-      await client.query(
-        `INSERT INTO "sources"("id","user_id","type","external_id","scope")
-           VALUES ($1,$2,'document','d1','personal')`,
-        [sourceId, userId],
-      );
-      await client.query(
-        `INSERT INTO "nodes"("id","user_id","node_type") VALUES ($1,$2,'Person')`,
-        [otherMarcel, userId],
-      );
-      await client.query(
-        `INSERT INTO "node_metadata"("id","node_id","label","canonical_label")
-           VALUES ($1,$2,'Marcel','marcel')`,
-        [newTypeId("node_metadata"), otherMarcel],
-      );
-      await client.query(
-        `INSERT INTO "source_links"("id","source_id","node_id") VALUES ($1,$2,$3)`,
-        [newTypeId("source_link"), sourceId, otherMarcel],
-      );
-
-      const { resolveIdentity } = await import("./identity-resolution");
-
-      const full = await resolveIdentity({
-        userId,
-        candidate: {
-          proposedLabel: "Marcel Samyn",
-          normalizedLabel: "marcel samyn",
-          nodeType: "Person",
-          scope: "personal",
-        },
-      });
-      expect(full.resolvedNodeId).toBe(selfNodeId);
-
-      const bare = await resolveIdentity({
+    const { resolveIdentity } = await import("./identity-resolution");
+    const { setLogSink } = await import("~/lib/observability/log");
+    const captured: Array<Record<string, unknown>> = [];
+    setLogSink((event) => captured.push(event));
+    try {
+      const resolution = await resolveIdentity({
         userId,
         candidate: {
           proposedLabel: "Marcel",
@@ -1265,10 +1218,96 @@ Insert these two `it(...)` blocks inside the `describeIfServer("resolveIdentity"
           scope: "personal",
         },
       });
-      expect(bare.resolvedNodeId).toBe(otherMarcel);
-      expect(bare.resolvedNodeId).not.toBe(selfNodeId);
-    });
+      expect(resolution.resolvedNodeId).toBeNull();
+      expect(resolution.decision.signal).toBe("none");
+      const canonical = resolution.decision.trace.find(
+        (t) => t.signal === "canonical_label",
+      );
+      expect(canonical?.fired).toBe(true);
+      expect(canonical?.candidates).toHaveLength(2);
+      expect(
+        canonical?.signal === "canonical_label" && canonical.ambiguous,
+      ).toMatchObject({
+        candidateNodeIds: expect.arrayContaining([marcelA, marcelB]),
+      });
+      const skip = captured.find(
+        (e) => e["event"] === "identity.ambiguous_skip",
+      );
+      expect(skip).toMatchObject({
+        event: "identity.ambiguous_skip",
+        userId,
+        normalizedLabel: "marcel",
+        signal: "canonical_label",
+        candidateCount: 2,
+      });
+    } finally {
+      setLogSink();
+    }
   });
+});
+
+it("self resolves by full name; a bare same-first-name does not merge into self", async () => {
+  await withDb(async (client) => {
+    const userId = "user_self_fullname";
+    await createIdentityTables(client);
+    await client.query(`INSERT INTO "users"("id") VALUES ($1)`, [userId]);
+
+    const { useDatabase } = await import("~/utils/db");
+    const db = await useDatabase();
+    const { ensureUserSelfIdentity } = await import("./user-self-identity");
+    const selfNodeId = await ensureUserSelfIdentity(db, userId, [
+      "Marcel",
+      "Marcel Samyn",
+    ]);
+
+    // A separate third-party "Marcel" with personal-scope support.
+    const otherMarcel = newTypeId("node");
+    const sourceId = newTypeId("source");
+    await client.query(
+      `INSERT INTO "sources"("id","user_id","type","external_id","scope")
+           VALUES ($1,$2,'document','d1','personal')`,
+      [sourceId, userId],
+    );
+    await client.query(
+      `INSERT INTO "nodes"("id","user_id","node_type") VALUES ($1,$2,'Person')`,
+      [otherMarcel, userId],
+    );
+    await client.query(
+      `INSERT INTO "node_metadata"("id","node_id","label","canonical_label")
+           VALUES ($1,$2,'Marcel','marcel')`,
+      [newTypeId("node_metadata"), otherMarcel],
+    );
+    await client.query(
+      `INSERT INTO "source_links"("id","source_id","node_id") VALUES ($1,$2,$3)`,
+      [newTypeId("source_link"), sourceId, otherMarcel],
+    );
+
+    const { resolveIdentity } = await import("./identity-resolution");
+
+    const full = await resolveIdentity({
+      userId,
+      candidate: {
+        proposedLabel: "Marcel Samyn",
+        normalizedLabel: "marcel samyn",
+        nodeType: "Person",
+        scope: "personal",
+      },
+    });
+    expect(full.resolvedNodeId).toBe(selfNodeId);
+
+    const bare = await resolveIdentity({
+      userId,
+      candidate: {
+        proposedLabel: "Marcel",
+        normalizedLabel: "marcel",
+        nodeType: "Person",
+        scope: "personal",
+      },
+    });
+    expect(bare.resolvedNodeId).toBe(otherMarcel);
+    expect(bare.resolvedNodeId).not.toBe(selfNodeId);
+  });
+});
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -1279,6 +1318,7 @@ Expected: FAIL — the ambiguous test currently resolves to `candidates[0]` (non
 - [ ] **Step 3: Add the `ambiguous` field to the exact-match trace variants**
 
 In `src/lib/identity-resolution.ts`, find:
+
 ```ts
   | {
       signal: "canonical_label";
@@ -1294,7 +1334,9 @@ In `src/lib/identity-resolution.ts`, find:
       crossScopeRefusal?: { nodeId: TypeId<"node">; otherScope: Scope };
     }
 ```
+
 Replace with:
+
 ```ts
   | {
       signal: "canonical_label";
@@ -1318,6 +1360,7 @@ Replace with:
 - [ ] **Step 4: Resolve only on a unique canonical match**
 
 Find:
+
 ```ts
   if (canonicalTrace.signal === "canonical_label" && canonicalTrace.fired) {
     const winner = canonicalTrace.candidates[0];
@@ -1333,7 +1376,9 @@ Find:
     }
   }
 ```
+
 Replace with:
+
 ```ts
   if (canonicalTrace.signal === "canonical_label" && canonicalTrace.fired) {
     if (canonicalTrace.candidates.length === 1) {
@@ -1365,6 +1410,7 @@ Replace with:
 - [ ] **Step 5: Resolve only on a unique alias match**
 
 Find:
+
 ```ts
   if (aliasTrace.signal === "alias" && aliasTrace.fired) {
     const winner = aliasTrace.candidates[0];
@@ -1380,7 +1426,9 @@ Find:
     }
   }
 ```
+
 Replace with:
+
 ```ts
   if (aliasTrace.signal === "alias" && aliasTrace.fired) {
     if (aliasTrace.candidates.length === 1) {
@@ -1404,10 +1452,13 @@ Replace with:
 - [ ] **Step 6: Add the `_logAmbiguousSkip` helper**
 
 In `src/lib/identity-resolution.ts`, find the start of `_logCrossScopeRefusal`:
+
 ```ts
 function _logCrossScopeRefusal(
 ```
+
 Insert this function immediately ABOVE it:
+
 ```ts
 function _logAmbiguousSkip(
   userId: string,
@@ -1426,7 +1477,6 @@ function _logAmbiguousSkip(
     candidateCount: candidates.length,
   });
 }
-
 ```
 
 - [ ] **Step 7: Run the resolver tests + full identity suite**
@@ -1451,17 +1501,21 @@ git commit -m "✨ feat(identity): unique-match-wins resolver + identity.ambiguo
 ## Task 10: Component 4 — `userIdentityNote` param + render + static rule
 
 **Files:**
+
 - Modify: `src/lib/extract-graph.ts`
 
 - [ ] **Step 1: Add the param to `ExtractGraphParams`**
 
 Find:
+
 ```ts
   contentNote?: string;
   /**
    * Debug hook fired exactly once after the LLM call returns, before
 ```
+
 Replace with:
+
 ```ts
   contentNote?: string;
   /**
@@ -1480,6 +1534,7 @@ Replace with:
 - [ ] **Step 2: Destructure it**
 
 Find:
+
 ```ts
   content,
   speakerMap,
@@ -1488,7 +1543,9 @@ Find:
   onLlmIO,
 }: ExtractGraphParams) {
 ```
+
 Replace with:
+
 ```ts
   content,
   speakerMap,
@@ -1502,27 +1559,33 @@ Replace with:
 - [ ] **Step 3: Build the render section alongside the others**
 
 Find:
-```ts
-  const speakerMapPromptSection = _formatSpeakerMapSection(speakerMap);
-```
-Replace with:
-```ts
-  const speakerMapPromptSection = _formatSpeakerMapSection(speakerMap);
 
-  const userIdentityPromptSection = userIdentityNote
-    ? `${userIdentityNote}\n\n`
-    : "";
+```ts
+const speakerMapPromptSection = _formatSpeakerMapSection(speakerMap);
+```
+
+Replace with:
+
+```ts
+const speakerMapPromptSection = _formatSpeakerMapSection(speakerMap);
+
+const userIdentityPromptSection = userIdentityNote
+  ? `${userIdentityNote}\n\n`
+  : "";
 ```
 
 - [ ] **Step 4: Inject the section into the user message**
 
 Find:
+
 ```ts
 ${speakerMapPromptSection}
 
 Extract the graph from the following ${sourceType}:
 ```
+
 Replace with:
+
 ```ts
 ${speakerMapPromptSection}
 
@@ -1532,10 +1595,13 @@ ${userIdentityPromptSection}Extract the graph from the following ${sourceType}:
 - [ ] **Step 5: Add the static anti-conflation rule**
 
 Find:
+
 ```ts
 - In node names use full names, eg. "John Doe" instead of "John"
 ```
+
 Replace with:
+
 ```ts
 - In node names use full names, eg. "John Doe" instead of "John"
 - If multiple people could share a name, use the most specific distinguishing label available (e.g. a full name) and NEVER merge or conflate two different people who share a first name.
@@ -1558,6 +1624,7 @@ git commit -m "✨ feat(extraction): userIdentityNote injection + anti-conflatio
 ## Task 11: Component 4 — wire conversation + document paths
 
 **Files:**
+
 - Modify: `src/lib/jobs/ingest-conversation.ts`
 - Modify: `src/lib/ingestion/extract-document-graph.ts`
 - Modify: `src/lib/ingestion/chunked-extract.ts`
@@ -1565,52 +1632,59 @@ git commit -m "✨ feat(extraction): userIdentityNote injection + anti-conflatio
 - [ ] **Step 1: Conversation — imports**
 
 In `src/lib/jobs/ingest-conversation.ts`, find:
+
 ```ts
 import { NodeTypeEnum } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
 ```
+
 Replace with:
+
 ```ts
-import { NodeTypeEnum } from "~/types/graph";
-import { TypeId } from "~/types/typeid";
 import { getUserSelfAliases } from "~/lib/user-profile";
 import { buildUserIdentityNote } from "~/lib/user-self-identity";
+import { NodeTypeEnum } from "~/types/graph";
+import { TypeId } from "~/types/typeid";
 ```
 
 - [ ] **Step 2: Conversation — build + pass the note**
 
 Find:
+
 ```ts
-  await extractGraph({
-    userId,
-    sourceType: "conversation",
-    sourceId,
-    statedAt: firstTurn.timestamp,
-    linkedNodeId: conversationNodeId,
-    sourceRefs,
-    content: formatConversationAsXml(insertedTurns),
-  });
+await extractGraph({
+  userId,
+  sourceType: "conversation",
+  sourceId,
+  statedAt: firstTurn.timestamp,
+  linkedNodeId: conversationNodeId,
+  sourceRefs,
+  content: formatConversationAsXml(insertedTurns),
+});
 ```
+
 Replace with:
+
 ```ts
-  const userIdentityNote = buildUserIdentityNote(
-    await getUserSelfAliases(db, userId),
-  );
-  await extractGraph({
-    userId,
-    sourceType: "conversation",
-    sourceId,
-    statedAt: firstTurn.timestamp,
-    linkedNodeId: conversationNodeId,
-    sourceRefs,
-    content: formatConversationAsXml(insertedTurns),
-    ...(userIdentityNote ? { userIdentityNote } : {}),
-  });
+const userIdentityNote = buildUserIdentityNote(
+  await getUserSelfAliases(db, userId),
+);
+await extractGraph({
+  userId,
+  sourceType: "conversation",
+  sourceId,
+  statedAt: firstTurn.timestamp,
+  linkedNodeId: conversationNodeId,
+  sourceRefs,
+  content: formatConversationAsXml(insertedTurns),
+  ...(userIdentityNote ? { userIdentityNote } : {}),
+});
 ```
 
 - [ ] **Step 3: Document — imports**
 
 In `src/lib/ingestion/extract-document-graph.ts`, find:
+
 ```ts
 import { runChunkedExtraction } from "./chunked-extract";
 import { ensureSourceNode } from "./ensure-source-node";
@@ -1618,7 +1692,9 @@ import { DrizzleDB } from "~/db";
 import { NodeTypeEnum } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
 ```
+
 Replace with:
+
 ```ts
 import { runChunkedExtraction } from "./chunked-extract";
 import { ensureSourceNode } from "./ensure-source-node";
@@ -1632,64 +1708,68 @@ import { TypeId } from "~/types/typeid";
 - [ ] **Step 4: Document — build + pass the note**
 
 Find:
-```ts
-  const linkedNodeId = await ensureSourceNode({
-    db,
-    userId,
-    sourceId,
-    timestamp,
-    nodeType: NodeTypeEnum.enum.Document,
-  });
 
-  await runChunkedExtraction({
-    userId,
-    sourceType: "document",
-    sourceId,
-    statedAt: timestamp,
-    linkedNodeId,
-    sourceRefs: [{ externalId, sourceId, statedAt: timestamp }],
-    content,
-    logLabel,
-    documentMetadata: {
-      ...(title !== undefined && { title }),
-      ...(author !== undefined && { author }),
-    },
-  });
+```ts
+const linkedNodeId = await ensureSourceNode({
+  db,
+  userId,
+  sourceId,
+  timestamp,
+  nodeType: NodeTypeEnum.enum.Document,
+});
+
+await runChunkedExtraction({
+  userId,
+  sourceType: "document",
+  sourceId,
+  statedAt: timestamp,
+  linkedNodeId,
+  sourceRefs: [{ externalId, sourceId, statedAt: timestamp }],
+  content,
+  logLabel,
+  documentMetadata: {
+    ...(title !== undefined && { title }),
+    ...(author !== undefined && { author }),
+  },
+});
 ```
+
 Replace with:
+
 ```ts
-  const linkedNodeId = await ensureSourceNode({
-    db,
-    userId,
-    sourceId,
-    timestamp,
-    nodeType: NodeTypeEnum.enum.Document,
-  });
+const linkedNodeId = await ensureSourceNode({
+  db,
+  userId,
+  sourceId,
+  timestamp,
+  nodeType: NodeTypeEnum.enum.Document,
+});
 
-  const userIdentityNote = buildUserIdentityNote(
-    await getUserSelfAliases(db, userId),
-  );
+const userIdentityNote = buildUserIdentityNote(
+  await getUserSelfAliases(db, userId),
+);
 
-  await runChunkedExtraction({
-    userId,
-    sourceType: "document",
-    sourceId,
-    statedAt: timestamp,
-    linkedNodeId,
-    sourceRefs: [{ externalId, sourceId, statedAt: timestamp }],
-    content,
-    logLabel,
-    documentMetadata: {
-      ...(title !== undefined && { title }),
-      ...(author !== undefined && { author }),
-    },
-    ...(userIdentityNote ? { userIdentityNote } : {}),
-  });
+await runChunkedExtraction({
+  userId,
+  sourceType: "document",
+  sourceId,
+  statedAt: timestamp,
+  linkedNodeId,
+  sourceRefs: [{ externalId, sourceId, statedAt: timestamp }],
+  content,
+  logLabel,
+  documentMetadata: {
+    ...(title !== undefined && { title }),
+    ...(author !== undefined && { author }),
+  },
+  ...(userIdentityNote ? { userIdentityNote } : {}),
+});
 ```
 
 - [ ] **Step 5: Chunked-extract — add param to the interface**
 
 In `src/lib/ingestion/chunked-extract.ts`, find:
+
 ```ts
   documentMetadata?: {
     title?: string;
@@ -1697,7 +1777,9 @@ In `src/lib/ingestion/chunked-extract.ts`, find:
   };
 }
 ```
+
 Replace with:
+
 ```ts
   documentMetadata?: {
     title?: string;
@@ -1714,57 +1796,63 @@ Replace with:
 - [ ] **Step 6: Chunked-extract — destructure + forward to every chunk**
 
 Find:
+
 ```ts
-  const {
-    userId,
-    sourceType,
-    sourceId,
-    statedAt,
-    linkedNodeId,
-    sourceRefs,
-    content,
-    logLabel,
-    documentMetadata,
-  } = params;
+const {
+  userId,
+  sourceType,
+  sourceId,
+  statedAt,
+  linkedNodeId,
+  sourceRefs,
+  content,
+  logLabel,
+  documentMetadata,
+} = params;
 ```
+
 Replace with:
+
 ```ts
-  const {
-    userId,
-    sourceType,
-    sourceId,
-    statedAt,
-    linkedNodeId,
-    sourceRefs,
-    content,
-    logLabel,
-    documentMetadata,
-    userIdentityNote,
-  } = params;
+const {
+  userId,
+  sourceType,
+  sourceId,
+  statedAt,
+  linkedNodeId,
+  sourceRefs,
+  content,
+  logLabel,
+  documentMetadata,
+  userIdentityNote,
+} = params;
 ```
 
 Then find:
+
 ```ts
-  const baseExtractParams = {
-    userId,
-    sourceType,
-    sourceId,
-    statedAt,
-    linkedNodeId,
-    sourceRefs,
-  };
+const baseExtractParams = {
+  userId,
+  sourceType,
+  sourceId,
+  statedAt,
+  linkedNodeId,
+  sourceRefs,
+};
 ```
+
 Replace with:
+
 ```ts
-  const baseExtractParams = {
-    userId,
-    sourceType,
-    sourceId,
-    statedAt,
-    linkedNodeId,
-    sourceRefs,
-    ...(userIdentityNote ? { userIdentityNote } : {}),
-  };
+const baseExtractParams = {
+  userId,
+  sourceType,
+  sourceId,
+  statedAt,
+  linkedNodeId,
+  sourceRefs,
+  ...(userIdentityNote ? { userIdentityNote } : {}),
+};
 ```
 
 - [ ] **Step 7: Typecheck**
@@ -1803,6 +1891,7 @@ Expected: PASS. If it reports formatting diffs, run `pnpm run format:fix` and re
 - [ ] **Step 4: Run the full affected test set (DB on :5431)**
 
 Run:
+
 ```bash
 pnpm run test -- run \
   src/lib/user-self-identity.test.ts \
@@ -1810,6 +1899,7 @@ pnpm run test -- run \
   src/lib/jobs/ingest-transcript.test.ts \
   src/lib/identity-resolution.test.ts
 ```
+
 Expected: all PASS. (Start Postgres first if needed: `docker compose up -d db`.)
 
 - [ ] **Step 5: Final commit (only if format:fix or lint:fix changed files)**
@@ -1825,26 +1915,26 @@ git commit -m "🎨 style(identity): lint/format cleanup"
 
 **1. Spec coverage**
 
-| Spec item | Task(s) |
-| --- | --- |
-| C1 primary label = longest/most-token alias | Task 1 (`selectPrimarySelfLabel`) |
-| C1 `ensureUserSelfIdentity` from both call sites (config + transcript, effective aliases) | Tasks 3, 4 |
-| C1 keep single-token aliases out of the alias table | Task 1 (`distinguishingAliases`) |
-| C1 stop writing bare self alias in `resolveSpeakers` | Task 2 |
-| C1 backfill maintenance route | Task 6 |
-| C2 register speaker nodes into `idMap` unconditionally | Task 7 (Step 1) |
-| C2 surface user-self as "you" + subject-wiring in prompt | Task 7 (Steps 2–3) |
-| C2 caching contract preserved (dynamic stays in user message) | Task 7 (speaker section) + Task 10 (note in user message) |
-| C3 unique-match-wins; >1 → split + `identity.ambiguous_skip` | Task 9 |
-| C3 no blunt self-prior | Confirmed: no self-preference added to the resolver anywhere |
-| C4 inject identity into document + conversation prompts | Tasks 10, 11 |
-| C4 instruct most-specific labels / no conflation | Task 10 (Step 5, static rule) |
-| Testing: resolver ambiguity/unique/cross-scope | Task 9 |
-| Testing: self hygiene seeds only multi-token; no bare alias | Tasks 5, 2 |
-| Testing: transcript self-utterance attaches to self with same-named participant present | Task 8 |
-| Testing: document "Marcel Samyn" → self; bare "Marcel" ↛ self | Task 9 (Step 1, second test) |
+| Spec item                                                                                 | Task(s)                                                      |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| C1 primary label = longest/most-token alias                                               | Task 1 (`selectPrimarySelfLabel`)                            |
+| C1 `ensureUserSelfIdentity` from both call sites (config + transcript, effective aliases) | Tasks 3, 4                                                   |
+| C1 keep single-token aliases out of the alias table                                       | Task 1 (`distinguishingAliases`)                             |
+| C1 stop writing bare self alias in `resolveSpeakers`                                      | Task 2                                                       |
+| C1 backfill maintenance route                                                             | Task 6                                                       |
+| C2 register speaker nodes into `idMap` unconditionally                                    | Task 7 (Step 1)                                              |
+| C2 surface user-self as "you" + subject-wiring in prompt                                  | Task 7 (Steps 2–3)                                           |
+| C2 caching contract preserved (dynamic stays in user message)                             | Task 7 (speaker section) + Task 10 (note in user message)    |
+| C3 unique-match-wins; >1 → split + `identity.ambiguous_skip`                              | Task 9                                                       |
+| C3 no blunt self-prior                                                                    | Confirmed: no self-preference added to the resolver anywhere |
+| C4 inject identity into document + conversation prompts                                   | Tasks 10, 11                                                 |
+| C4 instruct most-specific labels / no conflation                                          | Task 10 (Step 5, static rule)                                |
+| Testing: resolver ambiguity/unique/cross-scope                                            | Task 9                                                       |
+| Testing: self hygiene seeds only multi-token; no bare alias                               | Tasks 5, 2                                                   |
+| Testing: transcript self-utterance attaches to self with same-named participant present   | Task 8                                                       |
+| Testing: document "Marcel Samyn" → self; bare "Marcel" ↛ self                             | Task 9 (Step 1, second test)                                 |
 
-**2. Deliberate deviation from the spec (flagged):** the spec's "Testing (Integration document)" and "extend eval story 10" are delivered as **vitest integration/unit tests** (Task 8 transcript, Task 9 document-case) rather than as `src/evals/memory/stories/*` fixtures. Rationale: the vitest tests run against real Postgres and assert the exact subject/resolution behavior directly, giving equivalent coverage without the eval-harness stub plumbing; an eval-story extension can be added later if the probe harness needs it. No spec *behavior* is left unverified.
+**2. Deliberate deviation from the spec (flagged):** the spec's "Testing (Integration document)" and "extend eval story 10" are delivered as **vitest integration/unit tests** (Task 8 transcript, Task 9 document-case) rather than as `src/evals/memory/stories/*` fixtures. Rationale: the vitest tests run against real Postgres and assert the exact subject/resolution behavior directly, giving equivalent coverage without the eval-harness stub plumbing; an eval-story extension can be added later if the probe harness needs it. No spec _behavior_ is left unverified.
 
 **3. Placeholder scan:** none — every code step contains complete copy-pasteable content; every test step contains full assertions.
 

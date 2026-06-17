@@ -13,8 +13,8 @@ import {
   userProfileMetadataSchema,
   type UserProfileMetadata,
 } from "~/lib/schemas/user-profile-metadata";
-import { newTypeId } from "~/types/typeid";
 import { ensureUserSelfIdentity } from "~/lib/user-self-identity";
+import { newTypeId } from "~/types/typeid";
 
 /** Read `metadata` and parse with the schema. Empty/absent row → empty default. */
 async function readMetadata(

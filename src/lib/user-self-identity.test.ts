@@ -1,12 +1,12 @@
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Client } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import * as schema from "~/db/schema";
 import {
   buildUserIdentityNote,
   distinguishingAliases,
   selectPrimarySelfLabel,
 } from "./user-self-identity";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Client } from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import * as schema from "~/db/schema";
 
 describe("selectPrimarySelfLabel", () => {
   it("picks the alias with the most tokens", () => {
