@@ -14,6 +14,7 @@ import {
   type UserProfileMetadata,
 } from "~/lib/schemas/user-profile-metadata";
 import { newTypeId } from "~/types/typeid";
+import { ensureUserSelfIdentity } from "~/lib/user-self-identity";
 
 /** Read `metadata` and parse with the schema. Empty/absent row → empty default. */
 async function readMetadata(
@@ -67,18 +68,20 @@ export async function setUserSelfAliases(
       content: "",
       metadata: { ...parsed, userSelfAliases: nextAliases },
     });
-    return { aliases: nextAliases };
+  } else {
+    // Merge: replace `userSelfAliases`, preserve catchall keys.
+    const nextMetadata: UserProfileMetadata = {
+      ...existing,
+      userSelfAliases: nextAliases,
+    };
+    await db
+      .update(userProfiles)
+      .set({ metadata: nextMetadata, lastUpdatedAt: sql`now()` })
+      .where(eq(userProfiles.userId, userId));
   }
 
-  // Merge: replace `userSelfAliases`, preserve catchall keys.
-  const nextMetadata: UserProfileMetadata = {
-    ...existing,
-    userSelfAliases: nextAliases,
-  };
-  await db
-    .update(userProfiles)
-    .set({ metadata: nextMetadata, lastUpdatedAt: sql`now()` })
-    .where(eq(userProfiles.userId, userId));
+  // Keep the self node's label + distinguishing aliases in sync with config.
+  await ensureUserSelfIdentity(db, userId, nextAliases);
 
   return { aliases: nextAliases };
 }
