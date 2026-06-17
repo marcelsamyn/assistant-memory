@@ -11,8 +11,16 @@ export const backfillUserSelfIdentityRequestSchema = z.object({
   aliases: z.array(z.string().min(1)).optional(),
 });
 
+export type BackfillUserSelfIdentityRequest = z.infer<
+  typeof backfillUserSelfIdentityRequestSchema
+>;
+
 export const backfillUserSelfIdentityResponseSchema = z.object({
   selfNodeId: z.string(),
   primaryAliasesSeeded: z.array(z.string()),
   removedAmbiguousAliases: z.number().int().nonnegative(),
 });
+
+export type BackfillUserSelfIdentityResponse = z.infer<
+  typeof backfillUserSelfIdentityResponseSchema
+>;

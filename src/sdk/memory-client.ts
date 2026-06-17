@@ -8,6 +8,11 @@ import {
   deleteAliasResponseSchema,
 } from "../lib/schemas/alias.js";
 import {
+  BackfillUserSelfIdentityRequest,
+  BackfillUserSelfIdentityResponse,
+  backfillUserSelfIdentityResponseSchema,
+} from "../lib/schemas/backfill-user-self-identity.js";
+import {
   CreateClaimRequest,
   CreateClaimResponse,
   createClaimResponseSchema,
@@ -714,6 +719,27 @@ export class MemoryClient {
       "POST",
       "/maintenance/cleanup-placeholders",
       cleanupPlaceholdersResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * One-off maintenance: bring an existing user-self `Person` node up to the
+   * current identity-hygiene contract — distinguishing primary label, seeded
+   * multi-token aliases, and NO ambiguous bare-first-name alias. Idempotent.
+   *
+   * When `aliases` is omitted, the stored `userSelfAliases` are used. Edge:
+   * if the effective list (passed or stored) is empty, the self node's
+   * existing alias rows are ALL removed (clean-slate hygiene) — pass a
+   * non-empty list to avoid clearing them.
+   */
+  async backfillUserSelfIdentity(
+    payload: BackfillUserSelfIdentityRequest,
+  ): Promise<BackfillUserSelfIdentityResponse> {
+    return this._fetch(
+      "POST",
+      "/maintenance/backfill-user-self-identity",
+      backfillUserSelfIdentityResponseSchema,
       payload,
     );
   }

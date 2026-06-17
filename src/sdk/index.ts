@@ -29,6 +29,7 @@ export * from "../lib/schemas/summarize.js";
 export * from "../lib/schemas/rollup.js";
 export * from "../lib/schemas/cleanup.js";
 export * from "../lib/schemas/cleanup-placeholders.js";
+export * from "../lib/schemas/backfill-user-self-identity.js";
 export * from "../lib/schemas/open-commitments.js";
 export * from "../lib/schemas/prune-orphan-nodes.js";
 export * from "../lib/schemas/prune-stale-nodes.js";
