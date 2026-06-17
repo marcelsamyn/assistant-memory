@@ -847,4 +847,77 @@ describeIfServer("reattributeClaim", () => {
       await client.end();
     }
   });
+
+  it.each(["retracted", "superseded", "contradicted"] as const)(
+    "rejects reattribution of a %s (non-active) claim",
+    async (status) => {
+      const userId = `user_inactive_${status}`;
+      const sourceId = newTypeId("source");
+
+      const client = new Client({ connectionString: dsnFor(dbName) });
+      await client.connect();
+      const database = drizzle(client, { schema, casing: "snake_case" });
+      withDb(database);
+
+      try {
+        await createSchema(client);
+        await client.query(
+          `INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`,
+          [userId],
+        );
+        await client.query(
+          `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+             VALUES ($1, $2, 'manual', $3, 'completed')`,
+          [sourceId, userId, `manual:${userId}`],
+        );
+
+        const oldSubjectId = await seedNode(client, userId, "Person", "Bob");
+        const newSubjectId = await seedNode(client, userId, "Person", "Alice");
+        const objectId = await seedNode(client, userId, "Object", "Laptop");
+
+        const { reattributeClaim, InactiveClaimReattributionError } =
+          await import("./claim");
+        const { setSkipEmbeddingPersistence } = await import(
+          "~/utils/test-overrides"
+        );
+        setSkipEmbeddingPersistence(true);
+
+        const originalId = newTypeId("claim");
+        await database.insert(schema.claims).values({
+          id: originalId,
+          userId,
+          subjectNodeId: oldSubjectId,
+          objectNodeId: objectId,
+          predicate: "OWNED_BY",
+          statement: "Bob owns a laptop.",
+          sourceId,
+          scope: "personal",
+          assertedByKind: "user",
+          statedAt: new Date("2026-05-01T00:00:00.000Z"),
+          status,
+        });
+
+        await expect(
+          reattributeClaim({
+            userId,
+            claimId: originalId,
+            replace: "subject",
+            newNodeId: newSubjectId,
+          }),
+        ).rejects.toBeInstanceOf(InactiveClaimReattributionError);
+
+        // No new claim was created and the original keeps its status — dead
+        // history is not resurrected.
+        const rows = await client.query<{ status: string }>(
+          `SELECT status FROM claims WHERE user_id = $1`,
+          [userId],
+        );
+        expect(rows.rows).toEqual([{ status }]);
+      } finally {
+        vi.doUnmock("~/utils/db");
+        vi.resetModules();
+        await client.end();
+      }
+    },
+  );
 });

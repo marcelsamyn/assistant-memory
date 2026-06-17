@@ -1,6 +1,7 @@
 import { defineEventHandler, createError } from "h3";
 import {
   AttributeClaimObjectReattributionError,
+  InactiveClaimReattributionError,
   NodesNotFoundError,
   reattributeClaim,
 } from "~/lib/claim";
@@ -35,6 +36,13 @@ export default defineEventHandler(async (event) => {
           userId: e.userId,
           missingNodeIds: e.missingNodeIds,
         },
+      });
+    }
+    if (e instanceof InactiveClaimReattributionError) {
+      throw createError({
+        statusCode: 409,
+        statusMessage: e.message,
+        data: { name: e.name, claimId: e.claimId, status: e.status },
       });
     }
     if (e instanceof CrossScopeMergeError) {

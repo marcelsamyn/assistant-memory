@@ -1193,4 +1193,109 @@ describeIfServer("node operations", () => {
       await client.end();
     }
   });
+
+  it("summarizeNode caps the prompt at the 100 most recent active claims", async () => {
+    const userId = "user_summarize_cap";
+    const subjectNodeId = newTypeId("node");
+    const sourceId = newTypeId("source");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Person')`,
+        [subjectNodeId, userId],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label")
+           VALUES ($1, $2, 'Alice', 'alice')`,
+        [newTypeId("node_metadata"), subjectNodeId],
+      );
+      await client.query(
+        `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+           VALUES ($1, $2, 'manual', 'manual:user_summarize_cap', 'completed')`,
+        [sourceId, userId],
+      );
+
+      // 150 active claims with strictly increasing statedAt: claim index N is
+      // stated N days after the epoch base, so higher index == more recent.
+      const totalClaims = 150;
+      const baseDay = new Date("2026-01-01T00:00:00.000Z").getTime();
+      const dayMs = 24 * 60 * 60 * 1000;
+      for (let i = 0; i < totalClaims; i++) {
+        await client.query(
+          `INSERT INTO "claims" (
+             "id", "user_id", "subject_node_id", "object_value",
+             "predicate", "statement", "source_id", "asserted_by_kind",
+             "stated_at", "status"
+           ) VALUES ($1, $2, $3, $4, 'HAS_PREFERENCE', $5, $6, 'user', $7, 'active')`,
+          [
+            newTypeId("claim"),
+            userId,
+            subjectNodeId,
+            `value-${i}`,
+            `Alice fact number ${i}.`,
+            sourceId,
+            new Date(baseDay + i * dayMs).toISOString(),
+          ],
+        );
+      }
+
+      let capturedPrompt = "";
+      const parse = vi.fn(
+        async (body: {
+          messages: Array<{ role: string; content: string }>;
+        }) => {
+          capturedPrompt = body.messages.map((m) => m.content).join("\n\n");
+          return {
+            choices: [{ message: { parsed: { summary: "Summary." } } }],
+            usage: {
+              prompt_tokens: 20,
+              completion_tokens: 10,
+              total_tokens: 30,
+            },
+          };
+        },
+      );
+      const { setExtractionClientOverride } = await import(
+        "~/utils/test-overrides"
+      );
+      setExtractionClientOverride({
+        chat: { completions: { parse } },
+      } as never);
+
+      const { summarizeNode } = await import("./node");
+      const result = await summarizeNode({ userId, nodeId: subjectNodeId });
+
+      expect(result).toEqual({ summary: "Summary." });
+      expect(parse).toHaveBeenCalledTimes(1);
+
+      // Exactly 100 fact lines reach the prompt (one bullet per capped claim).
+      const factLineCount = capturedPrompt
+        .split("\n")
+        .filter((line) => line.startsWith("- ")).length;
+      expect(factLineCount).toBe(100);
+
+      // The newest claim (index 149) is kept; the oldest beyond the cap
+      // (index 0, and index 49 — the last excluded one) are dropped.
+      expect(capturedPrompt).toContain("Alice fact number 149.");
+      expect(capturedPrompt).toContain("Alice fact number 50.");
+      expect(capturedPrompt).not.toContain("Alice fact number 0.");
+      expect(capturedPrompt).not.toContain("Alice fact number 49.");
+    } finally {
+      const { setExtractionClientOverride: clear } = await import(
+        "~/utils/test-overrides"
+      );
+      clear(null);
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
 });
