@@ -10,6 +10,14 @@ const TEST_DB_USER = process.env["TEST_PG_USER"] ?? "postgres";
 const TEST_DB_PASSWORD = process.env["TEST_PG_PASSWORD"] ?? "postgres";
 const TEST_DB_ADMIN_DB = process.env["TEST_PG_ADMIN_DB"] ?? "postgres";
 
+// `summarizeNode` resolves the LLM client via `createCompletionClient`, which
+// touches these at import/call time even though the extraction override
+// short-circuits the actual network request. Default them so the suite is
+// self-contained regardless of the ambient `.env`.
+process.env["MEMORY_OPENAI_API_KEY"] ??= "test";
+process.env["MEMORY_OPENAI_API_BASE_URL"] ??= "http://localhost";
+process.env["MODEL_ID_GRAPH_EXTRACTION"] ??= "test";
+
 const adminDsn = () =>
   `postgres://${TEST_DB_USER}:${TEST_DB_PASSWORD}@${TEST_DB_HOST}:${TEST_DB_PORT}/${TEST_DB_ADMIN_DB}`;
 
@@ -974,6 +982,212 @@ describeIfServer("node operations", () => {
         resetTestOverrides();
       }
     } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("summarizeNode returns null when the node does not exist", async () => {
+    const userId = "user_summarize_missing";
+    const missingNodeId = newTypeId("node");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+
+      // The model must never be consulted on the not-found path.
+      const parse = vi.fn();
+      const { setExtractionClientOverride } = await import(
+        "~/utils/test-overrides"
+      );
+      setExtractionClientOverride({
+        chat: { completions: { parse } },
+      } as never);
+
+      const { summarizeNode } = await import("./node");
+      const result = await summarizeNode({ userId, nodeId: missingNodeId });
+
+      expect(result).toBeNull();
+      expect(parse).not.toHaveBeenCalled();
+    } finally {
+      const { setExtractionClientOverride: clear } = await import(
+        "~/utils/test-overrides"
+      );
+      clear(null);
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("summarizeNode short-circuits to an empty summary when the node has no active claims", async () => {
+    const userId = "user_summarize_empty";
+    const nodeId = newTypeId("node");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Concept')`,
+        [nodeId, userId],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label")
+           VALUES ($1, $2, 'Lonely Concept', 'lonely concept')`,
+        [newTypeId("node_metadata"), nodeId],
+      );
+
+      // With no active claims the LLM must not be called at all.
+      const parse = vi.fn();
+      const { setExtractionClientOverride } = await import(
+        "~/utils/test-overrides"
+      );
+      setExtractionClientOverride({
+        chat: { completions: { parse } },
+      } as never);
+
+      const { summarizeNode } = await import("./node");
+      const result = await summarizeNode({ userId, nodeId });
+
+      expect(result).toEqual({ summary: "" });
+      expect(parse).not.toHaveBeenCalled();
+    } finally {
+      const { setExtractionClientOverride: clear } = await import(
+        "~/utils/test-overrides"
+      );
+      clear(null);
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("summarizeNode grounds the prompt in the node's active claims and returns the model text", async () => {
+    const userId = "user_summarize_claims";
+    const subjectNodeId = newTypeId("node");
+    const objectNodeId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const connectionClaimId = newTypeId("claim");
+    const attributeClaimId = newTypeId("claim");
+    const retractedClaimId = newTypeId("claim");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES
+           ($1, $3, 'Person'),
+           ($2, $3, 'Object')`,
+        [subjectNodeId, objectNodeId, userId],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label") VALUES
+           ($1, $3, 'Alice', 'alice'),
+           ($2, $4, 'MacBook Pro', 'macbook pro')`,
+        [
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          subjectNodeId,
+          objectNodeId,
+        ],
+      );
+      await client.query(
+        `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+           VALUES ($1, $2, 'manual', 'manual:user_summarize_claims', 'completed')`,
+        [sourceId, userId],
+      );
+      await client.query(
+        `INSERT INTO "claims" (
+           "id", "user_id", "subject_node_id", "object_node_id", "object_value",
+           "predicate", "statement", "source_id", "asserted_by_kind", "stated_at", "status"
+         ) VALUES
+           ($1, $6, $4, $5, NULL, 'OWNED_BY', 'Alice owns a MacBook Pro.', $7, 'user', now(), 'active'),
+           ($2, $6, $4, NULL, 'tea', 'HAS_PREFERENCE', 'Alice prefers tea.', $7, 'user', now(), 'active'),
+           ($3, $6, $4, $5, NULL, 'TAGGED_WITH', 'Alice was tagged with a MacBook Pro.', $7, 'user', now(), 'retracted')`,
+        [
+          connectionClaimId,
+          attributeClaimId,
+          retractedClaimId,
+          subjectNodeId,
+          objectNodeId,
+          userId,
+          sourceId,
+        ],
+      );
+
+      let capturedPrompt = "";
+      const parse = vi.fn(
+        async (body: {
+          messages: Array<{ role: string; content: string }>;
+        }) => {
+          capturedPrompt = body.messages.map((m) => m.content).join("\n\n");
+          return {
+            choices: [
+              {
+                message: {
+                  parsed: {
+                    summary: "Alice owns a MacBook Pro and prefers tea.",
+                  },
+                },
+              },
+            ],
+            usage: {
+              prompt_tokens: 20,
+              completion_tokens: 10,
+              total_tokens: 30,
+            },
+          };
+        },
+      );
+      const { setExtractionClientOverride } = await import(
+        "~/utils/test-overrides"
+      );
+      setExtractionClientOverride({
+        chat: { completions: { parse } },
+      } as never);
+
+      const { summarizeNode } = await import("./node");
+      const result = await summarizeNode({ userId, nodeId: subjectNodeId });
+
+      expect(result).toEqual({
+        summary: "Alice owns a MacBook Pro and prefers tea.",
+      });
+      expect(parse).toHaveBeenCalledTimes(1);
+
+      // Active claims (both the relational connection and the attribute fact)
+      // are folded into the prompt context.
+      expect(capturedPrompt).toContain("Alice owns a MacBook Pro.");
+      expect(capturedPrompt).toContain("Alice prefers tea.");
+      expect(capturedPrompt).toContain("MacBook Pro");
+      expect(capturedPrompt).toContain("tea");
+      // Retracted (non-active) claims are excluded from the grounding context.
+      expect(capturedPrompt).not.toContain(
+        "Alice was tagged with a MacBook Pro.",
+      );
+    } finally {
+      const { setExtractionClientOverride: clear } = await import(
+        "~/utils/test-overrides"
+      );
+      clear(null);
       vi.doUnmock("~/utils/db");
       vi.resetModules();
       await client.end();

@@ -125,6 +125,26 @@ export const updateNodeResponseSchema = z.object({
 export type UpdateNodeRequest = z.infer<typeof updateNodeRequestSchema>;
 export type UpdateNodeResponse = z.infer<typeof updateNodeResponseSchema>;
 
+// --- Summarize Node ---
+
+export const summarizeNodeRequestSchema = z.object({
+  userId: z.string(),
+  nodeId: typeIdSchema("node"),
+});
+
+/**
+ * A concise, claim-grounded summary proposed for a node. Returned by
+ * `summarizeNode` and never persisted by it — the caller decides whether to
+ * write it back via `updateNode({ description })`. An empty string means the
+ * node had no active claims to summarize.
+ */
+export const summarizeNodeResponseSchema = z.object({
+  summary: z.string(),
+});
+
+export type SummarizeNodeRequest = z.infer<typeof summarizeNodeRequestSchema>;
+export type SummarizeNodeResponse = z.infer<typeof summarizeNodeResponseSchema>;
+
 // --- Delete Node ---
 
 export const deleteNodeRequestSchema = z.object({
