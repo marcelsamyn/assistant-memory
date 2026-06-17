@@ -145,6 +145,9 @@ import {
   GetNodeSourcesRequest,
   GetNodeSourcesResponse,
   getNodeSourcesResponseSchema,
+  SummarizeNodeRequest,
+  SummarizeNodeResponse,
+  summarizeNodeResponseSchema,
   UpdateNodeRequest,
   UpdateNodeResponse,
   updateNodeResponseSchema,
@@ -1019,6 +1022,25 @@ export class MemoryClient {
       "POST",
       "/node/sources",
       getNodeSourcesResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Re-derive a concise summary for a node from its own active claims via the
+   * LLM and return the proposed text. Pure read — it does NOT persist; pass the
+   * returned `summary` to {@link updateNode} (`description`) to save it. Returns
+   * `{ summary: "" }` when the node has no active claims; 404s when the node is
+   * absent or not owned by the user. Powers the Explore "Regenerate from
+   * claims" affordance.
+   */
+  async summarizeNode(
+    payload: SummarizeNodeRequest,
+  ): Promise<SummarizeNodeResponse> {
+    return this._fetch(
+      "POST",
+      "/node/summarize",
+      summarizeNodeResponseSchema,
       payload,
     );
   }

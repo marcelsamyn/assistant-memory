@@ -1,8 +1,9 @@
-/** Node operations: get, get sources, update, delete. */
+/** Node operations: get, get sources, summarize, update, delete. */
 import type {
   GetNodeClaimFilter,
   GetNodeResponse,
   GetNodeSourcesResponse,
+  SummarizeNodeResponse,
 } from "./schemas/node";
 import { format } from "date-fns";
 import { and, eq, or, inArray, aliasedTable, sql } from "drizzle-orm";
@@ -211,6 +212,118 @@ export async function getNodeSources(
       timestamp: s.timestamp,
     })),
   };
+}
+
+/**
+ * Render one active claim as a single factual line for the summary prompt.
+ * Relational claims read `Subject — PREDICATE → Object`; attribute claims read
+ * `Subject — PREDICATE → value`. The human-readable `statement` is appended so
+ * the model has both the structured triple and the narrative phrasing. Labels
+ * fall back to a placeholder so a claim is never silently dropped.
+ */
+function formatClaimForSummary(claim: {
+  predicate: string;
+  statement: string;
+  subjectLabel: string | null;
+  objectLabel: string | null;
+  objectValue: string | null;
+}): string {
+  const subject = claim.subjectLabel ?? "(unknown)";
+  const object = claim.objectLabel ?? claim.objectValue ?? "(unknown)";
+  return `- ${subject} — ${claim.predicate} → ${object}: ${claim.statement}`;
+}
+
+/** Prompt for a concise, claim-grounded node summary. */
+export function buildNodeSummaryPrompt({
+  label,
+  nodeType,
+  factLines,
+}: {
+  label: string;
+  nodeType: string;
+  factLines: string;
+}): string {
+  return `You are summarizing a single node in a personal knowledge graph.
+
+Node: "${label}" (type: ${nodeType})
+
+Facts asserted about this node (each line is a confirmed claim):
+"""
+${factLines}
+"""
+
+Write a concise 1–3 sentence, third-person summary of "${label}" grounded ONLY in the facts above. Do not invent, infer, or add anything not stated in the facts. Keep the tone neutral and factual, matching how a knowledge-graph node description reads. Return only the summary.`;
+}
+
+/**
+ * Re-derive a concise summary for a single node from its own active claims,
+ * via the cheap `conversation_summary` model. Pure read: the proposed text is
+ * RETURNED, never persisted — callers decide whether to write it back through
+ * {@link updateNode} (`description`). Powers the Explore "Regenerate from
+ * claims" affordance.
+ *
+ * - Returns `null` when the node is absent or not owned by `userId`, matching
+ *   {@link getNodeById} / {@link updateNode}; the route maps that to a 404.
+ * - Returns `{ summary: "" }` when the node has no active claims, short-
+ *   circuiting before the LLM call (nothing to ground a summary in).
+ *
+ * The LLM seam mirrors `source-title.ts` (dynamic `createCompletionClient` +
+ * `parseStructuredCompletion`) so the harness's extraction-client override
+ * covers this call instead of firing a real request.
+ */
+export async function summarizeNode({
+  userId,
+  nodeId,
+}: {
+  userId: string;
+  nodeId: TypeId<"node">;
+}): Promise<SummarizeNodeResponse | null> {
+  const result = await getNodeById(userId, nodeId);
+  if (!result) return null;
+
+  // `getNodeById` returns only active claims by default — exactly the grounding
+  // set we want.
+  if (result.claims.length === 0) return { summary: "" };
+
+  const factLines = result.claims.map(formatClaimForSummary).join("\n");
+
+  const { createCompletionClient, parseStructuredCompletion } = await import(
+    "./ai"
+  );
+  const { zodResponseFormat } = await import("openai/helpers/zod.mjs");
+  const { z } = await import("zod");
+  const { modelForTask, MODEL_MAX_OUTPUT_TOKENS } = await import(
+    "~/utils/models"
+  );
+
+  const client = await createCompletionClient(userId, {
+    task: "conversation_summary",
+  });
+  const completion = await parseStructuredCompletion(
+    client,
+    {
+      messages: [
+        {
+          role: "user",
+          content: buildNodeSummaryPrompt({
+            label: result.node.label ?? "(untitled)",
+            nodeType: result.node.nodeType,
+            factLines,
+          }),
+        },
+      ],
+      model: modelForTask("conversation_summary"),
+      max_tokens: MODEL_MAX_OUTPUT_TOKENS,
+      response_format: zodResponseFormat(
+        z.object({ summary: z.string() }),
+        "node_summary",
+      ),
+    },
+    { task: "conversation_summary", userId },
+  );
+
+  const summary = completion.choices[0]?.message.parsed?.summary?.trim() ?? "";
+  return { summary };
 }
 
 /**
