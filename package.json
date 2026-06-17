@@ -1,7 +1,7 @@
 {
   "private": false,
   "name": "@marcelsamyn/memory",
-  "version": "1.27.3",
+  "version": "1.28.0",
   "type": "module",
   "main": "dist/server/index.mjs",
   "types": "dist/server/index.d.ts",
