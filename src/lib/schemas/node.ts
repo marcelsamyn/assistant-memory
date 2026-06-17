@@ -104,6 +104,13 @@ export const updateNodeRequestSchema = z.object({
   nodeId: typeIdSchema("node"),
   label: z.string().optional(),
   nodeType: NodeTypeEnum.optional(),
+  /**
+   * Optional user-authored description override. When provided it is persisted
+   * onto `node_metadata.description`, overriding the claim-derived summary; an
+   * empty string clears the override. When omitted, the description is left
+   * untouched. Used by hosts that let users correct a node's summary directly.
+   */
+  description: z.string().optional(),
 });
 
 export const updateNodeResponseSchema = z.object({

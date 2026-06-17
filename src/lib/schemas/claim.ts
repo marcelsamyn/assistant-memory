@@ -2,6 +2,7 @@ import {
   AssertedByKindEnum,
   ClaimStatusEnum,
   PredicateEnum,
+  ReattributeReplaceEnum,
   ScopeEnum,
 } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
@@ -108,3 +109,25 @@ export const updateClaimResponseSchema = claimResponseSchema;
 
 export type UpdateClaimRequest = z.infer<typeof updateClaimRequestSchema>;
 export type UpdateClaimResponse = z.infer<typeof updateClaimResponseSchema>;
+
+export const reattributeClaimRequestSchema = z.object({
+  userId: z.string(),
+  claimId: typeIdSchema("claim"),
+  /**
+   * Which endpoint to re-point at `newNodeId`. `"subject"` rewrites
+   * `subjectNodeId`; `"object"` rewrites `objectNodeId` and is only valid for
+   * relational claims that already carry an object node (attribute claims with
+   * a scalar `objectValue` reject `"object"`).
+   */
+  replace: ReattributeReplaceEnum,
+  newNodeId: typeIdSchema("node"),
+});
+
+export const reattributeClaimResponseSchema = createClaimResponseSchema;
+
+export type ReattributeClaimRequest = z.infer<
+  typeof reattributeClaimRequestSchema
+>;
+export type ReattributeClaimResponse = z.infer<
+  typeof reattributeClaimResponseSchema
+>;

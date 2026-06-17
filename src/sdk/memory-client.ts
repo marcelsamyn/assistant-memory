@@ -14,6 +14,9 @@ import {
   DeleteClaimRequest,
   DeleteClaimResponse,
   deleteClaimResponseSchema,
+  ReattributeClaimRequest,
+  ReattributeClaimResponse,
+  reattributeClaimResponseSchema,
   UpdateClaimRequest,
   UpdateClaimResponse,
   updateClaimResponseSchema,
@@ -1070,6 +1073,29 @@ export class MemoryClient {
       "POST",
       "/claim/update",
       updateClaimResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Re-point one endpoint of a claim at a different node, atomically. The
+   * original claim is retracted (kept for history) and a replacement claim is
+   * created carrying over every other field — predicate, statement, objectValue,
+   * description, source, scope, validity window — with only the chosen endpoint
+   * swapped and provenance recorded as `user_confirmed`. Pass
+   * `replace: "subject"` to swap `subjectNodeId` or `replace: "object"` to swap
+   * `objectNodeId` (relational claims only — attribute claims with a scalar
+   * `objectValue` reject `"object"` with a 400). The new node must exist and
+   * belong to the user (else 422); a personal/reference scope mix is refused
+   * (409). Returns the newly created claim in the `createClaim` response shape.
+   */
+  async reattributeClaim(
+    payload: ReattributeClaimRequest,
+  ): Promise<ReattributeClaimResponse> {
+    return this._fetch(
+      "POST",
+      "/claim/reattribute",
+      reattributeClaimResponseSchema,
       payload,
     );
   }

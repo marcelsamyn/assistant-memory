@@ -217,10 +217,13 @@ export async function getNodeSources(
  * Update a node's label, nodeType, and/or description. Re-generates the
  * embedding when the label or description changes.
  *
- * `description` is a Task-scoped capability: the `/node/update` route still
- * 405s on it for knowledge nodes (whose descriptions are derived from sourced
- * claims), but Task descriptions are user-authored, so `updateCommitment`
- * routes through here to edit them. Passing `description: ""` clears it.
+ * `description` is a user-authored override persisted onto
+ * `node_metadata.description`. Knowledge-node descriptions are otherwise
+ * derived from sourced claims, but the `/node/update` route accepts an explicit
+ * `description` so hosts can let users correct a node's summary directly (and
+ * `updateCommitment` routes Task descriptions through here too). Passing
+ * `description: ""` clears the override; omitting it leaves the description
+ * untouched.
  */
 export async function updateNode(
   userId: string,
