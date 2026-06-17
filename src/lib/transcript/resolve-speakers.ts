@@ -11,12 +11,13 @@
  * Common aliases: speaker map, speaker resolution, transcript participant
  * mapping, user-self detection, placeholder Person.
  */
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { aliases, nodeMetadata, nodes, type NodeSelect } from "~/db/schema";
 import { createAlias, normalizeAliasText } from "~/lib/alias";
 import { normalizeLabel } from "~/lib/label";
 import { getEffectiveNodeScopes } from "~/lib/node-scope";
+import { ensureUserSelfPersonNode } from "~/lib/user-self-identity";
 import type { TypeId } from "~/types/typeid";
 
 export type SpeakerResolution =
@@ -110,17 +111,14 @@ export async function resolveSpeakers({
   for (const label of uniqueLabels) {
     const normalized = normalizeAliasText(label);
 
-    // 1. user-self
+    // 1. user-self. Resolution matches against the `userSelfAliases` config
+    // set directly, so we deliberately do NOT write the (often bare,
+    // ambiguous) speaker label into the alias table — that is exactly what let
+    // a same-named contact merge into the user. Distinguishing aliases are
+    // seeded separately via `ensureUserSelfIdentity`.
     if (userSelfNormalized.has(normalized)) {
       const nodeId = await ensureUserSelfNode();
       map.set(label, { nodeId, isUserSelf: true, resolution: "user_self" });
-      // Persist the alias on the user-self node so future identity resolution
-      // picks it up too.
-      await createAlias(db, {
-        userId,
-        canonicalNodeId: nodeId,
-        aliasText: label,
-      });
       continue;
     }
 
@@ -196,65 +194,6 @@ export async function resolveSpeakers({
   }
 
   return map;
-}
-
-/**
- * Ensure the user's own Person node exists. Looked up by
- * `nodeMetadata.additionalData.isUserSelf = true` for the user's Person nodes;
- * created lazily on first transcript ingestion if absent.
- *
- * Concurrency: serialized per-user via a transaction-scoped Postgres advisory
- * lock keyed on `hashtext('user_self_person:' || userId)`. Two concurrent
- * transcript jobs for the same user will queue at the lock and observe each
- * other's INSERT, so only one user-self Person row is ever created. The lock
- * is released automatically at transaction commit.
- */
-async function ensureUserSelfPersonNode(
-  db: DrizzleDB,
-  userId: string,
-): Promise<TypeId<"node">> {
-  return db.transaction(async (tx) => {
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtext(${"user_self_person:" + userId}))`,
-    );
-
-    const personNodes = await tx
-      .select({
-        id: nodes.id,
-        label: nodeMetadata.label,
-        additionalData: nodeMetadata.additionalData,
-      })
-      .from(nodes)
-      .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-      .where(and(eq(nodes.userId, userId), eq(nodes.nodeType, "Person")));
-
-    for (const row of personNodes) {
-      const additional = row.additionalData;
-      if (
-        additional &&
-        typeof additional === "object" &&
-        !Array.isArray(additional) &&
-        (additional as Record<string, unknown>)["isUserSelf"] === true
-      ) {
-        return row.id;
-      }
-    }
-
-    const [newNode] = await tx
-      .insert(nodes)
-      .values({ userId, nodeType: "Person" })
-      .returning();
-    if (!newNode) {
-      throw new Error(`Failed to create user-self Person node for ${userId}`);
-    }
-    await tx.insert(nodeMetadata).values({
-      nodeId: newNode.id,
-      label: userId,
-      canonicalLabel: normalizeLabel(userId),
-      additionalData: { isUserSelf: true },
-    });
-    return newNode.id;
-  });
 }
 
 async function createPlaceholderPersonNode(
