@@ -15,7 +15,7 @@ The same class of bug applies generally: any two same-named people (e.g. two
 friends named "Sarah") can be conflated, and a bare-first-name mention can be
 routed to the wrong node. The fix must be **general** (same-name
 disambiguation for anyone), with the user's own identity handled as a
-first-class case — but *not* via a blunt "when unsure, assume it's the user"
+first-class case — but _not_ via a blunt "when unsure, assume it's the user"
 heuristic, which is itself a cause of mis-merges.
 
 ## Root-cause analysis (code-grounded)
@@ -26,7 +26,7 @@ compounding gaps, traced through the transcript ingestion path
 
 1. **The speaker map carries provenance, not subject.** `speakerMap` is
    consumed only by `_resolveAssertedByKind` / `_resolveTranscriptProvenance`
-   to set *who asserted* a claim (`src/lib/extract-graph.ts:1352`). It is
+   to set _who asserted_ a claim (`src/lib/extract-graph.ts:1352`). It is
    never registered into `idMap`. So when the user-self speaker says "I'm
    flying to Lisbon", nothing tells the LLM to make the user the **subject** —
    it mints a fresh `temp_person` labelled "Marcel".
@@ -71,7 +71,7 @@ subject assignment + ambiguous name resolution downstream.
    first-class case — not a self-only patch.
 2. **Self-preference lives upstream, never as a blunt resolver default.** The
    user's identity is delivered by (a) subject-wiring in transcripts and
-   (b) specific, unambiguous aliases — *not* by making the resolver prefer the
+   (b) specific, unambiguous aliases — _not_ by making the resolver prefer the
    self node on an ambiguous match. A blunt "assume self" rule is the
    over-merge failure mode and is explicitly rejected.
 3. **Bare first names are inherently ambiguous and must never auto-merge** —
@@ -86,9 +86,9 @@ subject assignment + ambiguous name resolution downstream.
 
 Four components, each mapped to a root cause.
 
-### Component 1 — Self-node identity hygiene  *(fixes root cause #2)*
+### Component 1 — Self-node identity hygiene _(fixes root cause #2)_
 
-Give the user-self node a real, *distinguishing* identity and keep the alias
+Give the user-self node a real, _distinguishing_ identity and keep the alias
 table in sync, without seeding ambiguous bare first names.
 
 - **Primary label.** The self node's `label` / `canonicalLabel` becomes the
@@ -111,20 +111,20 @@ table in sync, without seeding ambiguous bare first names.
     `userSelfAliasesOverride` per request and never calls
     `/user/self-aliases`, so the persistent list may be empty. Hooking only
     the config endpoint would miss the real ingestion flow.
-  The single-token aliases remain available for transcript *speaker* matching
-  via the `userSelfAliases` config set (`resolve-speakers.ts:114`); they are
-  just kept out of the identity-resolution alias table.
+    The single-token aliases remain available for transcript _speaker_ matching
+    via the `userSelfAliases` config set (`resolve-speakers.ts:114`); they are
+    just kept out of the identity-resolution alias table.
 - **Stop writing the ambiguous self alias in speaker resolution.**
   `resolveSpeakers` no longer writes the bare user-self speaker label into the
   alias table (`resolve-speakers.ts:119`). Speaker resolution already matches
   self via the `userSelfAliases` config set (`:114`), so this is safe and
-  removes the ambiguity at its source. (Alias writes for *other* participants
+  removes the ambiguity at its source. (Alias writes for _other_ participants
   are unchanged.)
 - **Backfill.** A one-off maintenance route under `src/routes/maintenance/`
   renames the existing self node to the primary label, seeds distinguishing
   aliases, and removes the bare-first-name self alias if present.
 
-### Component 2 — Wire user-self as the claim *subject*  *(fixes root cause #1)*
+### Component 2 — Wire user-self as the claim _subject_ _(fixes root cause #1)_
 
 In the transcript path, make the user-self speaker's node the subject of that
 speaker's first-person claims, so "I…" attaches to the user — never to a minted
@@ -145,7 +145,7 @@ node.
 - This keeps the byte-identical-system-prompt caching contract: dynamic
   per-user identity stays in the trailing user message / speaker section.
 
-### Component 3 — Resolver: unique-match-wins, never guess  *(fixes root cause #3; generalises)*
+### Component 3 — Resolver: unique-match-wins, never guess _(fixes root cause #3; generalises)_
 
 Change the ambiguity behaviour of `resolveIdentity`
 (`src/lib/identity-resolution.ts`) for the exact-match signals (canonical
@@ -158,14 +158,15 @@ label, alias):
   null-path behaviour = "split") and emits a new observability event
   (`identity.ambiguous_skip`) carrying the candidate set, mirroring the
   existing `identity.cross_scope_merge_refused` pattern. Consolidation is left
-  to the background identity re-eval / `cleanup/dedup-sweep`, which *do* have
+  to the background identity re-eval / `cleanup/dedup-sweep`, which _do_ have
   embeddings + claim profiles to disambiguate with.
 - **No blunt self-prior.** `isUserSelf` is recorded in the decision trace for
-  observability and may serve as an *evidence-gated* tiebreak only (see Open
+  observability and may serve as an _evidence-gated_ tiebreak only (see Open
   questions), but is never a default winner — to avoid resurrecting the
   over-merge failure.
 
 Net effect with Components 1+2 in place:
+
 - A third-party bare "Marcel" mention that matches several nodes → split +
   logged (no arbitrary mis-route), instead of silently grabbing `candidates[0]`.
 - A specific "Marcel Samyn" mention (document/conversation, no speaker map) →
@@ -173,7 +174,7 @@ Net effect with Components 1+2 in place:
 - A transcript first-person "I…" → attached to self by subject-wiring
   (Component 2), never reaching the ambiguous name path.
 
-### Component 4 — Prompt injection on all paths  *(cheap insurance)*
+### Component 4 — Prompt injection on all paths _(cheap insurance)_
 
 Inject "who the user is" (primary name + aliases) into the **document** and
 **conversation** extraction prompts too (today only transcripts get speaker
@@ -228,7 +229,7 @@ multi-account-owner cases.
 ## Open questions
 
 1. **Evidence-gated self tiebreak:** should Component 3 ever prefer the
-   self node when it is *one of several* candidates and there is corroborating
+   self node when it is _one of several_ candidates and there is corroborating
    self-evidence, or always split on >1? Default proposal: always split (no
    self tiebreak) for maximum safety.
 2. **Primary-label selection:** longest alias by token count vs an explicit

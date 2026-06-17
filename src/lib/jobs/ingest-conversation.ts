@@ -10,10 +10,10 @@ import { safeToISOString } from "../safe-date";
 import { z } from "zod";
 import { DrizzleDB } from "~/db";
 import { type ConversationTurn } from "~/lib/conversation-store";
-import { NodeTypeEnum } from "~/types/graph";
-import { TypeId } from "~/types/typeid";
 import { getUserSelfAliases } from "~/lib/user-profile";
 import { buildUserIdentityNote } from "~/lib/user-self-identity";
+import { NodeTypeEnum } from "~/types/graph";
+import { TypeId } from "~/types/typeid";
 
 export const MessageSchema = z.object({
   id: z.string(),
