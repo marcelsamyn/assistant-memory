@@ -12,6 +12,8 @@ import { DrizzleDB } from "~/db";
 import { type ConversationTurn } from "~/lib/conversation-store";
 import { NodeTypeEnum } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
+import { getUserSelfAliases } from "~/lib/user-profile";
+import { buildUserIdentityNote } from "~/lib/user-self-identity";
 
 export const MessageSchema = z.object({
   id: z.string(),
@@ -66,6 +68,9 @@ export async function ingestConversation({
     timestamp: firstTurn.timestamp,
     nodeType: NodeTypeEnum.enum.Conversation,
   });
+  const userIdentityNote = buildUserIdentityNote(
+    await getUserSelfAliases(db, userId),
+  );
   await extractGraph({
     userId,
     sourceType: "conversation",
@@ -74,6 +79,7 @@ export async function ingestConversation({
     linkedNodeId: conversationNodeId,
     sourceRefs,
     content: formatConversationAsXml(insertedTurns),
+    ...(userIdentityNote ? { userIdentityNote } : {}),
   });
   return { insertedTurns };
 }
