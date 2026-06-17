@@ -155,13 +155,23 @@ export async function ensureUserSelfIdentity(
 
   const primaryLabel = selectPrimarySelfLabel(aliases);
   if (primaryLabel) {
-    await db
-      .update(nodeMetadata)
-      .set({
-        label: primaryLabel,
-        canonicalLabel: normalizeLabel(primaryLabel),
-      })
-      .where(eq(nodeMetadata.nodeId, nodeId));
+    // Read-before-write: this runs on every transcript ingest, where the label
+    // is almost always already correct. Skip the UPDATE when unchanged to avoid
+    // needless WAL/MVCC churn on the hot path.
+    const [current] = await db
+      .select({ label: nodeMetadata.label })
+      .from(nodeMetadata)
+      .where(eq(nodeMetadata.nodeId, nodeId))
+      .limit(1);
+    if (current?.label !== primaryLabel) {
+      await db
+        .update(nodeMetadata)
+        .set({
+          label: primaryLabel,
+          canonicalLabel: normalizeLabel(primaryLabel),
+        })
+        .where(eq(nodeMetadata.nodeId, nodeId));
+    }
   }
 
   await Promise.all(
