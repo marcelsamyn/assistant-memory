@@ -101,12 +101,16 @@ export type SignalTrace =
       candidates: SignalCandidate[];
       /** Set when a same-label match exists in a different scope. */
       crossScopeRefusal?: { nodeId: TypeId<"node">; otherScope: Scope };
+      /** Set when >1 same-scope/type candidate matched; resolver refuses to guess. */
+      ambiguous?: { candidateNodeIds: TypeId<"node">[] };
     }
   | {
       signal: "alias";
       fired: boolean;
       candidates: SignalCandidate[];
       crossScopeRefusal?: { nodeId: TypeId<"node">; otherScope: Scope };
+      /** Set when >1 same-scope/type candidate matched; resolver refuses to guess. */
+      ambiguous?: { candidateNodeIds: TypeId<"node">[] };
     }
   | {
       signal: "embedding_sim";
@@ -169,8 +173,8 @@ export async function resolveIdentity({
   );
   trace.push(canonicalTrace);
   if (canonicalTrace.signal === "canonical_label" && canonicalTrace.fired) {
-    const winner = canonicalTrace.candidates[0];
-    if (winner) {
+    if (canonicalTrace.candidates.length === 1) {
+      const winner = canonicalTrace.candidates[0]!;
       return _resolved(
         winner.nodeId,
         "canonical_label",
@@ -180,6 +184,18 @@ export async function resolveIdentity({
         userId,
       );
     }
+    // More than one same-scope/type candidate: do not guess. Record the
+    // ambiguity, log it, and fall through to later (more discriminating)
+    // signals; at extraction time those are absent, so the caller splits.
+    canonicalTrace.ambiguous = {
+      candidateNodeIds: canonicalTrace.candidates.map((c) => c.nodeId),
+    };
+    _logAmbiguousSkip(
+      userId,
+      candidate,
+      "canonical_label",
+      canonicalTrace.candidates,
+    );
   }
 
   // --- Signal 2: alias match -------------------------------------------
@@ -189,8 +205,8 @@ export async function resolveIdentity({
   );
   trace.push(aliasTrace);
   if (aliasTrace.signal === "alias" && aliasTrace.fired) {
-    const winner = aliasTrace.candidates[0];
-    if (winner) {
+    if (aliasTrace.candidates.length === 1) {
+      const winner = aliasTrace.candidates[0]!;
       return _resolved(
         winner.nodeId,
         "alias",
@@ -200,6 +216,10 @@ export async function resolveIdentity({
         userId,
       );
     }
+    aliasTrace.ambiguous = {
+      candidateNodeIds: aliasTrace.candidates.map((c) => c.nodeId),
+    };
+    _logAmbiguousSkip(userId, candidate, "alias", aliasTrace.candidates);
   }
 
   // --- Signal 3: embedding similarity ----------------------------------
@@ -745,6 +765,24 @@ function _resolved(
     resolvedNodeId: nodeId,
     decision: { signal, confidence, trace },
   };
+}
+
+function _logAmbiguousSkip(
+  userId: string,
+  candidate: IdentityCandidate,
+  signal: "canonical_label" | "alias",
+  candidates: SignalCandidate[],
+): void {
+  logEvent("identity.ambiguous_skip", {
+    userId,
+    candidateLabel: candidate.proposedLabel,
+    normalizedLabel: candidate.normalizedLabel,
+    nodeType: candidate.nodeType,
+    scope: candidate.scope,
+    signal,
+    candidateNodeIds: candidates.map((c) => c.nodeId),
+    candidateCount: candidates.length,
+  });
 }
 
 function _logCrossScopeRefusal(

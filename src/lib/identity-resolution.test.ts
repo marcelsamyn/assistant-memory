@@ -643,6 +643,151 @@ describeIfServer("resolveIdentity", () => {
     });
   });
 
+  it("signal 1 — multiple same-scope canonical matches do not resolve (ambiguous)", async () => {
+    await withDb(async (client) => {
+      const userId = "user_ambiguous";
+      const marcelA = newTypeId("node");
+      const marcelB = newTypeId("node");
+      const sourceId = newTypeId("source");
+      await createIdentityTables(client);
+      await client.query(`INSERT INTO "users"("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "sources"("id","user_id","type","external_id","scope")
+           VALUES ($1,$2,'document','p1','personal')`,
+        [sourceId, userId],
+      );
+      await client.query(
+        `INSERT INTO "nodes"("id","user_id","node_type")
+           VALUES ($1,$3,'Person'),($2,$3,'Person')`,
+        [marcelA, marcelB, userId],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata"("id","node_id","label","canonical_label")
+           VALUES ($1,$3,'Marcel','marcel'),($2,$4,'Marcel','marcel')`,
+        [
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          marcelA,
+          marcelB,
+        ],
+      );
+      await client.query(
+        `INSERT INTO "source_links"("id","source_id","node_id")
+           VALUES ($1,$3,$4),($2,$3,$5)`,
+        [
+          newTypeId("source_link"),
+          newTypeId("source_link"),
+          sourceId,
+          marcelA,
+          marcelB,
+        ],
+      );
+
+      const { resolveIdentity } = await import("./identity-resolution");
+      const { setLogSink } = await import("~/lib/observability/log");
+      const captured: Array<Record<string, unknown>> = [];
+      setLogSink((event) => captured.push(event));
+      try {
+        const resolution = await resolveIdentity({
+          userId,
+          candidate: {
+            proposedLabel: "Marcel",
+            normalizedLabel: "marcel",
+            nodeType: "Person",
+            scope: "personal",
+          },
+        });
+        expect(resolution.resolvedNodeId).toBeNull();
+        expect(resolution.decision.signal).toBe("none");
+        const canonical = resolution.decision.trace.find(
+          (t) => t.signal === "canonical_label",
+        );
+        expect(canonical?.fired).toBe(true);
+        expect(canonical?.candidates).toHaveLength(2);
+        expect(
+          canonical?.signal === "canonical_label" && canonical.ambiguous,
+        ).toMatchObject({
+          candidateNodeIds: expect.arrayContaining([marcelA, marcelB]),
+        });
+        const skip = captured.find(
+          (e) => e["event"] === "identity.ambiguous_skip",
+        );
+        expect(skip).toMatchObject({
+          event: "identity.ambiguous_skip",
+          userId,
+          normalizedLabel: "marcel",
+          signal: "canonical_label",
+          candidateCount: 2,
+        });
+      } finally {
+        setLogSink();
+      }
+    });
+  });
+
+  it("self resolves by full name; a bare same-first-name does not merge into self", async () => {
+    await withDb(async (client) => {
+      const userId = "user_self_fullname";
+      await createIdentityTables(client);
+      await client.query(`INSERT INTO "users"("id") VALUES ($1)`, [userId]);
+
+      const { useDatabase } = await import("~/utils/db");
+      const db = await useDatabase();
+      const { ensureUserSelfIdentity } = await import("./user-self-identity");
+      const selfNodeId = await ensureUserSelfIdentity(db, userId, [
+        "Marcel",
+        "Marcel Samyn",
+      ]);
+
+      // A separate third-party "Marcel" with personal-scope support.
+      const otherMarcel = newTypeId("node");
+      const sourceId = newTypeId("source");
+      await client.query(
+        `INSERT INTO "sources"("id","user_id","type","external_id","scope")
+           VALUES ($1,$2,'document','d1','personal')`,
+        [sourceId, userId],
+      );
+      await client.query(
+        `INSERT INTO "nodes"("id","user_id","node_type") VALUES ($1,$2,'Person')`,
+        [otherMarcel, userId],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata"("id","node_id","label","canonical_label")
+           VALUES ($1,$2,'Marcel','marcel')`,
+        [newTypeId("node_metadata"), otherMarcel],
+      );
+      await client.query(
+        `INSERT INTO "source_links"("id","source_id","node_id") VALUES ($1,$2,$3)`,
+        [newTypeId("source_link"), sourceId, otherMarcel],
+      );
+
+      const { resolveIdentity } = await import("./identity-resolution");
+
+      const full = await resolveIdentity({
+        userId,
+        candidate: {
+          proposedLabel: "Marcel Samyn",
+          normalizedLabel: "marcel samyn",
+          nodeType: "Person",
+          scope: "personal",
+        },
+      });
+      expect(full.resolvedNodeId).toBe(selfNodeId);
+
+      const bare = await resolveIdentity({
+        userId,
+        candidate: {
+          proposedLabel: "Marcel",
+          normalizedLabel: "marcel",
+          nodeType: "Person",
+          scope: "personal",
+        },
+      });
+      expect(bare.resolvedNodeId).toBe(otherMarcel);
+      expect(bare.resolvedNodeId).not.toBe(selfNodeId);
+    });
+  });
+
   it("decision trace records every signal attempted, in order", async () => {
     await withDb(async (client) => {
       const userId = "user_trace";
