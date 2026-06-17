@@ -8,6 +8,8 @@
 import { runChunkedExtraction } from "./chunked-extract";
 import { ensureSourceNode } from "./ensure-source-node";
 import { DrizzleDB } from "~/db";
+import { getUserSelfAliases } from "~/lib/user-profile";
+import { buildUserIdentityNote } from "~/lib/user-self-identity";
 import { NodeTypeEnum } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
 
@@ -50,6 +52,10 @@ export async function extractDocumentGraph(
     nodeType: NodeTypeEnum.enum.Document,
   });
 
+  const userIdentityNote = buildUserIdentityNote(
+    await getUserSelfAliases(db, userId),
+  );
+
   await runChunkedExtraction({
     userId,
     sourceType: "document",
@@ -63,5 +69,6 @@ export async function extractDocumentGraph(
       ...(title !== undefined && { title }),
       ...(author !== undefined && { author }),
     },
+    ...(userIdentityNote ? { userIdentityNote } : {}),
   });
 }

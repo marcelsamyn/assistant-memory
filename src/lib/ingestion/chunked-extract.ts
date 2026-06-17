@@ -65,6 +65,11 @@ export interface ChunkedExtractionParams {
     title?: string;
     author?: string;
   };
+  /**
+   * "Who the user is" note forwarded verbatim to every chunk's `extractGraph`
+   * call so per-fragment extraction resolves the user's name correctly.
+   */
+  userIdentityNote?: string;
 }
 
 export async function runChunkedExtraction(
@@ -80,6 +85,7 @@ export async function runChunkedExtraction(
     content,
     logLabel,
     documentMetadata,
+    userIdentityNote,
   } = params;
 
   const chunks = chunkMarkdown(content, env.INGEST_CHUNK_MAX_CHARS);
@@ -109,6 +115,7 @@ export async function runChunkedExtraction(
     statedAt,
     linkedNodeId,
     sourceRefs,
+    ...(userIdentityNote ? { userIdentityNote } : {}),
   };
 
   let succeeded = 0;
