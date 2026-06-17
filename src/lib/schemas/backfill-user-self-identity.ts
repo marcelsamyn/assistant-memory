@@ -2,7 +2,12 @@ import { z } from "zod";
 
 export const backfillUserSelfIdentityRequestSchema = z.object({
   userId: z.string().min(1),
-  /** When omitted, the stored `userSelfAliases` are used. */
+  /**
+   * When omitted, the stored `userSelfAliases` are used. Destructive edge: if
+   * the effective list (passed or stored) is empty, the self node's existing
+   * alias rows are ALL removed (clean-slate hygiene) — pass a non-empty list to
+   * avoid clearing them.
+   */
   aliases: z.array(z.string().min(1)).optional(),
 });
 
