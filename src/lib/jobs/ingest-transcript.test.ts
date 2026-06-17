@@ -788,4 +788,108 @@ describeIfServer("ingestTranscript", () => {
       await client.end();
     }
   });
+
+  it("attributes a user-self first-person claim to the self node, not a same-named participant", async () => {
+    const userId = "user_transcript_subject";
+    const transcriptId = "trans_subject_1";
+    const occurredAt = new Date("2026-05-01T10:00:00.000Z");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    // Captured so the LLM stub can emit the real self node id as subjectId.
+    let selfNodeIdForStub = "";
+
+    applyCommonMocks(database);
+    vi.doMock("../ai", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../ai")>()),
+      createCompletionClient: async () => ({
+        chat: {
+          completions: {
+            parse: async () => ({
+              choices: [
+                {
+                  message: {
+                    parsed: {
+                      nodes: [
+                        { id: "loc_1", type: "Location", label: "Lisbon" },
+                      ],
+                      relationshipClaims: [
+                        {
+                          subjectId: selfNodeIdForStub,
+                          objectId: "loc_1",
+                          predicate: "LIVES_IN",
+                          statement: "Marcel lives in Lisbon.",
+                          sourceRef: `${transcriptId}:0`,
+                          assertionKind: "user",
+                          assertedBySpeakerLabel: "Marcel",
+                        },
+                      ],
+                      attributeClaims: [],
+                      aliases: [],
+                    },
+                  },
+                },
+              ],
+            }),
+          },
+        },
+      }),
+    }));
+
+    try {
+      await createTranscriptTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+
+      // A different, same-first-name person already in the graph.
+      const otherMarcelId = newTypeId("node");
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Person')`,
+        [otherMarcelId, userId],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label") VALUES ($1, $2, 'Marcel', 'marcel')`,
+        [newTypeId("node_metadata"), otherMarcelId],
+      );
+
+      const { ensureUserSelfIdentity } = await import("../user-self-identity");
+      const selfNodeId = await ensureUserSelfIdentity(database, userId, [
+        "Marcel",
+        "Marcel Samyn",
+      ]);
+      selfNodeIdForStub = selfNodeId;
+
+      const { ingestTranscript } = await import("./ingest-transcript");
+      await ingestTranscript({
+        db: database,
+        userId,
+        transcriptId,
+        scope: "personal",
+        occurredAt,
+        content: {
+          kind: "segmented",
+          utterances: [
+            { speakerLabel: "Marcel", content: "I live in Lisbon now." },
+          ],
+        },
+        userSelfAliasesOverride: ["Marcel", "Marcel Samyn"],
+      });
+
+      const livesIn = await client.query<{
+        subject_node_id: string;
+        asserted_by_kind: string;
+      }>(
+        `SELECT subject_node_id, asserted_by_kind FROM claims WHERE user_id = $1 AND predicate = 'LIVES_IN'`,
+        [userId],
+      );
+      expect(livesIn.rows).toHaveLength(1);
+      expect(livesIn.rows[0]?.subject_node_id).toBe(selfNodeId);
+      expect(livesIn.rows[0]?.subject_node_id).not.toBe(otherMarcelId);
+      expect(livesIn.rows[0]?.asserted_by_kind).toBe("user");
+    } finally {
+      unmockCommon();
+      await client.end();
+    }
+  });
 });
