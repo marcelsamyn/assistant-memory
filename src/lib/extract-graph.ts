@@ -224,6 +224,15 @@ export async function extractGraph({
   const { nodesForPromptFormatting, idMap, nodeLabels } =
     _prepareInitialNodeMappings(cappedNodes);
 
+  // Register every resolved speaker node so the LLM can use its real id as a
+  // claim subjectId (e.g. the user-self speaker's first-person statements).
+  // Unconditional — speaker subjects must not be dropped by the 150-node cap.
+  if (speakerMap) {
+    for (const entry of speakerMap.values()) {
+      idMap.set(entry.nodeId.toString(), entry.nodeId);
+    }
+  }
+
   const openCommitmentsPromptSection = _formatOpenCommitmentsSection(
     cappedOpenCommitments,
   );
@@ -296,7 +305,7 @@ ${
 - "Orchard is based in Stockholm and uses a billing system built on the Stripe API." → (Orchard Labs, LOCATED_IN, Stockholm) and (Orchard Labs, USES, Stripe API).
 - "The Starter tier costs €49/month." → do NOT create a "€49" node; if the figure matters use (Starter tier, HAS_ATTRIBUTE, "€49/month"). Use RELATED_TO only when no specific predicate fits.`
     : speakerMap && speakerMap.size > 0
-      ? `- Speaker "Alice" (user-self) says "I shipped the spec." → assertionKind: "user", assertedBySpeakerLabel: "Alice".
+      ? `- Speaker "Alice" (user-self) says "I live in Lisbon." → create the (LIVES_IN, Lisbon) claim with subjectId set to Alice's nodeId from "Speakers in this transcript" (do NOT mint a new "Alice" node), assertionKind: "user", assertedBySpeakerLabel: "Alice".
 - Speaker "Bob" (non user-self) says "I'll send the PR tomorrow." → assertionKind: "participant", assertedBySpeakerLabel: "Bob".
 - Speaker "Bob" says "You're moving to Paris next month." Speaker "Alice" (user-self) replies "Yeah." → for the (Alice, LIVES_IN, Paris) claim use assertionKind: "user_confirmed", assertedBySpeakerLabel: "Alice".`
       : `- User says "I started working at Acme last week." → assertionKind: "user".
@@ -1422,11 +1431,14 @@ function _formatSpeakerMapSection(
 ): string {
   if (!speakerMap || speakerMap.size === 0) return "";
   const lines = [...speakerMap.entries()].map(([label, entry]) => {
-    const role = entry.isUserSelf ? "user-self" : "other-participant";
+    const role = entry.isUserSelf
+      ? "user-self (the user / 'you')"
+      : "other-participant";
     return `- speakerLabel: ${label}; nodeId: ${entry.nodeId}; role: ${role}`;
   });
   return `Speakers in this transcript:
 For each claim, set "assertedBySpeakerLabel" to the speaker who said it, using these labels exactly. Claims whose speaker label is missing or not in this list will be dropped.
+When a speaker states a fact about themselves (first-person "I…/my…"), use that speaker's nodeId above as the claim's subjectId — do NOT mint a new node for a speaker already listed here. In particular, attribute the user-self speaker's self-statements to their nodeId, never to a newly created same-named node.
 ${lines.join("\n")}`;
 }
 
