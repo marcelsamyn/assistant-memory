@@ -123,6 +123,15 @@ export const TaskStatusEnum = z.enum([
 
 export type TaskStatus = z.infer<typeof TaskStatusEnum>;
 
+/**
+ * Which endpoint of a claim a re-attribution swaps: the `subjectNodeId`
+ * (`"subject"`) or the `objectNodeId` (`"object"`). `"object"` is only valid
+ * for relational claims that carry an object node.
+ */
+export const ReattributeReplaceEnum = z.enum(["subject", "object"]);
+
+export type ReattributeReplace = z.infer<typeof ReattributeReplaceEnum>;
+
 export const AttributePredicateEnum = z.enum([
   "HAS_STATUS",
   "HAS_TASK_STATUS",

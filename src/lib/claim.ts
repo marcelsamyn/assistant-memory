@@ -1,8 +1,10 @@
-/** Claim operations: create, retract, delete. */
+/** Claim operations: create, retract, delete, reattribute. */
 import { and, eq, inArray } from "drizzle-orm";
 import { claims, claimEmbeddings, nodeMetadata, nodes } from "~/db/schema";
 import { applyClaimLifecycle, fetchClaimsByIds } from "~/lib/claims/lifecycle";
 import { generateEmbeddings } from "~/lib/embeddings";
+import { CrossScopeMergeError } from "~/lib/node";
+import { getEffectiveNodeScopes } from "~/lib/node-scope";
 import { logEvent } from "~/lib/observability/log";
 import { ensureSystemSource } from "~/lib/sources";
 import {
@@ -10,6 +12,7 @@ import {
   type AssertedByKind,
   type ClaimStatus,
   type Predicate,
+  type ReattributeReplace,
   type Scope,
 } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
@@ -283,6 +286,178 @@ export async function deleteClaim(
   );
   await maybeEnqueueAtlasInvalidation(db, userId, lifecycleStartedAt);
   return true;
+}
+
+/**
+ * Thrown when a re-attribution targets the object endpoint of an attribute
+ * claim (one with a scalar `objectValue` and no `objectNodeId`). Such claims
+ * have no object node to swap, so the operation is structurally invalid.
+ * Routes translate this into a 400 so callers get a structured error instead
+ * of string-matching the message.
+ */
+export class AttributeClaimObjectReattributionError extends Error {
+  readonly claimId: TypeId<"claim">;
+  readonly predicate: Predicate;
+  constructor(claimId: TypeId<"claim">, predicate: Predicate) {
+    super(
+      `Claim ${claimId} (${predicate}) is an attribute claim with no object node; cannot reattribute its object endpoint`,
+    );
+    this.name = "AttributeClaimObjectReattributionError";
+    this.claimId = claimId;
+    this.predicate = predicate;
+  }
+}
+
+export type ReattributeClaimInput = {
+  userId: string;
+  claimId: TypeId<"claim">;
+  replace: ReattributeReplace;
+  newNodeId: TypeId<"node">;
+};
+
+/**
+ * Atomically re-point one endpoint of a claim at a different node. The original
+ * claim is retracted (never hard-deleted, so history stays visible) and a new
+ * claim is created that preserves every other field — predicate, statement,
+ * objectValue, description, sourceId, scope, validity window — with only the
+ * chosen endpoint swapped. The new claim's provenance is recorded as
+ * `user_confirmed`; when the subject is replaced, `assertedByNodeId` is set to
+ * the new subject (mirroring how merge rewires subject-anchored provenance).
+ *
+ * `replace: "object"` is only valid for relational claims that already carry an
+ * `objectNodeId`; attribute claims (scalar `objectValue`) reject it with
+ * {@link AttributeClaimObjectReattributionError}. The new endpoint node must
+ * exist and belong to the user (else {@link NodesNotFoundError}), and the
+ * resulting (subject, object) scope pair must be uniform — a personal/reference
+ * mix is refused with {@link CrossScopeMergeError}, the same guard merge uses.
+ *
+ * Returns the newly created claim in the same shape as {@link createClaim};
+ * resolves `null` when the original claim does not exist for the user.
+ */
+export async function reattributeClaim(
+  input: ReattributeClaimInput,
+): Promise<CreatedClaim | null> {
+  const db = await useDatabase();
+
+  const [original] = await db
+    .select()
+    .from(claims)
+    .where(and(eq(claims.id, input.claimId), eq(claims.userId, input.userId)))
+    .limit(1);
+
+  if (!original) return null;
+
+  if (input.replace === "object" && original.objectNodeId === null) {
+    throw new AttributeClaimObjectReattributionError(
+      original.id,
+      original.predicate,
+    );
+  }
+
+  // Validate the new endpoint node exists and is owned by the user. Reuse the
+  // same ownership check createClaim uses so the error surface is identical.
+  await fetchOwnedNodeLabels(db, input.userId, [input.newNodeId]);
+
+  // Compute the resulting endpoint pair and refuse a cross-scope inconsistency,
+  // mirroring the guard merge enforces. For an attribute claim the object is a
+  // scalar value (no node), so only the subject participates.
+  const nextSubjectNodeId =
+    input.replace === "subject" ? input.newNodeId : original.subjectNodeId;
+  const nextObjectNodeId =
+    input.replace === "object" ? input.newNodeId : original.objectNodeId;
+  const scopeNodeIds: TypeId<"node">[] = [
+    nextSubjectNodeId,
+    ...(nextObjectNodeId !== null ? [nextObjectNodeId] : []),
+  ];
+  const scopeMap = await getEffectiveNodeScopes(db, input.userId, scopeNodeIds);
+  const scopes = scopeNodeIds.map((id) => scopeMap.get(id) ?? "personal");
+  const distinctScopes = new Set(scopes);
+  if (distinctScopes.size > 1) {
+    throw new CrossScopeMergeError(scopeNodeIds, [...distinctScopes]);
+  }
+
+  // Atomic retract-then-recreate: both the retraction and the new endpoint
+  // claim land in one transaction so the graph never observes a dangling or
+  // duplicated assertion.
+  const inserted = await db.transaction(async (tx) => {
+    await tx
+      .update(claims)
+      .set({ status: "retracted", updatedAt: new Date() })
+      .where(and(eq(claims.id, original.id), eq(claims.userId, input.userId)));
+
+    const [created] = await tx
+      .insert(claims)
+      .values({
+        userId: original.userId,
+        subjectNodeId: nextSubjectNodeId,
+        objectNodeId: nextObjectNodeId,
+        objectValue: original.objectValue,
+        predicate: original.predicate,
+        statement: original.statement,
+        description: original.description,
+        metadata: original.metadata,
+        objectInstant: original.objectInstant,
+        sourceId: original.sourceId,
+        scope: original.scope,
+        assertedByKind: "user_confirmed",
+        // When the subject is replaced, anchor provenance to the new subject —
+        // mirrors how merge rewires subject-side attribution. When the object
+        // is replaced the subject (and thus its provenance anchor) is unchanged.
+        assertedByNodeId:
+          input.replace === "subject"
+            ? nextSubjectNodeId
+            : original.assertedByNodeId,
+        statedAt: original.statedAt,
+        validFrom: original.validFrom,
+        validTo: original.validTo,
+        status: "active",
+      })
+      .returning();
+
+    if (!created) throw new Error("Failed to create reattributed claim");
+    return created;
+  });
+
+  logEvent("claim.retracted", {
+    claimId: original.id,
+    userId: original.userId,
+    reason: "reattribute",
+  });
+  logEvent("claim.inserted", {
+    claimId: inserted.id,
+    userId: inserted.userId,
+    predicate: inserted.predicate,
+    kind: inserted.assertedByKind,
+    scope: inserted.scope,
+    subjectNodeId: inserted.subjectNodeId,
+  });
+
+  // Run the lifecycle pass over both touched claims so single-current
+  // predicates settle correctly, then refresh the embedding for the new claim.
+  const lifecycleStartedAt = new Date();
+  await applyClaimLifecycle(db, [inserted]);
+  const { maybeEnqueueAtlasInvalidation } = await import(
+    "./jobs/atlas-invalidation"
+  );
+  await maybeEnqueueAtlasInvalidation(db, input.userId, lifecycleStartedAt);
+  const [finalized] = await fetchClaimsByIds(db, [inserted.id]);
+  if (!finalized) throw new Error("Failed to fetch reattributed claim");
+
+  await insertClaimEmbedding(db, finalized);
+
+  const labelMap = await fetchOwnedNodeLabels(db, input.userId, [
+    finalized.subjectNodeId,
+    ...(finalized.objectNodeId !== null ? [finalized.objectNodeId] : []),
+  ]);
+
+  return {
+    ...finalized,
+    subjectLabel: labelMap.get(finalized.subjectNodeId) ?? null,
+    objectLabel:
+      finalized.objectNodeId !== null
+        ? (labelMap.get(finalized.objectNodeId) ?? null)
+        : null,
+  };
 }
 
 /** Retract an active claim. User-facing updates only move claims out of active use. */

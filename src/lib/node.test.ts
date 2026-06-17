@@ -268,6 +268,75 @@ describeIfServer("node operations", () => {
     }
   });
 
+  it("persists an explicit description override and clears it with empty string", async () => {
+    const userId = "user_desc";
+    const nodeId = newTypeId("node");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({
+      useDatabase: async () => database,
+    }));
+    vi.doMock("~/lib/embeddings", () => ({
+      generateEmbeddings: async () => ({
+        data: [{ embedding: Array.from({ length: 1024 }, () => 0) }],
+        usage: { total_tokens: 0 },
+      }),
+    }));
+
+    try {
+      // Core tables already exist (created by the first test in this file).
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Concept')`,
+        [nodeId, userId],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label", "description")
+           VALUES ($1, $2, 'Stockholm', 'stockholm', 'Claim-derived summary')`,
+        [newTypeId("node_metadata"), nodeId],
+      );
+
+      const { updateNode } = await import("./node");
+      const { setSkipEmbeddingPersistence } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      const overridden = await updateNode(userId, nodeId, {
+        description: "User-corrected summary",
+      });
+      expect(overridden).toMatchObject({
+        id: nodeId,
+        description: "User-corrected summary",
+      });
+
+      const afterOverride = await client.query<{ description: string | null }>(
+        `SELECT "description" FROM "node_metadata" WHERE "node_id" = $1`,
+        [nodeId],
+      );
+      expect(afterOverride.rows[0]?.description).toBe("User-corrected summary");
+
+      // Empty string clears the override back to NULL.
+      const cleared = await updateNode(userId, nodeId, { description: "" });
+      expect(cleared?.description).toBeNull();
+
+      const afterClear = await client.query<{ description: string | null }>(
+        `SELECT "description" FROM "node_metadata" WHERE "node_id" = $1`,
+        [nodeId],
+      );
+      expect(afterClear.rows[0]?.description).toBeNull();
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.doUnmock("~/lib/embeddings");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
   async function ensureMergeTables(client: Client): Promise<void> {
     // The first test in this file creates the core tables inline. Merge-path
     // tests additionally need `node_embeddings` and `node_redirects` (the merge

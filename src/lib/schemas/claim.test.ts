@@ -3,6 +3,7 @@ import {
   type ClaimResponse,
   claimResponseSchema,
   createClaimResponseSchema,
+  reattributeClaimRequestSchema,
 } from "~/lib/schemas/claim";
 import { newTypeId } from "~/types/typeid";
 
@@ -47,5 +48,34 @@ describe("claim schemas", () => {
 
   it("keeps generic claim responses label-free", () => {
     expect(claimResponseSchema.parse({ claim }).claim.id).toBe(claim.id);
+  });
+});
+
+describe("reattributeClaimRequestSchema", () => {
+  it("accepts subject and object replacements", () => {
+    const base = {
+      userId: "user_A",
+      claimId: newTypeId("claim"),
+      newNodeId: newTypeId("node"),
+    };
+    expect(
+      reattributeClaimRequestSchema.parse({ ...base, replace: "subject" })
+        .replace,
+    ).toBe("subject");
+    expect(
+      reattributeClaimRequestSchema.parse({ ...base, replace: "object" })
+        .replace,
+    ).toBe("object");
+  });
+
+  it("rejects an unknown replace target", () => {
+    expect(() =>
+      reattributeClaimRequestSchema.parse({
+        userId: "user_A",
+        claimId: newTypeId("claim"),
+        newNodeId: newTypeId("node"),
+        replace: "predicate",
+      }),
+    ).toThrow();
   });
 });
