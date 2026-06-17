@@ -42,6 +42,9 @@ const describeIfServer = SERVER_AVAILABLE ? describe : describe.skip;
 type TestDb = NodePgDatabase<typeof schema>;
 
 async function createTables(client: Client): Promise<void> {
+  // `setUserSelfAliases` now calls `ensureUserSelfIdentity`, which touches the
+  // node/alias tables, so they must exist here too. Truncating `users CASCADE`
+  // in `afterEach` reaches these via their FKs.
   await client.query(`
     CREATE TABLE IF NOT EXISTS "users" ("id" text PRIMARY KEY NOT NULL);
     CREATE TABLE IF NOT EXISTS "user_profiles" (
@@ -51,6 +54,32 @@ async function createTables(client: Client): Promise<void> {
       "metadata" jsonb DEFAULT '{}'::jsonb NOT NULL,
       "last_updated_at" timestamp with time zone DEFAULT now() NOT NULL,
       "created_at" timestamp with time zone DEFAULT now() NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS "nodes" (
+      "id" text PRIMARY KEY NOT NULL,
+      "user_id" text NOT NULL REFERENCES "users"("id"),
+      "node_type" varchar(50) NOT NULL,
+      "created_at" timestamp with time zone DEFAULT now() NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS "node_metadata" (
+      "id" text PRIMARY KEY NOT NULL,
+      "node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+      "label" text,
+      "canonical_label" text,
+      "description" text,
+      "additional_data" jsonb,
+      "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+      CONSTRAINT "node_metadata_node_id_unique" UNIQUE ("node_id")
+    );
+    CREATE TABLE IF NOT EXISTS "aliases" (
+      "id" text PRIMARY KEY NOT NULL,
+      "user_id" text NOT NULL REFERENCES "users"("id"),
+      "alias_text" text NOT NULL,
+      "normalized_alias_text" text NOT NULL,
+      "canonical_node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+      "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+      CONSTRAINT "aliases_user_normalized_canonical_unique"
+        UNIQUE ("user_id", "normalized_alias_text", "canonical_node_id")
     );
   `);
 }
