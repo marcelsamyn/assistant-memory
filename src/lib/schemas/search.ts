@@ -48,6 +48,8 @@ export const searchHitSchema = z.object({
   kind: z.enum(["node", "claim"]),
   nodeId: z.string(),
   claimId: z.string().optional(),
+  /** Graph entity type of the hit node. Present on node hits; absent on claims. */
+  nodeType: NodeTypeEnum.optional(),
   text: z.string(),
   highlight: z.string(),
   score: z.number(),

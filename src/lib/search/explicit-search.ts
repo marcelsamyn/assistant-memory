@@ -157,6 +157,7 @@ export async function explicitSearch(
       {
         kind: "node",
         nodeId: row.id,
+        nodeType: row.type,
         text: row.label ?? "",
         highlight: nodeHighlight.get(row.id) ?? row.label ?? "",
         score: f.score,
