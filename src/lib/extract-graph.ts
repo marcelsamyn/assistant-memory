@@ -119,6 +119,15 @@ interface ExtractGraphParams {
    */
   contentNote?: string;
   /**
+   * Optional "who the user is" note (primary name + aliases) injected into the
+   * trailing user message so the model emits the user's most specific label
+   * and never conflates a same-named other person with the user. Used by
+   * document and conversation ingestion (transcripts use the speaker map
+   * instead). Cache-safe: lives in the dynamic user message, not the system
+   * prompt.
+   */
+  userIdentityNote?: string;
+  /**
    * Debug hook fired exactly once after the LLM call returns, before
    * dedup/identity-resolution runs. Receives the exact prompt sent and the
    * parsed response. Errors thrown by the hook are logged and swallowed so
@@ -142,6 +151,7 @@ export async function extractGraph({
   speakerMap,
   replaceClaimsForSources = true,
   contentNote,
+  userIdentityNote,
   onLlmIO,
 }: ExtractGraphParams) {
   const db = await useDatabase();
@@ -242,6 +252,10 @@ export async function extractGraph({
   );
 
   const speakerMapPromptSection = _formatSpeakerMapSection(speakerMap);
+
+  const userIdentityPromptSection = userIdentityNote
+    ? `${userIdentityNote}\n\n`
+    : "";
 
   const { createCompletionClient } = await import("./ai");
   const client = await createCompletionClient(userId, {
@@ -369,6 +383,7 @@ Rules of the graph:
 - Nodes are unique by type and label
 - Never create new nodes for a node that already exists
 - In node names use full names, eg. "John Doe" instead of "John"
+- If multiple people could share a name, use the most specific distinguishing label available (e.g. a full name) and NEVER merge or conflate two different people who share a first name.
 - Omit unnecessary details in node names, eg. "John Doe" instead of "John Doe (person)"
 - Nodes are independent of context and represent a *single* thing. Bad example: "John - the person taking a walk". Good example: "John" (Person node, no description) linked to [PARTICIPATED_IN] "John's walk on 2025-05-18" (Event node), linked to [OCCURRED_ON] "2025-05-18" (Temporal node).
 - Don't create nodes for things that should be represented by edges.
@@ -404,7 +419,7 @@ ${candidateCommitmentsPromptSection}
 
 ${speakerMapPromptSection}
 
-Extract the graph from the following ${sourceType}:
+${userIdentityPromptSection}Extract the graph from the following ${sourceType}:
 
 Allowed source refs:
 ${sourceRefsForPrompt}
