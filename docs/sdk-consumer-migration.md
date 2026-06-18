@@ -238,7 +238,7 @@ The legacy space-named tool is gone. Consumers that registered prompts or hard-c
 | —                                                                               | `bootstrap_memory` (new)                                           | Call **once** at conversation start. Returns the `ContextBundle` (pinned, atlas, open_commitments, recent_supersessions, preferences sections). Cached 6h per user; pass `forceRefresh: true` to bypass. Hosts that already render their own startup section may skip this and tell the model not to call it. |
 | —                                                                               | `get_entity` (new)                                                 | Single-entity card lookup by `nodeId`. Use after the model has an id from `search_memory` / `bootstrap_memory` and needs the full picture.                                                                                                                                                                    |
 
-`save memory`, `list_open_commitments`, `retrieve memories relevant for today`, `read scratchpad` / `write scratchpad` / `edit scratchpad`, and the `get node` / `update node` / `delete node` tools are **unchanged**.
+`save_memory`, `list_open_commitments`, `query_day_memories`, `read_scratchpad` / `write_scratchpad` / `edit_scratchpad`, and the `get_node` / `update_node` / `delete_node` tools are **unchanged**.
 
 #### Tool-description text is part of the contract
 

@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING: MCP tool names normalized to snake_case to satisfy the MCP tool-name format spec.** The SDK now warns at registration when a tool name contains spaces, flagging it as a future compatibility risk (see [SEP: Specify Format for Tool Names](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/986)). The following tools were renamed to match the snake_case convention already used by `bootstrap_memory`, `search_memory`, `list_open_commitments`, etc. — their schemas, descriptions, and request/response shapes are unchanged:
+
+  | Old | New |
+  | --- | --- |
+  | `save memory` | `save_memory` |
+  | `retrieve memories relevant for today` | `query_day_memories` |
+  | `read scratchpad` / `write scratchpad` / `edit scratchpad` | `read_scratchpad` / `write_scratchpad` / `edit_scratchpad` |
+  | `get node` / `get node sources` | `get_node` / `get_node_sources` |
+  | `update node` / `delete node` | `update_node` / `delete_node` |
+
+  Update any client that calls these tools by name. The `add`, `bootstrap_memory`, `search_memory`, `search_reference`, `get_entity`, and all commitment/metric/claim tools are unaffected.
+
 - **BREAKING: `queryTimeline` date bounds renamed `startDate`/`endDate` → `since`/`until`, with conventional semantics.** `since` is the earliest day (inclusive), `until` the latest (inclusive); both are optional and an omitted bound is open on that side (no more implicit `today` / 90-days-ago defaults). Previously `startDate` meant the _newest_ edge and `endDate` the _oldest_, which silently collapsed a one-sided window — e.g. `endDate: today` returned only today. `includePeriods` now derives week/month/year rollups from the day nodes actually in range, so an open `until: today` feed returns every past period it covers, not just the current one. Update callers: pass `until` for "up to" and `since` for "from".
 
 ### Fixed

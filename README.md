@@ -200,13 +200,13 @@ This is the integration that works with the current code.
 
 MCP connects over `GET /sse` and `POST /messages`. Most current tool names are human-readable strings; the first claims-first read-model tool is already snake_case:
 
-- `save memory`: document ingestion using the `POST /ingest/document` schema.
+- `save_memory`: document ingestion using the `POST /ingest/document` schema.
 - `search memory`: calls the same search path as `POST /query/search`.
-- `retrieve memories relevant for today`: calls the same path as `POST /query/day`.
+- `query_day_memories`: calls the same path as `POST /query/day`.
 - `list_open_commitments`: calls `POST /commitments/open` semantics and returns currently open tasks only. The model should call it before answering about outstanding, next, pending, follow-up, completed, or abandoned work unless an `open_commitments` section was rendered for this same model call.
-- `get node` and `get node sources`: raw graph and linked-source metadata inspection tools.
-- `read scratchpad`, `write scratchpad`, `edit scratchpad`: scratchpad operations.
-- `update node`, `delete node`: raw edit tools; these should be gated by the host.
+- `get_node` and `get_node_sources`: raw graph and linked-source metadata inspection tools.
+- `read_scratchpad`, `write_scratchpad`, `edit_scratchpad`: scratchpad operations.
+- `update_node`, `delete_node`: raw edit tools; these should be gated by the host.
 
 For a tool-using assistant, make `search memory` available on demand for personal lookup and `list_open_commitments` available with the instruction above. The host should still proactively inject bootstrap context at session start because the current MCP server does not yet expose a true bootstrap tool.
 

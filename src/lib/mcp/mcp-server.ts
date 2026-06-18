@@ -158,9 +158,9 @@ server.resource(
   }),
 );
 
-// Expose ingest document functionality as "save memory"
+// Expose ingest document functionality as "save_memory"
 server.tool(
-  "save memory",
+  "save_memory",
   ingestDocumentRequestSchema.shape,
   async ({ userId, document }) => {
     await saveMemory({ userId, document, updateExisting: false });
@@ -259,9 +259,9 @@ server.tool(
   },
 );
 
-// Expose day query as "retrieve memories relevant for today"
+// Expose day query as "query_day_memories"
 server.tool(
-  "retrieve memories relevant for today",
+  "query_day_memories",
   queryDayRequestSchema.shape,
   async ({ userId, date }) => {
     const { formattedResult } = await queryDayMemories({
@@ -683,7 +683,7 @@ server.tool(
 
 // Read scratchpad
 server.tool(
-  "read scratchpad",
+  "read_scratchpad",
   scratchpadReadRequestSchema.shape,
   async ({ userId }) => {
     const result = await readScratchpad({ userId });
@@ -695,7 +695,7 @@ server.tool(
 
 // Write scratchpad (overwrite or append)
 server.tool(
-  "write scratchpad",
+  "write_scratchpad",
   scratchpadWriteRequestSchema.shape,
   async (params) => {
     const result = await writeScratchpad(params);
@@ -709,7 +709,7 @@ server.tool(
 
 // Edit scratchpad (replace text with safeguards)
 server.tool(
-  "edit scratchpad",
+  "edit_scratchpad",
   scratchpadEditRequestSchema.shape,
   async (params) => {
     const result = await editScratchpad(params);
@@ -727,7 +727,7 @@ server.tool(
 
 // Get node by ID with edges and source IDs
 server.tool(
-  "get node",
+  "get_node",
   getNodeRequestSchema.shape,
   async ({ userId, nodeId }) => {
     const result = await getNodeById(userId, nodeId);
@@ -745,7 +745,7 @@ server.tool(
 
 // Get source metadata linked to a node
 server.tool(
-  "get node sources",
+  "get_node_sources",
   getNodeSourcesRequestSchema.shape,
   async ({ userId, nodeId }) => {
     const result = await getNodeSources(userId, nodeId);
@@ -762,7 +762,7 @@ server.tool(
 
 // Update node label/type
 server.tool(
-  "update node",
+  "update_node",
   updateNodeRequestSchema.shape,
   async ({ userId, nodeId, label, nodeType }) => {
     const result = await updateNode(userId, nodeId, {
@@ -785,7 +785,7 @@ server.tool(
 
 // Delete node by ID
 server.tool(
-  "delete node",
+  "delete_node",
   deleteNodeRequestSchema.shape,
   async ({ userId, nodeId }) => {
     const { deleted, affectedClaims } = await deleteNode(userId, nodeId);
