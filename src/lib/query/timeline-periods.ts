@@ -1,62 +1,63 @@
 import { readRollupMeta } from "../rollup/collect";
 import {
-  dayDate,
-  dayKeyOf,
   monthKeyForDay,
   periodLevelOf,
   weekKeyForDay,
   yearKeyForMonth,
 } from "../rollup/period";
 import type { QueryTimelinePeriod } from "../schemas/query-timeline";
-import { eachDayOfInterval } from "date-fns";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { nodeMetadata, nodes } from "~/db/schema";
 import { NodeTypeEnum } from "~/types/graph";
 
 /**
- * The distinct week/month/year period keys that contain at least one day in
- * [rangeMin, rangeMax] (both `YYYY-MM-DD`, rangeMin <= rangeMax). Membership is
- * defined by each day's own week/month/year, so a week straddling a month
- * boundary never drags in the adjacent month. Day-level keys are never returned.
+ * Load week/month/year temporal-rollup summaries for the days in `[since, until]`.
  *
- * aka: timeline rollup period keys, week/month/year keys for a date window.
- */
-export function periodKeysForWindow(
-  rangeMin: string,
-  rangeMax: string,
-): string[] {
-  const keys = new Set<string>();
-  for (const day of eachDayOfInterval({
-    start: dayDate(rangeMin),
-    end: dayDate(rangeMax),
-  })) {
-    const dayKey = dayKeyOf(day);
-    const monthKey = monthKeyForDay(dayKey);
-    keys.add(weekKeyForDay(dayKey));
-    keys.add(monthKey);
-    keys.add(yearKeyForMonth(monthKey));
-  }
-  return [...keys];
-}
-
-/**
- * Load week/month/year temporal-rollup summaries overlapping [rangeMin, rangeMax].
+ * Periods are derived from the day nodes that actually fall in range: each in-range
+ * day's week/month/year keys are collected, then the matching `Temporal` rollup
+ * nodes are loaded. A period therefore appears only when the window contains a day
+ * it covers — exactly what the timeline can render — and open bounds (`since` or
+ * `until` omitted) work without enumerating a calendar interval.
  *
- * Fetches the `Temporal` rollup nodes whose label is one of `periodKeysForWindow`
- * (day nodes are excluded by construction). `summary` is null until the rollup job
- * has written a real summary — detected via `additionalData.rollup` — so boilerplate
- * descriptions never surface. Only existing rollup nodes appear.
+ * `summary` is null until the rollup job has written a real summary (detected via
+ * `additionalData.rollup`), so boilerplate descriptions never surface.
+ *
+ * aka: timeline rollup periods, week/month/year summaries for a date window.
  */
 export async function loadTimelinePeriods(
   db: DrizzleDB,
   userId: string,
-  rangeMin: string,
-  rangeMax: string,
+  since?: string,
+  until?: string,
 ): Promise<QueryTimelinePeriod[]> {
-  const keys = periodKeysForWindow(rangeMin, rangeMax);
-  if (keys.length === 0) return [];
+  // 1. Distinct day-node labels in range (day nodes are `YYYY-MM-DD`).
+  const dayRows = await db
+    .selectDistinct({ label: nodeMetadata.label })
+    .from(nodes)
+    .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
+    .where(
+      and(
+        eq(nodes.userId, userId),
+        eq(nodes.nodeType, NodeTypeEnum.enum.Temporal),
+        sql`${nodeMetadata.label} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`,
+        ...(since ? [gte(nodeMetadata.label, since)] : []),
+        ...(until ? [lte(nodeMetadata.label, until)] : []),
+      ),
+    );
 
+  // 2. The week/month/year keys those days belong to.
+  const keys = new Set<string>();
+  for (const { label } of dayRows) {
+    if (!label) continue;
+    const monthKey = monthKeyForDay(label);
+    keys.add(weekKeyForDay(label));
+    keys.add(monthKey);
+    keys.add(yearKeyForMonth(monthKey));
+  }
+  if (keys.size === 0) return [];
+
+  // 3. The rollup nodes for those keys (day labels are never among them).
   const rows = await db
     .select({
       id: nodes.id,
@@ -70,7 +71,7 @@ export async function loadTimelinePeriods(
       and(
         eq(nodes.userId, userId),
         eq(nodes.nodeType, NodeTypeEnum.enum.Temporal),
-        inArray(nodeMetadata.label, keys),
+        inArray(nodeMetadata.label, [...keys]),
       ),
     )
     .orderBy(nodeMetadata.label);
