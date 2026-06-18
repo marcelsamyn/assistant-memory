@@ -24,6 +24,7 @@
   ],
   "scripts": {
     "build": "nitro build",
+    "prepublishOnly": "pnpm run build-sdk",
     "build-sdk": "tsc --project tsconfig.sdk.json && tsc-alias --project tsconfig.sdk.json --resolve-full-paths --resolve-full-extension .js && node scripts/verify-sdk-build.mjs",
     "verify-sdk": "node scripts/verify-sdk-build.mjs",
     "dev": "nitro dev",
