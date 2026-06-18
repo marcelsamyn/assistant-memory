@@ -6,13 +6,13 @@ const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
 export const queryTimelineRequestSchema = z.object({
   userId: z.string(),
-  startDate: z
+  since: z
     .string()
-    .regex(dateRegex, "startDate must be in YYYY-MM-DD format")
+    .regex(dateRegex, "since must be in YYYY-MM-DD format")
     .optional(),
-  endDate: z
+  until: z
     .string()
-    .regex(dateRegex, "endDate must be in YYYY-MM-DD format")
+    .regex(dateRegex, "until must be in YYYY-MM-DD format")
     .optional(),
   limit: z.number().int().min(1).max(100).default(30),
   offset: z.number().int().min(0).default(0),
