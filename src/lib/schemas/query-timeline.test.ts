@@ -10,22 +10,22 @@ describe("queryTimelineRequestSchema", () => {
     expect(parsed.userId).toBe("user_123");
     expect(parsed.limit).toBe(30);
     expect(parsed.offset).toBe(0);
-    expect(parsed.startDate).toBeUndefined();
-    expect(parsed.endDate).toBeUndefined();
+    expect(parsed.since).toBeUndefined();
+    expect(parsed.until).toBeUndefined();
     expect(parsed.nodeTypes).toBeUndefined();
   });
 
   it("accepts full request with all fields", () => {
     const parsed = queryTimelineRequestSchema.parse({
       userId: "user_123",
-      startDate: "2025-01-15",
-      endDate: "2024-10-15",
+      since: "2024-10-15",
+      until: "2025-01-15",
       limit: 10,
       offset: 5,
       nodeTypes: ["Person", "Event"],
     });
-    expect(parsed.startDate).toBe("2025-01-15");
-    expect(parsed.endDate).toBe("2024-10-15");
+    expect(parsed.since).toBe("2024-10-15");
+    expect(parsed.until).toBe("2025-01-15");
     expect(parsed.limit).toBe(10);
     expect(parsed.offset).toBe(5);
     expect(parsed.nodeTypes).toEqual(["Person", "Event"]);
@@ -35,7 +35,7 @@ describe("queryTimelineRequestSchema", () => {
     expect(() =>
       queryTimelineRequestSchema.parse({
         userId: "user_123",
-        startDate: "01-15-2025",
+        since: "01-15-2025",
       }),
     ).toThrow();
   });
