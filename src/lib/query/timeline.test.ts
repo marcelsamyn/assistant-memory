@@ -231,8 +231,8 @@ describeIfServer("queryTimeline", () => {
         await queryTimeline(
           queryTimelineRequestSchema.parse({
             userId,
-            startDate: "2026-06-30",
-            endDate: "2026-06-01",
+            since: "2026-06-01",
+            until: "2026-06-30",
           }),
         ),
       );
@@ -250,8 +250,8 @@ describeIfServer("queryTimeline", () => {
         await queryTimeline(
           queryTimelineRequestSchema.parse({
             userId,
-            startDate: "2026-06-30",
-            endDate: "2026-06-01",
+            since: "2026-06-01",
+            until: "2026-06-30",
             includePeriods: true,
           }),
         ),
@@ -272,6 +272,25 @@ describeIfServer("queryTimeline", () => {
         withPeriods.periods.find((p) => p.key === "2026-06")!.summary,
       ).toBe("June summary");
 
+      // Regression: the Petals past feed sends only `until` (open `since`).
+      // The week/month/year periods for in-range days must come back — not just
+      // the current period — which the old `endDate`-collapses-the-window bug
+      // dropped.
+      const pastFeed = queryTimelineResponseSchema.parse(
+        await queryTimeline(
+          queryTimelineRequestSchema.parse({
+            userId,
+            until: "2026-12-31",
+            includePeriods: true,
+          }),
+        ),
+      );
+      expect(pastFeed.periods.map((p) => p.key)).toEqual([
+        "2026",
+        "2026-06",
+        "2026-W24",
+      ]);
+
       // Day-feed guard: a 2026-07 month rollup node sorts INSIDE a window that
       // extends into July, so without the `~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`
       // guard it would leak into `days`. Only the seeded June day nodes should
@@ -280,8 +299,8 @@ describeIfServer("queryTimeline", () => {
         await queryTimeline(
           queryTimelineRequestSchema.parse({
             userId,
-            startDate: "2026-07-31",
-            endDate: "2026-06-01",
+            since: "2026-06-01",
+            until: "2026-07-31",
           }),
         ),
       );

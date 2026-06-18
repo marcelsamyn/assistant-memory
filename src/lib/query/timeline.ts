@@ -3,7 +3,6 @@ import {
   QueryTimelineResponse,
 } from "../schemas/query-timeline";
 import { loadTimelinePeriods } from "./timeline-periods";
-import { format, subDays } from "date-fns";
 import { and, eq, or, gte, lte, desc, inArray, sql, count } from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
 import { NodeTypeEnum } from "~/types/graph";
@@ -21,30 +20,30 @@ import { useDatabase } from "~/utils/db";
 export async function queryTimeline(
   params: QueryTimelineRequest,
 ): Promise<QueryTimelineResponse> {
-  const { userId, limit = 30, offset = 0, nodeTypes, includePeriods } = params;
-
-  const today = format(new Date(), "yyyy-MM-dd");
-  const ninetyDaysAgo = format(subDays(new Date(), 90), "yyyy-MM-dd");
-  const startDate = params.startDate ?? today;
-  const endDate = params.endDate ?? ninetyDaysAgo;
-
-  // Normalize so rangeMin <= rangeMax regardless of param ordering
-  const rangeMin = startDate < endDate ? startDate : endDate;
-  const rangeMax = startDate < endDate ? endDate : startDate;
+  const {
+    userId,
+    since,
+    until,
+    limit = 30,
+    offset = 0,
+    nodeTypes,
+    includePeriods,
+  } = params;
 
   const db = await useDatabase();
 
   const periods = includePeriods
-    ? await loadTimelinePeriods(db, userId, rangeMin, rangeMax)
+    ? await loadTimelinePeriods(db, userId, since, until)
     : [];
 
-  // Shared WHERE clause for day-node lookups
+  // Shared WHERE clause for day-node lookups. `since`/`until` are inclusive
+  // bounds; an omitted bound is open on that side.
   const dayNodeWhere = and(
     eq(nodes.userId, userId),
     eq(nodes.nodeType, NodeTypeEnum.enum.Temporal),
     sql`${nodeMetadata.label} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`,
-    gte(nodeMetadata.label, rangeMin),
-    lte(nodeMetadata.label, rangeMax),
+    ...(since ? [gte(nodeMetadata.label, since)] : []),
+    ...(until ? [lte(nodeMetadata.label, until)] : []),
   );
 
   // Step 1: Count total days with data in the range (DB-level).
