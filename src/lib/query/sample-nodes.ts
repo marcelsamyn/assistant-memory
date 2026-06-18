@@ -13,10 +13,12 @@ import {
   SampleNodesRequest,
   SampleNodesResponse,
 } from "~/lib/schemas/sample-nodes";
+import { type NodeType } from "~/types/graph.js";
+import { type TypeId } from "~/types/typeid.js";
 import { useDatabase } from "~/utils/db";
 
 /** Node types that are scaffolding/system-owned, never "wander into" targets. */
-const NOISE_NODE_TYPES = ["Temporal", "Atlas", "AssistantDream"];
+const NOISE_NODE_TYPES: NodeType[] = ["Temporal", "Atlas", "AssistantDream"];
 const MIN_CONNECTIONS = 3;
 const POOL_SIZE = 60;
 
@@ -43,7 +45,10 @@ export async function sampleInterestingNodes(
       .from(claims)
       .where(and(eq(claims.userId, userId), eq(claims.status, "active"))),
     db
-      .select({ nodeId: claims.objectNodeId, claimId: claims.id })
+      .select({
+        nodeId: sql<TypeId<"node">>`${claims.objectNodeId}`,
+        claimId: claims.id,
+      })
       .from(claims)
       .where(
         and(

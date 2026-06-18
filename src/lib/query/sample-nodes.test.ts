@@ -1,8 +1,8 @@
-import { drizzle } from "drizzle-orm/node-postgres";
+import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
-import { newTypeId } from "~/types/typeid";
+import { newTypeId, type TypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
 const TEST_DB_PORT = Number(process.env["TEST_PG_PORT"] ?? 5431);
@@ -42,7 +42,7 @@ describeIfServer("sampleInterestingNodes", () => {
   )}`;
 
   let client: Client;
-  let database: ReturnType<typeof drizzle<typeof schema>>;
+  let database: NodePgDatabase<typeof schema>;
   let testIds: {
     hub: string;
     wellLinked: string;
@@ -177,17 +177,17 @@ describeIfServer("sampleInterestingNodes", () => {
     });
 
     // Helper: make `count` active claims linking `node` to distinct spokes.
-    const linkClaims = (node: string, count: number) =>
+    const linkClaims = (node: TypeId<"node">, count: number) =>
       Array.from({ length: count }, (_, i) => ({
         id: newTypeId("claim"),
         userId,
         subjectNodeId: node,
         objectNodeId: spokes[i % spokes.length]!,
-        predicate: "RELATED_TO",
+        predicate: "RELATED_TO" as const,
         statement: "x",
         sourceId: src,
         scope: "personal" as const,
-        assertedByKind: "user_stated" as const,
+        assertedByKind: "user" as const,
         statedAt: new Date("2026-01-01T00:00:00.000Z"),
         status: "active" as const,
       }));
