@@ -12,10 +12,12 @@ import { useDatabase } from "~/utils/db";
 /**
  * Query a timeline of memories grouped by date.
  *
- * Finds all Temporal (day) nodes within a date range for a user,
- * then fetches connected nodes for each day. Supports pagination
- * via limit/offset on days, and optional nodeType filtering on
- * the connected nodes.
+ * Finds Temporal (day) nodes between the optional inclusive `since`/`until`
+ * bounds for a user — each bound is open when omitted, so there is no implied
+ * default window — then fetches connected nodes for each day. Supports
+ * pagination via limit/offset on days (newest-first), and optional nodeType
+ * filtering on the connected nodes. With `includePeriods`, returns the
+ * week/month/year rollups covering the in-range days.
  */
 export async function queryTimeline(
   params: QueryTimelineRequest,
