@@ -10,6 +10,23 @@ has the _what to change_.
 
 ---
 
+## `queryTimeline` bounds renamed to `since` / `until` (breaking)
+
+- `MemoryClient.queryTimeline({ ... })` no longer accepts `startDate` / `endDate`.
+  Use `since` (earliest day, inclusive) and `until` (latest day, inclusive).
+  Both optional; omit a bound for an open window. There is no implicit default
+  window anymore.
+- Semantics are now conventional (`since <= until`). The old `startDate` was the
+  newest edge and `endDate` the oldest — the reverse — which collapsed one-sided
+  windows. Concretely: a "today and older" feed is now `{ until: today }`
+  (was, incorrectly, `{ endDate: today }`); a "tomorrow and newer" feed is
+  `{ since: tomorrow }`.
+- `includePeriods: true` returns the week/month/year rollups for the days in
+  range (open bounds included), so past-period summaries now appear in a
+  `{ until: today }` feed.
+
+---
+
 ## SDK source content lookup and metadata-only node sources
 
 - `MemoryClient.getSource({ userId, sourceId, includeContent: true })` now
