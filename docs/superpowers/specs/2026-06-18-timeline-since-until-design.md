@@ -14,13 +14,13 @@ existed with real summaries.
 Today the handler does:
 
 ```ts
-const startDate = params.startDate ?? today;          // startDate = NEWEST edge
-const endDate   = params.endDate   ?? ninetyDaysAgo;  // endDate   = OLDEST edge
+const startDate = params.startDate ?? today; // startDate = NEWEST edge
+const endDate = params.endDate ?? ninetyDaysAgo; // endDate   = OLDEST edge
 const rangeMin = startDate < endDate ? startDate : endDate;
 const rangeMax = startDate < endDate ? endDate : startDate;
 ```
 
-So `startDate` is the *newest* bound (default today) and `endDate` the *oldest*
+So `startDate` is the _newest_ bound (default today) and `endDate` the _oldest_
 (default 90 days ago) — the reverse of the universal `start ≤ end` convention.
 Petals, reading the names the obvious way, called the feed with `endDate: today`
 (meaning "newest = today"). The backend read that as "oldest = today", and with
@@ -114,7 +114,7 @@ scan is proportional to real data, not calendar span.
   `since ≤ until` ordering.
 - **Regression test (the bug):** with day nodes spanning several past weeks and
   summarized rollup nodes for them, `queryTimeline({ until: today,
-  includePeriods: true })` returns the **past** week/month/year periods (e.g.
+includePeriods: true })` returns the **past** week/month/year periods (e.g.
   `2026-W23`), not only the current ones.
 - Open-bound tests: `since` only, `until` only, neither.
 
@@ -172,7 +172,7 @@ SDK major is published and the dep is bumped:
 1. **assistant-memory** (this branch): schema + query + periods + tests + SDK
    types + changelog + the `prepublishOnly` hook (§5b) → merge → release via
    `pnpm version major` + `pnpm publish` (auto-builds) + `git push
-   --follow-tags`.
+--follow-tags`.
 2. **petals**: bump SDK dep to `^2.0.0`, apply §6, verify (build/lint/test + a
    timeline screenshot), open PR.
 

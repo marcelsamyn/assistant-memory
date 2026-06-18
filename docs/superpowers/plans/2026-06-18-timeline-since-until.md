@@ -34,10 +34,12 @@
 ### Task 1: Rename request schema `startDate`/`endDate` → `since`/`until`
 
 **Files:**
+
 - Modify: `src/lib/schemas/query-timeline.ts:7-22` (request schema), and `QueryTimelineRequest` type (already inferred — no manual change).
 - Test: `src/lib/schemas/query-timeline.test.ts:7-82`
 
 **Interfaces:**
+
 - Produces: `queryTimelineRequestSchema` with optional `since?: string` and `until?: string` (both `YYYY-MM-DD`), unchanged `userId`, `limit` (default 30, 1–100), `offset` (default 0, ≥0), `nodeTypes?`, `includePeriods?`. `QueryTimelineRequest = z.infer<...>`. Consumed by Tasks 2 and 3 and by `src/sdk/memory-client.ts` (`queryTimeline(payload: QueryTimelineRequest)`).
 
 - [ ] **Step 1: Update the schema test to the new field names**
@@ -45,31 +47,35 @@
 In `src/lib/schemas/query-timeline.test.ts`, replace the `startDate`/`endDate` references:
 
 Lines 13-14 become:
+
 ```ts
-    expect(parsed.since).toBeUndefined();
-    expect(parsed.until).toBeUndefined();
+expect(parsed.since).toBeUndefined();
+expect(parsed.until).toBeUndefined();
 ```
 
 Lines 21-22 and 27-28 (the "full request" case) become:
+
 ```ts
       since: "2024-10-15",
       until: "2025-01-15",
 ```
+
 ```ts
-    expect(parsed.since).toBe("2024-10-15");
-    expect(parsed.until).toBe("2025-01-15");
+expect(parsed.since).toBe("2024-10-15");
+expect(parsed.until).toBe("2025-01-15");
 ```
 
 Lines 34-40 (invalid date) become:
+
 ```ts
-  it("rejects invalid date format", () => {
-    expect(() =>
-      queryTimelineRequestSchema.parse({
-        userId: "user_123",
-        since: "01-15-2025",
-      }),
-    ).toThrow();
-  });
+it("rejects invalid date format", () => {
+  expect(() =>
+    queryTimelineRequestSchema.parse({
+      userId: "user_123",
+      since: "01-15-2025",
+    }),
+  ).toThrow();
+});
 ```
 
 - [ ] **Step 2: Run the schema test to verify it fails**
@@ -80,6 +86,7 @@ Expected: FAIL — `since`/`until` are not yet in the schema (parsed values unde
 - [ ] **Step 3: Rename the fields in the schema**
 
 In `src/lib/schemas/query-timeline.ts`, replace lines 9-16 (`startDate`/`endDate` blocks) with:
+
 ```ts
     since: z
         .string()
@@ -99,7 +106,7 @@ Expected: PASS.
 - [ ] **Step 5: Confirm the SDK type surface still compiles**
 
 Run: `pnpm run build:check`
-Expected: PASS (the SDK client `queryTimeline(payload: QueryTimelineRequest)` picks up the renamed fields; `src/lib/query/timeline.ts` will still reference `params.startDate`/`endDate` and FAIL here — that's expected and fixed in Task 3, so if build:check fails *only* in `src/lib/query/timeline.ts`, proceed; if it fails elsewhere, stop and investigate).
+Expected: PASS (the SDK client `queryTimeline(payload: QueryTimelineRequest)` picks up the renamed fields; `src/lib/query/timeline.ts` will still reference `params.startDate`/`endDate` and FAIL here — that's expected and fixed in Task 3, so if build:check fails _only_ in `src/lib/query/timeline.ts`, proceed; if it fails elsewhere, stop and investigate).
 
 - [ ] **Step 6: Commit**
 
@@ -113,10 +120,12 @@ git commit -m "♻️ refactor(timeline): rename queryTimeline bounds to since/u
 ### Task 2: Derive periods from in-range day nodes (`loadTimelinePeriods`)
 
 **Files:**
+
 - Modify: `src/lib/query/timeline-periods.ts` (full rewrite — delete `periodKeysForWindow`, new `loadTimelinePeriods` signature/body)
 - Test: `src/lib/query/timeline-periods.test.ts`
 
 **Interfaces:**
+
 - Consumes: `monthKeyForDay(dayKey: string): string`, `weekKeyForDay(dayKey: string): string`, `yearKeyForMonth(monthKey: string): string`, `periodLevelOf(key: string): "day"|"week"|"month"|"year"` from `../rollup/period`; `readRollupMeta` from `../rollup/collect`; `QueryTimelinePeriod` from `../schemas/query-timeline`.
 - Produces: `loadTimelinePeriods(db, userId, since?, until?): Promise<QueryTimelinePeriod[]>` — returns rollup periods (`{ key, granularity, summary, temporalNodeId }`) for the week/month/year buckets that contain at least one day node in `[since, until]`, ordered by `key` ascending. Consumed by Task 3.
 
@@ -125,6 +134,7 @@ git commit -m "♻️ refactor(timeline): rename queryTimeline bounds to since/u
 In `src/lib/query/timeline-periods.test.ts`:
 
 (a) Change the import on line 1 to drop `periodKeysForWindow`:
+
 ```ts
 import { loadTimelinePeriods } from "./timeline-periods";
 ```
@@ -132,26 +142,23 @@ import { loadTimelinePeriods } from "./timeline-periods";
 (b) Delete the entire `describe("periodKeysForWindow", () => { ... })` block (lines 8-29).
 
 (c) Inside the `loadTimelinePeriods` test, after the existing `expect(... not.toContain("2026-05"))` assertion (around line 198) and before the `"nobody"` assertion, add:
-```ts
-      // Past feed shape: only `until` set, `since` open. Periods are still
-      // derived from the in-range day node (2026-06-10 → W24), and a
-      // summarized rollup with no day node in range (2026-05) stays excluded.
-      const openSince = await loadTimelinePeriods(
-        database,
-        userId,
-        undefined,
-        "2026-06-30",
-      );
-      expect(openSince.map((p) => p.key)).toEqual([
-        "2026",
-        "2026-06",
-        "2026-W24",
-      ]);
-      expect(openSince.map((p) => p.key)).not.toContain("2026-05");
 
-      // Fully open window behaves the same here (all day nodes are in June).
-      const openBoth = await loadTimelinePeriods(database, userId);
-      expect(openBoth.map((p) => p.key)).toEqual(["2026", "2026-06", "2026-W24"]);
+```ts
+// Past feed shape: only `until` set, `since` open. Periods are still
+// derived from the in-range day node (2026-06-10 → W24), and a
+// summarized rollup with no day node in range (2026-05) stays excluded.
+const openSince = await loadTimelinePeriods(
+  database,
+  userId,
+  undefined,
+  "2026-06-30",
+);
+expect(openSince.map((p) => p.key)).toEqual(["2026", "2026-06", "2026-W24"]);
+expect(openSince.map((p) => p.key)).not.toContain("2026-05");
+
+// Fully open window behaves the same here (all day nodes are in June).
+const openBoth = await loadTimelinePeriods(database, userId);
+expect(openBoth.map((p) => p.key)).toEqual(["2026", "2026-06", "2026-W24"]);
 ```
 
 - [ ] **Step 2: Run the periods test to verify it fails**
@@ -162,6 +169,7 @@ Expected: FAIL — `periodKeysForWindow` no longer imported breaks the build, an
 - [ ] **Step 3: Rewrite `timeline-periods.ts`**
 
 Replace the **entire** contents of `src/lib/query/timeline-periods.ts` with:
+
 ```ts
 import { readRollupMeta } from "../rollup/collect";
 import {
@@ -274,10 +282,12 @@ git commit -m "♻️ refactor(timeline): derive rollup periods from in-range da
 ### Task 3: Handler uses `since`/`until` with conditional bounds
 
 **Files:**
+
 - Modify: `src/lib/query/timeline.ts:24-48` (param read, window logic, day WHERE) and the `date-fns` import line.
 - Test: `src/lib/query/timeline.test.ts` (field renames + open-`until` regression)
 
 **Interfaces:**
+
 - Consumes: `loadTimelinePeriods(db, userId, since?, until?)` (Task 2); `QueryTimelineRequest.since/until` (Task 1).
 - Produces: `queryTimeline(params): Promise<QueryTimelineResponse>` — unchanged response shape; day feed filtered by optional `since`/`until`, periods loaded for the same bounds.
 
@@ -286,6 +296,7 @@ git commit -m "♻️ refactor(timeline): derive rollup periods from in-range da
 In `src/lib/query/timeline.test.ts`:
 
 (a) The `base` call (lines 232-236) — swap to intuitive bounds:
+
 ```ts
           queryTimelineRequestSchema.parse({
             userId,
@@ -295,6 +306,7 @@ In `src/lib/query/timeline.test.ts`:
 ```
 
 (b) The `withPeriods` call (lines 251-256):
+
 ```ts
           queryTimelineRequestSchema.parse({
             userId,
@@ -305,6 +317,7 @@ In `src/lib/query/timeline.test.ts`:
 ```
 
 (c) The `spanning` call (lines 281-285):
+
 ```ts
           queryTimelineRequestSchema.parse({
             userId,
@@ -314,25 +327,26 @@ In `src/lib/query/timeline.test.ts`:
 ```
 
 (d) After the `withPeriods` assertions (after line 273, before the `spanning` block's comment on line 275), add the bug regression — the Petals past-feed shape (only `until`, `since` open) must return the past periods:
+
 ```ts
-      // Regression: the Petals past feed sends only `until` (open `since`).
-      // The week/month/year periods for in-range days must come back — not just
-      // the current period — which the old `endDate`-collapses-the-window bug
-      // dropped.
-      const pastFeed = queryTimelineResponseSchema.parse(
-        await queryTimeline(
-          queryTimelineRequestSchema.parse({
-            userId,
-            until: "2026-12-31",
-            includePeriods: true,
-          }),
-        ),
-      );
-      expect(pastFeed.periods.map((p) => p.key)).toEqual([
-        "2026",
-        "2026-06",
-        "2026-W24",
-      ]);
+// Regression: the Petals past feed sends only `until` (open `since`).
+// The week/month/year periods for in-range days must come back — not just
+// the current period — which the old `endDate`-collapses-the-window bug
+// dropped.
+const pastFeed = queryTimelineResponseSchema.parse(
+  await queryTimeline(
+    queryTimelineRequestSchema.parse({
+      userId,
+      until: "2026-12-31",
+      includePeriods: true,
+    }),
+  ),
+);
+expect(pastFeed.periods.map((p) => p.key)).toEqual([
+  "2026",
+  "2026-06",
+  "2026-W24",
+]);
 ```
 
 - [ ] **Step 2: Run the handler test to verify it fails**
@@ -345,39 +359,43 @@ Expected: FAIL — schema no longer has `startDate`/`endDate`, so the handler (s
 In `src/lib/query/timeline.ts`:
 
 (a) Replace the destructure + window block (lines 24-33) with:
-```ts
-  const {
-    userId,
-    since,
-    until,
-    limit = 30,
-    offset = 0,
-    nodeTypes,
-    includePeriods,
-  } = params;
 
-  const db = await useDatabase();
+```ts
+const {
+  userId,
+  since,
+  until,
+  limit = 30,
+  offset = 0,
+  nodeTypes,
+  includePeriods,
+} = params;
+
+const db = await useDatabase();
 ```
+
 (This deletes `today`, `ninetyDaysAgo`, `startDate`, `endDate`, `rangeMin`, `rangeMax`. Note `const db = await useDatabase();` moves up here; delete the later duplicate `const db = await useDatabase();` that was on line 35.)
 
 (b) Replace the `periods` assignment (was lines 37-39) so it sits right after `db`:
+
 ```ts
-  const periods = includePeriods
-    ? await loadTimelinePeriods(db, userId, since, until)
-    : [];
+const periods = includePeriods
+  ? await loadTimelinePeriods(db, userId, since, until)
+  : [];
 ```
 
 (c) Replace the `dayNodeWhere` block (lines 42-48) with:
+
 ```ts
-  // Shared WHERE clause for day-node lookups. `since`/`until` are inclusive
-  // bounds; an omitted bound is open on that side.
-  const dayNodeWhere = and(
-    eq(nodes.userId, userId),
-    eq(nodes.nodeType, NodeTypeEnum.enum.Temporal),
-    sql`${nodeMetadata.label} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`,
-    ...(since ? [gte(nodeMetadata.label, since)] : []),
-    ...(until ? [lte(nodeMetadata.label, until)] : []),
-  );
+// Shared WHERE clause for day-node lookups. `since`/`until` are inclusive
+// bounds; an omitted bound is open on that side.
+const dayNodeWhere = and(
+  eq(nodes.userId, userId),
+  eq(nodes.nodeType, NodeTypeEnum.enum.Temporal),
+  sql`${nodeMetadata.label} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`,
+  ...(since ? [gte(nodeMetadata.label, since)] : []),
+  ...(until ? [lte(nodeMetadata.label, until)] : []),
+);
 ```
 
 (d) Remove the now-unused `date-fns` import (line 6: `import { format, subDays } from "date-fns";`). Confirm no other `format`/`subDays` use remains in the file (`grep -n "format\|subDays" src/lib/query/timeline.ts` → no hits).
@@ -404,14 +422,17 @@ git commit -m "✨ feat(timeline): queryTimeline accepts open since/until bounds
 ### Task 4: Auto-build the SDK before publish (`prepublishOnly`)
 
 **Files:**
+
 - Modify: `package.json` (`scripts`)
 
 **Interfaces:**
+
 - Produces: a `prepublishOnly` script that runs `pnpm run build-sdk`, so `pnpm publish` always rebuilds `dist` first.
 
 - [ ] **Step 1: Add the hook**
 
 In `package.json`, inside `"scripts"`, add (place it just above `"build-sdk"`):
+
 ```jsonc
     "prepublishOnly": "pnpm run build-sdk",
 ```
@@ -433,6 +454,7 @@ git commit -m "🔧 chore(release): build the SDK automatically before publish"
 ### Task 5: Changelog + consumer migration note
 
 **Files:**
+
 - Modify: `CHANGELOG.md` (`[Unreleased]`)
 - Modify: `docs/sdk-consumer-migration.md` (prepend newest entry under the title block)
 
@@ -445,15 +467,17 @@ In `CHANGELOG.md`, in the `[Unreleased]` → `### Added` bullet that begins "**`
 - [ ] **Step 2: Add a breaking-change entry**
 
 In `CHANGELOG.md`, under `## [Unreleased]`, add a new `### Changed` section (above `### Fixed`):
+
 ```markdown
 ### Changed
 
-- **BREAKING: `queryTimeline` date bounds renamed `startDate`/`endDate` → `since`/`until`, with conventional semantics.** `since` is the earliest day (inclusive), `until` the latest (inclusive); both are optional and an omitted bound is open on that side (no more implicit `today` / 90-days-ago defaults). Previously `startDate` meant the *newest* edge and `endDate` the *oldest*, which silently collapsed a one-sided window — e.g. `endDate: today` returned only today. `includePeriods` now derives week/month/year rollups from the day nodes actually in range, so an open `until: today` feed returns every past period it covers, not just the current one. Update callers: pass `until` for "up to" and `since` for "from".
+- **BREAKING: `queryTimeline` date bounds renamed `startDate`/`endDate` → `since`/`until`, with conventional semantics.** `since` is the earliest day (inclusive), `until` the latest (inclusive); both are optional and an omitted bound is open on that side (no more implicit `today` / 90-days-ago defaults). Previously `startDate` meant the _newest_ edge and `endDate` the _oldest_, which silently collapsed a one-sided window — e.g. `endDate: today` returned only today. `includePeriods` now derives week/month/year rollups from the day nodes actually in range, so an open `until: today` feed returns every past period it covers, not just the current one. Update callers: pass `until` for "up to" and `since` for "from".
 ```
 
 - [ ] **Step 3: Add the consumer migration note**
 
 In `docs/sdk-consumer-migration.md`, immediately after the `---` that follows the intro (before the first existing `##` entry), insert:
+
 ```markdown
 ## `queryTimeline` bounds renamed to `since` / `until` (breaking)
 
@@ -489,9 +513,11 @@ git commit -m "📚 docs(timeline): changelog + migration note for since/until r
 - [ ] **Step 1: Run the full gate**
 
 Run, from repo root, with Postgres up on `localhost:5431`:
+
 ```bash
 pnpm run lint && pnpm run format && pnpm run build:check && pnpm run build-sdk && pnpm test --run
 ```
+
 Expected: all green. If `format` reports issues, run `pnpm run format:fix`, re-run, and amend the most relevant commit.
 
 - [ ] **Step 2: Confirm no stray `startDate`/`endDate` remain in the timeline surface**

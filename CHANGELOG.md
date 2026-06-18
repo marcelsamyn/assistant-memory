@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **BREAKING: `queryTimeline` date bounds renamed `startDate`/`endDate` → `since`/`until`, with conventional semantics.** `since` is the earliest day (inclusive), `until` the latest (inclusive); both are optional and an omitted bound is open on that side (no more implicit `today` / 90-days-ago defaults). Previously `startDate` meant the *newest* edge and `endDate` the *oldest*, which silently collapsed a one-sided window — e.g. `endDate: today` returned only today. `includePeriods` now derives week/month/year rollups from the day nodes actually in range, so an open `until: today` feed returns every past period it covers, not just the current one. Update callers: pass `until` for "up to" and `since` for "from".
+- **BREAKING: `queryTimeline` date bounds renamed `startDate`/`endDate` → `since`/`until`, with conventional semantics.** `since` is the earliest day (inclusive), `until` the latest (inclusive); both are optional and an omitted bound is open on that side (no more implicit `today` / 90-days-ago defaults). Previously `startDate` meant the _newest_ edge and `endDate` the _oldest_, which silently collapsed a one-sided window — e.g. `endDate: today` returned only today. `includePeriods` now derives week/month/year rollups from the day nodes actually in range, so an open `until: today` feed returns every past period it covers, not just the current one. Update callers: pass `until` for "up to" and `since` for "from".
 
 ### Fixed
 

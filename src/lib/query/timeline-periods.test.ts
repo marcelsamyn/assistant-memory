@@ -5,7 +5,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
 import { newTypeId } from "~/types/typeid";
 
-
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
 const TEST_DB_PORT = Number(process.env["TEST_PG_PORT"] ?? 5431);
 const TEST_DB_USER = process.env["TEST_PG_USER"] ?? "postgres";
@@ -193,7 +192,11 @@ describeIfServer("loadTimelinePeriods", () => {
 
       // Fully open window behaves the same here (all day nodes are in June).
       const openBoth = await loadTimelinePeriods(database, userId);
-      expect(openBoth.map((p) => p.key)).toEqual(["2026", "2026-06", "2026-W24"]);
+      expect(openBoth.map((p) => p.key)).toEqual([
+        "2026",
+        "2026-06",
+        "2026-W24",
+      ]);
 
       expect(
         await loadTimelinePeriods(
