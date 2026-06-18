@@ -234,6 +234,11 @@ import {
   type RollupResponse,
 } from "../lib/schemas/rollup.js";
 import {
+  sampleNodesResponseSchema,
+  type SampleNodesRequest,
+  type SampleNodesResponse,
+} from "../lib/schemas/sample-nodes.js";
+import {
   ScratchpadReadRequest,
   ScratchpadWriteRequest,
   ScratchpadEditRequest,
@@ -540,6 +545,15 @@ export class MemoryClient {
       "POST",
       "/query/graph",
       queryGraphResponseSchema,
+      payload,
+    );
+  }
+
+  async sampleNodes(payload: SampleNodesRequest): Promise<SampleNodesResponse> {
+    return this._fetch(
+      "POST",
+      "/query/sample-nodes",
+      sampleNodesResponseSchema,
       payload,
     );
   }
