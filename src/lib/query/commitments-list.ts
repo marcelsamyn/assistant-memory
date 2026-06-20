@@ -104,7 +104,7 @@ function statusProvenanceFilter(
 }
 
 /**
- * Provenance predicate for the OWNED_BY / DUE_ON sub-joins. The trusted band
+ * Provenance predicate for the ASSIGNED_TO / DUE_ON sub-joins. The trusted band
  * shows only trusted metadata; candidate/all apply no constraint so a trusted
  * owner/due on a not-yet-confirmed candidate still surfaces.
  */
@@ -273,7 +273,7 @@ export async function listCommitments(
       and(
         eq(ownerClaim.userId, userId),
         eq(ownerClaim.subjectNodeId, nodes.id),
-        eq(ownerClaim.predicate, "OWNED_BY"),
+        eq(ownerClaim.predicate, "ASSIGNED_TO"),
         eq(ownerClaim.status, "active"),
         eq(ownerClaim.scope, "personal"),
         subJoinProvenanceFilter(ownerClaim.assertedByKind, provenance),

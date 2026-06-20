@@ -21,6 +21,8 @@ import { story15CommitmentsLifecycle } from "./15-commitments-lifecycle";
 import { story16CleanupOpsSurface } from "./16-cleanup-ops-surface";
 import { story17TrustHierarchyMatrix } from "./17-trust-hierarchy-matrix";
 import { story18DayNodeAttachment } from "./18-day-node-attachment";
+import { story19PredicateShapeGuardrails } from "./19-predicate-shape-guardrails";
+import { story20OrganizationTaxonomy } from "./20-organization-taxonomy";
 
 export const ALL_STORIES: readonly EvalFixture[] = [
   story01ProjectLifecycle,
@@ -40,4 +42,6 @@ export const ALL_STORIES: readonly EvalFixture[] = [
   story16CleanupOpsSurface,
   story17TrustHierarchyMatrix,
   story18DayNodeAttachment,
+  story19PredicateShapeGuardrails,
+  story20OrganizationTaxonomy,
 ];

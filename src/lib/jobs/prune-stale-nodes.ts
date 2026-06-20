@@ -41,6 +41,7 @@ import { useDatabase } from "~/utils/db";
 
 const DEFAULT_PRUNABLE_NODE_TYPES = [
   "Person",
+  "Organization",
   "Location",
   "Event",
   "Object",

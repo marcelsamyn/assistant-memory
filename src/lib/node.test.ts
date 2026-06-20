@@ -220,7 +220,7 @@ describeIfServer("node operations", () => {
             "predicate", "statement", "source_id", "asserted_by_kind", "stated_at", "status"
           )
           VALUES
-            ($1, $6, $3, $4, 'OWNED_BY', 'Alice owns a MacBook Pro.', $5, 'user', now(), 'active'),
+            ($1, $6, $3, $4, 'OWNS', 'Alice owns a MacBook Pro.', $5, 'user', now(), 'active'),
             ($2, $6, $3, $4, 'TAGGED_WITH', 'Alice was tagged with a MacBook Pro.', $5, 'user', now(), 'retracted')
         `,
         [
@@ -246,7 +246,7 @@ describeIfServer("node operations", () => {
       expect(nodeResult?.claims).toHaveLength(1);
       expect(nodeResult?.claims[0]).toMatchObject({
         id: activeClaimId,
-        predicate: "OWNED_BY",
+        predicate: "OWNS",
         statement: "Alice owns a MacBook Pro.",
       });
 
@@ -366,6 +366,78 @@ describeIfServer("node operations", () => {
         "created_at" timestamp with time zone DEFAULT now() NOT NULL,
         CONSTRAINT "node_redirects_user_id_from_node_id_pk"
           PRIMARY KEY ("user_id","from_node_id")
+      );
+    `);
+  }
+
+  async function ensureCreateNodeTables(client: Client): Promise<void> {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS "users" ("id" text PRIMARY KEY NOT NULL);
+      CREATE TABLE IF NOT EXISTS "nodes" (
+        "id" text PRIMARY KEY NOT NULL,
+        "user_id" text NOT NULL REFERENCES "users"("id"),
+        "node_type" varchar(50) NOT NULL,
+        "created_at" timestamp with time zone DEFAULT now() NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS "node_metadata" (
+        "id" text PRIMARY KEY NOT NULL,
+        "node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+        "label" text,
+        "canonical_label" text,
+        "description" text,
+        "additional_data" jsonb,
+        "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+        CONSTRAINT "node_metadata_node_id_unique" UNIQUE ("node_id")
+      );
+      CREATE TABLE IF NOT EXISTS "sources" (
+        "id" text PRIMARY KEY NOT NULL,
+        "user_id" text NOT NULL REFERENCES "users"("id"),
+        "type" varchar(50) NOT NULL,
+        "external_id" text NOT NULL,
+        "parent_source" text,
+        "scope" varchar(16) DEFAULT 'personal' NOT NULL,
+        "metadata" jsonb,
+        "last_ingested_at" timestamp with time zone,
+        "status" varchar(20) DEFAULT 'completed',
+        "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+        "deleted_at" timestamp with time zone,
+        "content_type" varchar(100),
+        "content_length" integer,
+        CONSTRAINT "sources_user_type_external_unique" UNIQUE ("user_id", "type", "external_id")
+      );
+      CREATE TABLE IF NOT EXISTS "source_links" (
+        "id" text PRIMARY KEY NOT NULL,
+        "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
+        "node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+        "specific_location" text,
+        "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+        CONSTRAINT "source_links_source_id_node_id_unique" UNIQUE ("source_id", "node_id")
+      );
+      CREATE TABLE IF NOT EXISTS "claims" (
+        "id" text PRIMARY KEY NOT NULL,
+        "user_id" text NOT NULL REFERENCES "users"("id"),
+        "subject_node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+        "object_node_id" text REFERENCES "nodes"("id") ON DELETE CASCADE,
+        "object_value" text,
+        "predicate" varchar(80) NOT NULL,
+        "statement" text NOT NULL,
+        "description" text,
+        "metadata" jsonb,
+        "object_instant" timestamp with time zone,
+        "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
+        "scope" varchar(16) DEFAULT 'personal' NOT NULL,
+        "asserted_by_kind" varchar(24) NOT NULL,
+        "asserted_by_node_id" text REFERENCES "nodes"("id") ON DELETE SET NULL,
+        "superseded_by_claim_id" text REFERENCES "claims"("id") ON DELETE SET NULL,
+        "contradicted_by_claim_id" text REFERENCES "claims"("id") ON DELETE SET NULL,
+        "stated_at" timestamp with time zone NOT NULL,
+        "valid_from" timestamp with time zone,
+        "valid_to" timestamp with time zone,
+        "status" varchar(30) DEFAULT 'active' NOT NULL,
+        "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+        "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+        CONSTRAINT "claims_object_shape_xor_ck"
+          CHECK (num_nonnulls("object_node_id", "object_value") = 1)
       );
     `);
   }
@@ -677,7 +749,7 @@ describeIfServer("node operations", () => {
         [sourceId, userId],
       );
       // Three claims:
-      //  1. target as OBJECT (OWNED_BY) — must cascade-delete.
+      //  1. target as OBJECT (OWNS) — must cascade-delete.
       //  2. target as SUBJECT (HAS_PREFERENCE attribute) — must cascade-delete.
       //  3. target as ASSERTED_BY (participant) on a claim about a DIFFERENT
       //     subject/object — must SURVIVE with asserted_by_node_id NULL.
@@ -687,7 +759,7 @@ describeIfServer("node operations", () => {
            "predicate", "statement", "source_id", "scope", "asserted_by_kind",
            "asserted_by_node_id", "stated_at", "status"
          ) VALUES
-           ($1, $9, $4, $5, NULL, 'OWNED_BY', 'Task owned by Midday Marcel.',
+           ($1, $9, $4, $5, NULL, 'OWNS', 'Task owned by Midday Marcel.',
             $8, 'personal', 'user', NULL, now(), 'active'),
            ($2, $9, $5, NULL, 'tighter spec', 'HAS_PREFERENCE',
             'Midday Marcel prefers a tighter spec.', $8, 'personal', 'user',
@@ -819,7 +891,7 @@ describeIfServer("node operations", () => {
     }
   });
 
-  it("attaches a manually-created node to today's day node via OCCURRED_ON", async () => {
+  it("attaches a manually-created node to today's day node via RECORDED_ON", async () => {
     // Regression for the linkage gap: `/node/create` previously did not link
     // the new node to a Temporal day node, so `/query/node-type` (which
     // traverses one hop from the day node) returned empty for nodes created
@@ -839,9 +911,10 @@ describeIfServer("node operations", () => {
         data: [{ embedding: Array.from({ length: 1024 }, () => 0) }],
         usage: { total_tokens: 0 },
       }),
-    }));
+      }));
 
     try {
+      await ensureCreateNodeTables(client);
       await ensureMergeTables(client);
       // The inline `sources` table created by the first test in this file is
       // missing optional columns referenced by Drizzle's insert. Add them so
@@ -865,7 +938,7 @@ describeIfServer("node operations", () => {
         "A person created via /node/create",
       );
 
-      // OCCURRED_ON claim links the new node to a Temporal day node.
+      // RECORDED_ON claim links the new node to a Temporal day node.
       const claimRows = await client.query<{
         subject_node_id: string;
         object_node_id: string | null;
@@ -874,7 +947,7 @@ describeIfServer("node operations", () => {
       }>(
         `SELECT "subject_node_id", "object_node_id", "predicate", "asserted_by_kind"
          FROM "claims"
-         WHERE "user_id" = $1 AND "subject_node_id" = $2 AND "predicate" = 'OCCURRED_ON'`,
+         WHERE "user_id" = $1 AND "subject_node_id" = $2 AND "predicate" = 'RECORDED_ON'`,
         [userId, created.id],
       );
       expect(claimRows.rows).toHaveLength(1);
@@ -903,7 +976,7 @@ describeIfServer("node operations", () => {
         `SELECT s."type"
          FROM "claims" c
          INNER JOIN "sources" s ON s."id" = c."source_id"
-         WHERE c."subject_node_id" = $1 AND c."predicate" = 'OCCURRED_ON'`,
+         WHERE c."subject_node_id" = $1 AND c."predicate" = 'RECORDED_ON'`,
         [created.id],
       );
       expect(sourceRows.rows[0]?.type).toBe("manual");
@@ -1120,7 +1193,7 @@ describeIfServer("node operations", () => {
            "id", "user_id", "subject_node_id", "object_node_id", "object_value",
            "predicate", "statement", "source_id", "asserted_by_kind", "stated_at", "status"
          ) VALUES
-           ($1, $6, $4, $5, NULL, 'OWNED_BY', 'Alice owns a MacBook Pro.', $7, 'user', now(), 'active'),
+           ($1, $6, $4, $5, NULL, 'OWNS', 'Alice owns a MacBook Pro.', $7, 'user', now(), 'active'),
            ($2, $6, $4, NULL, 'tea', 'HAS_PREFERENCE', 'Alice prefers tea.', $7, 'user', now(), 'active'),
            ($3, $6, $4, $5, NULL, 'TAGGED_WITH', 'Alice was tagged with a MacBook Pro.', $7, 'user', now(), 'retracted')`,
         [

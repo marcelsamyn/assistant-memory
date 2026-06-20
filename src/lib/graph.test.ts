@@ -203,7 +203,7 @@ describeIfServer("graph claim operations", () => {
             "predicate", "statement", "source_id", "scope", "asserted_by_kind", "stated_at", "status"
           )
           VALUES
-            ($1, $11, $6, $7, NULL, 'OWNED_BY', 'Alice owns a MacBook Pro.', $10, 'personal', 'user', now(), 'active'),
+            ($1, $11, $6, $7, NULL, 'OWNS', 'Alice owns a MacBook Pro.', $10, 'personal', 'user', now(), 'active'),
             ($2, $11, $6, $8, NULL, 'TAGGED_WITH', 'Alice was tagged with Hidden Item.', $10, 'personal', 'user', now(), 'retracted'),
             ($3, $11, $6, NULL, 'busy', 'HAS_STATUS', 'Alice is busy.', $10, 'personal', 'user', now(), 'active'),
             ($4, $11, $6, $9, NULL, 'RELATED_TO', 'Alice is related to a reference item.', $12, 'reference', 'document_author', now(), 'active'),
@@ -233,7 +233,7 @@ describeIfServer("graph claim operations", () => {
       expect(oneHopNodes[0]).toMatchObject({
         id: laptopNodeId,
         label: "MacBook Pro",
-        predicate: "OWNED_BY",
+        predicate: "OWNS",
         statement: "Alice owns a MacBook Pro.",
         claimSubjectId: aliceNodeId,
         claimObjectId: laptopNodeId,
@@ -411,7 +411,7 @@ describeIfServer("graph claim operations", () => {
             "asserted_by_kind", "stated_at", "status"
           )
           VALUES
-            ($1, $8, $4, $5, 'OWNED_BY', 'Alice owns a MacBook Pro.', $6, 'personal', 'user', now(), 'active'),
+            ($1, $8, $4, $5, 'OWNS', 'Alice owns a MacBook Pro.', $6, 'personal', 'user', now(), 'active'),
             ($2, $8, $4, $5, 'RELATED_TO', 'Alice is related to reference content.', $7, 'reference', 'document_author', now(), 'active'),
             ($3, $8, $4, $5, 'TAGGED_WITH', 'Assistant inferred this relation.', $6, 'personal', 'assistant_inferred', now(), 'active')
         `,

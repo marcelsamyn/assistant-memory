@@ -571,7 +571,7 @@ describeIfServer("setCommitmentOwner", () => {
     await admin.end();
   });
 
-  it("assigns an owner and then reassigns, superseding the prior OWNED_BY", async () => {
+  it("assigns an owner and then reassigns, superseding the prior ASSIGNED_TO", async () => {
     const userId = "user_set_owner_reassign";
     const ownerANodeId = newTypeId("node");
     const ownerBNodeId = newTypeId("node");
@@ -633,7 +633,7 @@ describeIfServer("setCommitmentOwner", () => {
         expect(assignResult.claimId).toBeTruthy();
         const firstOwnerClaimId = assignResult.claimId!;
 
-        // Reassign to owner B — should supersede the previous OWNED_BY
+        // Reassign to owner B — should supersede the previous ASSIGNED_TO
         const reassignResult = await setCommitmentOwner(
           setCommitmentOwnerRequestSchema.parse({
             userId,
@@ -648,7 +648,7 @@ describeIfServer("setCommitmentOwner", () => {
         expect(reassignResult.claimId).toBeTruthy();
         expect(reassignResult.claimId).not.toBe(firstOwnerClaimId);
 
-        // Prior OWNED_BY claim must be superseded
+        // Prior ASSIGNED_TO claim must be superseded
         const { rows } = await client.query(
           `SELECT status FROM claims WHERE id = $1`,
           [firstOwnerClaimId],
@@ -664,7 +664,7 @@ describeIfServer("setCommitmentOwner", () => {
     }
   });
 
-  it("clears an owner (ownedBy: null) retracts active OWNED_BY and returns retractedClaimIds", async () => {
+  it("clears an owner (ownedBy: null) retracts active ASSIGNED_TO and returns retractedClaimIds", async () => {
     const userId = "user_set_owner_clear";
     const ownerNodeId = newTypeId("node");
 
@@ -720,7 +720,7 @@ describeIfServer("setCommitmentOwner", () => {
         expect(clearResult.claimId).toBeNull();
         expect(clearResult.retractedClaimIds).toContain(ownerClaimId);
 
-        // The OWNED_BY claim must now be retracted
+        // The ASSIGNED_TO claim must now be retracted
         const { rows } = await client.query(
           `SELECT status FROM claims WHERE id = $1`,
           [ownerClaimId],

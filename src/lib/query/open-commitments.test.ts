@@ -284,9 +284,9 @@ describeIfServer("open commitments query", () => {
             ($4, $25, $18, NULL, 'done', 'HAS_TASK_STATUS', 'Done task is complete.', $23, 'personal', 'user', '2026-04-04T10:00:00Z', 'active'),
             ($5, $25, $19, NULL, 'pending', 'HAS_TASK_STATUS', 'Reference task is pending.', $24, 'reference', 'document_author', '2026-04-05T10:00:00Z', 'active'),
             ($6, $25, $20, NULL, 'pending', 'HAS_TASK_STATUS', 'Inferred task is pending.', $23, 'personal', 'assistant_inferred', '2026-04-06T10:00:00Z', 'active'),
-            ($7, $25, $15, $13, NULL, 'OWNED_BY', 'Marcel owns Send spec.', $23, 'personal', 'user', '2026-04-01T10:01:00Z', 'active'),
-            ($8, $25, $16, $13, NULL, 'OWNED_BY', 'Marcel owns Review memo.', $23, 'personal', 'user', '2026-04-02T10:01:00Z', 'active'),
-            ($9, $25, $17, $14, NULL, 'OWNED_BY', 'Jane owns Prepare budget.', $23, 'personal', 'user', '2026-04-03T10:01:00Z', 'active'),
+            ($7, $25, $15, $13, NULL, 'ASSIGNED_TO', 'Marcel owns Send spec.', $23, 'personal', 'user', '2026-04-01T10:01:00Z', 'active'),
+            ($8, $25, $16, $13, NULL, 'ASSIGNED_TO', 'Marcel owns Review memo.', $23, 'personal', 'user', '2026-04-02T10:01:00Z', 'active'),
+            ($9, $25, $17, $14, NULL, 'ASSIGNED_TO', 'Jane owns Prepare budget.', $23, 'personal', 'user', '2026-04-03T10:01:00Z', 'active'),
             ($10, $25, $15, $21, NULL, 'DUE_ON', 'Send spec is due on 2026-04-27.', $23, 'personal', 'user', '2026-04-01T10:02:00Z', 'active'),
             ($11, $25, $16, $22, NULL, 'DUE_ON', 'Review memo is due on 2026-05-05.', $23, 'personal', 'user', '2026-04-02T10:02:00Z', 'active'),
             ($12, $25, $17, $21, NULL, 'DUE_ON', 'Prepare budget is due on 2026-04-27.', $23, 'personal', 'user', '2026-04-03T10:02:00Z', 'active')

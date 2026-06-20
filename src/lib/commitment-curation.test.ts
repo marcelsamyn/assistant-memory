@@ -193,7 +193,7 @@ describeIfServer("commitment curation", () => {
          ) VALUES
            ($1, $9, $5, NULL, 'pending', 'HAS_TASK_STATUS', 'Confirmed task is pending.', $8, 'personal', 'user', '2026-06-01T10:00:00Z', 'active'),
            ($2, $9, $6, NULL, 'pending', 'HAS_TASK_STATUS', 'Inferred task is pending.', $8, 'personal', 'assistant_inferred', '2026-06-01T11:00:00Z', 'active'),
-           ($3, $9, $6, $7, NULL, 'OWNED_BY', 'Inferred task owned by Marcel.', $8, 'personal', 'assistant_inferred', '2026-06-01T11:01:00Z', 'active'),
+           ($3, $9, $6, $7, NULL, 'ASSIGNED_TO', 'Inferred task owned by Marcel.', $8, 'personal', 'assistant_inferred', '2026-06-01T11:01:00Z', 'active'),
            ($4, $9, $6, $10, NULL, 'DUE_ON', 'Inferred task due on 2026-08-01.', $8, 'personal', 'assistant_inferred', '2026-06-01T11:02:00Z', 'active')`,
         [
           newTypeId("claim"),
@@ -280,7 +280,7 @@ describeIfServer("commitment curation", () => {
            "predicate", "statement", "source_id", "scope", "asserted_by_kind", "stated_at", "status"
          ) VALUES
            ($1, $6, $4, NULL, 'pending', 'HAS_TASK_STATUS', 'Inferred task is pending.', $5, 'personal', 'assistant_inferred', '2026-06-01T10:00:00Z', 'active'),
-           ($2, $6, $4, $7, NULL, 'OWNED_BY', 'Marcel owns inferred task.', $5, 'personal', 'user', '2026-06-02T10:00:00Z', 'active'),
+           ($2, $6, $4, $7, NULL, 'ASSIGNED_TO', 'Marcel owns inferred task.', $5, 'personal', 'user', '2026-06-02T10:00:00Z', 'active'),
            ($3, $6, $4, $8, NULL, 'DUE_ON', 'Inferred task due on 2026-09-09.', $5, 'personal', 'user', '2026-06-02T10:01:00Z', 'active')`,
         [
           newTypeId("claim"),

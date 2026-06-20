@@ -19,7 +19,7 @@ import { useDatabase } from "~/utils/db";
 /** The three predicates that carry a Task's lifecycle. */
 const TASK_PREDICATES: readonly Predicate[] = [
   "HAS_TASK_STATUS",
-  "OWNED_BY",
+  "ASSIGNED_TO",
   "DUE_ON",
 ];
 
@@ -29,7 +29,7 @@ function isTaskLifecyclePredicate(
 ): predicate is TaskLifecycleEntry["predicate"] {
   return (
     predicate === "HAS_TASK_STATUS" ||
-    predicate === "OWNED_BY" ||
+    predicate === "ASSIGNED_TO" ||
     predicate === "DUE_ON"
   );
 }
@@ -80,7 +80,7 @@ export async function getCommitment(
     (claim) => claim.predicate === "HAS_TASK_STATUS" && isActive(claim.status),
   );
   const activeOwner = taskClaims.find(
-    (claim) => claim.predicate === "OWNED_BY" && isActive(claim.status),
+    (claim) => claim.predicate === "ASSIGNED_TO" && isActive(claim.status),
   );
   const activeDue = taskClaims.find(
     (claim) => claim.predicate === "DUE_ON" && isActive(claim.status),

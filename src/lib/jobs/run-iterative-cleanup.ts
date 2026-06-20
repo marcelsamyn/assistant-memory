@@ -4,7 +4,9 @@ import type {
   CleanupGraphIterationParams,
   CleanupGraphResult,
 } from "./cleanup-graph";
-import { TypeId } from "~/types/typeid";
+import { auditInvalidRelationshipPredicateShapes } from "~/lib/claims/predicate-shape-audit";
+import type { TypeId } from "~/types/typeid";
+import { useDatabase } from "~/utils/db";
 
 /**
  * Params for iterative cleanup across multiple seed batches
@@ -58,11 +60,19 @@ export async function runIterativeCleanup(
     dynamicFollowups = true,
   } = params;
 
-  let seedPool = await fetchEntryNodes(
-    userId,
-    since,
-    seedsPerIteration * iterations,
-  );
+  const seedCount = seedsPerIteration * iterations;
+  const db = await useDatabase();
+  const [entrySeeds, invalidShapeAudit] = await Promise.all([
+    fetchEntryNodes(userId, since, seedCount),
+    auditInvalidRelationshipPredicateShapes(db, userId, { exampleLimit: 0 }),
+  ]);
+  const invalidShapeSeeds = invalidShapeAudit.seedNodeIds.slice(0, seedCount);
+  let seedPool = Array.from(new Set([...invalidShapeSeeds, ...entrySeeds]));
+  if (invalidShapeAudit.totalInvalid > 0) {
+    console.info(
+      `[cleanup-iter] Prioritizing ${invalidShapeSeeds.length} seed nodes from ${invalidShapeAudit.totalInvalid} invalid relationship-shape claims`,
+    );
+  }
   const processed = new Set<TypeId<"node">>();
   let successCount = 0;
   let attempt = 0;

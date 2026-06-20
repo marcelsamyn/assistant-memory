@@ -26,6 +26,10 @@ import {
 import { createAlias, deleteAliasByText } from "~/lib/alias";
 import { createClaim, type ClaimSelect } from "~/lib/claim";
 import { applyClaimLifecycle } from "~/lib/claims/lifecycle";
+import {
+  isInvalidRelationshipPredicateClaimShape,
+  relationshipPredicateFrom,
+} from "~/lib/claims/predicate-shapes";
 import type { GraphNode } from "~/lib/jobs/cleanup-graph";
 import { normalizeLabel } from "~/lib/label";
 import { logEvent } from "~/lib/observability/log";
@@ -226,6 +230,35 @@ export class DeleteNodeNotAllowedError extends Error {
   }
 }
 
+async function isShapeInvalidRelationshipClaim(
+  database: DbOrTx,
+  userId: string,
+  claim: ClaimSelect,
+): Promise<boolean> {
+  const predicate = relationshipPredicateFrom(claim.predicate);
+  if (predicate === null) return false;
+  if (claim.objectNodeId === null) return true;
+
+  const rows = await database
+    .select({ id: nodes.id, nodeType: nodes.nodeType })
+    .from(nodes)
+    .where(
+      and(
+        eq(nodes.userId, userId),
+        inArray(nodes.id, [claim.subjectNodeId, claim.objectNodeId]),
+      ),
+    );
+  const subject = rows.find((row) => row.id === claim.subjectNodeId);
+  const object = rows.find((row) => row.id === claim.objectNodeId);
+  if (!subject || !object) return false;
+
+  return isInvalidRelationshipPredicateClaimShape({
+    predicate,
+    subjectType: subject.nodeType,
+    objectType: object.nodeType,
+  });
+}
+
 // =============================================================================
 // Per-op helpers
 // =============================================================================
@@ -251,7 +284,12 @@ export async function retractClaim(
     .limit(1);
 
   if (!claim) return null;
-  if (!RETRACTABLE_KINDS.has(claim.assertedByKind)) {
+  const shapeInvalid = await isShapeInvalidRelationshipClaim(
+    database,
+    userId,
+    claim,
+  );
+  if (!RETRACTABLE_KINDS.has(claim.assertedByKind) && !shapeInvalid) {
     throw new RetractionNotAllowedError(claim);
   }
 
@@ -262,7 +300,6 @@ export async function retractClaim(
       and(
         eq(claims.id, op.claimId),
         eq(claims.userId, userId),
-        eq(claims.assertedByKind, "assistant_inferred"),
       ),
     )
     .returning();

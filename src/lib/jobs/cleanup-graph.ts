@@ -11,6 +11,10 @@
  * cleanup pipeline, cleanup prompt builder.
  */
 import { createCompletionClient, parseStructuredCompletion } from "../ai";
+import {
+  formatRelationshipPredicateGuide,
+  isInvalidRelationshipPredicateClaimShape,
+} from "../claims/predicate-shapes";
 import { getConversationBootstrapContext } from "../context/assemble-bootstrap-context";
 import type { ContextBundle } from "../context/types";
 import { generateAndInsertNodeEmbeddings } from "../embeddings-util";
@@ -96,6 +100,7 @@ export interface GraphClaim {
   assertedByKind: AssertedByKind;
   retractAllowed: boolean;
   contradictionCitationAllowed: boolean;
+  invalidRelationshipShape: boolean;
 }
 export interface Subgraph {
   nodes: GraphNode[];
@@ -119,6 +124,7 @@ export interface TempClaim {
   assertedByKind: AssertedByKind;
   retractAllowed: boolean;
   contradictionCitationAllowed: boolean;
+  invalidRelationshipShape: boolean;
 }
 export interface TempSubgraph {
   nodes: TempNode[];
@@ -339,11 +345,14 @@ async function fetchNodeEvidenceCounts(
 async function fetchSubgraphClaims(
   db: DrizzleDB,
   userId: string,
-  nodeIds: readonly TypeId<"node">[],
+  graphNodes: readonly GraphNode[],
   limit: number,
 ): Promise<GraphClaim[]> {
-  const uniqueNodeIds = [...new Set(nodeIds)];
+  const uniqueNodeIds = [...new Set(graphNodes.map((node) => node.id))];
   if (uniqueNodeIds.length === 0) return [];
+  const nodeTypesById = new Map(
+    graphNodes.map((node) => [node.id, node.type]),
+  );
 
   const rows = await db
     .select({
@@ -371,15 +380,31 @@ async function fetchSubgraphClaims(
     .orderBy(desc(claims.createdAt), desc(claims.id))
     .limit(limit);
 
-  return rows.map((claim) => ({
-    ...claim,
-    retractAllowed: claim.assertedByKind === "assistant_inferred",
-    contradictionCitationAllowed:
-      claim.assertedByKind === "user" ||
-      claim.assertedByKind === "user_confirmed" ||
-      claim.assertedByKind === "participant" ||
-      claim.assertedByKind === "document_author",
-  }));
+  return rows.map((claim) => {
+    const subjectType = nodeTypesById.get(claim.subject);
+    const objectType =
+      claim.object === null ? null : (nodeTypesById.get(claim.object) ?? null);
+    const invalidRelationshipShape =
+      subjectType === undefined
+        ? false
+        : isInvalidRelationshipPredicateClaimShape({
+            predicate: claim.predicate,
+            subjectType,
+            objectType,
+          });
+    return {
+      ...claim,
+      retractAllowed:
+        claim.assertedByKind === "assistant_inferred" ||
+        invalidRelationshipShape,
+      contradictionCitationAllowed:
+        claim.assertedByKind === "user" ||
+        claim.assertedByKind === "user_confirmed" ||
+        claim.assertedByKind === "participant" ||
+        claim.assertedByKind === "document_author",
+      invalidRelationshipShape,
+    };
+  });
 }
 
 /**
@@ -481,7 +506,7 @@ async function buildSubgraph(
   const claimsArr = await fetchSubgraphClaims(
     db,
     userId,
-    nodesArr.map((node) => node.id),
+    nodesArr,
     maxClaims,
   );
   return { nodes: nodesArr, claims: claimsArr };
@@ -513,6 +538,7 @@ function toTempSubgraph(sub: Subgraph): {
       assertedByKind: claim.assertedByKind,
       retractAllowed: claim.retractAllowed,
       contradictionCitationAllowed: claim.contradictionCitationAllowed,
+      invalidRelationshipShape: claim.invalidRelationshipShape,
     };
     if (tgt) tempClaim.objectTemp = mapper.getId(tgt)!;
     if (claim.objectValue !== null) tempClaim.objectValue = claim.objectValue;
@@ -561,7 +587,7 @@ export function buildCleanupPrompt(
         claim.objectTemp !== undefined
           ? ` object="${claim.objectTemp}"`
           : ` objectValue="${claim.objectValue ?? ""}"`;
-      return `<claim id="${claim.id}" subject="${claim.subjectTemp}"${objectAttr} predicate="${claim.predicate}" provenance="[${claim.assertedByKind}, ${claim.scope}]" retractAllowed="${claim.retractAllowed.toString()}" contradictionCitationAllowed="${claim.contradictionCitationAllowed.toString()}">${claim.statement}</claim>`;
+      return `<claim id="${claim.id}" subject="${claim.subjectTemp}"${objectAttr} predicate="${claim.predicate}" provenance="[${claim.assertedByKind}, ${claim.scope}]" retractAllowed="${claim.retractAllowed.toString()}" contradictionCitationAllowed="${claim.contradictionCitationAllowed.toString()}" invalidRelationshipShape="${claim.invalidRelationshipShape.toString()}">${claim.statement}</claim>`;
     })
     .join("\n");
   const deleteTargets = temp.nodes
@@ -572,11 +598,16 @@ export function buildCleanupPrompt(
     .filter((claim) => claim.retractAllowed)
     .map((claim) => `- ${claim.id}`)
     .join("\n");
+  const invalidRelationshipTargets = temp.claims
+    .filter((claim) => claim.invalidRelationshipShape)
+    .map((claim) => `- ${claim.id}`)
+    .join("\n");
   const contradictionCitationTargets = temp.claims
     .filter((claim) => claim.contradictionCitationAllowed)
     .map((claim) => `- ${claim.id}`)
     .join("\n");
   const bundleText = renderBundleSections(bundle);
+  const relationshipPredicateGuide = formatRelationshipPredicateGuide();
 
   return `You are a graph cleaning assistant. Your task is to analyze this claim subgraph and propose cleanup operations to ensure accuracy, remove redundancies, and reconcile contradictions.
 
@@ -584,7 +615,7 @@ Output a single JSON object \`{ "operations": [...] }\` matching the cleanup ope
 
 - \`merge_nodes { keepTempId, removeTempIds }\` — collapse duplicates / aliases. Prefer this over \`delete_node\` whenever two nodes plausibly represent the same entity.
 - \`delete_node { tempId }\` — only for nodes explicitly listed under \`eligible_delete_nodes\` below. If that list is empty, do not emit \`delete_node\`.
-- \`retract_claim { claimId, reason }\` — only for claims explicitly listed under \`eligible_retract_claims\` below. If that list is empty, do not emit \`retract_claim\`.
+- \`retract_claim { claimId, reason }\` — only for claims explicitly listed under \`eligible_retract_claims\` below. This includes uncorroborated assistant-inferred claims and relationship claims whose predicate/type shape is impossible. If that list is empty, do not emit \`retract_claim\`.
 - \`contradict_claim { claimId, contradictedByClaimId, reason }\` — citation REQUIRED. Use only when another ACTIVE, same-scope, source-backed claim already in this subgraph contradicts the original. \`contradictedByClaimId\` must be listed under \`eligible_contradiction_citations\` below.
 - \`promote_assertion { claimId, corroboratingSourceId, reason }\` — when an \`assistant_inferred\` claim is corroborated by a user-attributed source visible in the bundle (i.e., bundle evidence cites a claim with the same fact, attributed to \`user\` or \`user_confirmed\`). The corroborating source id is the \`sourceId\` field on that bundle evidence row.
 - \`add_claim { subjectTempId, objectTempId, objectValue, predicate, statement, sourceClaimId }\` — system-authored. Provide exactly ONE of \`objectTempId\` / \`objectValue\` and set the other to null. Use SPARINGLY and only for facts directly inferrable from the subgraph (e.g., a transitive relation visible in two existing claims). When at all possible, set \`sourceClaimId\` to the real \`clm_*\` id from the subgraph so scope is inherited correctly (use null only when no claim applies). Never invent facts not grounded in the subgraph.
@@ -598,12 +629,16 @@ ID rules:
 Cleaning rules:
 1. **The bundle is not the full memory.** It is high-signal current context, not a complete evidence set. Absence from the bundle is NEVER sufficient reason to retract or contradict a sourced claim.
 2. **Reconcile against explicit contradictions.** Claims that directly contradict a specific claim visible in this subgraph should be \`contradict_claim\` with that cited claim id. Atlas / open_commitments / preferences guide cleanup, but they are not standalone citations.
-3. **Provenance gates retraction.** A claim with \`provenance=[assistant_inferred, …]\` and no corroboration in the bundle or in adjacent claims is the only valid \`retract_claim\` target. Do NOT retract claims with \`provenance=[user, …]\`, \`[user_confirmed, …]\`, \`[participant, …]\`, \`[document_author, …]\`, or \`[system, …]\`.
+3. **Provenance gates retraction.** A claim with \`provenance=[assistant_inferred, …]\` and no corroboration in the bundle or in adjacent claims is a valid \`retract_claim\` target. Claims listed under \`invalid_relationship_claims\` are the narrow exception: the relationship shape is impossible under the predicate table, so they may be retracted even when source-attributed. Do NOT retract any other claim with \`provenance=[user, …]\`, \`[user_confirmed, …]\`, \`[participant, …]\`, \`[document_author, …]\`, or \`[system, …]\`.
 4. **Promote, don't duplicate.** When the bundle's evidence shows a \`user\`/\`user_confirmed\` claim that says the same thing as an \`assistant_inferred\` subgraph claim, emit \`promote_assertion\` rather than \`add_claim\`.
 5. **Prefer \`merge_nodes\` over \`delete_node\`.** If two nodes plausibly refer to the same entity (similar labels, overlapping aliases, compatible types), merge. NEVER merge record / occurrence nodes — \`Task\`, \`Event\`, \`Idea\`, \`Document\`, \`Conversation\`, \`AssistantDream\`, \`Feedback\`, \`Atlas\` — even when their labels match exactly: these legitimately recur with the same name (e.g. a task created for each day, a weekly standup event) and represent distinct instances. Only merge nominal entities (\`Person\`, \`Location\`, \`Object\`, \`Emotion\`, \`Concept\`, \`Media\`, \`Temporal\`).
 6. **No fabricated facts.** Never \`add_claim\` something that isn't already inferrable from the subgraph + bundle. System-authored claims must cite a \`sourceClaimId\` whenever possible.
 7. **Idempotence.** Don't add a claim that duplicates an existing relationship visible in the subgraph.
 8. **Action flags are hard gates.** Do not emit an operation when its target is not in the matching eligible list below. These lists already account for hidden attribute claims, participant provenance, source links, and aliases that may not be otherwise obvious in the subgraph.
+9. **Predicate shapes are hard gates.** Any \`add_claim\` relationship must obey the predicate shape table below. If the available nodes do not match a specific predicate, either choose a valid predicate, create the missing Event node first, use an attribute claim with \`objectValue\`, or emit no operation.
+10. **Repair invalid relationships.** Prioritize claims listed under \`invalid_relationship_claims\`. When the statement supports a valid replacement, emit the valid replacement first, then \`retract_claim\` the invalid relationship. For brief interactions or moments, create a concise Event only when the event itself is durable enough to remember; otherwise retract the invalid relationship without inventing a replacement. Use \`RELATED_TO\` only when the statement expresses a durable association and no specific predicate fits.
+
+${relationshipPredicateGuide}
 
 <eligible_targets>
 <eligible_delete_nodes>
@@ -612,6 +647,9 @@ ${deleteTargets || "(none)"}
 <eligible_retract_claims>
 ${retractTargets || "(none)"}
 </eligible_retract_claims>
+<invalid_relationship_claims>
+${invalidRelationshipTargets || "(none)"}
+</invalid_relationship_claims>
 <eligible_contradiction_citations>
 ${contradictionCitationTargets || "(none)"}
 </eligible_contradiction_citations>

@@ -179,10 +179,10 @@ export async function ensureAssistantAtlasNode(
     .onConflictDoNothing();
   await db.insert(claims).values({
     userId,
-    subjectNodeId: atlasNodeId,
-    objectNodeId: assistantNodeId,
-    predicate: "OWNED_BY",
-    statement: `Atlas ${assistantId} is owned by assistant ${assistantId}.`,
+    subjectNodeId: assistantNodeId,
+    objectNodeId: atlasNodeId,
+    predicate: "OWNS",
+    statement: `Assistant ${assistantId} owns atlas ${assistantId}.`,
     sourceId,
     scope: "personal",
     assertedByKind: "system",

@@ -81,7 +81,7 @@ Driven by Petals integration feedback. Five changes; all additive, no breaking c
 - `POST /node/create` now accepts an optional `initialClaims: Array<{ predicate, statement, objectNodeId? | objectValue?, description?, assertedByKind?, assertedByNodeId? }>`.
 - Claims are written sequentially after the node insert. If any claim fails (validation, FK, lifecycle), the node is deleted (FK `ON DELETE CASCADE` removes already-created claims) and the original error re-throws — no half-bootstrapped record survives.
 - Response now also returns `initialClaimIds: TypeId<"claim">[]` in the order claims were supplied. Empty array when no `initialClaims` were sent, so existing callers see `node` exactly as before plus an empty array.
-- Concrete win for Petals' `createCommitment`: collapse the three-call sequence (`createNode(Task)` → `createClaim(HAS_TASK_STATUS)` → `createClaim(OWNED_BY)`) into one `createNode` call where the Task is never observable without its required status claim. Validation errors (e.g. an invalid `HAS_TASK_STATUS` value) surface as `400 InvalidObjectValueError` and the node is rolled back automatically.
+- Concrete win for Petals' `createCommitment`: collapse the three-call sequence (`createNode(Task)` → `createClaim(HAS_TASK_STATUS)` → `createClaim(ASSIGNED_TO)`) into one `createNode` call where the Task is never observable without its required status claim. Validation errors (e.g. an invalid `HAS_TASK_STATUS` value) surface as `400 InvalidObjectValueError` and the node is rolled back automatically.
 - **NEW exports:** `createNodeInitialClaimSchema`, `CreateNodeInitialClaim`.
 
 ### Notes on items NOT shipped from the feedback
@@ -105,7 +105,7 @@ Driven by Petals integration feedback. Five changes; all additive, no breaking c
 - **NEW REST:** `POST /maintenance/prune-orphan-nodes` — deterministic maintenance for broken blob-backed sources and evidence-free legacy/entity nodes. It first removes source rows whose blob payload no longer exists, then prunes nodes made evidence-free by that repair. A node candidate has no claims as subject/object/speaker and no aliases; source links alone do not keep it alive. Request: `{ userId, olderThanDays?, limit?, sourceScanLimit?, sampleLimit?, dryRun?, nodeTypes? }`. `dryRun` defaults to `true`; response includes `hasMore` for node batches and `sourceScanHasMore` when the source scan hit its cap.
 - **NEW SDK method:** `MemoryClient.pruneOrphanNodes(payload)` → `PruneOrphanNodesResponse`.
 - **NEW exports:** `PruneOrphanNodesRequest`, `PruneOrphanNodesResponse`, `pruneOrphanNodesRequestSchema`, `pruneOrphanNodesResponseSchema`.
-- Default scanned node types are entity/task-like only: `Person`, `Location`, `Event`, `Object`, `Emotion`, `Concept`, `Media`, `Feedback`, `Idea`, `Task`. Generated/structural node types (`Conversation`, `Document`, `Temporal`, `Atlas`, `AssistantDream`) are excluded unless explicitly passed in `nodeTypes`.
+- Default scanned node types are entity/task-like only: `Person`, `Organization`, `Location`, `Event`, `Object`, `Emotion`, `Concept`, `Media`, `Feedback`, `Idea`, `Task`. Generated/structural node types (`Conversation`, `Document`, `Temporal`, `Atlas`, `AssistantDream`) are excluded unless explicitly passed in `nodeTypes`.
 - `MemoryClient.cleanup(...)` now runs orphan pruning first by default with `{ dryRun: false, olderThanDays: 7, limit: 10000, sampleLimit: 0 }`. Pass `pruneOrphanNodes: false` only for diagnostics or if an operator is running the standalone endpoint separately.
 
 ---
@@ -275,7 +275,7 @@ Hosts that did string-match on the old XML output need to switch to JSON parsing
 Mostly internal quality improvements; consumer surface mostly stable.
 
 - `3f78288` — **Atlas is now claim-derived.** REST shape (`POST /query/atlas`) unchanged but content quality changed materially. Consumers caching Atlas output should evict on deploy.
-- `1436046` — `(predicate, subjectType)` cardinality axis. No SDK change; consumers reading Task ownership now see at most one current `OWNED_BY` / `DUE_ON` per Task at any time.
+- `1436046` — `(predicate, subjectType)` cardinality axis. No SDK change; consumers reading Task ownership now see at most one current `ASSIGNED_TO` / `DUE_ON` per Task at any time.
 - `c4eb446` — Identity resolution rewritten with four-signal trace (canonical label / alias / embedding / claim profile) and is scope-bounded — cross-scope merges no longer happen. Visible only in extraction outcomes; no API change.
 - `42fcc2b` — Profile synthesis job rewrites node descriptions from active claims. `nodeMetadata.description` content quality changes; shape is unchanged.
 - `28f1fbe`, `fe0ad01` — Internal `ContextBundle` and `NodeCard` synthesis layers. Exposed externally in PR 3-iii.

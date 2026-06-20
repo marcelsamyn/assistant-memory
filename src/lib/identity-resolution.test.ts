@@ -509,7 +509,7 @@ describeIfServer("resolveIdentity", () => {
           decoyNodeId,
         ],
       );
-      // matchNode has user-asserted profile: HAS_GOAL=ship-q4, OWNED_BY→colleague.
+      // matchNode has user-asserted profile: HAS_GOAL=ship-q4, OWNS→colleague.
       // decoyNode has the same shape, but only as `assistant_inferred`, so it
       // must NOT contribute to profile compatibility.
       const matchClaim1 = newTypeId("claim");
@@ -522,9 +522,9 @@ describeIfServer("resolveIdentity", () => {
             "predicate","statement","source_id","scope","asserted_by_kind","stated_at","status")
            VALUES
              ($1,$5,$6,NULL,'ship-q4','HAS_GOAL','match goal',$7,'personal','user',now(),'active'),
-             ($2,$5,$6,$8,NULL,'OWNED_BY','match owns colleague',$7,'personal','user',now(),'active'),
+             ($2,$5,$6,$8,NULL,'OWNS','match owns colleague',$7,'personal','user',now(),'active'),
              ($3,$5,$9,NULL,'ship-q4','HAS_GOAL','decoy goal',$7,'personal','assistant_inferred',now(),'active'),
-             ($4,$5,$9,$8,NULL,'OWNED_BY','decoy owns colleague',$7,'personal','assistant_inferred',now(),'active')`,
+             ($4,$5,$9,$8,NULL,'OWNS','decoy owns colleague',$7,'personal','assistant_inferred',now(),'active')`,
         [
           matchClaim1,
           matchClaim2,
@@ -555,7 +555,7 @@ describeIfServer("resolveIdentity", () => {
               assertedByKind: "user",
             },
             {
-              predicate: "OWNED_BY",
+              predicate: "OWNS",
               objectNodeId: colleagueNodeId,
               assertedByKind: "user",
             },

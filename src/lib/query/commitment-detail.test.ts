@@ -78,8 +78,8 @@ describeIfServer("getCommitment detail query", () => {
     const claimPendingId = newTypeId("claim"); // superseded
     const claimInProgressId = newTypeId("claim"); // superseded
     const claimDoneId = newTypeId("claim"); // active HAS_TASK_STATUS
-    const claimOwnerAliceId = newTypeId("claim"); // superseded OWNED_BY
-    const claimOwnerBobId = newTypeId("claim"); // active OWNED_BY
+    const claimOwnerAliceId = newTypeId("claim"); // superseded ASSIGNED_TO
+    const claimOwnerBobId = newTypeId("claim"); // active ASSIGNED_TO
     const claimDueOrigId = newTypeId("claim"); // superseded DUE_ON
     const claimDueNewId = newTypeId("claim"); // active DUE_ON
 
@@ -227,8 +227,8 @@ describeIfServer("getCommitment detail query", () => {
       await client.query(
         `INSERT INTO "claims" ("id","user_id","subject_node_id","object_node_id","predicate","statement","source_id","scope","asserted_by_kind","stated_at","status")
          VALUES
-           ($1,$3,$4,$5,'OWNED_BY','Task owned by Alice.',$7,'personal','user','2026-02-01T10:01:00Z','superseded'),
-           ($2,$3,$4,$6,'OWNED_BY','Task owned by Bob.',  $7,'personal','user','2026-02-15T10:01:00Z','active')`,
+           ($1,$3,$4,$5,'ASSIGNED_TO','Task owned by Alice.',$7,'personal','user','2026-02-01T10:01:00Z','superseded'),
+           ($2,$3,$4,$6,'ASSIGNED_TO','Task owned by Bob.',  $7,'personal','user','2026-02-15T10:01:00Z','active')`,
         [
           claimOwnerAliceId,
           claimOwnerBobId,

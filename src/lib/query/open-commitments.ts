@@ -78,7 +78,7 @@ function provenanceFilter(
 }
 
 /**
- * Provenance predicate for the OWNED_BY / DUE_ON metadata sub-joins, which is
+ * Provenance predicate for the ASSIGNED_TO / DUE_ON metadata sub-joins, which is
  * NOT symmetric with the status filter. The trusted view shows only trusted
  * metadata (excludes inferred). The candidate view applies NO provenance
  * constraint, so a *trusted* owner/due set on a not-yet-confirmed candidate
@@ -153,7 +153,7 @@ async function queryCommitments(
       and(
         eq(ownerClaim.userId, userId),
         eq(ownerClaim.subjectNodeId, nodes.id),
-        eq(ownerClaim.predicate, "OWNED_BY"),
+        eq(ownerClaim.predicate, "ASSIGNED_TO"),
         eq(ownerClaim.status, "active"),
         eq(ownerClaim.scope, "personal"),
         subJoinProvenanceFilter(ownerClaim.assertedByKind, provenance),
@@ -195,7 +195,7 @@ async function queryCommitments(
       ),
     )
     // Belt-and-suspenders newest-wins dedupe across (taskId): supersession
-    // for OWNED_BY/DUE_ON on Tasks is now enforced at the lifecycle engine
+    // for ASSIGNED_TO/DUE_ON on Tasks is now enforced at the lifecycle engine
     // via `subjectTypeOverrides` in the predicate registry, so production
     // claims should already be single-active. We keep this dedupe so claims
     // written before the override landed (or any backfill gap) don't leak

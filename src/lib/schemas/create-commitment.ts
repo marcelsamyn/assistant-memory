@@ -15,7 +15,7 @@ import { isValidTimeZone } from "~/lib/time-zone.js";
  * The server creates the `Task` node and bootstraps it with a `HAS_TASK_STATUS`
  * claim (so it is never observable in a half-bootstrapped, status-less state),
  * plus an optional `DUE_ON` claim — resolving the canonical Temporal node
- * internally — and an optional `OWNED_BY` claim to a referenced entity. A fresh
+ * internally — and an optional `ASSIGNED_TO` claim to a referenced entity. A fresh
  * commitment therefore deserialises identically to one returned by
  * `getOpenCommitments`.
  *
@@ -55,7 +55,7 @@ export const createCommitmentRequestSchema = z
       .nullish(),
     /**
      * Optional owner: the node id of the entity (typically a `Person`) that owns
-     * the commitment. Emits an `OWNED_BY` claim. Must be an existing node owned
+     * the commitment. Emits an `ASSIGNED_TO` claim. Must be an existing node owned
      * by `userId`, otherwise the call fails before any node is written.
      */
     ownedBy: typeIdSchema("node").optional(),
@@ -99,7 +99,7 @@ export const createCommitmentResponseSchema = z.object({
   statusClaimId: typeIdSchema("claim"),
   /** ID of the `DUE_ON` claim, or `null` when no due date was supplied. */
   dueClaimId: typeIdSchema("claim").nullable(),
-  /** ID of the `OWNED_BY` claim, or `null` when no owner was supplied. */
+  /** ID of the `ASSIGNED_TO` claim, or `null` when no owner was supplied. */
   ownerClaimId: typeIdSchema("claim").nullable(),
 });
 

@@ -10,7 +10,7 @@ import { z } from "zod";
 /**
  * Detail read model for a single commitment: current state, lifecycle history,
  * and evidence sources. Reuses `getNodeById` for a one-query node + history
- * slice across the three task predicates (`HAS_TASK_STATUS`, `OWNED_BY`,
+ * slice across the three task predicates (`HAS_TASK_STATUS`, `ASSIGNED_TO`,
  * `DUE_ON`), then batch-resolves the distinct source ids.
  */
 export const getCommitmentRequestSchema = z.object({
@@ -24,7 +24,7 @@ export const getCommitmentRequestSchema = z.object({
 
 export const taskLifecycleEntrySchema = z.object({
   claimId: typeIdSchema("claim"),
-  predicate: z.enum(["HAS_TASK_STATUS", "OWNED_BY", "DUE_ON"]),
+  predicate: z.enum(["HAS_TASK_STATUS", "ASSIGNED_TO", "DUE_ON"]),
   /** `objectValue` (status) or `objectLabel` (owner / due) of the claim. */
   value: z.string().nullable(),
   objectNodeId: typeIdSchema("node").nullable(),
