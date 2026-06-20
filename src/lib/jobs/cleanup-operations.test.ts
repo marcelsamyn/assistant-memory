@@ -389,10 +389,10 @@ describeIfServer("cleanup operation helpers", () => {
       id: claimId,
       userId,
       subjectNodeId: subjectId,
-      predicate: "RELATED_TO",
-      statement: "Legacy topic related to another migrated concept.",
+      predicate: "HAS_ATTRIBUTE",
+      statement: "Legacy topic came from imported memory.",
       sourceId,
-      objectValue: "another migrated concept",
+      objectValue: "imported memory",
       assertedByKind: "user",
     });
 
@@ -420,6 +420,144 @@ describeIfServer("cleanup operation helpers", () => {
       [claimId],
     );
     expect(after.rows[0]?.status).toBe("active");
+  });
+
+  it("retract_claim allows sourced relationship claims whose predicate shape is impossible", async () => {
+    const userId = "user_retract_invalid_shape";
+    const personId = newTypeId("node");
+    const objectId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const claimId = newTypeId("claim");
+
+    await seedUserAndNodes(rootClient, userId, [
+      { id: personId, nodeType: "Person", label: "Ada" },
+      { id: objectId, nodeType: "Object", label: "desk lamp" },
+    ]);
+    await seedSource(rootClient, {
+      sourceId,
+      userId,
+      type: "conversation_message",
+      externalId: "msg:user_retract_invalid_shape",
+      scope: "personal",
+    });
+    await seedClaim(rootClient, {
+      id: claimId,
+      userId,
+      subjectNodeId: personId,
+      objectNodeId: objectId,
+      predicate: "LOCATED_IN",
+      statement: "Ada likes the desk lamp.",
+      sourceId,
+      assertedByKind: "user",
+    });
+
+    const { applyCleanupOperations } = await import("./cleanup-operations");
+    const result = await applyCleanupOperations(
+      database,
+      userId,
+      [
+        {
+          kind: "retract_claim",
+          claimId,
+          reason: "relationship shape is impossible: Person LOCATED_IN Object",
+        },
+      ],
+      buildMapper([]),
+    );
+
+    expect(result.applied).toBe(1);
+    expect(result.errors).toHaveLength(0);
+
+    const after = await rootClient.query<{ status: string }>(
+      `SELECT "status" FROM "claims" WHERE "id" = $1`,
+      [claimId],
+    );
+    expect(after.rows[0]?.status).toBe("retracted");
+  });
+
+  it("audits invalid relationship predicate shapes by count and example", async () => {
+    const userId = "user_audit_invalid_shapes";
+    const personId = newTypeId("node");
+    const objectId = newTypeId("node");
+    const taskId = newTypeId("node");
+    const temporalId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const invalidLocationClaimId = newTypeId("claim");
+    const invalidDueClaimId = newTypeId("claim");
+    const validDueClaimId = newTypeId("claim");
+
+    await seedUserAndNodes(rootClient, userId, [
+      { id: personId, nodeType: "Person", label: "Ada" },
+      { id: objectId, nodeType: "Object", label: "desk lamp" },
+      { id: taskId, nodeType: "Task", label: "Send the note" },
+      { id: temporalId, nodeType: "Temporal", label: "2026-07-01" },
+    ]);
+    await seedSource(rootClient, {
+      sourceId,
+      userId,
+      type: "conversation_message",
+      externalId: "msg:user_audit_invalid_shapes",
+      scope: "personal",
+    });
+    await seedClaim(rootClient, {
+      id: invalidLocationClaimId,
+      userId,
+      subjectNodeId: personId,
+      objectNodeId: objectId,
+      predicate: "LOCATED_IN",
+      statement: "Ada likes the desk lamp.",
+      sourceId,
+      assertedByKind: "user",
+    });
+    await seedClaim(rootClient, {
+      id: invalidDueClaimId,
+      userId,
+      subjectNodeId: personId,
+      objectNodeId: temporalId,
+      predicate: "DUE_ON",
+      statement: "Ada mentioned July 1.",
+      sourceId,
+      assertedByKind: "user",
+    });
+    await seedClaim(rootClient, {
+      id: validDueClaimId,
+      userId,
+      subjectNodeId: taskId,
+      objectNodeId: temporalId,
+      predicate: "DUE_ON",
+      statement: "Send the note is due on 2026-07-01.",
+      sourceId,
+      assertedByKind: "user",
+    });
+
+    const { auditInvalidRelationshipPredicateShapes } = await import(
+      "~/lib/claims/predicate-shape-audit"
+    );
+    const audit = await auditInvalidRelationshipPredicateShapes(
+      database,
+      userId,
+      { exampleLimit: 5 },
+    );
+
+    expect(audit.totalInvalid).toBe(2);
+    expect(audit.counts).toContainEqual({
+      predicate: "LOCATED_IN",
+      count: 1,
+    });
+    expect(audit.counts).toContainEqual({ predicate: "DUE_ON", count: 1 });
+    expect(audit.examples.map((example) => example.claimId)).toContain(
+      invalidLocationClaimId,
+    );
+    expect(audit.examples.map((example) => example.claimId)).toContain(
+      invalidDueClaimId,
+    );
+    expect(audit.examples.map((example) => example.claimId)).not.toContain(
+      validDueClaimId,
+    );
+    expect(audit.seedNodeIds).toContain(personId);
+    expect(audit.seedNodeIds).toContain(objectId);
+    expect(audit.seedNodeIds).toContain(temporalId);
+    expect(audit.seedNodeIds).not.toContain(taskId);
   });
 
   it("contradict_claim sets contradicted_by_claim_id and status", async () => {

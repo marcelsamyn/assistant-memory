@@ -6,6 +6,7 @@ import { z } from "zod";
 
 export const NodeTypeEnum = z.enum([
   "Person",
+  "Organization",
   "Location",
   "Event",
   "Object",
@@ -33,6 +34,7 @@ export type NodeType = z.infer<typeof NodeTypeEnum>;
  */
 export const ExtractionNodeTypeEnum = z.enum([
   "Person",
+  "Organization",
   "Location",
   "Event",
   "Object",
@@ -65,6 +67,7 @@ export type ExtractionNodeType = z.infer<typeof ExtractionNodeTypeEnum>;
  */
 export const LABEL_MERGEABLE_NODE_TYPES = [
   "Person",
+  "Organization",
   "Location",
   "Object",
   "Emotion",
@@ -150,10 +153,11 @@ export const RelationshipPredicateEnum = z.enum([
   "PARTICIPATED_IN",
   "OCCURRED_AT",
   "OCCURRED_ON",
+  "RECORDED_ON",
   "INVOLVED_ITEM",
   "EXHIBITED_EMOTION",
   "TAGGED_WITH",
-  "OWNED_BY",
+  "ASSIGNED_TO",
   "DUE_ON",
   "PRECEDES",
   "FOLLOWS",
@@ -166,6 +170,7 @@ export const RelationshipPredicateEnum = z.enum([
   "LOCATED_IN",
   "PART_OF",
   "USES",
+  "OWNS",
   "AFFILIATED_WITH",
   // Catch-all — last resort only, when no specific predicate fits.
   "RELATED_TO",

@@ -3,7 +3,10 @@ import { sources } from "~/db/schema";
 import { sourceService, type SourceCreateInput } from "~/lib/sources";
 import { Scope, SourceType } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
-import { getSourceServiceOverride } from "~/utils/test-overrides";
+import {
+  getSourceServiceOverride,
+  shouldSkipJobEnqueue,
+} from "~/utils/test-overrides";
 
 export interface SourceInput {
   externalId: string;
@@ -101,19 +104,21 @@ export async function insertNewSources(params: {
   }));
 
   // Best-effort, fire-and-forget container titling. Guarded inside the job, so
-  // enqueuing unconditionally is safe and idempotent. Dynamic import avoids a
-  // queues ⇄ ingestion import cycle.
-  const { batchQueue } = await import("../queues");
-  await batchQueue.add(
-    "generate-source-title",
-    { userId, sourceId: parentSource.id },
-    {
-      attempts: 2,
-      backoff: { type: "exponential", delay: 1_000 },
-      removeOnComplete: true,
-      removeOnFail: 20,
-    },
-  );
+  // enqueuing is safe and idempotent. Eval/probe runs set skipJobEnqueue so
+  // they do not import queues or let title generation consume LLM stubs.
+  if (!shouldSkipJobEnqueue()) {
+    const { batchQueue } = await import("../queues");
+    await batchQueue.add(
+      "generate-source-title",
+      { userId, sourceId: parentSource.id },
+      {
+        attempts: 2,
+        backoff: { type: "exponential", delay: 1_000 },
+        removeOnComplete: true,
+        removeOnFail: 20,
+      },
+    );
+  }
 
   return { sourceId: parentSource.id, newSourceSourceIds, sourceRefs };
 }

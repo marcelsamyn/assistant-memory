@@ -314,28 +314,28 @@ describeIfServer("getNodeCard", () => {
         statedAt: new Date("2026-04-22T10:00:00Z"),
         status: "active",
       },
-      // OWNED_BY relationship: project owned by Marcel (multi_value on Concept).
+      // OWNS relationship: Marcel owns the project.
       {
         id: newTypeId("claim"),
         userId,
-        subjectNodeId: projectId,
-        objectNodeId: personId,
-        predicate: "OWNED_BY",
-        statement: "Memory Layer is owned by Marcel.",
+        subjectNodeId: personId,
+        objectNodeId: projectId,
+        predicate: "OWNS",
+        statement: "Marcel owns Memory Layer.",
         sourceId,
         scope: "personal",
         assertedByKind: "user",
         statedAt: new Date("2026-04-15T10:00:00Z"),
         status: "active",
       },
-      // Open commitment: Task owned by Marcel, status pending.
+      // Open commitment: Task assigned to Marcel, status pending.
       {
         id: newTypeId("claim"),
         userId,
         subjectNodeId: taskId,
         objectNodeId: personId,
-        predicate: "OWNED_BY",
-        statement: "Task is owned by Marcel.",
+        predicate: "ASSIGNED_TO",
+        statement: "Task is assigned to Marcel.",
         sourceId,
         scope: "personal",
         assertedByKind: "user",
@@ -447,7 +447,7 @@ describeIfServer("getNodeCard", () => {
     expect(card.openCommitments).toBeUndefined();
   });
 
-  it("Non-Person node: openCommitments stays undefined even with related OWNED_BY commitments", async () => {
+  it("Non-Person node: openCommitments stays undefined even with related ASSIGNED_TO commitments", async () => {
     await freshSchema();
     const userId = "user_concept_card";
     const conceptId = newTypeId("node");
@@ -459,14 +459,14 @@ describeIfServer("getNodeCard", () => {
     await insertNode(taskId, userId, "Task", "Subtask");
 
     await database.insert(schema.claims).values([
-      // Task's owner is the Concept (unusual but exercises the filter).
+      // Task's assignee is the Concept (unusual but exercises the filter).
       {
         id: newTypeId("claim"),
         userId,
         subjectNodeId: taskId,
         objectNodeId: conceptId,
-        predicate: "OWNED_BY",
-        statement: "Subtask owned by Big Project.",
+        predicate: "ASSIGNED_TO",
+        statement: "Subtask assigned to Big Project.",
         sourceId,
         scope: "personal",
         assertedByKind: "user",
@@ -495,13 +495,15 @@ describeIfServer("getNodeCard", () => {
     expect(card.openCommitments).toBeUndefined();
   });
 
-  it("Subject-type cardinality routing: OWNED_BY is multi_value on Concept, single on Task", async () => {
+  it("Predicate routing: OWNS is multi_value and ASSIGNED_TO is single-current", async () => {
     await freshSchema();
     const userId = "user_routing";
     const conceptId = newTypeId("node");
     const taskId = newTypeId("node");
     const owner1 = newTypeId("node");
     const owner2 = newTypeId("node");
+    const owned1 = newTypeId("node");
+    const owned2 = newTypeId("node");
     const sourceId = newTypeId("source");
     await insertUser(userId);
     await insertPersonalSource(sourceId, userId, "msg_routing");
@@ -510,16 +512,18 @@ describeIfServer("getNodeCard", () => {
     await insertNode(taskId, userId, "Task", "Single-owner Task");
     await insertNode(owner1, userId, "Person", "Alice");
     await insertNode(owner2, userId, "Person", "Bob");
+    await insertNode(owned1, userId, "Object", "Laptop");
+    await insertNode(owned2, userId, "Object", "Notebook");
 
     await database.insert(schema.claims).values([
-      // Concept has TWO active OWNED_BY (multi_value) — both stay active.
+      // Concept has TWO active OWNS claims (multi_value) — both stay active.
       {
         id: newTypeId("claim"),
         userId,
         subjectNodeId: conceptId,
-        objectNodeId: owner1,
-        predicate: "OWNED_BY",
-        statement: "Shared Initiative owned by Alice.",
+        objectNodeId: owned1,
+        predicate: "OWNS",
+        statement: "Shared Initiative owns Laptop.",
         sourceId,
         scope: "personal",
         assertedByKind: "user",
@@ -530,24 +534,24 @@ describeIfServer("getNodeCard", () => {
         id: newTypeId("claim"),
         userId,
         subjectNodeId: conceptId,
-        objectNodeId: owner2,
-        predicate: "OWNED_BY",
-        statement: "Shared Initiative owned by Bob.",
+        objectNodeId: owned2,
+        predicate: "OWNS",
+        statement: "Shared Initiative owns Notebook.",
         sourceId,
         scope: "personal",
         assertedByKind: "user",
         statedAt: new Date("2026-04-12T10:00:00Z"),
         status: "active",
       },
-      // Task has TWO OWNED_BY: lifecycle would have superseded the older one.
+      // Task has TWO ASSIGNED_TO claims: lifecycle would have superseded the older one.
       // We emulate the post-lifecycle state directly.
       {
         id: newTypeId("claim"),
         userId,
         subjectNodeId: taskId,
         objectNodeId: owner1,
-        predicate: "OWNED_BY",
-        statement: "Task owned by Alice (older).",
+        predicate: "ASSIGNED_TO",
+        statement: "Task assigned to Alice (older).",
         sourceId,
         scope: "personal",
         assertedByKind: "user",
@@ -559,8 +563,8 @@ describeIfServer("getNodeCard", () => {
         userId,
         subjectNodeId: taskId,
         objectNodeId: owner2,
-        predicate: "OWNED_BY",
-        statement: "Task owned by Bob (latest).",
+        predicate: "ASSIGNED_TO",
+        statement: "Task assigned to Bob (latest).",
         sourceId,
         scope: "personal",
         assertedByKind: "user",
@@ -571,25 +575,25 @@ describeIfServer("getNodeCard", () => {
 
     const { getNodeCard } = await import("./node-card");
 
-    // Concept card: both OWNED_BY claims are active and surface in recentEvidence.
+    // Concept card: both OWNS claims are active and surface in recentEvidence.
     const conceptCard = await getNodeCard({ userId, nodeId: conceptId });
     expect(conceptCard).not.toBeNull();
     if (!conceptCard) throw new Error("expected concept card");
-    // Multi_value OWNED_BY → not in currentFacts.
+    // Multi_value OWNS → not in currentFacts.
     expect(conceptCard.currentFacts).toEqual([]);
-    // Both OWNED_BY claims appear in recentEvidence.
+    // Both OWNS claims appear in recentEvidence.
     const conceptStatements = conceptCard.recentEvidence.map(
       (e) => e.statement,
     );
-    expect(conceptStatements).toContain("Shared Initiative owned by Alice.");
-    expect(conceptStatements).toContain("Shared Initiative owned by Bob.");
+    expect(conceptStatements).toContain("Shared Initiative owns Laptop.");
+    expect(conceptStatements).toContain("Shared Initiative owns Notebook.");
 
     // Task card: single-current-value override → currentFacts has exactly one (latest).
     const taskCard = await getNodeCard({ userId, nodeId: taskId });
     expect(taskCard).not.toBeNull();
     if (!taskCard) throw new Error("expected task card");
     expect(taskCard.currentFacts.length).toBe(1);
-    expect(taskCard.currentFacts[0]?.predicate).toBe("OWNED_BY");
+    expect(taskCard.currentFacts[0]?.predicate).toBe("ASSIGNED_TO");
     expect(taskCard.currentFacts[0]?.objectNodeId).toBe(owner2);
     expect(taskCard.currentFacts[0]?.objectLabel).toBe("Bob");
   });

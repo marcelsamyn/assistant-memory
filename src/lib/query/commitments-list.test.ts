@@ -338,7 +338,7 @@ describeIfServer("listCommitments query", () => {
         );
       }
 
-      // OWNED_BY claims: Alice owns pending+inProgress, Bob owns done
+      // ASSIGNED_TO claims: Alice owns pending+inProgress, Bob owns done
       const ownerClaims = [
         [
           taskPendingId,
@@ -358,7 +358,7 @@ describeIfServer("listCommitments query", () => {
       for (const [taskId, ownerNodeId, stmt, statedAt] of ownerClaims) {
         await client.query(
           `INSERT INTO "claims" ("id", "user_id", "subject_node_id", "object_node_id", "predicate", "statement", "source_id", "scope", "asserted_by_kind", "stated_at", "status")
-           VALUES ($1, $2, $3, $4, 'OWNED_BY', $5, $6, 'personal', 'user', $7, 'active')`,
+           VALUES ($1, $2, $3, $4, 'ASSIGNED_TO', $5, $6, 'personal', 'user', $7, 'active')`,
           [
             newTypeId("claim"),
             userId,

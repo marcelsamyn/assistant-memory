@@ -6,6 +6,10 @@ import {
   defaultTaskStatusStatement,
 } from "./claims/default-task-status";
 import { applyClaimLifecycle, fetchClaimsByIds } from "./claims/lifecycle";
+import {
+  assertRelationshipPredicateShape,
+  formatRelationshipPredicateGuide,
+} from "./claims/predicate-shapes";
 import { coerceTaskStatus } from "./claims/task-status";
 import {
   generateCommitmentPresentation,
@@ -261,6 +265,7 @@ export async function extractGraph({
   const client = await createCompletionClient(userId, {
     task: "graph_extraction",
   });
+  const relationshipPredicateGuide = formatRelationshipPredicateGuide();
 
   // Static instruction block. Depends only on `sourceType` (and whether a
   // speaker map is present), so it is byte-identical across every ingest of
@@ -319,11 +324,11 @@ ${
 - "Orchard is based in Stockholm and uses a billing system built on the Stripe API." → (Orchard Labs, LOCATED_IN, Stockholm) and (Orchard Labs, USES, Stripe API).
 - "The Starter tier costs €49/month." → do NOT create a "€49" node; if the figure matters use (Starter tier, HAS_ATTRIBUTE, "€49/month"). Use RELATED_TO only when no specific predicate fits.`
     : speakerMap && speakerMap.size > 0
-      ? `- Speaker "Alice" (user-self) says "I live in Lisbon." → create the (LIVES_IN, Lisbon) claim with subjectId set to Alice's nodeId from "Speakers in this transcript" (do NOT mint a new "Alice" node), assertionKind: "user", assertedBySpeakerLabel: "Alice".
+      ? `- Speaker "Alice" (user-self) says "I live in Lisbon." → create the (Alice, LOCATED_IN, Lisbon) claim with subjectId set to Alice's nodeId from "Speakers in this transcript" (do NOT mint a new "Alice" node), assertionKind: "user", assertedBySpeakerLabel: "Alice".
 - Speaker "Bob" (non user-self) says "I'll send the PR tomorrow." → assertionKind: "participant", assertedBySpeakerLabel: "Bob".
-- Speaker "Bob" says "You're moving to Paris next month." Speaker "Alice" (user-self) replies "Yeah." → for the (Alice, LIVES_IN, Paris) claim use assertionKind: "user_confirmed", assertedBySpeakerLabel: "Alice".`
+- Speaker "Bob" says "You're moving to Paris next month." Speaker "Alice" (user-self) replies "Yeah." → for the (Alice, LOCATED_IN, Paris) claim use assertionKind: "user_confirmed", assertedBySpeakerLabel: "Alice".`
       : `- User says "I started working at Acme last week." → assertionKind: "user".
-- Assistant: "So you live in Paris now?" User: "Yes." → assertionKind: "user_confirmed" for the (user, LIVES_IN, Paris) claim (if extracted).
+- Assistant: "So you live in Paris now?" User: "Yes." → assertionKind: "user_confirmed" for the (user, LOCATED_IN, Paris) claim (if extracted).
 - Assistant: "It sounds like you might be a software engineer." User does not respond. → do NOT extract. If you must, assertionKind: "assistant_inferred".`
 }
 
@@ -332,24 +337,26 @@ ${
     ? `Extract, for example, the following elements:
 1. People mentioned in the text (real or fictional)
 2. Locations the text discusses or references
-3. Events the text describes or analyzes
-4. Objects, products, services, or items the text references
-5. Concepts, theories, frameworks, or ideas the text explores
-6. Other media the text cites (books, articles, studies, podcasts, etc.)
-7. Temporal references the text provides (dates, periods, deadlines)
-8. Recommendations, decisions, best practices, and warnings the text states
-9. Facts the text states about people, organizations, or other entities`
+3. Organizations the text mentions, including companies, institutions, clients, schools, nonprofits, teams, clubs, communities, and named informal groups
+4. Events the text describes or analyzes
+5. Objects, products, services, or items the text references
+6. Concepts, theories, frameworks, or ideas the text explores
+7. Other media the text cites (books, articles, studies, podcasts, etc.)
+8. Temporal references the text provides (dates, periods, deadlines)
+9. Recommendations, decisions, best practices, and warnings the text states
+10. Facts the text states about people, organizations, or other entities`
     : `Extract, for example, the following elements:
 1. People mentioned by the user (real or fictional)
-2. Locations the user discussed or mentioned
-3. Events that the user stated occurred or experienced
-4. Objects or items the user mentioned as significant
-5. Emotions the user expressed or discussed
-6. Concepts or ideas the user explored or mentioned
-7. Media the user mentioned (books, movies, articles, etc.)
-8. Temporal references the user provided (dates, times, periods)
-9. The user's preferences, goals, projects, and plans
-10. Facts the user stated about other people or entities`
+2. Organizations the user mentioned, including companies, institutions, clients, schools, nonprofits, teams, clubs, communities, and named informal groups
+3. Locations the user discussed or mentioned
+4. Events that the user stated occurred or experienced
+5. Objects or items the user mentioned as significant
+6. Emotions the user expressed or discussed
+7. Concepts or ideas the user explored or mentioned
+8. Media the user mentioned (books, movies, articles, etc.)
+9. Temporal references the user provided (dates, times, periods)
+10. The user's preferences, goals, projects, and plans
+11. Facts the user stated about other people or entities`
 }
 
 For each element, create a node with:
@@ -362,7 +369,9 @@ For each element, create a node with:
 	- Claims represent sourced facts about nodes. For example, if you have a Person node and an Event node, create a claim from the Person node to the Event node with predicate PARTICIPATED_IN.
 	- Relationship claims use objectId and a relationship predicate.
 	- Attribute claims use objectValue and an attribute predicate, such as HAS_STATUS, HAS_PREFERENCE, HAS_GOAL, MADE_DECISION, or HAS_ATTRIBUTE (a generic property whose value goes in objectValue).
-	- Use the MOST SPECIFIC predicate that fits; RELATED_TO is a fallback ONLY when no other predicate applies. For world/document facts use, e.g., WORKS_AT (person→organization), FOUNDED (founder→organization), CREATED (creator→work or product), LOCATED_IN (entity→place), PART_OF (component→larger whole), USES (entity→tool/product/service), AFFILIATED_WITH (looser or former affiliation, e.g. a previous employer or investor), OWNED_BY, or PARTICIPATED_IN.
+	- Use the MOST SPECIFIC predicate that fits; RELATED_TO is a fallback ONLY when no other predicate applies.
+	- The relationship predicate table below is mandatory. Do not emit a relationship claim unless its subject and object node types match the table.
+	- Do not emit RECORDED_ON for ordinary source content. Ingestion attaches bookkeeping dates automatically; use OCCURRED_ON only when the text says a real event/content/task happened on a date.
 	- For a notable scalar property of an entity, prefer a HAS_ATTRIBUTE attribute claim (value in objectValue) over creating a node for the value.
 	- ONLY create claims for facts explicitly stated by the ${sourceType === "document" ? "document text" : "user"}, not your own interpretations or assumptions.
 	- In the claim statement, write one concise sentence that can stand alone as the sourced assertion.
@@ -386,12 +395,16 @@ Rules of the graph:
 - If multiple people could share a name, use the most specific distinguishing label available (e.g. a full name) and NEVER merge or conflate two different people who share a first name.
 - Omit unnecessary details in node names, eg. "John Doe" instead of "John Doe (person)"
 - Nodes are independent of context and represent a *single* thing. Bad example: "John - the person taking a walk". Good example: "John" (Person node, no description) linked to [PARTICIPATED_IN] "John's walk on 2025-05-18" (Event node), linked to [OCCURRED_ON] "2025-05-18" (Temporal node).
+- Use Organization for companies, employers, clients, schools, nonprofits, teams, clubs, communities, and named informal groups. Do not model those as Person, Concept, or Object.
+- Products, apps, projects, documents, events, and loose topics are usually Object, Concept, Document, Event, or Media, not Organization, unless the source clearly refers to the organization operating them.
 - Don't create nodes for things that should be represented by edges.
 - NEVER create a node for a scalar value, quantity, duration, money amount, percentage, count, or date range (e.g. "47 days", "€49", "38 employees", "six months"). Put it in the claim statement, or in a HAS_ATTRIBUTE attribute claim's objectValue when the value is worth keeping. Nodes are only for entities you can refer to again: people, organizations, places, products/works, events, media, and genuine concepts.
 - Temporal nodes are ONLY for specific calendar points (a day or date the content anchors to), never durations or periods ("six months", "two weeks").
 - Avoid redundant or duplicate information - if a fact is already represented, don't create another node or edge for it
 
 	Then create relationshipClaims and attributeClaims to represent the facts using the appropriate predicates.
+
+${relationshipPredicateGuide}
 
 ${
   sourceType === "document"
@@ -805,7 +818,7 @@ function _formatOpenCommitmentsSection(
   const header = `CURRENT OPEN TASKS:
 These are the user's currently open Task nodes. Each line lists the task's existing nodeId, label, current status, owner, and due date. RULES:
 - If the source mentions completing, abandoning, or progressing one of these tasks, emit an attribute claim with predicate \`HAS_TASK_STATUS\` (objectValue one of "pending", "in_progress", "done", "abandoned") whose subjectId is the task's existingNodeId shown below. DO NOT create a new Task node for it.
-- Only emit \`HAS_TASK_STATUS\`, \`OWNED_BY\`, or \`DUE_ON\` claims for these existing tasks if their status, owner, or due date has actually changed in the source. Tasks whose state is unchanged should NOT be re-emitted.
+- Only emit \`HAS_TASK_STATUS\`, \`ASSIGNED_TO\`, or \`DUE_ON\` claims for these existing tasks if their status, owner, or due date has actually changed in the source. Tasks whose state is unchanged should NOT be re-emitted.
 - A "task" is a concrete, actionable item a specific person still has to DO. Only create one when the source establishes a real action item with a clear owner.
 - DO NOT manufacture tasks from any of the following:
   - assistant suggestions, proposals, offers, or recommendations the user did not take up (e.g. "you could try…", "maybe set up a…", "we should…", "want me to…");
@@ -813,7 +826,7 @@ These are the user's currently open Task nodes. Each line lists the task's exist
   - general planning, brainstorming, venting, or discussion the user did not commit to acting on;
   - the existence of the conversation itself — NEVER create a "check-in", "weekly planning", "review", or similar meta task that merely restates that this conversation took place.
 - A Task node's label must be a short imperative action (e.g. "Book Zouk social tickets"), NOT a topic, a date, or a description of the conversation. NEVER put a multi-point summary, recap, or transcript of the conversation into a Task node's label or description.
-- For a genuine brand-new task not in this list, create a new Task node with a temporary id (e.g. "temp_task_1") and emit \`HAS_TASK_STATUS=pending\` (and \`OWNED_BY\` / \`DUE_ON\` as applicable). Every newly created task is recorded as TENTATIVE (unconfirmed) and surfaced to the user to confirm — ingestion never creates a firm commitment, and the \`assertionKind\` you put on a new task's status claim does not change that. Do NOT lower the bar above just because the task will be tentative: still only create one when the source establishes a real action item.`;
+- For a genuine brand-new task not in this list, create a new Task node with a temporary id (e.g. "temp_task_1") and emit \`HAS_TASK_STATUS=pending\` (and \`ASSIGNED_TO\` / \`DUE_ON\` as applicable). Every newly created task is recorded as TENTATIVE (unconfirmed) and surfaced to the user to confirm — ingestion never creates a firm commitment, and the \`assertionKind\` you put on a new task's status claim does not change that. Do NOT lower the bar above just because the task will be tentative: still only create one when the source establishes a real action item.`;
 
   if (openCommitments.length === 0) {
     return `${header}
@@ -914,6 +927,22 @@ async function _fetchSourceScope(
   // Source must exist by the time extraction runs; default defensively to
   // personal so we never silently widen scope on a misconfigured source.
   return row?.scope ?? "personal";
+}
+
+async function _fetchNodeTypeMap(
+  db: DrizzleDB,
+  userId: string,
+  nodeIds: TypeId<"node">[],
+): Promise<Map<TypeId<"node">, NodeType>> {
+  const uniqueNodeIds = [...new Set(nodeIds)];
+  if (uniqueNodeIds.length === 0) return new Map();
+
+  const nodeRows = await db
+    .select({ id: nodes.id, nodeType: nodes.nodeType })
+    .from(nodes)
+    .where(and(eq(nodes.userId, userId), inArray(nodes.id, uniqueNodeIds)));
+
+  return new Map(nodeRows.map((node) => [node.id, node.nodeType]));
 }
 
 async function _processAndInsertNewNodes(
@@ -1030,6 +1059,16 @@ async function _processAndInsertLlmClaims(
     userId,
     [...sourceRefMap.values()].map((sourceRef) => sourceRef.sourceId),
   );
+  const relationshipNodeIds = new Set<TypeId<"node">>();
+  for (const llmClaim of uniqueParsedLlmClaims) {
+    const subjectNodeId = idMap.get(llmClaim.subjectId);
+    const objectNodeId = idMap.get(llmClaim.objectId);
+    if (subjectNodeId) relationshipNodeIds.add(subjectNodeId);
+    if (objectNodeId) relationshipNodeIds.add(objectNodeId);
+  }
+  const nodeTypes = await _fetchNodeTypeMap(db, userId, [
+    ...relationshipNodeIds,
+  ]);
 
   for (const llmClaim of uniqueParsedLlmClaims) {
     const subjectNodeId = idMap.get(llmClaim.subjectId);
@@ -1065,6 +1104,27 @@ async function _processAndInsertLlmClaims(
 
     const provenance = _resolveAssertedByKind(llmClaim, sourceType, speakerMap);
     if (provenance === null) continue;
+
+    const subjectType = nodeTypes.get(subjectNodeId);
+    const objectType = nodeTypes.get(objectNodeId);
+    if (!subjectType || !objectType) {
+      console.warn(
+        `Skipping relationship claim with unresolved node types: ${llmClaim.subjectId} -> ${llmClaim.objectId}`,
+      );
+      continue;
+    }
+
+    try {
+      assertRelationshipPredicateShape({
+        predicate: llmClaim.predicate,
+        subjectType,
+        objectType,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`Skipping invalid relationship claim shape: ${message}`);
+      continue;
+    }
 
     claimInserts.push({
       userId,

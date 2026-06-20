@@ -119,6 +119,14 @@ export const PREDICATE_POLICIES: PredicatePolicyMap = {
     retrievalSection: "evidence",
     forceRefreshOnSupersede: false,
   },
+  RECORDED_ON: {
+    predicate: "RECORDED_ON",
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
   INVOLVED_ITEM: {
     predicate: "INVOLVED_ITEM",
     cardinality: "multi_value",
@@ -143,22 +151,13 @@ export const PREDICATE_POLICIES: PredicatePolicyMap = {
     retrievalSection: "evidence",
     forceRefreshOnSupersede: false,
   },
-  OWNED_BY: {
-    predicate: "OWNED_BY",
-    cardinality: "multi_value",
-    lifecycle: "none",
+  ASSIGNED_TO: {
+    predicate: "ASSIGNED_TO",
+    cardinality: "single_current_value",
+    lifecycle: "supersede_previous",
     feedsAtlas: false,
     retrievalSection: "evidence",
     forceRefreshOnSupersede: false,
-    // A Task has exactly one current owner — reassignment supersedes the
-    // prior claim. Non-Task subjects (atlas co-owners, shared artifacts)
-    // keep multi_value semantics.
-    subjectTypeOverrides: {
-      Task: {
-        cardinality: "single_current_value",
-        lifecycle: "supersede_previous",
-      },
-    },
   },
   DUE_ON: {
     predicate: "DUE_ON",
@@ -246,6 +245,14 @@ export const PREDICATE_POLICIES: PredicatePolicyMap = {
   },
   USES: {
     predicate: "USES",
+    cardinality: "multi_value",
+    lifecycle: "none",
+    feedsAtlas: false,
+    retrievalSection: "evidence",
+    forceRefreshOnSupersede: false,
+  },
+  OWNS: {
+    predicate: "OWNS",
     cardinality: "multi_value",
     lifecycle: "none",
     feedsAtlas: false,

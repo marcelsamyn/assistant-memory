@@ -10,6 +10,7 @@ describe("isLabelMergeableNodeType", () => {
     for (const nodeType of LABEL_MERGEABLE_NODE_TYPES) {
       expect(isLabelMergeableNodeType(nodeType)).toBe(true);
     }
+    expect(isLabelMergeableNodeType("Organization")).toBe(true);
   });
 
   it("protects record/occurrence types from label-based merging", () => {

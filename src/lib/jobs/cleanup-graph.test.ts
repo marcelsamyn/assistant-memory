@@ -46,8 +46,8 @@ function makeTempSubgraph(): TempSubgraph {
       {
         id: newTypeId("node"),
         tempId: "temp_node_1",
-        label: "Marcel",
-        description: "User",
+        label: "Ada",
+        description: "Example person",
         type: "Person",
         evidenceClaimCount: 2,
         sourceLinkCount: 1,
@@ -72,22 +72,24 @@ function makeTempSubgraph(): TempSubgraph {
         subjectTemp: "temp_node_1",
         objectTemp: "temp_node_2",
         predicate: "RELATED_TO",
-        statement: "Marcel lives in Antwerp.",
+        statement: "Ada lives in Antwerp.",
         scope: "personal",
         assertedByKind: "user",
         retractAllowed: false,
         contradictionCitationAllowed: true,
+        invalidRelationshipShape: false,
       },
       {
         id: claimAssistantInferred,
         subjectTemp: "temp_node_1",
         objectTemp: "temp_node_2",
         predicate: "OCCURRED_AT",
-        statement: "Marcel visited Antwerp last weekend.",
+        statement: "Ada visited Antwerp last weekend.",
         scope: "personal",
         assertedByKind: "assistant_inferred",
         retractAllowed: true,
         contradictionCitationAllowed: false,
+        invalidRelationshipShape: true,
       },
     ],
   };
@@ -119,6 +121,7 @@ describe("buildCleanupPrompt", () => {
     expect(prompt).toContain(`provenance="[assistant_inferred, personal]"`);
     expect(prompt).toContain(`provenance="[user, personal]"`);
     expect(prompt).toContain(`retractAllowed="true"`);
+    expect(prompt).toContain(`invalidRelationshipShape="true"`);
     expect(prompt).toContain(`contradictionCitationAllowed="true"`);
     expect(prompt).toContain(`id="${inferred.id}"`);
     expect(prompt).toContain(`id="${userClaim.id}"`);
@@ -135,6 +138,8 @@ describe("buildCleanupPrompt", () => {
     expect(prompt).toContain("<eligible_delete_nodes>");
     expect(prompt).toContain("(none)");
     expect(prompt).toContain("<eligible_retract_claims>");
+    expect(prompt).toContain(`- ${inferred.id}`);
+    expect(prompt).toContain("<invalid_relationship_claims>");
     expect(prompt).toContain(`- ${inferred.id}`);
     expect(prompt).toContain("<eligible_contradiction_citations>");
     expect(prompt).toContain(`- ${userClaim.id}`);
@@ -167,6 +172,7 @@ describe("buildCleanupPrompt", () => {
     expect(prompt).toContain("Return at most 10 operations");
     expect(prompt).toContain("Absence from the bundle is NEVER sufficient");
     expect(prompt).toContain("ACTIVE, same-scope, source-backed claim");
+    expect(prompt).toContain("relationship shape is impossible");
   });
 
   it("emits provider-compatible JSON Schema for the cleanup operations", () => {
@@ -190,7 +196,7 @@ describe("buildCleanupPrompt", () => {
 
     expect(prompt).toContain("<subgraph>");
     expect(prompt).toContain('<node tempId="temp_node_1"');
-    expect(prompt).toContain("Marcel lives in Antwerp.");
+    expect(prompt).toContain("Ada lives in Antwerp.");
   });
 
   it("omits the bundle wrapper when no sections are present", () => {

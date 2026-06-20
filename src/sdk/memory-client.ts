@@ -866,7 +866,7 @@ export class MemoryClient {
   /**
    * Open a new commitment as a Task: creates the node and bootstraps it with a
    * `HAS_TASK_STATUS` claim (pending or in_progress), plus an optional `DUE_ON`
-   * (server resolves the Temporal node) and `OWNED_BY` claim. Always creates a
+   * (server resolves the Temporal node) and `ASSIGNED_TO` claim. Always creates a
    * new Task — use `createClaim`/`setCommitmentDue` to advance an existing one.
    *
    * Optional time-of-day precision: pass `dueTime` (`HH:mm`, 24h) together
@@ -939,8 +939,8 @@ export class MemoryClient {
 
   /**
    * Assign, reassign, or clear a Task's owner. Pass a node id to assert a new
-   * `OWNED_BY` claim (superseding any prior active one automatically), or
-   * `ownedBy: null` to retract every active `OWNED_BY` claim without asserting
+   * `ASSIGNED_TO` claim (superseding any prior active one automatically), or
+   * `ownedBy: null` to retract every active `ASSIGNED_TO` claim without asserting
    * a new one. Throws if the owner node id is missing or cross-user.
    */
   async setCommitmentOwner(
@@ -993,7 +993,7 @@ export class MemoryClient {
   /**
    * Detail read model for a single commitment: current status, active owner and
    * due date, evidence source ids, and — when `includeHistory` is true — the
-   * full lifecycle history of `HAS_TASK_STATUS`, `OWNED_BY`, and `DUE_ON` claims
+   * full lifecycle history of `HAS_TASK_STATUS`, `ASSIGNED_TO`, and `DUE_ON` claims
    * sorted newest-first. Suited to detail views and undo flows.
    */
   async getCommitment(

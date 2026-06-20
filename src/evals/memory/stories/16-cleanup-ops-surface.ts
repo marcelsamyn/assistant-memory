@@ -121,7 +121,7 @@ export const story16CleanupOpsSurface: EvalFixture = {
         },
       ],
     },
-    // Step 2 — add_claim. HAS_PREFERENCE marcel → fresh idea.
+    // Step 2 — add_claim. HAS_PREFERENCE marcel → scalar preference value.
     {
       kind: "applyCleanupOperations",
       seedNodeIds: (ctx) => [
@@ -132,9 +132,9 @@ export const story16CleanupOpsSurface: EvalFixture = {
         ctx.nodes.get("doomed")!,
       ],
       operations: () => [
-        // Re-create the fresh node in this step's mapper so we can reference
-        // it in add_claim. The previous step already inserted it; this op
-        // adds a *second* fresh node and we then write the claim to it.
+        // The previous step already inserted one fresh node. This op adds a
+        // second fresh node so the final node-count assertion still proves
+        // create_node works when composed with another operation.
         {
           kind: "create_node",
           tempId: "fresh2",
@@ -145,8 +145,8 @@ export const story16CleanupOpsSurface: EvalFixture = {
         {
           kind: "add_claim",
           subjectTempId: "temp_node_0", // marcel
-          objectTempId: "fresh2",
-          objectValue: null,
+          objectTempId: null,
+          objectValue: "likes the fresh idea",
           predicate: "HAS_PREFERENCE",
           statement: "Marcel likes the fresh idea.",
           sourceClaimId: null,

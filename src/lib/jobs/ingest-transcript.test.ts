@@ -265,7 +265,7 @@ describeIfServer("ingestTranscript", () => {
     }));
     // `ensureDayNode` (called from `ensureSourceNode`) embeds the day label
     // via Jina in production. Replace it with a minimal real-DB stub: insert
-    // a Temporal node and return its id. The OCCURRED_ON claim that
+    // a Temporal node and return its id. The RECORDED_ON claim that
     // `ensureSourceNode` writes then satisfies its FK to nodes(id).
     vi.doMock("../temporal", () => ({
       ensureDayNode: async (
@@ -599,6 +599,7 @@ describeIfServer("ingestTranscript", () => {
           userId,
           [
             "Person",
+            "Organization",
             "Location",
             "Event",
             "Object",
@@ -819,7 +820,7 @@ describeIfServer("ingestTranscript", () => {
                         {
                           subjectId: selfNodeIdForStub,
                           objectId: "loc_1",
-                          predicate: "LIVES_IN",
+                          predicate: "LOCATED_IN",
                           statement: "Marcel lives in Lisbon.",
                           sourceRef: `${transcriptId}:0`,
                           assertionKind: "user",
@@ -876,17 +877,17 @@ describeIfServer("ingestTranscript", () => {
         userSelfAliasesOverride: ["Marcel", "Marcel Samyn"],
       });
 
-      const livesIn = await client.query<{
+      const locatedIn = await client.query<{
         subject_node_id: string;
         asserted_by_kind: string;
       }>(
-        `SELECT subject_node_id, asserted_by_kind FROM claims WHERE user_id = $1 AND predicate = 'LIVES_IN'`,
+        `SELECT subject_node_id, asserted_by_kind FROM claims WHERE user_id = $1 AND predicate = 'LOCATED_IN'`,
         [userId],
       );
-      expect(livesIn.rows).toHaveLength(1);
-      expect(livesIn.rows[0]?.subject_node_id).toBe(selfNodeId);
-      expect(livesIn.rows[0]?.subject_node_id).not.toBe(otherMarcelId);
-      expect(livesIn.rows[0]?.asserted_by_kind).toBe("user");
+      expect(locatedIn.rows).toHaveLength(1);
+      expect(locatedIn.rows[0]?.subject_node_id).toBe(selfNodeId);
+      expect(locatedIn.rows[0]?.subject_node_id).not.toBe(otherMarcelId);
+      expect(locatedIn.rows[0]?.asserted_by_kind).toBe("user");
     } finally {
       unmockCommon();
       await client.end();

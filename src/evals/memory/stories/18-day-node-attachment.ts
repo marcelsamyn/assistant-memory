@@ -5,7 +5,7 @@
  * skip the temporal-graph attachment that ingestion paths uphold via
  * `ensureSourceNode`. After the fix, every non-Temporal node created via
  * `createNode` must:
- *  - have exactly one `OCCURRED_ON` claim with `assertedByKind === "system"`
+ *  - have exactly one `RECORDED_ON` claim with `assertedByKind === "system"`
  *    where `subjectNodeId === newNodeId`,
  *  - the object node must be a `Temporal` node whose `metadata.label` is
  *    today's date in `yyyy-MM-dd` format,
@@ -13,9 +13,9 @@
  *
  * Negative regression: when `createNode` is invoked with `nodeType="Temporal"`
  * the function deliberately skips the day-node attachment to avoid a self-edge
- * / cycle. We assert no `OCCURRED_ON` claim is created for that path.
+ * / cycle. We assert no `RECORDED_ON` claim is created for that path.
  *
- * Common aliases: createNode day-node, OCCURRED_ON regression, manual source
+ * Common aliases: createNode day-node, RECORDED_ON regression, manual source
  * attach, temporal attach.
  */
 import { ensureUser } from "../seed";
@@ -28,7 +28,7 @@ import { setSkipEmbeddingPersistence } from "~/utils/test-overrides";
 export const story18DayNodeAttachment: EvalFixture = {
   name: "18-day-node-attachment",
   description:
-    "createNode wires a non-Temporal node to today's day node via OCCURRED_ON sourced from the per-user manual source; Temporal nodes skip the self-attachment.",
+    "createNode wires a non-Temporal node to today's day node via RECORDED_ON sourced from the per-user manual source; Temporal nodes skip the self-attachment.",
   setup: async (ctx) => {
     await ensureUser(ctx);
   },
@@ -37,7 +37,7 @@ export const story18DayNodeAttachment: EvalFixture = {
     custom: [
       {
         description:
-          "createNode('Concept', 'foo') attaches exactly one OCCURRED_ON claim to today's Temporal node, sourced from a manual system source",
+          "createNode('Concept', 'foo') attaches exactly one RECORDED_ON claim to today's Temporal node, sourced from a manual system source",
         run: async (ctx) => {
           // The harness already enables the embedding-skip seam globally, but
           // we set it again here defensively in case the order ever changes;
@@ -50,7 +50,7 @@ export const story18DayNodeAttachment: EvalFixture = {
 
             const today = format(new Date(), "yyyy-MM-dd");
 
-            const occurredRows = await ctx.db
+            const recordedRows = await ctx.db
               .select({
                 id: claims.id,
                 subjectNodeId: claims.subjectNodeId,
@@ -62,31 +62,31 @@ export const story18DayNodeAttachment: EvalFixture = {
               .where(
                 and(
                   eq(claims.userId, ctx.userId),
-                  eq(claims.predicate, "OCCURRED_ON"),
+                  eq(claims.predicate, "RECORDED_ON"),
                   eq(claims.subjectNodeId, created.id),
                 ),
               );
-            if (occurredRows.length !== 1) {
+            if (recordedRows.length !== 1) {
               return {
                 pass: false,
-                message: `expected 1 OCCURRED_ON claim for new node, got ${occurredRows.length}`,
+                message: `expected 1 RECORDED_ON claim for new node, got ${recordedRows.length}`,
               };
             }
-            const [row] = occurredRows;
+            const [row] = recordedRows;
             if (!row) {
-              return { pass: false, message: "OCCURRED_ON row missing" };
+              return { pass: false, message: "RECORDED_ON row missing" };
             }
             if (row.assertedByKind !== "system") {
               return {
                 pass: false,
-                message: `OCCURRED_ON.assertedByKind=${row.assertedByKind}, expected system`,
+                message: `RECORDED_ON.assertedByKind=${row.assertedByKind}, expected system`,
               };
             }
             if (!row.objectNodeId) {
               return {
                 pass: false,
                 message:
-                  "OCCURRED_ON.objectNodeId is null; expected a Temporal node",
+                  "RECORDED_ON.objectNodeId is null; expected a Temporal node",
               };
             }
 
@@ -102,7 +102,7 @@ export const story18DayNodeAttachment: EvalFixture = {
             if (!dayNode) {
               return {
                 pass: false,
-                message: "OCCURRED_ON object node missing from DB",
+                message: "RECORDED_ON object node missing from DB",
               };
             }
             if (dayNode.nodeType !== "Temporal") {
@@ -125,13 +125,13 @@ export const story18DayNodeAttachment: EvalFixture = {
             if (!source) {
               return {
                 pass: false,
-                message: "OCCURRED_ON source missing",
+                message: "RECORDED_ON source missing",
               };
             }
             if (source.type !== "manual") {
               return {
                 pass: false,
-                message: `OCCURRED_ON source type=${source.type}, expected manual`,
+                message: `RECORDED_ON source type=${source.type}, expected manual`,
               };
             }
             return { pass: true };
@@ -142,7 +142,7 @@ export const story18DayNodeAttachment: EvalFixture = {
       },
       {
         description:
-          "createNode('Temporal', '2026-04-30') does NOT create a self-OCCURRED_ON edge",
+          "createNode('Temporal', '2026-04-30') does NOT create a self-RECORDED_ON edge",
         run: async (ctx) => {
           setSkipEmbeddingPersistence(true);
           try {
@@ -161,14 +161,14 @@ export const story18DayNodeAttachment: EvalFixture = {
               .where(
                 and(
                   eq(claims.userId, ctx.userId),
-                  eq(claims.predicate, "OCCURRED_ON"),
+                  eq(claims.predicate, "RECORDED_ON"),
                   eq(claims.subjectNodeId, created.id),
                 ),
               );
             if (rows.length !== 0) {
               return {
                 pass: false,
-                message: `expected 0 OCCURRED_ON claims for Temporal node, got ${rows.length}`,
+                message: `expected 0 RECORDED_ON claims for Temporal node, got ${rows.length}`,
               };
             }
             return { pass: true };

@@ -64,7 +64,7 @@ describe("resolvePredicatePolicy", () => {
   });
 
   it("returns the base policy for unknown / null subject type", () => {
-    expect(resolvePredicatePolicy("OWNED_BY", null)).toMatchObject({
+    expect(resolvePredicatePolicy("OWNS", null)).toMatchObject({
       cardinality: "multi_value",
       lifecycle: "none",
     });
@@ -74,9 +74,9 @@ describe("resolvePredicatePolicy", () => {
     });
   });
 
-  it("upgrades OWNED_BY on Task subjects to single_current_value", () => {
-    expect(resolvePredicatePolicy("OWNED_BY", "Task")).toMatchObject({
-      predicate: "OWNED_BY",
+  it("keeps ASSIGNED_TO single_current_value", () => {
+    expect(resolvePredicatePolicy("ASSIGNED_TO", "Task")).toMatchObject({
+      predicate: "ASSIGNED_TO",
       cardinality: "single_current_value",
       lifecycle: "supersede_previous",
       feedsAtlas: false,
@@ -94,12 +94,12 @@ describe("resolvePredicatePolicy", () => {
     });
   });
 
-  it("preserves multi_value OWNED_BY for non-Task subjects", () => {
-    expect(resolvePredicatePolicy("OWNED_BY", "Concept")).toMatchObject({
+  it("preserves multi_value OWNS across subject types", () => {
+    expect(resolvePredicatePolicy("OWNS", "Concept")).toMatchObject({
       cardinality: "multi_value",
       lifecycle: "none",
     });
-    expect(resolvePredicatePolicy("OWNED_BY", "Atlas")).toMatchObject({
+    expect(resolvePredicatePolicy("OWNS", "Person")).toMatchObject({
       cardinality: "multi_value",
       lifecycle: "none",
     });

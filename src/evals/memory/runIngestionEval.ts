@@ -51,6 +51,7 @@ import {
   resetTestOverrides,
   setExtractionClientOverride,
   setSkipEmbeddingPersistence,
+  setSkipJobEnqueue,
   setSkipSemanticSearch,
   setSourceServiceOverride,
 } from "~/utils/test-overrides";
@@ -91,6 +92,7 @@ export async function runIngestionEval(
     setTestDatabase(harnessDb as unknown as typeof db);
     setSourceServiceOverride(createStubSourceService(harnessDb));
     setSkipEmbeddingPersistence(true);
+    setSkipJobEnqueue(true);
     setSkipSemanticSearch(true);
 
     const userId = `eval_user_${fixture.name}`;

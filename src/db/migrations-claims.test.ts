@@ -156,7 +156,7 @@ describeIfServer("migration 0010 (claims layer, PR 1a)", () => {
             VALUES ('sln_conversation_____________', 'src_realconversation________', 'node_cccccccccccccccccccccccccc', '2026-02-01T00:00:00Z');
           INSERT INTO "edges" ("id", "user_id", "source_node_id", "target_node_id", "edge_type", "description", "created_at")
             VALUES
-              ('edge_keepowned_________________', 'user_A', 'node_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'node_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'OWNED_BY',     'owns the laptop', '2026-02-01T00:00:00Z'),
+              ('edge_keepowned_________________', 'user_A', 'node_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'node_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'OWNED_BY', 'owns the laptop', '2026-02-01T00:00:00Z'),
               ('edge_dropmention_______________', 'user_A', 'node_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'node_cccccccccccccccccccccccccc', 'MENTIONED_IN', NULL,              '2026-02-02T00:00:00Z'),
               ('edge_keeptagged________________', 'user_A', 'node_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'node_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'TAGGED_WITH',  NULL,              '2026-02-03T00:00:00Z');
           INSERT INTO "edge_embeddings" ("id", "edge_id", "embedding", "model_name")
@@ -817,6 +817,578 @@ describeIfServer("migration 0011 (claims phase 2b foundation)", () => {
       await client.query("BEGIN");
       await applyMigration();
       await client.query("COMMIT");
+    } finally {
+      await client.end();
+    }
+  });
+});
+
+describeIfServer("migration 0025 (relationship taxonomy split)", () => {
+  const dbName = `memory_claims_mig_0025_test_${Date.now()}_${Math.floor(
+    Math.random() * 1e6,
+  )}`;
+
+  beforeAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE "${dbName}"`);
+    await admin.end();
+  });
+
+  afterAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(
+      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+       WHERE datname = $1 AND pid <> pg_backend_pid()`,
+      [dbName],
+    );
+    await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+    await admin.end();
+  });
+
+  it("rewrites OWNED_BY into ASSIGNED_TO, OWNS, or RELATED_TO by node shape", async () => {
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+
+    try {
+      await client.query(`
+        CREATE TABLE "users" ("id" text PRIMARY KEY NOT NULL);
+        CREATE TABLE "nodes" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "node_type" varchar(50) NOT NULL,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL
+        );
+        CREATE TABLE "claims" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "subject_node_id" text NOT NULL REFERENCES "nodes"("id"),
+          "object_node_id" text REFERENCES "nodes"("id"),
+          "object_value" text,
+          "predicate" varchar(80) NOT NULL,
+          "statement" text NOT NULL,
+          "status" varchar(30) DEFAULT 'active' NOT NULL,
+          "scope" varchar(16) DEFAULT 'personal' NOT NULL,
+          "stated_at" timestamp with time zone NOT NULL,
+          "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+        );
+        CREATE INDEX "claims_task_metadata_lookup_idx"
+          ON "claims" USING btree ("user_id","subject_node_id","predicate","stated_at" DESC NULLS LAST)
+          WHERE "claims"."status" = 'active'
+            AND "claims"."scope" = 'personal'
+            AND "claims"."predicate" IN ('OWNED_BY', 'DUE_ON')
+            AND "claims"."object_node_id" IS NOT NULL;
+
+        INSERT INTO "users" ("id") VALUES ('user_A');
+        INSERT INTO "nodes" ("id", "user_id", "node_type")
+          VALUES
+            ('node_task_direct______________', 'user_A', 'Task'),
+            ('node_task_inverted____________', 'user_A', 'Task'),
+            ('node_owner_alex_______________', 'user_A', 'Person'),
+            ('node_owner_blair______________', 'user_A', 'Person'),
+            ('node_owner_casey______________', 'user_A', 'Person'),
+            ('node_object_mug_______________', 'user_A', 'Object'),
+            ('node_object_bike______________', 'user_A', 'Object'),
+            ('node_emotion_anxiety__________', 'user_A', 'Emotion'),
+            ('node_person_ambiguous_________', 'user_A', 'Person');
+        INSERT INTO "claims" (
+          "id", "user_id", "subject_node_id", "object_node_id", "object_value",
+          "predicate", "statement", "stated_at", "status", "scope"
+        )
+        VALUES
+          (
+            'claim_task_direct______________',
+            'user_A',
+            'node_task_direct______________',
+            'node_owner_alex_______________',
+            NULL,
+            'OWNED_BY',
+            'The task is assigned to Alex.',
+            '2026-06-01T00:00:00Z',
+            'active',
+            'personal'
+          ),
+          (
+            'claim_task_inverted____________',
+            'user_A',
+            'node_owner_blair______________',
+            'node_task_inverted____________',
+            NULL,
+            'OWNED_BY',
+            'Blair is responsible for the task.',
+            '2026-06-02T00:00:00Z',
+            'active',
+            'personal'
+          ),
+          (
+            'claim_passive_ordinary_________',
+            'user_A',
+            'node_object_mug_______________',
+            'node_owner_casey______________',
+            NULL,
+            'OWNED_BY',
+            'The mug belongs to Casey.',
+            '2026-06-03T00:00:00Z',
+            'active',
+            'personal'
+          ),
+          (
+            'claim_active_ordinary__________',
+            'user_A',
+            'node_owner_alex_______________',
+            'node_object_bike______________',
+            NULL,
+            'OWNED_BY',
+            'Alex owns the bike.',
+            '2026-06-04T00:00:00Z',
+            'active',
+            'personal'
+          ),
+          (
+            'claim_ambiguous_______________',
+            'user_A',
+            'node_owner_alex_______________',
+            'node_person_ambiguous_________',
+            NULL,
+            'OWNED_BY',
+            'Ambiguous legacy ownership.',
+            '2026-06-05T00:00:00Z',
+            'active',
+            'personal'
+          ),
+          (
+            'claim_task_non_person__________',
+            'user_A',
+            'node_task_direct______________',
+            'node_emotion_anxiety__________',
+            NULL,
+            'OWNED_BY',
+            'The task is assigned to anxiety.',
+            '2026-06-06T00:00:00Z',
+            'active',
+            'personal'
+          );
+      `);
+
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      const migrationSql = await fs.readFile(
+        path.join(process.cwd(), "drizzle", "0025_relation_taxonomy_split.sql"),
+        "utf8",
+      );
+      const statements = migrationSql
+        .split("--> statement-breakpoint")
+        .map((statement) => statement.trim())
+        .filter((statement) => statement.length > 0);
+      for (const statement of statements) {
+        await client.query(statement);
+      }
+
+      const rows = await client.query<{
+        id: string;
+        predicate: string;
+        subject_node_id: string;
+        object_node_id: string;
+      }>(
+        `SELECT id, predicate, subject_node_id, object_node_id
+           FROM claims
+           ORDER BY id`,
+      );
+      expect(rows.rows).toEqual([
+        {
+          id: "claim_active_ordinary__________",
+          predicate: "OWNS",
+          subject_node_id: "node_owner_alex_______________",
+          object_node_id: "node_object_bike______________",
+        },
+        {
+          id: "claim_ambiguous_______________",
+          predicate: "RELATED_TO",
+          subject_node_id: "node_owner_alex_______________",
+          object_node_id: "node_person_ambiguous_________",
+        },
+        {
+          id: "claim_passive_ordinary_________",
+          predicate: "OWNS",
+          subject_node_id: "node_owner_casey______________",
+          object_node_id: "node_object_mug_______________",
+        },
+        {
+          id: "claim_task_direct______________",
+          predicate: "ASSIGNED_TO",
+          subject_node_id: "node_task_direct______________",
+          object_node_id: "node_owner_alex_______________",
+        },
+        {
+          id: "claim_task_inverted____________",
+          predicate: "ASSIGNED_TO",
+          subject_node_id: "node_task_inverted____________",
+          object_node_id: "node_owner_blair______________",
+        },
+        {
+          id: "claim_task_non_person__________",
+          predicate: "RELATED_TO",
+          subject_node_id: "node_task_direct______________",
+          object_node_id: "node_emotion_anxiety__________",
+        },
+      ]);
+
+      const indexes = await client.query<{ indexdef: string }>(
+        `SELECT indexdef
+           FROM pg_indexes
+           WHERE schemaname = 'public'
+             AND tablename = 'claims'
+             AND indexname = 'claims_task_metadata_lookup_idx'`,
+      );
+      expect(indexes.rows[0]?.indexdef).toContain("ASSIGNED_TO");
+      expect(indexes.rows[0]?.indexdef).not.toContain("OWNED_BY");
+    } finally {
+      await client.end();
+    }
+  });
+});
+
+describeIfServer("migration 0026 (recorded-on bookkeeping dates)", () => {
+  const dbName = `memory_claims_mig_0026_test_${Date.now()}_${Math.floor(
+    Math.random() * 1e6,
+  )}`;
+
+  beforeAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE "${dbName}"`);
+    await admin.end();
+  });
+
+  afterAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(
+      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+       WHERE datname = $1 AND pid <> pg_backend_pid()`,
+      [dbName],
+    );
+    await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+    await admin.end();
+  });
+
+  it("rewrites generated bookkeeping OCCURRED_ON claims to RECORDED_ON only", async () => {
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+
+    try {
+      await client.query(`
+        CREATE TABLE "users" ("id" text PRIMARY KEY NOT NULL);
+        CREATE TABLE "nodes" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "node_type" varchar(50) NOT NULL,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL
+        );
+        CREATE TABLE "claims" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "subject_node_id" text NOT NULL REFERENCES "nodes"("id"),
+          "object_node_id" text REFERENCES "nodes"("id"),
+          "predicate" varchar(80) NOT NULL,
+          "statement" text NOT NULL,
+          "status" varchar(30) DEFAULT 'active' NOT NULL,
+          "scope" varchar(16) DEFAULT 'personal' NOT NULL,
+          "asserted_by_kind" varchar(24) NOT NULL,
+          "stated_at" timestamp with time zone NOT NULL,
+          "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+        );
+
+        INSERT INTO "users" ("id") VALUES ('user_A');
+        INSERT INTO "nodes" ("id", "user_id", "node_type")
+          VALUES
+            ('node_person___________________', 'user_A', 'Person'),
+            ('node_document_________________', 'user_A', 'Document'),
+            ('node_event____________________', 'user_A', 'Event'),
+            ('node_day______________________', 'user_A', 'Temporal');
+        INSERT INTO "claims" (
+          "id", "user_id", "subject_node_id", "object_node_id",
+          "predicate", "statement", "status", "scope", "asserted_by_kind", "stated_at"
+        )
+        VALUES
+          (
+            'claim_manual_node______________',
+            'user_A',
+            'node_person___________________',
+            'node_day______________________',
+            'OCCURRED_ON',
+            'Person node occurred on 2026-06-19',
+            'active',
+            'personal',
+            'system',
+            '2026-06-19T00:00:00Z'
+          ),
+          (
+            'claim_source_node______________',
+            'user_A',
+            'node_document_________________',
+            'node_day______________________',
+            'OCCURRED_ON',
+            'Document source occurred on 2026-06-19',
+            'active',
+            'personal',
+            'system',
+            '2026-06-19T00:00:00Z'
+          ),
+          (
+            'claim_real_event______________',
+            'user_A',
+            'node_event____________________',
+            'node_day______________________',
+            'OCCURRED_ON',
+            'The event happened on 2026-06-19.',
+            'active',
+            'personal',
+            'user',
+            '2026-06-19T00:00:00Z'
+          ),
+          (
+            'claim_system_real_event_______',
+            'user_A',
+            'node_event____________________',
+            'node_day______________________',
+            'OCCURRED_ON',
+            'The system-generated event happened on 2026-06-19.',
+            'active',
+            'personal',
+            'system',
+            '2026-06-19T00:00:00Z'
+          );
+      `);
+
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      const migrationSql = await fs.readFile(
+        path.join(
+          process.cwd(),
+          "drizzle",
+          "0026_recorded_on_bookkeeping_dates.sql",
+        ),
+        "utf8",
+      );
+      const statements = migrationSql
+        .split("--> statement-breakpoint")
+        .map((statement) => statement.trim())
+        .filter((statement) => statement.length > 0);
+      for (const statement of statements) {
+        await client.query(statement);
+      }
+
+      const rows = await client.query<{ id: string; predicate: string }>(
+        `SELECT id, predicate FROM claims ORDER BY id`,
+      );
+      expect(rows.rows).toEqual([
+        { id: "claim_manual_node______________", predicate: "RECORDED_ON" },
+        { id: "claim_real_event______________", predicate: "OCCURRED_ON" },
+        { id: "claim_source_node______________", predicate: "RECORDED_ON" },
+        { id: "claim_system_real_event_______", predicate: "OCCURRED_ON" },
+      ]);
+    } finally {
+      await client.end();
+    }
+  });
+});
+
+describeIfServer("migration 0027 (organization node type)", () => {
+  const dbName = `memory_claims_mig_0027_test_${Date.now()}_${Math.floor(
+    Math.random() * 1e6,
+  )}`;
+
+  beforeAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE "${dbName}"`);
+    await admin.end();
+  });
+
+  afterAll(async () => {
+    const admin = new Client({ connectionString: adminDsn() });
+    await admin.connect();
+    await admin.query(
+      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+       WHERE datname = $1 AND pid <> pg_backend_pid()`,
+      [dbName],
+    );
+    await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+    await admin.end();
+  });
+
+  it("retypes high-confidence historical organization nodes without user review", async () => {
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+
+    try {
+      await client.query(`
+        CREATE TABLE "users" ("id" text PRIMARY KEY NOT NULL);
+        CREATE TABLE "nodes" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "node_type" varchar(50) NOT NULL,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL
+        );
+        CREATE TABLE "node_metadata" (
+          "id" text PRIMARY KEY NOT NULL,
+          "node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
+          "label" text,
+          "canonical_label" text,
+          "description" text,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL
+        );
+        CREATE TABLE "claims" (
+          "id" text PRIMARY KEY NOT NULL,
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "subject_node_id" text NOT NULL REFERENCES "nodes"("id"),
+          "object_node_id" text REFERENCES "nodes"("id"),
+          "predicate" varchar(80) NOT NULL,
+          "statement" text NOT NULL,
+          "status" varchar(30) DEFAULT 'active' NOT NULL,
+          "stated_at" timestamp with time zone NOT NULL
+        );
+
+        INSERT INTO "users" ("id") VALUES ('user_A');
+        INSERT INTO "nodes" ("id", "user_id", "node_type")
+          VALUES
+            ('node_person_worker___________', 'user_A', 'Person'),
+            ('node_person_employer_________', 'user_A', 'Person'),
+            ('node_concept_employer________', 'user_A', 'Concept'),
+            ('node_group___________________', 'user_A', 'Concept'),
+            ('node_founded_company_________', 'user_A', 'Concept'),
+            ('node_founded_project_________', 'user_A', 'Concept'),
+            ('node_person_founder__________', 'user_A', 'Person'),
+            ('node_person_company_behavior_', 'user_A', 'Person'),
+            ('node_friend__________________', 'user_A', 'Person');
+        INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label", "description")
+          VALUES
+            ('meta_person_worker___________', 'node_person_worker___________', 'Ari', 'ari', NULL),
+            ('meta_person_employer_________', 'node_person_employer_________', 'Orchard Labs', 'orchard labs', NULL),
+            ('meta_concept_employer________', 'node_concept_employer________', 'Northstar Bank', 'northstar bank', NULL),
+            ('meta_group___________________', 'node_group___________________', 'Saturday Supper Club', 'saturday supper club', 'Named friend group.'),
+            ('meta_founded_company_________', 'node_founded_company_________', 'Blue Harbor Studio', 'blue harbor studio', 'Independent design company.'),
+            ('meta_founded_project_________', 'node_founded_project_________', 'Launch Checklist', 'launch checklist', 'A reusable project checklist.'),
+            ('meta_person_founder__________', 'node_person_founder__________', 'Casey', 'casey', 'Casey founded a company and leads a community.'),
+            ('meta_person_company_behavior_', 'node_person_company_behavior_', 'River Company', 'river company', 'A person-like node with misleading company text.'),
+            ('meta_friend__________________', 'node_friend__________________', 'Riley', 'riley', NULL);
+        INSERT INTO "claims" (
+          "id", "user_id", "subject_node_id", "object_node_id",
+          "predicate", "statement", "status", "stated_at"
+        )
+        VALUES
+          (
+            'claim_work_person____________',
+            'user_A',
+            'node_person_worker___________',
+            'node_person_employer_________',
+            'WORKS_AT',
+            'Ari works at Orchard Labs.',
+            'active',
+            '2026-06-19T00:00:00Z'
+          ),
+          (
+            'claim_work_concept___________',
+            'user_A',
+            'node_person_worker___________',
+            'node_concept_employer________',
+            'WORKS_AT',
+            'Ari works at Northstar Bank.',
+            'active',
+            '2026-06-19T00:00:00Z'
+          ),
+          (
+            'claim_affiliated_group_______',
+            'user_A',
+            'node_person_worker___________',
+            'node_group___________________',
+            'AFFILIATED_WITH',
+            'Ari is affiliated with Saturday Supper Club.',
+            'active',
+            '2026-06-19T00:00:00Z'
+          ),
+          (
+            'claim_founded_company________',
+            'user_A',
+            'node_person_worker___________',
+            'node_founded_company_________',
+            'FOUNDED',
+            'Ari founded Blue Harbor Studio.',
+            'active',
+            '2026-06-19T00:00:00Z'
+          ),
+          (
+            'claim_founded_project________',
+            'user_A',
+            'node_person_worker___________',
+            'node_founded_project_________',
+            'FOUNDED',
+            'Ari founded Launch Checklist.',
+            'active',
+            '2026-06-19T00:00:00Z'
+          ),
+          (
+            'claim_affiliated_person______',
+            'user_A',
+            'node_person_worker___________',
+            'node_friend__________________',
+            'AFFILIATED_WITH',
+            'Ari is affiliated with Riley.',
+            'active',
+            '2026-06-19T00:00:00Z'
+          ),
+          (
+            'claim_person_founder_________',
+            'user_A',
+            'node_person_founder__________',
+            'node_founded_company_________',
+            'FOUNDED',
+            'Casey founded Blue Harbor Studio.',
+            'active',
+            '2026-06-19T00:00:00Z'
+          ),
+          (
+            'claim_person_behavior________',
+            'user_A',
+            'node_person_company_behavior_',
+            'node_founded_project_________',
+            'HAS_PREFERENCE',
+            'River Company prefers quiet mornings.',
+            'active',
+            '2026-06-19T00:00:00Z'
+          );
+      `);
+
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      const migrationSql = await fs.readFile(
+        path.join(process.cwd(), "drizzle", "0027_organization_node_type.sql"),
+        "utf8",
+      );
+      const statements = migrationSql
+        .split("--> statement-breakpoint")
+        .map((statement) => statement.trim())
+        .filter((statement) => statement.length > 0);
+      for (const statement of statements) {
+        await client.query(statement);
+      }
+
+      const rows = await client.query<{ id: string; node_type: string }>(
+        `SELECT id, node_type FROM nodes ORDER BY id`,
+      );
+      expect(rows.rows).toEqual([
+        { id: "node_concept_employer________", node_type: "Organization" },
+        { id: "node_founded_company_________", node_type: "Organization" },
+        { id: "node_founded_project_________", node_type: "Concept" },
+        { id: "node_friend__________________", node_type: "Person" },
+        { id: "node_group___________________", node_type: "Organization" },
+        { id: "node_person_company_behavior_", node_type: "Person" },
+        { id: "node_person_employer_________", node_type: "Organization" },
+        { id: "node_person_founder__________", node_type: "Person" },
+        { id: "node_person_worker___________", node_type: "Person" },
+      ]);
     } finally {
       await client.end();
     }

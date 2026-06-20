@@ -764,7 +764,7 @@ describeIfServer("applyClaimLifecycle", () => {
     }
   });
 
-  it("supersedes prior OWNED_BY claims on Task subjects", async () => {
+  it("supersedes prior ASSIGNED_TO claims on Task subjects", async () => {
     const userId = "user_H";
     const taskNodeId = newTypeId("node");
     const ownerANodeId = newTypeId("node");
@@ -803,7 +803,7 @@ describeIfServer("applyClaimLifecycle", () => {
             userId,
             subjectNodeId: taskNodeId,
             objectNodeId: ownerANodeId,
-            predicate: "OWNED_BY",
+            predicate: "ASSIGNED_TO",
             statement: "Task owned by A.",
             sourceId,
             assertedByKind: "user",
@@ -815,7 +815,7 @@ describeIfServer("applyClaimLifecycle", () => {
             userId,
             subjectNodeId: taskNodeId,
             objectNodeId: ownerBNodeId,
-            predicate: "OWNED_BY",
+            predicate: "ASSIGNED_TO",
             statement: "Task reassigned to B.",
             sourceId,
             assertedByKind: "user",
@@ -952,7 +952,7 @@ describeIfServer("applyClaimLifecycle", () => {
     }
   });
 
-  it("keeps multiple OWNED_BY claims active on non-Task subjects", async () => {
+  it("keeps multiple OWNS claims active on non-Task subjects", async () => {
     const userId = "user_J";
     const conceptNodeId = newTypeId("node");
     const ownerANodeId = newTypeId("node");
@@ -971,7 +971,7 @@ describeIfServer("applyClaimLifecycle", () => {
       await client.query(
         `
           INSERT INTO "nodes" ("id", "user_id", "node_type")
-            VALUES ($1, $4, 'Concept'), ($2, $4, 'Person'), ($3, $4, 'Person')
+            VALUES ($1, $4, 'Concept'), ($2, $4, 'Object'), ($3, $4, 'Object')
         `,
         [conceptNodeId, ownerANodeId, ownerBNodeId, userId],
       );
@@ -991,8 +991,8 @@ describeIfServer("applyClaimLifecycle", () => {
             userId,
             subjectNodeId: conceptNodeId,
             objectNodeId: ownerANodeId,
-            predicate: "OWNED_BY",
-            statement: "Concept co-owned by A.",
+            predicate: "OWNS",
+            statement: "Concept owns object A.",
             sourceId,
             assertedByKind: "user",
             statedAt: new Date("2026-04-10T00:00:00.000Z"),
@@ -1003,8 +1003,8 @@ describeIfServer("applyClaimLifecycle", () => {
             userId,
             subjectNodeId: conceptNodeId,
             objectNodeId: ownerBNodeId,
-            predicate: "OWNED_BY",
-            statement: "Concept co-owned by B.",
+            predicate: "OWNS",
+            statement: "Concept owns object B.",
             sourceId,
             assertedByKind: "user",
             statedAt: new Date("2026-04-12T00:00:00.000Z"),
@@ -1046,7 +1046,7 @@ describeIfServer("applyClaimLifecycle", () => {
     }
   });
 
-  it("trust rule still applies to OWNED_BY on Tasks", async () => {
+  it("trust rule still applies to ASSIGNED_TO on Tasks", async () => {
     const userId = "user_K";
     const taskNodeId = newTypeId("node");
     const ownerANodeId = newTypeId("node");
@@ -1085,7 +1085,7 @@ describeIfServer("applyClaimLifecycle", () => {
             userId,
             subjectNodeId: taskNodeId,
             objectNodeId: ownerANodeId,
-            predicate: "OWNED_BY",
+            predicate: "ASSIGNED_TO",
             statement: "User asserted owner A.",
             sourceId,
             assertedByKind: "user",
@@ -1097,7 +1097,7 @@ describeIfServer("applyClaimLifecycle", () => {
             userId,
             subjectNodeId: taskNodeId,
             objectNodeId: ownerBNodeId,
-            predicate: "OWNED_BY",
+            predicate: "ASSIGNED_TO",
             statement: "Assistant inferred owner B.",
             sourceId,
             assertedByKind: "assistant_inferred",

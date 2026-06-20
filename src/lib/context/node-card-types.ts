@@ -23,7 +23,7 @@ import { typeIdSchema } from "~/types/typeid.js";
 /**
  * Active `single_current_value` attribute claim about the node, plus any
  * relationship claim whose policy resolves to single_current_value for the
- * subject's type (e.g. OWNED_BY on a Task). Either an `objectValue` (attribute)
+ * subject's type (e.g. ASSIGNED_TO on a Task). Either an `objectValue` (attribute)
  * or an `objectNodeId` + resolved `objectLabel` (relationship) is set; the
  * other column is null. The `(predicate, subjectType)` policy gate happens in
  * `node-card.ts`.

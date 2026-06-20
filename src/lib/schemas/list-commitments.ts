@@ -49,7 +49,7 @@ export const listCommitmentsRequestSchema = z
     provenance: commitmentProvenanceEnum.default("trusted"),
     /** Only tasks owned by this node. Mutually exclusive with `unowned`. */
     ownedBy: typeIdSchema("node").optional(),
-    /** Only tasks with no active `OWNED_BY`. Mutually exclusive with `ownedBy`. */
+    /** Only tasks with no active `ASSIGNED_TO`. Mutually exclusive with `ownedBy`. */
     unowned: z.boolean().optional(),
     /** `YYYY-MM-DD`, inclusive upper bound on the due date. */
     dueBefore: z

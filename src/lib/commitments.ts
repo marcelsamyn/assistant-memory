@@ -195,7 +195,7 @@ export async function setCommitmentDue(
  * `initialClaims`: a mandatory `HAS_TASK_STATUS` (so the task is never
  * observable without a status), plus an optional `DUE_ON` — resolving the
  * canonical Temporal node via {@link ensureDayNode} — and an optional
- * `OWNED_BY`. Because `createNode` rolls the node back if any claim fails, a
+ * `ASSIGNED_TO`. Because `createNode` rolls the node back if any claim fails, a
  * bad `ownedBy` leaves nothing behind.
  *
  * Always creates a new Task; callers wanting to advance an existing task's
@@ -217,7 +217,7 @@ export async function createCommitment(
   } = input;
   const db = await useDatabase();
 
-  // Resolve the owner up-front: it yields a natural-language OWNED_BY statement
+  // Resolve the owner up-front: it yields a natural-language ASSIGNED_TO statement
   // and lets the response echo the same `{ nodeId, label }` shape as the
   // open-commitments view. Existence is enforced here (createClaim re-checks)
   // so a bad owner fails before any node is written.
@@ -233,7 +233,7 @@ export async function createCommitment(
     ownerLabel = ownerRow.label ?? null;
   }
 
-  // HAS_TASK_STATUS first so its claim id is index 0; DUE_ON and OWNED_BY are
+  // HAS_TASK_STATUS first so its claim id is index 0; DUE_ON and ASSIGNED_TO are
   // appended only when supplied, and their positions are captured so we can map
   // createNode's ordered `initialClaimIds` back onto the response.
   const initialClaims: CreateNodeInitialClaimInput[] = [
@@ -270,10 +270,10 @@ export async function createCommitment(
   if (ownedBy !== undefined) {
     ownerIndex =
       initialClaims.push({
-        predicate: "OWNED_BY",
+        predicate: "ASSIGNED_TO",
         statement: ownerLabel
-          ? `${label} is owned by ${ownerLabel}.`
-          : `${label} is owned by a referenced entity.`,
+          ? `${label} is assigned to ${ownerLabel}.`
+          : `${label} is assigned to a referenced entity.`,
         objectNodeId: ownedBy,
         assertedByKind,
       }) - 1;
@@ -471,9 +471,9 @@ export async function setCommitmentStatus(
  *
  * - `ownedBy: TypeId<"node">` → resolve the owner node's label (throwing
  *   {@link NodesNotFoundError} if missing/cross-user) and assert a new
- *   `OWNED_BY` claim. The predicate-policy override for `Task` subjects
- *   supersedes any prior active `OWNED_BY` claim automatically.
- * - `ownedBy: null` → retract every active `OWNED_BY` claim on the task. No new
+ *   `ASSIGNED_TO` claim. The predicate policy supersedes any prior active
+ *   `ASSIGNED_TO` claim automatically.
+ * - `ownedBy: null` → retract every active `ASSIGNED_TO` claim on the task. No new
  *   claim is asserted.
  *
  * Throws {@link TaskNotFoundError} if the subject isn't a Task owned by the
@@ -495,7 +495,7 @@ export async function setCommitmentOwner(
         and(
           eq(claims.userId, userId),
           eq(claims.subjectNodeId, taskId),
-          eq(claims.predicate, "OWNED_BY"),
+          eq(claims.predicate, "ASSIGNED_TO"),
           eq(claims.status, "active"),
         ),
       );
@@ -525,10 +525,10 @@ export async function setCommitmentOwner(
   const created = await createClaim({
     userId,
     subjectNodeId: taskId,
-    predicate: "OWNED_BY",
+    predicate: "ASSIGNED_TO",
     statement: ownerLabel
-      ? `Task is owned by ${ownerLabel}.`
-      : `Task is owned by a referenced entity.`,
+      ? `Task is assigned to ${ownerLabel}.`
+      : `Task is assigned to a referenced entity.`,
     objectNodeId: ownedBy,
     description: note,
     assertedByKind,

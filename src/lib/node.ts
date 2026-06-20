@@ -539,14 +539,14 @@ export interface CreateNodeInitialClaimInput {
 
 /**
  * Create a new node with metadata and embedding, and attach it to the
- * Temporal day node for "today" via an `OCCURRED_ON` claim sourced from the
+ * Temporal day node for "today" via a `RECORDED_ON` claim sourced from the
  * per-user manual system source. Day-node attachment preserves the
  * temporal-graph invariant that ingestion paths uphold (see
  * `ensureSourceNode`), so date-scoped queries like `nodeType` can find
  * manually-created nodes the same way they find ingested ones.
  *
  * `initialClaims` lets callers bootstrap the node with required claims
- * (e.g. a `Task` with its `HAS_TASK_STATUS` and `OWNED_BY`) so it is never
+ * (e.g. a `Task` with its `HAS_TASK_STATUS` and `ASSIGNED_TO`) so it is never
  * observable in a half-bootstrapped state. Claims are written sequentially
  * after the node is created; if any one fails, the node is deleted and the
  * original error is re-thrown.
@@ -594,17 +594,17 @@ export async function createNode(
     .values({ sourceId, nodeId: inserted.id })
     .onConflictDoNothing();
 
-  // Link to today's day node via OCCURRED_ON, mirroring `ensureSourceNode`.
+  // Link to today's day node via RECORDED_ON, mirroring `ensureSourceNode`.
   // Skip for Temporal nodes themselves to avoid a self-link / cycle.
   if (nodeType !== "Temporal") {
     const now = new Date();
     const dayNodeId = await ensureDayNode(db, userId, now);
     await db.insert(claims).values({
       userId,
-      predicate: "OCCURRED_ON",
+      predicate: "RECORDED_ON",
       subjectNodeId: inserted.id,
       objectNodeId: dayNodeId,
-      statement: `${nodeType} node occurred on ${format(now, "yyyy-MM-dd")}`,
+      statement: `${nodeType} node recorded on ${format(now, "yyyy-MM-dd")}`,
       sourceId,
       scope: "personal",
       assertedByKind: "system",

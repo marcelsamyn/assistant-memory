@@ -6,7 +6,7 @@
  *  1. HAS_TASK_STATUS lifecycle: pending → in_progress → done. Each
  *     transition should be a registry-driven supersession; once done the
  *     task disappears from the open list.
- *  2. `ownedBy` filter: returns only tasks whose active OWNED_BY claim points
+ *  2. `ownedBy` filter: returns only tasks whose active ASSIGNED_TO claim points
  *     at the requested node id.
  *  3. `dueBefore` filter: drops tasks whose active DUE_ON falls outside the
  *     requested ceiling.
@@ -163,7 +163,7 @@ export const story15CommitmentsLifecycle: EvalFixture = {
           name: "bobOwned",
           subjectName: "bobTask",
           objectName: "bob",
-          predicate: "OWNED_BY",
+          predicate: "ASSIGNED_TO",
           sourceName: "sessionFilters",
           statement: "Bob owns the report.",
           assertedByKind: "user",

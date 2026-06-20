@@ -79,14 +79,14 @@ export async function ensureSourceNode({
       );
     }
 
-    // Link to day node with a sourced relationship claim.
+    // Link to day node with a sourced bookkeeping relationship claim.
     const dayNodeId = await ensureDayNode(db, userId, timestamp);
     await db.insert(claims).values({
       userId,
-      predicate: "OCCURRED_ON",
+      predicate: "RECORDED_ON",
       subjectNodeId: newNode.id,
       objectNodeId: dayNodeId,
-      statement: `${nodeType} source occurred on ${timestamp.toISOString().slice(0, 10)}`,
+      statement: `${nodeType} source recorded on ${timestamp.toISOString().slice(0, 10)}`,
       sourceId,
       scope: "personal",
       assertedByKind: "system",

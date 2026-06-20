@@ -9,26 +9,72 @@
  * Mirrors `deep-research-cache.ts` ergonomics. Common aliases: bootstrap
  * cache, context bundle cache, read-model cache.
  */
-import { redisConnection } from "../queues";
 import { contextBundleSchema, type ContextBundle } from "./types";
+import { shouldSkipJobEnqueue } from "~/utils/test-overrides";
 
 const CONTEXT_BUNDLE_PREFIX = "context-bundle:";
 const TTL_SECONDS = 6 * 60 * 60;
 
+interface ContextCacheClient {
+  get(key: string): Promise<string | null>;
+  set(
+    key: string,
+    value: string,
+    expiryMode: "EX",
+    ttlSeconds: number,
+  ): Promise<unknown>;
+  del(key: string): Promise<unknown>;
+}
+
+const inMemoryCache = new Map<string, { value: string; expiresAt: number }>();
+
+const inMemoryCacheClient: ContextCacheClient = {
+  async get(key) {
+    const entry = inMemoryCache.get(key);
+    if (entry === undefined) return null;
+    if (entry.expiresAt <= Date.now()) {
+      inMemoryCache.delete(key);
+      return null;
+    }
+    return entry.value;
+  },
+  async set(key, value, _expiryMode, ttlSeconds) {
+    inMemoryCache.set(key, {
+      value,
+      expiresAt: Date.now() + ttlSeconds * 1000,
+    });
+  },
+  async del(key) {
+    inMemoryCache.delete(key);
+  },
+};
+
 function buildKey(userId: string): string {
   return `${CONTEXT_BUNDLE_PREFIX}${userId}`;
+}
+
+async function getCacheClient(): Promise<ContextCacheClient> {
+  if (shouldSkipJobEnqueue()) return inMemoryCacheClient;
+  const { redisConnection } = await import("../queues");
+  return {
+    get: (key) => redisConnection.get(key),
+    set: (key, value, expiryMode, ttlSeconds) =>
+      redisConnection.set(key, value, expiryMode, ttlSeconds),
+    del: (key) => redisConnection.del(key),
+  };
 }
 
 export async function getCachedBundle(
   userId: string,
 ): Promise<ContextBundle | null> {
   try {
-    const data = await redisConnection.get(buildKey(userId));
+    const client = await getCacheClient();
+    const data = await client.get(buildKey(userId));
     if (!data) return null;
     const parsed = contextBundleSchema.safeParse(JSON.parse(data));
     if (!parsed.success) {
       // Stale payload shape — drop it so the next call rebuilds cleanly.
-      await redisConnection.del(buildKey(userId));
+      await client.del(buildKey(userId));
       return null;
     }
     return parsed.data;
@@ -43,7 +89,8 @@ export async function setCachedBundle(
   bundle: ContextBundle,
 ): Promise<void> {
   try {
-    await redisConnection.set(
+    const client = await getCacheClient();
+    await client.set(
       buildKey(userId),
       JSON.stringify(bundle),
       "EX",
@@ -56,7 +103,8 @@ export async function setCachedBundle(
 
 export async function invalidateCachedBundle(userId: string): Promise<void> {
   try {
-    await redisConnection.del(buildKey(userId));
+    const client = await getCacheClient();
+    await client.del(buildKey(userId));
   } catch (error) {
     console.error("Failed to invalidate cached context bundle:", error);
   }

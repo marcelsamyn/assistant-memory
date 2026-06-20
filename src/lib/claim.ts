@@ -2,15 +2,19 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { claims, claimEmbeddings, nodeMetadata, nodes } from "~/db/schema";
 import { applyClaimLifecycle, fetchClaimsByIds } from "~/lib/claims/lifecycle";
+import { assertRelationshipPredicateShape } from "~/lib/claims/predicate-shapes";
 import { generateEmbeddings } from "~/lib/embeddings";
 import { CrossScopeMergeError } from "~/lib/node";
 import { getEffectiveNodeScopes } from "~/lib/node-scope";
 import { logEvent } from "~/lib/observability/log";
 import { ensureSystemSource } from "~/lib/sources";
 import {
+  AttributePredicateEnum,
+  RelationshipPredicateEnum,
   TaskStatusEnum,
   type AssertedByKind,
   type ClaimStatus,
+  type NodeType,
   type Predicate,
   type ReattributeReplace,
   type Scope,
@@ -45,6 +49,22 @@ export class InvalidObjectValueError extends Error {
     this.predicate = predicate;
     this.objectValue = objectValue;
     this.allowedValues = allowedValues;
+  }
+}
+
+/**
+ * Thrown when a claim's predicate does not match its object representation:
+ * attribute predicates require `objectValue`, relationship predicates require
+ * `objectNodeId`.
+ */
+export class InvalidPredicateObjectShapeError extends Error {
+  readonly predicate: Predicate;
+  readonly expected: "objectValue" | "objectNodeId";
+  constructor(predicate: Predicate, expected: "objectValue" | "objectNodeId") {
+    super(`Predicate ${predicate} requires ${expected}`);
+    this.name = "InvalidPredicateObjectShapeError";
+    this.predicate = predicate;
+    this.expected = expected;
   }
 }
 
@@ -127,16 +147,20 @@ export function claimEmbeddingText(claim: {
   return `${claim.predicate} ${claim.statement} status=${claim.status} statedAt=${claim.statedAt.toISOString()}`;
 }
 
-async function fetchOwnedNodeLabels(
+async function fetchOwnedNodes(
   db: Database,
   userId: string,
   nodeIds: TypeId<"node">[],
-): Promise<Map<TypeId<"node">, string | null>> {
+): Promise<Map<TypeId<"node">, { label: string | null; nodeType: NodeType }>> {
   const uniqueNodeIds = [...new Set(nodeIds)];
   if (uniqueNodeIds.length === 0) return new Map();
 
   const found = await db
-    .select({ id: nodes.id, label: nodeMetadata.label })
+    .select({
+      id: nodes.id,
+      label: nodeMetadata.label,
+      nodeType: nodes.nodeType,
+    })
     .from(nodes)
     .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
     .where(and(eq(nodes.userId, userId), inArray(nodes.id, uniqueNodeIds)));
@@ -147,7 +171,12 @@ async function fetchOwnedNodeLabels(
     throw new NodesNotFoundError(userId, missing);
   }
 
-  return new Map(found.map((node) => [node.id, node.label ?? null]));
+  return new Map(
+    found.map((node) => [
+      node.id,
+      { label: node.label ?? null, nodeType: node.nodeType },
+    ]),
+  );
 }
 
 async function insertClaimEmbedding(
@@ -186,6 +215,23 @@ export async function createClaim(
     throw new Error("Exactly one of objectNodeId or objectValue is required");
   }
 
+  const relationshipPredicate = RelationshipPredicateEnum.safeParse(
+    input.predicate,
+  );
+  const attributePredicate = AttributePredicateEnum.safeParse(input.predicate);
+  if (relationshipPredicate.success && !hasObjectNode) {
+    throw new InvalidPredicateObjectShapeError(
+      input.predicate,
+      "objectNodeId",
+    );
+  }
+  if (attributePredicate.success && !hasObjectValue) {
+    throw new InvalidPredicateObjectShapeError(
+      input.predicate,
+      "objectValue",
+    );
+  }
+
   // HAS_TASK_STATUS carries a canonical vocabulary that the open-commitments
   // read model relies on. Reject anything outside `TaskStatusEnum` at the
   // write boundary so different SDK consumers can't drift apart on labels
@@ -204,10 +250,22 @@ export async function createClaim(
     }
   }
 
-  const nodeLabels = await fetchOwnedNodeLabels(db, input.userId, [
+  const ownedNodes = await fetchOwnedNodes(db, input.userId, [
     input.subjectNodeId,
     ...(input.objectNodeId !== undefined ? [input.objectNodeId] : []),
   ]);
+
+  if (relationshipPredicate.success && input.objectNodeId !== undefined) {
+    const subject = ownedNodes.get(input.subjectNodeId);
+    const object = ownedNodes.get(input.objectNodeId);
+    if (subject && object) {
+      assertRelationshipPredicateShape({
+        predicate: relationshipPredicate.data,
+        subjectType: subject.nodeType,
+        objectType: object.nodeType,
+      });
+    }
+  }
 
   const sourceId =
     input.sourceId ?? (await ensureSystemSource(db, input.userId, "manual"));
@@ -258,10 +316,10 @@ export async function createClaim(
   await insertClaimEmbedding(db, finalized);
   return {
     ...finalized,
-    subjectLabel: nodeLabels.get(input.subjectNodeId) ?? null,
+    subjectLabel: ownedNodes.get(input.subjectNodeId)?.label ?? null,
     objectLabel:
       input.objectNodeId !== undefined
-        ? (nodeLabels.get(input.objectNodeId) ?? null)
+        ? (ownedNodes.get(input.objectNodeId)?.label ?? null)
         : null,
   };
 }
@@ -388,7 +446,7 @@ export async function reattributeClaim(
 
   // Validate the new endpoint node exists and is owned by the user. Reuse the
   // same ownership check createClaim uses so the error surface is identical.
-  await fetchOwnedNodeLabels(db, input.userId, [input.newNodeId]);
+  await fetchOwnedNodes(db, input.userId, [input.newNodeId]);
 
   // Compute the resulting endpoint pair and refuse a cross-scope inconsistency,
   // mirroring the guard merge enforces. For an attribute claim the object is a
@@ -477,17 +535,17 @@ export async function reattributeClaim(
 
   await insertClaimEmbedding(db, finalized);
 
-  const labelMap = await fetchOwnedNodeLabels(db, input.userId, [
+  const nodeMap = await fetchOwnedNodes(db, input.userId, [
     finalized.subjectNodeId,
     ...(finalized.objectNodeId !== null ? [finalized.objectNodeId] : []),
   ]);
 
   return {
     ...finalized,
-    subjectLabel: labelMap.get(finalized.subjectNodeId) ?? null,
+    subjectLabel: nodeMap.get(finalized.subjectNodeId)?.label ?? null,
     objectLabel:
       finalized.objectNodeId !== null
-        ? (labelMap.get(finalized.objectNodeId) ?? null)
+        ? (nodeMap.get(finalized.objectNodeId)?.label ?? null)
         : null,
   };
 }

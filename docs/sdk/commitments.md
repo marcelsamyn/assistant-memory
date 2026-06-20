@@ -3,7 +3,7 @@
 Commitments are **Task nodes** in the memory graph. A Task's state lives entirely in claims attached to it:
 
 - `HAS_TASK_STATUS` — the task's current lifecycle position: `pending`, `in_progress`, `done`, or `abandoned`. Exactly one active status claim exists per task at any time; creating a new one automatically supersedes the prior.
-- `OWNED_BY` — points to an owner node (typically a `Person`). Enforced as single-active on Task subjects; reassigning creates a new claim and supersedes the prior.
+- `ASSIGNED_TO` — points to the task owner/assignee node (typically a `Person`). Enforced as single-active on Task subjects; reassigning creates a new claim and supersedes the prior.
 - `DUE_ON` — points to a Temporal day node. Same single-active rule; the server resolves the canonical day node from the `YYYY-MM-DD` string.
 
 The **lifecycle engine** (`single_current_value + supersede_previous` predicate policy) maintains these invariants automatically — callers never manually supersede or retract prior claims when using commitment methods.
@@ -16,7 +16,7 @@ The **lifecycle engine** (`single_current_value + supersede_previous` predicate 
 
 ### `createCommitment`
 
-Opens a new Task node, bootstrapping it with a `HAS_TASK_STATUS` claim and optionally `DUE_ON` and `OWNED_BY` claims in a single round-trip.
+Opens a new Task node, bootstrapping it with a `HAS_TASK_STATUS` claim and optionally `DUE_ON` and `ASSIGNED_TO` claims in a single round-trip.
 
 **Route:** `POST /commitments/create`
 
@@ -176,10 +176,10 @@ Assign, reassign, or clear a Task's owner. A structural twin of `setCommitmentDu
 | ------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `taskId`            | `nodeId`                    |                                                                                                                                        |
 | `owner`             | `{ nodeId, label } \| null` | The new owner, or `null` after a clear.                                                                                                |
-| `claimId`           | `claimId \| null`           | The new `OWNED_BY` claim. `null` on the clear path.                                                                                    |
+| `claimId`           | `claimId \| null`           | The new `ASSIGNED_TO` claim. `null` on the clear path.                                                                                 |
 | `retractedClaimIds` | `claimId[]`                 | Prior claims retracted. Populated only on the clear path (`ownedBy: null`); empty when assigning (lifecycle supersedes automatically). |
 
-**Lifecycle effect:** assign path — creates a new `OWNED_BY` claim; lifecycle supersedes the prior. Clear path — retracts every active `OWNED_BY` claim; no new claim asserted. `NodesNotFoundError` (404) if the owner node does not exist or belongs to a different user.
+**Lifecycle effect:** assign path — creates a new `ASSIGNED_TO` claim; lifecycle supersedes the prior. Clear path — retracts every active `ASSIGNED_TO` claim; no new claim asserted. `NodesNotFoundError` (404) if the owner node does not exist or belongs to a different user.
 
 ```ts
 // Assign
@@ -310,7 +310,7 @@ Paginated, sortable, searchable list across **all four statuses** (open, done, a
 | `statuses`         | `TaskStatus[]`                                                      | no       | all four            | Filter to specific statuses.                                                           |
 | `provenance`       | `"trusted" \| "candidate" \| "all"`                                 | no       | `"trusted"`         | `"trusted"` excludes `assistant_inferred`; `"candidate"` is only `assistant_inferred`. |
 | `ownedBy`          | `nodeId`                                                            | no       |                     | Mutually exclusive with `unowned`.                                                     |
-| `unowned`          | `boolean`                                                           | no       |                     | Only tasks with no active `OWNED_BY`.                                                  |
+| `unowned`          | `boolean`                                                           | no       |                     | Only tasks with no active `ASSIGNED_TO`.                                               |
 | `dueBefore`        | `string` (`YYYY-MM-DD`)                                             | no       |                     | Inclusive upper bound on due date.                                                     |
 | `dueAfter`         | `string` (`YYYY-MM-DD`)                                             | no       |                     | Inclusive lower bound on due date.                                                     |
 | `dueBeforeInstant` | `string` (ISO 8601 instant)                                         | no       |                     | Inclusive upper bound on `dueAt` (UTC instant). Matches timed tasks only.              |
@@ -383,7 +383,7 @@ Detailed read model for a single Task: current state (status, owner, due date) p
 | ---------------- | --------- | -------- | ------- | --------------------------------------------------------------------------------- |
 | `userId`         | `string`  | yes      |         |                                                                                   |
 | `taskId`         | `nodeId`  | yes      |         |                                                                                   |
-| `includeHistory` | `boolean` | no       | `true`  | Include full lifecycle history of `HAS_TASK_STATUS`, `OWNED_BY`, `DUE_ON` claims. |
+| `includeHistory` | `boolean` | no       | `true`  | Include full lifecycle history of `HAS_TASK_STATUS`, `ASSIGNED_TO`, `DUE_ON` claims. |
 | `includeSources` | `boolean` | no       | `true`  | Include distinct evidence sources behind the task's claims.                       |
 
 **Response**
@@ -398,7 +398,7 @@ Detailed read model for a single Task: current state (status, owner, due date) p
 | `statusClaimId`        | `claimId \| null`                    |                                                                       |
 | `statusStatedAt`       | `Date \| null`                       |                                                                       |
 | `statusAssertedByKind` | `AssertedByKind \| null`             |                                                                       |
-| `owner`                | `{ nodeId, label, claimId } \| null` | Includes the active `OWNED_BY` claim id.                              |
+| `owner`                | `{ nodeId, label, claimId } \| null` | Includes the active `ASSIGNED_TO` claim id.                           |
 | `dueOn`                | `string \| null`                     |                                                                       |
 | `dueTime`              | `string \| null`                     | `HH:mm` wall-clock time, or `null` for date-only.                     |
 | `timeZone`             | `string \| null`                     | IANA timezone, or `null` for date-only.                               |
@@ -422,7 +422,7 @@ Each `TaskLifecycleEntry`:
 | Field            | Type                                                        | Notes                                                  |
 | ---------------- | ----------------------------------------------------------- | ------------------------------------------------------ |
 | `claimId`        | `claimId`                                                   |                                                        |
-| `predicate`      | `"HAS_TASK_STATUS" \| "OWNED_BY" \| "DUE_ON"`               |                                                        |
+| `predicate`      | `"HAS_TASK_STATUS" \| "ASSIGNED_TO" \| "DUE_ON"`            |                                                        |
 | `value`          | `string \| null`                                            | `objectValue` for status; `objectLabel` for owner/due. |
 | `objectNodeId`   | `nodeId \| null`                                            |                                                        |
 | `status`         | `"active" \| "superseded" \| "retracted" \| "contradicted"` |                                                        |

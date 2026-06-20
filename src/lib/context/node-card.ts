@@ -574,7 +574,7 @@ export async function getNodeCards(
 
 /**
  * Per-Person open-commitments fetch. `getOpenCommitments` already queries the
- * subset of claims under HAS_TASK_STATUS / OWNED_BY / DUE_ON; running it in
+ * subset of claims under HAS_TASK_STATUS / ASSIGNED_TO / DUE_ON; running it in
  * parallel for the small subset of Person ids in a card batch is the simplest
  * shape until the read-model pipeline lands a true batch query.
  */

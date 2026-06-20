@@ -267,7 +267,7 @@ describeIfServer("claim operations", () => {
 
       const subjectId = newTypeId("node");
       await client.query(
-        `INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Entity')`,
+        `INSERT INTO "nodes" ("id","user_id","node_type") VALUES ($1,$2,'Task')`,
         [subjectId, userId],
       );
 
@@ -460,7 +460,7 @@ describeIfServer("reattributeClaim", () => {
         userId,
         subjectNodeId: oldSubjectId,
         objectNodeId: objectId,
-        predicate: "OWNED_BY",
+        predicate: "OWNS",
         statement: "Bob owns a MacBook Pro.",
         description: "ownership note",
         sourceId,
@@ -486,7 +486,7 @@ describeIfServer("reattributeClaim", () => {
         subjectNodeId: newSubjectId,
         objectNodeId: objectId,
         objectValue: null,
-        predicate: "OWNED_BY",
+        predicate: "OWNS",
         statement: "Bob owns a MacBook Pro.",
         description: "ownership note",
         sourceId,
@@ -569,7 +569,7 @@ describeIfServer("reattributeClaim", () => {
         userId,
         subjectNodeId: subjectId,
         objectNodeId: oldObjectId,
-        predicate: "OWNED_BY",
+        predicate: "OWNS",
         statement: "Alice owns a laptop.",
         sourceId,
         scope: "personal",
@@ -723,7 +723,7 @@ describeIfServer("reattributeClaim", () => {
         userId,
         subjectNodeId: subjectId,
         objectNodeId: objectId,
-        predicate: "OWNED_BY",
+        predicate: "OWNS",
         statement: "Alice owns a laptop.",
         sourceId: personalSourceId,
         scope: "personal",
@@ -791,7 +791,7 @@ describeIfServer("reattributeClaim", () => {
         userId,
         subjectNodeId: subjectId,
         objectNodeId: objectId,
-        predicate: "OWNED_BY",
+        predicate: "OWNS",
         statement: "Alice owns a laptop.",
         sourceId,
         scope: "personal",
@@ -888,7 +888,7 @@ describeIfServer("reattributeClaim", () => {
           userId,
           subjectNodeId: oldSubjectId,
           objectNodeId: objectId,
-          predicate: "OWNED_BY",
+          predicate: "OWNS",
           statement: "Bob owns a laptop.",
           sourceId,
           scope: "personal",

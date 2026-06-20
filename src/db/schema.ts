@@ -210,7 +210,7 @@ export const claims = pgTable(
         table.statedAt.desc(),
       )
       .where(
-        sql`${table.status} = 'active' AND ${table.scope} = 'personal' AND ${table.predicate} IN ('OWNED_BY', 'DUE_ON') AND ${table.objectNodeId} IS NOT NULL`,
+        sql`${table.status} = 'active' AND ${table.scope} = 'personal' AND ${table.predicate} IN ('ASSIGNED_TO', 'DUE_ON') AND ${table.objectNodeId} IS NOT NULL`,
       ),
     index("claims_due_instant_idx")
       .on(table.userId, table.objectInstant)

@@ -209,7 +209,7 @@ describeIfServer("extractGraph claim-native insertion", () => {
                           {
                             subjectId: "existing_person_1",
                             objectId: "project_1",
-                            predicate: "TAGGED_WITH",
+                            predicate: "RELATED_TO",
                             statement: "Alice discussed Project Falcon.",
                             sourceRef: "msg_1",
                             assertionKind: "user",
@@ -353,6 +353,15 @@ describeIfServer("extractGraph claim-native insertion", () => {
       expect(prompt).toContain(
         "- sourceRef: msg_1; statedAt: 2026-04-25T10:00:00.000Z",
       );
+      expect(prompt).toContain("Relationship predicate shape rules:");
+      expect(prompt).toContain("- ASSIGNED_TO:");
+      expect(prompt).toContain("- OWNS:");
+      expect(prompt).toContain("- RECORDED_ON:");
+      expect(prompt).toContain("Organization");
+      expect(prompt).toContain("named informal groups");
+      expect(prompt).toContain("Do not emit RECORDED_ON");
+      expect(prompt).not.toContain("LIVES_IN");
+      expect(prompt).not.toContain("OWNED_BY");
       expect(prompt).not.toContain("- msg_1 (2026-04-25T10:00:00.000Z)");
       expect(warnings).toContain(
         "Skipping claim with invalid sourceRef: missing_msg",

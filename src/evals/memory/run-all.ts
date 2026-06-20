@@ -11,18 +11,15 @@
  *
  * Common aliases: eval runner, regression CI script, memory eval artifacts.
  */
-// Provide harmless defaults for env vars the harness never exercises (Redis,
-// MinIO, OpenAI). The harness reaches Postgres directly via the test DSN; no
-// other service is contacted. These defaults must be set before any module
-// imports `~/utils/env`.
-import { isServerReachable } from "./db-fixture";
-import { runIngestionEval } from "./runIngestionEval";
-import { ALL_STORIES } from "./stories";
 import type { EvalResult } from "./types";
 import "dotenv/config";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
+// Provide harmless defaults for env vars the harness never exercises (Redis,
+// MinIO, OpenAI). The harness reaches Postgres directly via the test DSN; no
+// other service is contacted. Env-dependent modules are imported dynamically
+// inside `runAll()` after these defaults are installed.
 process.env["DATABASE_URL"] ??=
   "postgres://postgres:postgres@localhost:5431/postgres";
 process.env["MEMORY_OPENAI_API_KEY"] ??= "test";
@@ -91,6 +88,12 @@ function renderMarkdown(summary: RunSummary): string {
 }
 
 export async function runAll(): Promise<RunSummary> {
+  const [{ isServerReachable }, { runIngestionEval }, { ALL_STORIES }] =
+    await Promise.all([
+      import("./db-fixture"),
+      import("./runIngestionEval"),
+      import("./stories"),
+    ]);
   const start = Date.now();
   const results: EvalResult[] = [];
 
