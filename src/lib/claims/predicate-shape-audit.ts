@@ -15,14 +15,13 @@ import {
   RelationshipPredicateEnum,
   type AssertedByKind,
   type NodeType,
+  type Predicate,
   type RelationshipPredicate,
   type Scope,
 } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 
-const DEPRECATED_RELATIONSHIP_PREDICATES = ["OWNED_BY"] as const;
-type DeprecatedRelationshipPredicate =
-  (typeof DEPRECATED_RELATIONSHIP_PREDICATES)[number];
+type DeprecatedRelationshipPredicate = "OWNED_BY";
 
 export interface InvalidRelationshipPredicateShapeClaim {
   claimId: TypeId<"claim">;
@@ -71,6 +70,20 @@ export interface RelationshipPredicateHealthAudit {
   promptGuide: RelationshipPredicateGuideStats;
 }
 
+interface InvalidRelationshipPredicateShapeRow {
+  claimId: TypeId<"claim">;
+  predicate: Predicate;
+  statement: string;
+  assertedByKind: AssertedByKind;
+  scope: Scope;
+  subjectNodeId: TypeId<"node">;
+  subjectType: NodeType;
+  subjectLabel: string | null;
+  objectNodeId: TypeId<"node"> | null;
+  objectType: NodeType | null;
+  objectLabel: string | null;
+}
+
 export async function auditInvalidRelationshipPredicateShapes(
   db: DrizzleDB,
   userId: string,
@@ -79,8 +92,10 @@ export async function auditInvalidRelationshipPredicateShapes(
   },
 ): Promise<InvalidRelationshipPredicateShapeAudit> {
   const subjectMetadata = aliasedTable(nodeMetadata, "shapeAuditSubjectMeta");
+  const objectNodes = aliasedTable(nodes, "shapeAuditObjectNodes");
+  const objectMetadata = aliasedTable(nodeMetadata, "shapeAuditObjectMeta");
 
-  const rows = await db
+  const rows: InvalidRelationshipPredicateShapeRow[] = await db
     .select({
       claimId: claims.id,
       predicate: claims.predicate,
@@ -91,6 +106,8 @@ export async function auditInvalidRelationshipPredicateShapes(
       subjectType: nodes.nodeType,
       subjectLabel: subjectMetadata.label,
       objectNodeId: claims.objectNodeId,
+      objectType: objectNodes.nodeType,
+      objectLabel: objectMetadata.label,
     })
     .from(claims)
     .innerJoin(nodes, eq(nodes.id, claims.subjectNodeId))
@@ -98,6 +115,8 @@ export async function auditInvalidRelationshipPredicateShapes(
       subjectMetadata,
       eq(subjectMetadata.nodeId, claims.subjectNodeId),
     )
+    .leftJoin(objectNodes, eq(objectNodes.id, claims.objectNodeId))
+    .leftJoin(objectMetadata, eq(objectMetadata.nodeId, claims.objectNodeId))
     .where(
       and(
         eq(claims.userId, userId),
@@ -106,30 +125,6 @@ export async function auditInvalidRelationshipPredicateShapes(
       ),
     );
 
-  const objectNodeIds = rows
-    .map((row) => row.objectNodeId)
-    .filter((nodeId): nodeId is TypeId<"node"> => nodeId !== null);
-  const objectRows =
-    objectNodeIds.length === 0
-      ? []
-      : await db
-          .select({
-            nodeId: nodes.id,
-            type: nodes.nodeType,
-            label: nodeMetadata.label,
-          })
-          .from(nodes)
-          .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-          .where(
-            and(eq(nodes.userId, userId), inArray(nodes.id, objectNodeIds)),
-          );
-  const objectsById = new Map(
-    objectRows.map((row) => [
-      row.nodeId,
-      { type: row.type, label: row.label },
-    ]),
-  );
-
   const counts = new Map<RelationshipPredicate, number>();
   const examples: InvalidRelationshipPredicateShapeClaim[] = [];
   const seedNodeIds = new Set<TypeId<"node">>();
@@ -137,12 +132,10 @@ export async function auditInvalidRelationshipPredicateShapes(
   for (const row of rows) {
     const predicate = relationshipPredicateFrom(row.predicate);
     if (predicate === null) continue;
-    const object =
-      row.objectNodeId === null ? undefined : objectsById.get(row.objectNodeId);
     const invalid = isInvalidRelationshipPredicateClaimShape({
       predicate,
       subjectType: row.subjectType,
-      objectType: object?.type ?? null,
+      objectType: row.objectType ?? null,
     });
     if (!invalid) continue;
 
@@ -162,12 +155,12 @@ export async function auditInvalidRelationshipPredicateShapes(
           label: row.subjectLabel,
         },
         object:
-          row.objectNodeId === null || object === undefined
+          row.objectNodeId === null || row.objectType === null
             ? null
             : {
                 nodeId: row.objectNodeId,
-                type: object.type,
-                label: object.label,
+                type: row.objectType,
+                label: row.objectLabel,
               },
       });
     }

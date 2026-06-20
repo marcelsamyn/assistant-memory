@@ -36,23 +36,22 @@ organization_candidates AS (
           SELECT 1
           FROM "claims" c
           WHERE c."status" = 'active'
-            AND (
-              (
-                c."subject_node_id" = nt."id"
-                AND c."predicate" IN (
-                  'EXHIBITED_EMOTION',
-                  'FOUNDED',
-                  'HAS_GOAL',
-                  'HAS_PREFERENCE',
-                  'PARTICIPATED_IN',
-                  'WORKS_AT'
-                )
-              )
-              OR (
-                c."object_node_id" = nt."id"
-                AND c."predicate" = 'ASSIGNED_TO'
-              )
+            AND c."subject_node_id" = nt."id"
+            AND c."predicate" IN (
+              'EXHIBITED_EMOTION',
+              'FOUNDED',
+              'HAS_GOAL',
+              'HAS_PREFERENCE',
+              'PARTICIPATED_IN',
+              'WORKS_AT'
             )
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "claims" c
+          WHERE c."status" = 'active'
+            AND c."object_node_id" = nt."id"
+            AND c."predicate" = 'ASSIGNED_TO'
         )
       )
     )
