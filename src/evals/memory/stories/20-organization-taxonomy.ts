@@ -118,7 +118,8 @@ export const story20OrganizationTaxonomy: EvalFixture = {
   expectations: {
     nodeCounts: [
       {
-        description: "organization nodes are minted for formal and informal groups",
+        description:
+          "organization nodes are minted for formal and informal groups",
         type: "Organization",
         exactCount: 4,
       },
@@ -169,7 +170,8 @@ export const story20OrganizationTaxonomy: EvalFixture = {
           if ((misclassifiedProductRows?.count ?? 0) !== 0) {
             return {
               pass: false,
-              message: "expected Northstar app to remain Object, not Organization",
+              message:
+                "expected Northstar app to remain Object, not Organization",
             };
           }
 

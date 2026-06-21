@@ -93,7 +93,10 @@ function proposeOwnedByRepair(
     };
   }
 
-  if (OWNABLE_TYPES.has(input.subject.type) && OWNER_TYPES.has(input.object.type)) {
+  if (
+    OWNABLE_TYPES.has(input.subject.type) &&
+    OWNER_TYPES.has(input.object.type)
+  ) {
     return {
       claimId: input.claimId,
       reason: "legacy_passive_ownership",
@@ -106,7 +109,10 @@ function proposeOwnedByRepair(
     };
   }
 
-  if (OWNER_TYPES.has(input.subject.type) && OWNABLE_TYPES.has(input.object.type)) {
+  if (
+    OWNER_TYPES.has(input.subject.type) &&
+    OWNABLE_TYPES.has(input.object.type)
+  ) {
     return {
       claimId: input.claimId,
       reason: "legacy_active_ownership",

@@ -95,27 +95,32 @@ export const RELATIONSHIP_PREDICATE_SHAPES: RelationshipPredicateShapeMap = {
     subjectTypes: ["Person"],
     objectTypes: ["Event", "Conversation"],
     meaning: "a person took part in an event or conversation",
-    useWhen: "Use for attendance, calls, meetings, trips, classes, and other event participation.",
+    useWhen:
+      "Use for attendance, calls, meetings, trips, classes, and other event participation.",
   },
   OCCURRED_AT: {
     predicate: "OCCURRED_AT",
     subjectTypes: EVENT_TYPES,
     objectTypes: ["Location"],
     meaning: "an event happened at a place",
-    useWhen: "Use only for event location, not for where a person lives or where an object belongs.",
+    useWhen:
+      "Use only for event location, not for where a person lives or where an object belongs.",
   },
   OCCURRED_ON: {
     predicate: "OCCURRED_ON",
     subjectTypes: [...EVENT_TYPES, "Task", "Media", "Object"],
     objectTypes: ["Temporal"],
-    meaning: "an event, content item, task, or time-anchored thing happened on a date",
-    useWhen: "Use for calendar dates. The object must be a Temporal node such as a day.",
+    meaning:
+      "an event, content item, task, or time-anchored thing happened on a date",
+    useWhen:
+      "Use for calendar dates. The object must be a Temporal node such as a day.",
   },
   RECORDED_ON: {
     predicate: "RECORDED_ON",
     subjectTypes: RECORDABLE_TYPES,
     objectTypes: ["Temporal"],
-    meaning: "a node or source was recorded, ingested, observed, or created on a date",
+    meaning:
+      "a node or source was recorded, ingested, observed, or created on a date",
     useWhen:
       "Use for graph bookkeeping dates. Do not use when the source text says an event happened; use OCCURRED_ON for real-world occurrence dates.",
   },
@@ -124,21 +129,24 @@ export const RELATIONSHIP_PREDICATE_SHAPES: RelationshipPredicateShapeMap = {
     subjectTypes: EVENT_TYPES,
     objectTypes: ["Object", "Concept", "Media", "Location"],
     meaning: "an event involved a notable non-person item",
-    useWhen: "Use for objects, media, tools, places, or concepts that mattered in an event.",
+    useWhen:
+      "Use for objects, media, tools, places, or concepts that mattered in an event.",
   },
   EXHIBITED_EMOTION: {
     predicate: "EXHIBITED_EMOTION",
     subjectTypes: ["Person"],
     objectTypes: ["Emotion"],
     meaning: "a person expressed or displayed an emotion",
-    useWhen: "Use only when the object is an Emotion node such as excitement, frustration, joy, or concern.",
+    useWhen:
+      "Use only when the object is an Emotion node such as excitement, frustration, joy, or concern.",
   },
   TAGGED_WITH: {
     predicate: "TAGGED_WITH",
     subjectTypes: "any",
     objectTypes: ["Concept"],
     meaning: "a node has a reusable conceptual tag",
-    useWhen: "Use for durable labels or categories, not for arbitrary entities.",
+    useWhen:
+      "Use for durable labels or categories, not for arbitrary entities.",
   },
   ASSIGNED_TO: {
     predicate: "ASSIGNED_TO",
@@ -153,7 +161,8 @@ export const RELATIONSHIP_PREDICATE_SHAPES: RelationshipPredicateShapeMap = {
     subjectTypes: ["Task"],
     objectTypes: ["Temporal"],
     meaning: "a task is due on a date",
-    useWhen: "Use only for task deadlines. The object must be a Temporal date node.",
+    useWhen:
+      "Use only for task deadlines. The object must be a Temporal date node.",
   },
   PRECEDES: {
     predicate: "PRECEDES",
@@ -181,7 +190,8 @@ export const RELATIONSHIP_PREDICATE_SHAPES: RelationshipPredicateShapeMap = {
     subjectTypes: ["Person"],
     objectTypes: ["Organization", "Concept", "Object"],
     meaning: "a person founded an organization, project, or product",
-    useWhen: "Use for founder relationships, not ordinary authorship or ownership.",
+    useWhen:
+      "Use for founder relationships, not ordinary authorship or ownership.",
   },
   CREATED: {
     predicate: "CREATED",
@@ -201,8 +211,10 @@ export const RELATIONSHIP_PREDICATE_SHAPES: RelationshipPredicateShapeMap = {
     predicate: "PART_OF",
     subjectTypes: "any",
     objectTypes: "any",
-    meaning: "one thing is a component, member, section, or period inside another",
-    useWhen: "Use for containment or composition, including time rollups such as day to week.",
+    meaning:
+      "one thing is a component, member, section, or period inside another",
+    useWhen:
+      "Use for containment or composition, including time rollups such as day to week.",
   },
   USES: {
     predicate: "USES",
@@ -216,21 +228,24 @@ export const RELATIONSHIP_PREDICATE_SHAPES: RelationshipPredicateShapeMap = {
     subjectTypes: OWNER_TYPES,
     objectTypes: OWNABLE_TYPES,
     meaning: "an owner entity owns or possesses another thing",
-    useWhen: "Use owner-to-owned direction. Do not use for task assignment; use ASSIGNED_TO.",
+    useWhen:
+      "Use owner-to-owned direction. Do not use for task assignment; use ASSIGNED_TO.",
   },
   AFFILIATED_WITH: {
     predicate: "AFFILIATED_WITH",
     subjectTypes: ["Person", "Organization", "Concept", "Object"],
     objectTypes: ["Person", "Organization", "Concept", "Object"],
     meaning: "a loose or former affiliation between entities",
-    useWhen: "Use when a more specific predicate such as WORKS_AT, FOUNDED, CREATED, or OWNS does not fit.",
+    useWhen:
+      "Use when a more specific predicate such as WORKS_AT, FOUNDED, CREATED, or OWNS does not fit.",
   },
   RELATED_TO: {
     predicate: "RELATED_TO",
     subjectTypes: "any",
     objectTypes: "any",
     meaning: "a durable explicit association with no more specific predicate",
-    useWhen: "Use sparingly for meaningful associations that are not events, preferences, ownership, location, dates, employment, creation, usage, or task metadata.",
+    useWhen:
+      "Use sparingly for meaningful associations that are not events, preferences, ownership, location, dates, employment, creation, usage, or task metadata.",
   },
 };
 

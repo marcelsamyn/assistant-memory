@@ -911,7 +911,7 @@ describeIfServer("node operations", () => {
         data: [{ embedding: Array.from({ length: 1024 }, () => 0) }],
         usage: { total_tokens: 0 },
       }),
-      }));
+    }));
 
     try {
       await ensureCreateNodeTables(client);

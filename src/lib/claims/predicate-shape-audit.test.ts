@@ -186,7 +186,9 @@ describeIfServer("auditRelationshipPredicateHealth", () => {
         { predicate: "OWNED_BY", count: 1 },
       ]);
       expect(report.repairProposals).toHaveLength(2);
-      expect(report.repairProposals.map((proposal) => proposal.claimId)).toEqual(
+      expect(
+        report.repairProposals.map((proposal) => proposal.claimId),
+      ).toEqual(
         expect.arrayContaining([
           claimIds.invertedDate,
           claimIds.deprecatedOwnership,

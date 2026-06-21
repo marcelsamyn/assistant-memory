@@ -111,10 +111,7 @@ export async function auditInvalidRelationshipPredicateShapes(
     })
     .from(claims)
     .innerJoin(nodes, eq(nodes.id, claims.subjectNodeId))
-    .leftJoin(
-      subjectMetadata,
-      eq(subjectMetadata.nodeId, claims.subjectNodeId),
-    )
+    .leftJoin(subjectMetadata, eq(subjectMetadata.nodeId, claims.subjectNodeId))
     .leftJoin(objectNodes, eq(objectNodes.id, claims.objectNodeId))
     .leftJoin(objectMetadata, eq(objectMetadata.nodeId, claims.objectNodeId))
     .where(
@@ -227,10 +224,7 @@ async function loadDeprecatedPredicateRepairProposals(
     })
     .from(claims)
     .innerJoin(nodes, eq(nodes.id, claims.subjectNodeId))
-    .leftJoin(
-      subjectMetadata,
-      eq(subjectMetadata.nodeId, claims.subjectNodeId),
-    )
+    .leftJoin(subjectMetadata, eq(subjectMetadata.nodeId, claims.subjectNodeId))
     .where(
       and(
         eq(claims.userId, userId),
@@ -258,10 +252,7 @@ async function loadDeprecatedPredicateRepairProposals(
             and(eq(nodes.userId, userId), inArray(nodes.id, objectNodeIds)),
           );
   const objectsById = new Map(
-    objectRows.map((row) => [
-      row.nodeId,
-      { type: row.type, label: row.label },
-    ]),
+    objectRows.map((row) => [row.nodeId, { type: row.type, label: row.label }]),
   );
 
   return rows.flatMap((row) => {
@@ -307,11 +298,7 @@ export async function auditRelationshipPredicateHealth(
     await Promise.all([
       auditInvalidRelationshipPredicateShapes(db, userId, options),
       loadDeprecatedPredicateCounts(db, userId),
-      loadDeprecatedPredicateRepairProposals(
-        db,
-        userId,
-        options.exampleLimit,
-      ),
+      loadDeprecatedPredicateRepairProposals(db, userId, options.exampleLimit),
     ]);
 
   const invalidRepairProposals = invalidShapes.examples.flatMap((example) => {
@@ -336,10 +323,7 @@ export async function auditRelationshipPredicateHealth(
   return {
     invalidShapes,
     deprecatedPredicates,
-    repairProposals: [
-      ...invalidRepairProposals,
-      ...deprecatedRepairProposals,
-    ],
+    repairProposals: [...invalidRepairProposals, ...deprecatedRepairProposals],
     promptGuide: promptGuideStats(),
   };
 }

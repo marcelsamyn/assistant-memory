@@ -104,8 +104,8 @@ describe("proposeRelationshipPredicateShapeRepair", () => {
     ).toMatchObject({
       predicate: "OWNS",
       subjectNodeId: person.nodeId,
-        objectNodeId: object.nodeId,
-      });
+      objectNodeId: object.nodeId,
+    });
 
     expect(
       proposeRelationshipPredicateShapeRepair({
