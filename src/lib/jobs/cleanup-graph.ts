@@ -350,9 +350,7 @@ async function fetchSubgraphClaims(
 ): Promise<GraphClaim[]> {
   const uniqueNodeIds = [...new Set(graphNodes.map((node) => node.id))];
   if (uniqueNodeIds.length === 0) return [];
-  const nodeTypesById = new Map(
-    graphNodes.map((node) => [node.id, node.type]),
-  );
+  const nodeTypesById = new Map(graphNodes.map((node) => [node.id, node.type]));
 
   const rows = await db
     .select({
@@ -503,12 +501,7 @@ async function buildSubgraph(
         counts.aliasCount === 0,
     };
   });
-  const claimsArr = await fetchSubgraphClaims(
-    db,
-    userId,
-    nodesArr,
-    maxClaims,
-  );
+  const claimsArr = await fetchSubgraphClaims(db, userId, nodesArr, maxClaims);
   return { nodes: nodesArr, claims: claimsArr };
 }
 

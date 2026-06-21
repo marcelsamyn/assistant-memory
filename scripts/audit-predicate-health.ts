@@ -1,8 +1,7 @@
-import "dotenv/config";
-
 import { auditRelationshipPredicateHealth } from "../src/lib/claims/predicate-shape-audit";
-import { z } from "zod";
 import { useDatabase } from "../src/utils/db";
+import "dotenv/config";
+import { z } from "zod";
 
 const argsSchema = z.object({
   userId: z.string().min(1),
@@ -10,7 +9,9 @@ const argsSchema = z.object({
 });
 
 async function main(): Promise<void> {
-  const [userId, exampleLimit] = process.argv.slice(2).filter((arg) => arg !== "--");
+  const [userId, exampleLimit] = process.argv
+    .slice(2)
+    .filter((arg) => arg !== "--");
   const args = argsSchema.parse({
     userId,
     exampleLimit,

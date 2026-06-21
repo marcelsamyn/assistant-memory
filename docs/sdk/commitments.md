@@ -379,12 +379,12 @@ Detailed read model for a single Task: current state (status, owner, due date) p
 
 **Request**
 
-| Field            | Type      | Required | Default | Notes                                                                             |
-| ---------------- | --------- | -------- | ------- | --------------------------------------------------------------------------------- |
-| `userId`         | `string`  | yes      |         |                                                                                   |
-| `taskId`         | `nodeId`  | yes      |         |                                                                                   |
+| Field            | Type      | Required | Default | Notes                                                                                |
+| ---------------- | --------- | -------- | ------- | ------------------------------------------------------------------------------------ |
+| `userId`         | `string`  | yes      |         |                                                                                      |
+| `taskId`         | `nodeId`  | yes      |         |                                                                                      |
 | `includeHistory` | `boolean` | no       | `true`  | Include full lifecycle history of `HAS_TASK_STATUS`, `ASSIGNED_TO`, `DUE_ON` claims. |
-| `includeSources` | `boolean` | no       | `true`  | Include distinct evidence sources behind the task's claims.                       |
+| `includeSources` | `boolean` | no       | `true`  | Include distinct evidence sources behind the task's claims.                          |
 
 **Response**
 

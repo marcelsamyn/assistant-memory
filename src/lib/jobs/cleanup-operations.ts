@@ -296,12 +296,7 @@ export async function retractClaim(
   const [updated] = await database
     .update(claims)
     .set({ status: "retracted", updatedAt: new Date() })
-    .where(
-      and(
-        eq(claims.id, op.claimId),
-        eq(claims.userId, userId),
-      ),
-    )
+    .where(and(eq(claims.id, op.claimId), eq(claims.userId, userId)))
     .returning();
 
   if (!updated) return null;

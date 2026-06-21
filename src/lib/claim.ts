@@ -220,16 +220,10 @@ export async function createClaim(
   );
   const attributePredicate = AttributePredicateEnum.safeParse(input.predicate);
   if (relationshipPredicate.success && !hasObjectNode) {
-    throw new InvalidPredicateObjectShapeError(
-      input.predicate,
-      "objectNodeId",
-    );
+    throw new InvalidPredicateObjectShapeError(input.predicate, "objectNodeId");
   }
   if (attributePredicate.success && !hasObjectValue) {
-    throw new InvalidPredicateObjectShapeError(
-      input.predicate,
-      "objectValue",
-    );
+    throw new InvalidPredicateObjectShapeError(input.predicate, "objectValue");
   }
 
   // HAS_TASK_STATUS carries a canonical vocabulary that the open-commitments
