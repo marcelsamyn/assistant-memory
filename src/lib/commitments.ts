@@ -444,6 +444,8 @@ export async function setCommitmentStatus(
     ? coerceTaskStatus(previous.objectValue)
     : null;
   const previousClaimId = previous ? previous.id : null;
+  const statusAssertedByKind =
+    assertedByKind === "assistant_inferred" ? "user" : assertedByKind;
 
   const created = await createClaim({
     userId,
@@ -452,7 +454,7 @@ export async function setCommitmentStatus(
     statement: `Task marked ${status}.`,
     objectValue: status,
     description: note,
-    assertedByKind,
+    assertedByKind: statusAssertedByKind,
     statedAt: new Date(),
   });
 

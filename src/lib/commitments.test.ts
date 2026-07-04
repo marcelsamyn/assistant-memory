@@ -378,6 +378,75 @@ describeIfServer("setCommitmentStatus", () => {
     }
   });
 
+  it("does not keep an explicit status change in the candidate band", async () => {
+    const userId = "user_set_status_candidate_done";
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await provisionSchema(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+
+      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      try {
+        const { createCommitment, setCommitmentStatus } = await import(
+          "./commitments"
+        );
+
+        const created = await createCommitment(
+          createCommitmentRequestSchema.parse({
+            userId,
+            label: "Review accidentally retained candidate provenance",
+            assertedByKind: "assistant_inferred",
+          }),
+        );
+
+        const result = await setCommitmentStatus(
+          setCommitmentStatusRequestSchema.parse({
+            userId,
+            taskId: created.taskId,
+            status: "done",
+            assertedByKind: "assistant_inferred",
+          }),
+        );
+
+        const activeStatus = await client.query<{
+          object_value: string;
+          asserted_by_kind: string;
+          status: string;
+        }>(
+          `
+            SELECT "object_value", "asserted_by_kind", "status"
+            FROM "claims"
+            WHERE "id" = $1
+          `,
+          [result.claimId],
+        );
+
+        expect(activeStatus.rows[0]).toEqual({
+          object_value: "done",
+          asserted_by_kind: "user",
+          status: "active",
+        });
+      } finally {
+        resetTestOverrides();
+      }
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
   it("returns null previousStatus/previousClaimId when no prior active status exists", async () => {
     const userId = "user_set_status_noprev";
     const taskNodeId = newTypeId("node");

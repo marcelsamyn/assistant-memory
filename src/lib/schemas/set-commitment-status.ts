@@ -22,7 +22,11 @@ export const setCommitmentStatusRequestSchema = z.object({
   status: TaskStatusEnum,
   /** Optional note stored on the new claim's `description`. */
   note: z.string().min(1).optional(),
-  /** Provenance for the new `HAS_TASK_STATUS` claim. Defaults to `"user"`. */
+  /**
+   * Provenance for the new `HAS_TASK_STATUS` claim. Defaults to `"user"`;
+   * `"assistant_inferred"` is accepted for legacy callers but stored as `"user"`
+   * because this endpoint represents an explicit status mutation.
+   */
   assertedByKind: AssertedByKindEnum.optional(),
 });
 
