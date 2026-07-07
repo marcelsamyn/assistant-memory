@@ -232,7 +232,7 @@ describeIfServer("ingest -> search end-to-end", () => {
                         {
                           subjectId: "existing_person_1",
                           objectId: "project_1",
-                          predicate: "PARTICIPATED_IN",
+                          predicate: "RELATED_TO",
                           statement: `${personLabel} is working on the ${projectLabel} project.`,
                           sourceRef: "msg_1",
                           assertionKind: "user",
