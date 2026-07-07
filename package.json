@@ -33,7 +33,7 @@
     "tsx": "tsx",
     "test": "vitest",
     "check:structured-outputs": "tsx scripts/check-structured-output-schemas.ts",
-    "build:check": "tsc --noEmit && pnpm run check:structured-outputs",
+    "build:check": "tsc --noEmit && tsx scripts/check-structured-output-schemas.ts",
     "lint": "eslint src --ext .js,.mjs,.cjs,.ts",
     "lint:fix": "eslint src --ext .js,.mjs,.cjs,.ts --fix",
     "format": "prettier --check .",
@@ -64,6 +64,7 @@
     "prettier": "^3.5.3",
     "tsc-alias": "^1.8.16",
     "tsx": "^4.19.3",
+    "typescript": "5.8.3",
     "typescript-eslint": "^8.29.0",
     "vitest": "^3.1.3"
   },

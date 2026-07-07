@@ -167,6 +167,65 @@ describe("runChunkedExtraction", () => {
     ).rejects.toThrow(/all 3 chunk\(s\) failed/);
   });
 
+  it("splits and retries a chunk whose structured response hits the output length limit", async () => {
+    vi.doMock("~/utils/env", () => ({
+      env: { INGEST_CHUNK_MAX_CHARS: 10000, INGEST_DEBUG_DIR: undefined },
+    }));
+
+    const content = [
+      `Alpha daily log paragraph ${"a".repeat(2200)}`,
+      `Beta daily log paragraph ${"b".repeat(2200)}`,
+    ].join("\n\n");
+    const lengthLimitError = new Error(
+      "Could not parse response content as the length limit was reached",
+    );
+    lengthLimitError.name = "LengthFinishReasonError";
+
+    const calls: Array<{
+      content: string;
+      contentNote: string | undefined;
+      replaceFlag: boolean | undefined;
+    }> = [];
+    vi.doMock("~/lib/extract-graph", () => ({
+      extractGraph: vi.fn(
+        async (params: {
+          content: string;
+          contentNote?: string;
+          replaceClaimsForSources?: boolean;
+        }) => {
+          calls.push({
+            content: params.content,
+            contentNote: params.contentNote,
+            replaceFlag: params.replaceClaimsForSources,
+          });
+          if (calls.length === 1) throw lengthLimitError;
+          return { newNodesCreated: 0, claimsCreated: 0 };
+        },
+      ),
+    }));
+
+    const { runChunkedExtraction } = await import(
+      "~/lib/ingestion/chunked-extract"
+    );
+
+    await runChunkedExtraction({
+      ...makeBaseParams(),
+      content,
+    });
+
+    expect(calls).toHaveLength(3);
+    expect(calls[0]?.content).toBe(content);
+    expect(calls[1]?.content).toContain("Alpha daily log paragraph");
+    expect(calls[1]?.content).not.toContain("Beta daily log paragraph");
+    expect(calls[2]?.content).toContain("Beta daily log paragraph");
+    expect(calls[2]?.content).not.toContain("Alpha daily log paragraph");
+    expect(calls[1]?.contentNote).toContain("section 1 of 2");
+    expect(calls[2]?.contentNote).toContain("section 2 of 2");
+    expect(calls[0]?.replaceFlag).toBe(true);
+    expect(calls[1]?.replaceFlag).toBe(true);
+    expect(calls[2]?.replaceFlag).toBe(false);
+  });
+
   it("surfaces document title and author into the contentNote so the LLM doesn't attribute author claims to the user", async () => {
     vi.doMock("~/utils/env", () => ({
       env: { INGEST_CHUNK_MAX_CHARS: 6000, INGEST_DEBUG_DIR: undefined },

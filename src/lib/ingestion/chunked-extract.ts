@@ -41,6 +41,8 @@ import { type SourceType } from "~/types/graph";
 import { type TypeId } from "~/types/typeid";
 import { env } from "~/utils/env";
 
+const MAX_LENGTH_LIMIT_SPLIT_DEPTH = 4;
+
 export interface ChunkedExtractionParams {
   userId: string;
   sourceType: SourceType;
@@ -120,13 +122,26 @@ export async function runChunkedExtraction(
 
   let succeeded = 0;
   let failed = 0;
+  let totalLeafChunks = chunks.length;
   let didReplaceClaims = false;
-  const failures: Array<{ index: number; message: string }> = [];
+  const failures: Array<{ label: string; message: string }> = [];
 
-  for (const [index, chunk] of chunks.entries()) {
+  const extractChunk = async ({
+    chunk,
+    index,
+    total,
+    label,
+    splitDepth,
+  }: {
+    chunk: string;
+    index: number;
+    total: number;
+    label: string;
+    splitDepth: number;
+  }): Promise<void> => {
     const contentNote = buildContentNote({
       index,
-      total: chunks.length,
+      total,
       sourceType,
       ...(documentMetadata && { documentMetadata }),
       ...(thesis && { thesis }),
@@ -139,31 +154,64 @@ export async function runChunkedExtraction(
         replaceClaimsForSources: !didReplaceClaims,
         ...(contentNote && { contentNote }),
         ...(debugDir && {
-          onLlmIO: makeDebugDumpHook(debugDir, sourceId, index),
+          onLlmIO: makeDebugDumpHook(debugDir, sourceId, label),
         }),
       });
       didReplaceClaims = true;
       succeeded += 1;
       console.log(
-        `chunked-extract:   chunk=${index}/${chunks.length} len=${chunk.length} newNodes=${result.newNodesCreated} claims=${result.claimsCreated}`,
+        `chunked-extract:   chunk=${label}/${total} len=${chunk.length} newNodes=${result.newNodesCreated} claims=${result.claimsCreated}`,
       );
     } catch (err) {
+      if (
+        isOutputLengthLimitError(err) &&
+        splitDepth < MAX_LENGTH_LIMIT_SPLIT_DEPTH
+      ) {
+        const subChunks = splitChunkForLengthLimitRetry(chunk);
+        if (subChunks.length > 1) {
+          totalLeafChunks += subChunks.length - 1;
+          console.warn(
+            `chunked-extract:   chunk=${label}/${total} len=${chunk.length} hit output length limit; retrying as ${subChunks.length} smaller chunks`,
+          );
+          for (const [subIndex, subChunk] of subChunks.entries()) {
+            await extractChunk({
+              chunk: subChunk,
+              index: subIndex,
+              total: subChunks.length,
+              label: `${label}.${subIndex}`,
+              splitDepth: splitDepth + 1,
+            });
+          }
+          return;
+        }
+      }
+
       failed += 1;
       const message = err instanceof Error ? err.message : String(err);
-      failures.push({ index, message });
+      failures.push({ label, message });
       console.error(
-        `chunked-extract:   chunk=${index}/${chunks.length} len=${chunk.length} FAILED: ${message}`,
+        `chunked-extract:   chunk=${label}/${total} len=${chunk.length} FAILED: ${message}`,
       );
     }
+  };
+
+  for (const [index, chunk] of chunks.entries()) {
+    await extractChunk({
+      chunk,
+      index,
+      total: chunks.length,
+      label: String(index),
+      splitDepth: 0,
+    });
   }
 
   if (failed > 0) {
     console.warn(
-      `chunked-extract: src=${sourceId} succeeded=${succeeded}/${chunks.length} failed=${failed}/${chunks.length}`,
+      `chunked-extract: src=${sourceId} succeeded=${succeeded}/${totalLeafChunks} failed=${failed}/${totalLeafChunks}`,
     );
     if (succeeded === 0) {
       throw new Error(
-        `chunked-extract: src=${sourceId} all ${chunks.length} chunk(s) failed; first error: ${failures[0]?.message}`,
+        `chunked-extract: src=${sourceId} all ${totalLeafChunks} chunk(s) failed; first error: ${failures[0]?.message}`,
       );
     }
   }
@@ -273,6 +321,86 @@ function buildContentNote(opts: {
   return lines.join("\n");
 }
 
+function isOutputLengthLimitError(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    (err.name === "LengthFinishReasonError" ||
+      err.message.includes("length limit was reached"))
+  );
+}
+
+function splitChunkForLengthLimitRetry(chunk: string): string[] {
+  if (chunk.length < 2) return [];
+
+  const targetMaxChars = Math.ceil(chunk.length / 2);
+  const semanticChunks = chunkMarkdown(chunk, targetMaxChars);
+  if (
+    semanticChunks.length > 1 &&
+    semanticChunks.every((semanticChunk) => semanticChunk.length < chunk.length)
+  ) {
+    return semanticChunks;
+  }
+
+  const splitIndex = findFallbackSplitIndex(chunk);
+  if (splitIndex === null) return [];
+
+  return [
+    chunk.slice(0, splitIndex).trimEnd(),
+    chunk.slice(splitIndex).trimStart(),
+  ].filter((part) => part.length > 0);
+}
+
+function findFallbackSplitIndex(text: string): number | null {
+  if (text.length < 2) return null;
+
+  const midpoint = Math.floor(text.length / 2);
+  const candidates = [
+    splitBefore(text, "\n\n", midpoint),
+    splitAfter(text, "\n\n", midpoint),
+    splitBefore(text, "\n", midpoint),
+    splitAfter(text, "\n", midpoint),
+    splitBefore(text, ". ", midpoint),
+    splitAfter(text, ". ", midpoint),
+    splitBefore(text, " ", midpoint),
+    splitAfter(text, " ", midpoint),
+  ].filter(
+    (candidate): candidate is number =>
+      candidate !== null && candidate > 0 && candidate < text.length,
+  );
+
+  let best: number | null = null;
+  for (const candidate of candidates) {
+    if (
+      best === null ||
+      Math.abs(candidate - midpoint) < Math.abs(best - midpoint)
+    ) {
+      best = candidate;
+    }
+  }
+
+  return best ?? midpoint;
+}
+
+function splitBefore(
+  text: string,
+  delimiter: string,
+  index: number,
+): number | null {
+  const delimiterIndex = text.lastIndexOf(delimiter, index);
+  if (delimiterIndex === -1) return null;
+  return delimiterIndex + delimiter.length;
+}
+
+function splitAfter(
+  text: string,
+  delimiter: string,
+  index: number,
+): number | null {
+  const delimiterIndex = text.indexOf(delimiter, index);
+  if (delimiterIndex === -1) return null;
+  return delimiterIndex + delimiter.length;
+}
+
 /**
  * Returns an `extractGraph` `onLlmIO` hook that writes the prompt and parsed
  * response for a single chunk to `<debugDir>`. Errors are logged and
@@ -281,7 +409,7 @@ function buildContentNote(opts: {
 function makeDebugDumpHook(
   debugDir: string,
   sourceId: string,
-  chunkIndex: number,
+  chunkIndex: string,
 ): (info: { prompt: string; response: unknown }) => Promise<void> {
   return async ({ prompt, response }) => {
     try {
