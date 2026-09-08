@@ -294,7 +294,10 @@ describeIfServer("partition migration upgrade", () => {
     const applied = await client.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM drizzle.__drizzle_migrations",
     );
-    expect(Number(applied.rows[0]?.count)).toBe(37);
+    const journal = journalSchema.parse(
+      JSON.parse(await readFile("drizzle/meta/_journal.json", "utf8")),
+    );
+    expect(Number(applied.rows[0]?.count)).toBe(journal.entries.length);
 
     const backfilled = await client.query<{
       feed_epoch: number;
