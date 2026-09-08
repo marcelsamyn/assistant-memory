@@ -260,6 +260,13 @@
       "when": 1788856923932,
       "tag": "0036_redact_feed_tombstones",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1788865799729,
+      "tag": "0037_batch_runtime_change_feed",
+      "breakpoints": true
     }
   ]
 }
