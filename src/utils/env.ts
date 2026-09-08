@@ -52,6 +52,12 @@ const envSchema = z.object({
   MINIO_ACCESS_KEY: z.string().min(1),
   MINIO_SECRET_KEY: z.string().min(1),
   SOURCES_BUCKET: z.string().min(1),
+  SOURCE_BLOB_UPLOAD_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(2147483647)
+    .default(60_000),
   MARKITDOWN_URL: z
     .string()
     .url()

@@ -19,6 +19,10 @@ import {
   withSourceWriteFence,
 } from "~/lib/partition-access";
 import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import {
+  putSourceBlob,
+  SourceBlobUploadTimeoutError,
+} from "~/lib/source-blob-put";
 import { Scope, SourceType } from "~/types/graph";
 import { typeIdSchema, type TypeId } from "~/types/typeid";
 import { env } from "~/utils/env";
@@ -144,6 +148,7 @@ export class SourceService {
     private bucket: string,
     private inlineThreshold = 1024, // bytes
     private blobUploadHooks: SourceBlobUploadHooks = {},
+    private blobUploadTimeoutMs = env.SOURCE_BLOB_UPLOAD_TIMEOUT_MS,
   ) {}
 
   /** Ensure the S3/MinIO bucket exists, creating it if necessary */
@@ -314,7 +319,11 @@ export class SourceService {
           );
           successes.push(row.id);
         } catch (err: unknown) {
-          await this.scheduleFailedSourceBlobUploadCleanup(row);
+          // A cancelled request can have reached storage. Leave its reservation
+          // for stale-upload recovery instead of claiming an immediate outcome.
+          if (!(err instanceof SourceBlobUploadTimeoutError)) {
+            await this.scheduleFailedSourceBlobUploadCleanup(row);
+          }
           failures.push({ sourceId: row.id, reason: toErrorMessage(err) });
         }
       }
@@ -427,6 +436,12 @@ export class SourceService {
     contentType: string | undefined,
     rootWriteFence?: { userId: string; source: SourceWriteFence },
   ): Promise<void> {
+    // Resolve the bucket region and sign before taking database row locks.
+    const signedUrl = await this.minioClient.presignedPutObject(
+      this.bucket,
+      sourceBlobObjectKey(source.userId, source.id),
+      3600,
+    );
     await this.db.transaction(async (tx) => {
       const fences = this.sourceBlobUploadFences(source, rootWriteFence);
       const sourceIds = [
@@ -517,15 +532,7 @@ export class SourceService {
         sourceId: source.id,
         objectKey: sourceBlobObjectKey(source.userId, source.id),
       });
-      await new Promise<void>((resolve, reject) => {
-        this.minioClient.putObject(
-          this.bucket,
-          sourceBlobObjectKey(source.userId, source.id),
-          fileBuffer,
-          fileBuffer.length,
-          (error) => (error ? reject(error) : resolve()),
-        );
-      });
+      await putSourceBlob(signedUrl, fileBuffer, this.blobUploadTimeoutMs);
       const [updatedSource] = await tx
         .update(sources)
         .set({
