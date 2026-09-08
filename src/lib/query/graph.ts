@@ -7,7 +7,7 @@ import {
 } from "../graph";
 import { assertPartitionReadAllowed } from "../partition-access";
 import { QueryGraphRequest, QueryGraphResponse } from "../schemas/query-graph";
-import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { nodes, nodeMetadata } from "~/db/schema";
 import type { NodeType } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
@@ -27,7 +27,7 @@ export async function queryKnowledgeGraph(
   const db = await useDatabase();
   await assertPartitionReadAllowed(db, userId, partitionKey);
 
-  // If no query -> return full labeled graph
+  // Start with a stable, bounded selection; callers can expand neighborhoods.
   if (!query) {
     let whereCondition = and(
       eq(nodes.userId, userId),
@@ -52,7 +52,9 @@ export async function queryKnowledgeGraph(
       })
       .from(nodes)
       .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-      .where(whereCondition);
+      .where(whereCondition)
+      .orderBy(asc(nodes.id))
+      .limit(maxNodes);
 
     // Ensure label is string, not null
     const nodeRowsClean = nodeRows.map((n) => ({
