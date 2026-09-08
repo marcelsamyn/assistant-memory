@@ -1,10 +1,24 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { Client as MinioClient } from "minio";
 import { Readable } from "stream";
 import { z } from "zod";
 import db, { type DrizzleDB } from "~/db";
-import { sources, SourcesInsert } from "~/db/schema";
+import {
+  sourceBlobUploads,
+  sourceTombstones,
+  sources,
+  SourcesInsert,
+} from "~/db/schema";
 import { logEvent } from "~/lib/observability/log";
+import {
+  PartitionAccessError,
+  assertLiveSourceParents,
+  lockSourceParentAttachmentGates,
+  preparePartitionWrite,
+  type SourceWriteFence,
+  withSourceWriteFence,
+} from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { Scope, SourceType } from "~/types/graph";
 import { typeIdSchema, type TypeId } from "~/types/typeid";
 import { env } from "~/utils/env";
@@ -62,7 +76,10 @@ function sourceObjectPrefix(userId: string): string {
   return `${userId}/`;
 }
 
-function sourceObjectKey(userId: string, sourceId: TypeId<"source">): string {
+export function sourceBlobObjectKey(
+  userId: string,
+  sourceId: TypeId<"source">,
+): string {
   return `${sourceObjectPrefix(userId)}${sourceId}`;
 }
 
@@ -83,6 +100,15 @@ export interface SourceBlobStore {
   listBlobSourceIds(userId: string): Promise<ReadonlySet<TypeId<"source">>>;
 }
 
+/** Test/adapter seam around an externally visible blob upload. */
+export interface SourceBlobUploadHooks {
+  beforePut?: (input: {
+    userId: string;
+    sourceId: TypeId<"source">;
+    objectKey: string;
+  }) => Promise<void>;
+}
+
 /** Discriminated union of inline vs blob payload */
 export type RawResult =
   | { kind: "inline"; sourceId: string; content: string }
@@ -91,6 +117,7 @@ export type RawResult =
 /** Input for creating a source */
 export interface SourceCreateInput {
   userId: string;
+  partitionKey?: ContextPartitionKey;
   sourceType: SourceType;
   externalId: string;
   parentId?: TypeId<"source">;
@@ -116,6 +143,7 @@ export class SourceService {
     private minioClient: MinioClient,
     private bucket: string,
     private inlineThreshold = 1024, // bytes
+    private blobUploadHooks: SourceBlobUploadHooks = {},
   ) {}
 
   /** Ensure the S3/MinIO bucket exists, creating it if necessary */
@@ -139,17 +167,34 @@ export class SourceService {
   }
 
   /** Insert multiple sources with optional inline or blob payloads */
-  async insertMany(inputs: SourceCreateInput[]): Promise<{
+  async insertMany(
+    inputs: SourceCreateInput[],
+    rootWriteFence?: { userId: string; source: SourceWriteFence },
+  ): Promise<{
     successes: TypeId<"source">[];
     failures: Array<{ sourceId?: TypeId<"source">; reason: string }>;
   }> {
     const successes: TypeId<"source">[] = [];
     const failures: Array<{ sourceId?: TypeId<"source">; reason: string }> = [];
 
+    await Promise.all(
+      [
+        ...new Map(
+          inputs.map((input) => [
+            `${input.userId}:${input.partitionKey ?? "<legacy>"}`,
+            input,
+          ]),
+        ).values(),
+      ].map((input) =>
+        preparePartitionWrite(this.db, input.userId, input.partitionKey),
+      ),
+    );
+
     // 1. Bulk insert initial source rows with status pending
     const insertRows = inputs.map(
       (input): SourcesInsert => ({
         userId: input.userId,
+        partitionKey: input.partitionKey,
         type: input.sourceType,
         externalId: input.externalId,
         parentSource: input.parentId,
@@ -173,13 +218,55 @@ export class SourceService {
       );
     });
 
-    const inserted = await this.db
-      .insert(sources)
-      .values(insertRows)
-      .onConflictDoNothing({
-        target: [sources.userId, sources.type, sources.externalId],
-      })
-      .returning();
+    const insertSourceRows = (database: DrizzleDB) =>
+      database
+        .insert(sources)
+        .values(insertRows)
+        .onConflictDoNothing({
+          target: [sources.userId, sources.type, sources.externalId],
+        })
+        .returning();
+    const parentAttachments = inputs.flatMap((input) =>
+      input.parentId
+        ? [{ userId: input.userId, sourceId: input.parentId }]
+        : [],
+    );
+    const insertWithParentAttachmentFence = async (
+      database: DrizzleDB,
+      gatesAlreadyHeld = false,
+    ) => {
+      if (!gatesAlreadyHeld) {
+        await lockSourceParentAttachmentGates(database, parentAttachments);
+      }
+      await assertLiveSourceParents(database, parentAttachments);
+      return insertSourceRows(database);
+    };
+    const inserted = rootWriteFence
+      ? await withSourceWriteFence(
+          this.db,
+          {
+            userId: rootWriteFence.userId,
+            sources: [rootWriteFence.source],
+            beforeSourceLocks: (tx) =>
+              lockSourceParentAttachmentGates(tx, parentAttachments),
+          },
+          (tx) => insertWithParentAttachmentFence(tx, true),
+        )
+      : parentAttachments.length > 0
+        ? await this.db.transaction((tx) => insertWithParentAttachmentFence(tx))
+        : await insertSourceRows(this.db);
+
+    const writePayload = <T>(write: (database: DrizzleDB) => Promise<T>) =>
+      rootWriteFence
+        ? withSourceWriteFence(
+            this.db,
+            {
+              userId: rootWriteFence.userId,
+              sources: [rootWriteFence.source],
+            },
+            (tx) => write(tx),
+          )
+        : write(this.db);
 
     // 2. Handle payloads
     await this.ensureBucket();
@@ -203,10 +290,12 @@ export class SourceService {
           rawContent: input.content ?? input.fileBuffer!.toString("utf-8"),
         };
         try {
-          await this.db
-            .update(sources)
-            .set({ metadata: updatedMeta, status: "completed" })
-            .where(eq(sources.id, row.id));
+          await writePayload((database) =>
+            database
+              .update(sources)
+              .set({ metadata: updatedMeta, status: "completed" })
+              .where(eq(sources.id, row.id)),
+          );
           successes.push(row.id);
         } catch (err: unknown) {
           failures.push({ sourceId: row.id, reason: toErrorMessage(err) });
@@ -214,41 +303,30 @@ export class SourceService {
       }
       // Blob payload
       else if (input.fileBuffer) {
-        const key = sourceObjectKey(row.userId, row.id);
         try {
-          await new Promise<void>((resolve, reject) => {
-            this.minioClient.putObject(
-              this.bucket,
-              key,
-              input.fileBuffer!,
-              input.fileBuffer!.length,
-              (err) => (err ? reject(err) : resolve()),
-            );
-          });
-          await this.db
-            .update(sources)
-            .set({
-              status: "completed" as const,
-              contentType: input.contentType,
-              contentLength: input.fileBuffer!.length,
-            })
-            .where(eq(sources.id, row.id));
+          await this.reserveSourceBlobUpload(row, rootWriteFence);
+          await this.beginSourceBlobUpload(row, rootWriteFence);
+          await this.putSourceBlobWithFence(
+            row,
+            input.fileBuffer,
+            input.contentType,
+            rootWriteFence,
+          );
           successes.push(row.id);
         } catch (err: unknown) {
-          await this.db
-            .update(sources)
-            .set({ status: "failed" as const })
-            .where(eq(sources.id, row.id));
+          await this.scheduleFailedSourceBlobUploadCleanup(row);
           failures.push({ sourceId: row.id, reason: toErrorMessage(err) });
         }
       }
       // no payload
       else {
         try {
-          await this.db
-            .update(sources)
-            .set({ status: "completed" as const })
-            .where(eq(sources.id, row.id));
+          await writePayload((database) =>
+            database
+              .update(sources)
+              .set({ status: "completed" as const })
+              .where(eq(sources.id, row.id)),
+          );
           successes.push(row.id);
         } catch (err: unknown) {
           failures.push({ sourceId: row.id, reason: toErrorMessage(err) });
@@ -259,23 +337,311 @@ export class SourceService {
     return { successes, failures };
   }
 
-  /** Hard delete a source: remove blob then drop the DB row */
-  async deleteHard(userId: string, sourceId: TypeId<"source">): Promise<void> {
-    await this.ensureBucket();
-    const key = sourceObjectKey(userId, sourceId);
-    // delete blob, ignore errors
-    try {
+  /**
+   * Source erasure and object storage cannot share a transaction. Reserve the
+   * deterministic object key before any put so tombstone owns a durable
+   * coordination point even if this worker dies between database steps.
+   */
+  private async reserveSourceBlobUpload(
+    source: SourcesInsert & { id: TypeId<"source"> },
+    rootWriteFence?: { userId: string; source: SourceWriteFence },
+  ): Promise<void> {
+    await withSourceWriteFence(
+      this.db,
+      this.sourceBlobUploadFences(source, rootWriteFence),
+      async (tx) => {
+        const [existing] = await tx
+          .select({ state: sourceBlobUploads.state })
+          .from(sourceBlobUploads)
+          .where(
+            and(
+              eq(sourceBlobUploads.userId, source.userId),
+              eq(sourceBlobUploads.sourceId, source.id),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (existing) {
+          throw new Error(
+            `A blob upload reservation already exists for source ${source.id}`,
+          );
+        }
+        await tx.insert(sourceBlobUploads).values({
+          userId: source.userId,
+          sourceId: source.id,
+          objectKey: sourceBlobObjectKey(source.userId, source.id),
+          state: "reserved",
+        });
+      },
+    );
+  }
+
+  /** Marks a committed reservation as ready to own the external put. */
+  private async beginSourceBlobUpload(
+    source: SourcesInsert & { id: TypeId<"source"> },
+    rootWriteFence?: { userId: string; source: SourceWriteFence },
+  ): Promise<void> {
+    await withSourceWriteFence(
+      this.db,
+      this.sourceBlobUploadFences(source, rootWriteFence),
+      async (tx) => {
+        const [upload] = await tx
+          .select({ state: sourceBlobUploads.state })
+          .from(sourceBlobUploads)
+          .where(
+            and(
+              eq(sourceBlobUploads.userId, source.userId),
+              eq(sourceBlobUploads.sourceId, source.id),
+            ),
+          )
+          .for("update")
+          .limit(1);
+        if (!upload || upload.state !== "reserved") {
+          throw new PartitionAccessError(
+            "SOURCE_TOMBSTONED",
+            "Source blob upload was cancelled before bytes were sent",
+          );
+        }
+        await tx
+          .update(sourceBlobUploads)
+          .set({ state: "uploading", updatedAt: new Date() })
+          .where(
+            and(
+              eq(sourceBlobUploads.userId, source.userId),
+              eq(sourceBlobUploads.sourceId, source.id),
+              eq(sourceBlobUploads.state, "reserved"),
+            ),
+          );
+      },
+    );
+  }
+
+  /**
+   * Holds the source and reservation locks across the object-store call. A
+   * tombstone therefore waits for this put, then switches the reservation to
+   * cleanup; if it wins first this method fails before sending bytes.
+   */
+  private async putSourceBlobWithFence(
+    source: SourcesInsert & { id: TypeId<"source"> },
+    fileBuffer: Buffer,
+    contentType: string | undefined,
+    rootWriteFence?: { userId: string; source: SourceWriteFence },
+  ): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const fences = this.sourceBlobUploadFences(source, rootWriteFence);
+      const sourceIds = [
+        ...new Set(fences.sources.map((fence) => fence.sourceId)),
+      ].sort();
+      const lockedSources = await tx
+        .select({
+          id: sources.id,
+          version: sources.version,
+          deletedAt: sources.deletedAt,
+        })
+        .from(sources)
+        .where(
+          and(
+            eq(sources.userId, source.userId),
+            inArray(sources.id, sourceIds),
+          ),
+        )
+        .orderBy(sources.id)
+        .for("update");
+      if (
+        lockedSources.length !== sourceIds.length ||
+        lockedSources.some((locked) => locked.deletedAt !== null)
+      ) {
+        throw new PartitionAccessError(
+          "SOURCE_TOMBSTONED",
+          "Source blob upload was cancelled before bytes were sent",
+        );
+      }
+      const tombstones = await tx
+        .select({ sourceId: sourceTombstones.sourceId })
+        .from(sourceTombstones)
+        .where(
+          and(
+            eq(sourceTombstones.userId, source.userId),
+            inArray(sourceTombstones.sourceId, sourceIds),
+          ),
+        );
+      if (tombstones.length > 0) {
+        throw new PartitionAccessError(
+          "SOURCE_TOMBSTONED",
+          "Source blob upload was cancelled before bytes were sent",
+        );
+      }
+      if (
+        rootWriteFence?.userId !== undefined &&
+        rootWriteFence.userId !== source.userId
+      ) {
+        throw new PartitionAccessError(
+          "SOURCE_TOMBSTONED",
+          "Source upload root fence belongs to another user",
+        );
+      }
+      if (rootWriteFence?.source.expectedSourceVersion !== undefined) {
+        const root = lockedSources.find(
+          (locked) => locked.id === rootWriteFence.source.sourceId,
+        );
+        if (
+          !root ||
+          root.version !== rootWriteFence.source.expectedSourceVersion
+        ) {
+          throw new PartitionAccessError(
+            "SOURCE_VERSION_CONFLICT",
+            "Source upload root changed before bytes were committed",
+            root?.version,
+          );
+        }
+      }
+      const [upload] = await tx
+        .select({ state: sourceBlobUploads.state })
+        .from(sourceBlobUploads)
+        .where(
+          and(
+            eq(sourceBlobUploads.userId, source.userId),
+            eq(sourceBlobUploads.sourceId, source.id),
+          ),
+        )
+        .for("update")
+        .limit(1);
+      if (!upload || upload.state !== "uploading") {
+        throw new PartitionAccessError(
+          "SOURCE_TOMBSTONED",
+          "Source blob upload was cancelled before bytes were sent",
+        );
+      }
+      await this.blobUploadHooks.beforePut?.({
+        userId: source.userId,
+        sourceId: source.id,
+        objectKey: sourceBlobObjectKey(source.userId, source.id),
+      });
       await new Promise<void>((resolve, reject) => {
-        this.minioClient.removeObject(this.bucket, key, (err) =>
-          err ? reject(err) : resolve(),
+        this.minioClient.putObject(
+          this.bucket,
+          sourceBlobObjectKey(source.userId, source.id),
+          fileBuffer,
+          fileBuffer.length,
+          (error) => (error ? reject(error) : resolve()),
         );
       });
-    } catch {
-      // ignore missing blob
+      const [updatedSource] = await tx
+        .update(sources)
+        .set({
+          status: "completed",
+          contentType,
+          contentLength: fileBuffer.length,
+        })
+        .where(
+          and(eq(sources.userId, source.userId), eq(sources.id, source.id)),
+        )
+        .returning({ id: sources.id });
+      if (!updatedSource) {
+        throw new PartitionAccessError(
+          "SOURCE_TOMBSTONED",
+          "Source disappeared while its blob upload was completing",
+        );
+      }
+      await tx
+        .update(sourceBlobUploads)
+        .set({
+          state: "uploaded",
+          uploadedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(sourceBlobUploads.userId, source.userId),
+            eq(sourceBlobUploads.sourceId, source.id),
+            eq(sourceBlobUploads.state, "uploading"),
+          ),
+        );
+    });
+  }
+
+  /** Marks a failed or cancelled upload for durable physical cleanup. */
+  private async scheduleFailedSourceBlobUploadCleanup(
+    source: SourcesInsert & { id: TypeId<"source"> },
+  ): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const [lockedSource] = await tx
+        .select({ deletedAt: sources.deletedAt })
+        .from(sources)
+        .where(
+          and(eq(sources.userId, source.userId), eq(sources.id, source.id)),
+        )
+        .for("update")
+        .limit(1);
+      const [upload] = await tx
+        .select({ state: sourceBlobUploads.state })
+        .from(sourceBlobUploads)
+        .where(
+          and(
+            eq(sourceBlobUploads.userId, source.userId),
+            eq(sourceBlobUploads.sourceId, source.id),
+          ),
+        )
+        .for("update")
+        .limit(1);
+      if (upload && upload.state !== "cleanup_completed") {
+        await tx
+          .update(sourceBlobUploads)
+          .set({ state: "cleanup_pending", updatedAt: new Date() })
+          .where(
+            and(
+              eq(sourceBlobUploads.userId, source.userId),
+              eq(sourceBlobUploads.sourceId, source.id),
+            ),
+          );
+      }
+      if (lockedSource && lockedSource.deletedAt === null) {
+        await tx
+          .update(sources)
+          .set({ status: "failed" })
+          .where(
+            and(eq(sources.userId, source.userId), eq(sources.id, source.id)),
+          );
+      }
+    });
+  }
+
+  private sourceBlobUploadFences(
+    source: SourcesInsert & { id: TypeId<"source"> },
+    rootWriteFence?: { userId: string; source: SourceWriteFence },
+  ): { userId: string; sources: readonly SourceWriteFence[] } {
+    return {
+      userId: source.userId,
+      sources: [
+        ...(rootWriteFence ? [rootWriteFence.source] : []),
+        { sourceId: source.id },
+      ],
+    };
+  }
+
+  /** Physical object deletion only; source lifecycle owns the SQL receipt. */
+  async deleteRawBlobIfPresent(
+    userId: string,
+    sourceId: TypeId<"source">,
+  ): Promise<void> {
+    return this.deleteRawBlobObjectKeyIfPresent(
+      sourceBlobObjectKey(userId, sourceId),
+    );
+  }
+
+  /** Deletes an opaque object key captured in a lifecycle receipt. */
+  async deleteRawBlobObjectKeyIfPresent(objectKey: string): Promise<void> {
+    if (!(await this.minioClient.bucketExists(this.bucket))) return;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        this.minioClient.removeObject(this.bucket, objectKey, (error) =>
+          error ? reject(error) : resolve(),
+        );
+      });
+    } catch (error) {
+      if (isMissingSourceBlobError(error)) return;
+      throw error;
     }
-    await this.db
-      .delete(sources)
-      .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)));
   }
 
   /** Fetch raw payloads for given sourceIds (inline or blob) */
@@ -285,7 +651,11 @@ export class SourceService {
   ): Promise<RawResult[]> {
     const rows = await this.db.query.sources.findMany({
       where: (src, { and, eq, inArray }) =>
-        and(eq(src.userId, userId), inArray(src.id, sourceIds)),
+        and(
+          eq(src.userId, userId),
+          inArray(src.id, sourceIds),
+          isNull(src.deletedAt),
+        ),
     });
     const results: RawResult[] = [];
 
@@ -300,7 +670,7 @@ export class SourceService {
       } else if (row.contentLength === null && row.contentType === null) {
         continue;
       } else {
-        const key = sourceObjectKey(userId, row.id);
+        const key = sourceBlobObjectKey(userId, row.id);
         let stream: Readable;
         try {
           stream = (await this.minioClient.getObject(
@@ -396,12 +766,15 @@ export async function ensureSystemSource(
   database: DrizzleDB,
   userId: string,
   type: Extract<SourceType, "manual" | "legacy_migration">,
+  partitionKey?: ContextPartitionKey,
 ): Promise<TypeId<"source">> {
-  const externalId = `${type}:${userId}`;
+  await preparePartitionWrite(database, userId, partitionKey);
+  const externalId = `${type}:${userId}${partitionKey === undefined ? "" : `:${partitionKey}`}`;
   const [inserted] = await database
     .insert(sources)
     .values({
       userId,
+      partitionKey,
       type,
       externalId,
       status: "completed",
@@ -416,7 +789,7 @@ export async function ensureSystemSource(
   if (inserted) return inserted.id;
 
   const [existing] = await database
-    .select({ id: sources.id })
+    .select({ id: sources.id, deletedAt: sources.deletedAt })
     .from(sources)
     .where(
       and(
@@ -429,6 +802,23 @@ export async function ensureSystemSource(
 
   if (!existing) {
     throw new Error(`Failed to ensure ${type} source for user ${userId}`);
+  }
+
+  const [tombstone] = await database
+    .select({ sourceId: sourceTombstones.sourceId })
+    .from(sourceTombstones)
+    .where(
+      and(
+        eq(sourceTombstones.userId, userId),
+        eq(sourceTombstones.sourceId, existing.id),
+      ),
+    )
+    .limit(1);
+  if (existing.deletedAt !== null || tombstone) {
+    throw new PartitionAccessError(
+      "SOURCE_TOMBSTONED",
+      `A tombstoned ${type} source cannot be reused`,
+    );
   }
 
   return existing.id;

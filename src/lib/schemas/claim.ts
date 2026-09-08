@@ -6,11 +6,13 @@ import {
   ScopeEnum,
 } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 export const claimSchema = z.object({
   id: typeIdSchema("claim"),
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.nullable(),
   subjectNodeId: typeIdSchema("node"),
   objectNodeId: typeIdSchema("node").nullable(),
   objectValue: z.string().nullable(),
@@ -38,6 +40,7 @@ export const createdClaimSchema = claimSchema.extend({
 
 export const createClaimRequestShape = {
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   subjectNodeId: typeIdSchema("node"),
   predicate: PredicateEnum,
   statement: z.string().min(1),
@@ -89,6 +92,7 @@ export type CreateClaimResponse = z.infer<typeof createClaimResponseSchema>;
 
 export const deleteClaimRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   claimId: typeIdSchema("claim"),
 });
 
@@ -101,6 +105,7 @@ export type DeleteClaimResponse = z.infer<typeof deleteClaimResponseSchema>;
 
 export const updateClaimRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   claimId: typeIdSchema("claim"),
   status: z.literal(ClaimStatusEnum.enum.retracted),
 });
@@ -112,6 +117,7 @@ export type UpdateClaimResponse = z.infer<typeof updateClaimResponseSchema>;
 
 export const reattributeClaimRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   claimId: typeIdSchema("claim"),
   /**
    * Which endpoint to re-point at `newNodeId`. `"subject"` rewrites

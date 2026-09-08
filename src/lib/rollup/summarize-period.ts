@@ -8,7 +8,7 @@
  */
 import { collectPeriodInput, fingerprintOf, readRollupMeta } from "./collect";
 import { periodLevelOf, type PeriodLevel } from "./period";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type OpenAI from "openai";
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
 import { z } from "zod";
@@ -16,6 +16,7 @@ import type { DrizzleDB } from "~/db";
 import { claims, nodeEmbeddings, nodeMetadata } from "~/db/schema";
 import { parseStructuredCompletion } from "~/lib/ai";
 import { generateEmbeddings } from "~/lib/embeddings";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { ensurePeriodNode } from "~/lib/temporal";
 import type { TypeId } from "~/types/typeid";
 import { MODEL_MAX_OUTPUT_TOKENS, modelForTask } from "~/utils/models";
@@ -52,6 +53,7 @@ export type SummarizePeriodOutcome =
 export interface SummarizePeriodParams {
   db: DrizzleDB;
   userId: string;
+  partitionKey?: ContextPartitionKey;
   periodKey: string;
   /** Completion client created once per sweep (task: temporal_summary). */
   client: OpenAI;
@@ -62,16 +64,23 @@ export interface SummarizePeriodParams {
 export async function summarizePeriod({
   db,
   userId,
+  partitionKey,
   periodKey,
   client,
   rollupSourceId,
 }: SummarizePeriodParams): Promise<SummarizePeriodOutcome> {
   const level = periodLevelOf(periodKey);
 
-  const collected = await collectPeriodInput(db, userId, periodKey, level);
+  const collected = await collectPeriodInput(
+    db,
+    userId,
+    periodKey,
+    level,
+    partitionKey,
+  );
   if (!collected) return "skipped-empty";
 
-  const nodeId = await ensurePeriodNode(db, userId, periodKey);
+  const nodeId = await ensurePeriodNode(db, userId, periodKey, partitionKey);
 
   // Containment edges first (and on every run) so a previously interrupted
   // run is repaired even when the summary itself fingerprint-skips.
@@ -82,6 +91,7 @@ export async function summarizePeriod({
     nodeId,
     periodKey,
     rollupSourceId,
+    partitionKey,
   );
 
   const fingerprint = fingerprintOf(collected.inputText);
@@ -175,6 +185,7 @@ async function ensurePartOfClaims(
   parentNodeId: TypeId<"node">,
   parentKey: string,
   rollupSourceId: TypeId<"source">,
+  partitionKey?: ContextPartitionKey,
 ): Promise<void> {
   if (childNodeIds.length === 0) return;
 
@@ -184,6 +195,9 @@ async function ensurePartOfClaims(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         eq(claims.objectNodeId, parentNodeId),
         eq(claims.predicate, "PART_OF"),
         eq(claims.status, "active"),
@@ -203,6 +217,7 @@ async function ensurePartOfClaims(
   await db.insert(claims).values(
     missing.map((childNodeId) => ({
       userId,
+      partitionKey,
       predicate: "PART_OF" as const,
       subjectNodeId: childNodeId,
       objectNodeId: parentNodeId,

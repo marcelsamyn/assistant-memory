@@ -7,10 +7,10 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const { userId, ids } = resolveCitationsRequestSchema.parse(
+  const { userId, partitionKey, ids } = resolveCitationsRequestSchema.parse(
     await readBody(event),
   );
   const db = await useDatabase();
-  const citations = await resolveCitations(db, userId, ids);
+  const citations = await resolveCitations(db, userId, ids, partitionKey);
   return resolveCitationsResponseSchema.parse({ citations });
 });

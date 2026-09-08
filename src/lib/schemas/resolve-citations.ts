@@ -1,8 +1,10 @@
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 export const resolveCitationsRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   ids: z.array(z.string().max(200)).max(200),
 });
 export type ResolveCitationsRequest = z.infer<

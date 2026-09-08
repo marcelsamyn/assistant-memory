@@ -1,5 +1,6 @@
 import { AssertedByKindEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 /**
@@ -19,6 +20,7 @@ import { z } from "zod";
  */
 export const setCommitmentOwnerRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   taskId: typeIdSchema("node"),
   /** Owner node id to assign, or `null` to clear the owner. */
   ownedBy: typeIdSchema("node").nullable(),

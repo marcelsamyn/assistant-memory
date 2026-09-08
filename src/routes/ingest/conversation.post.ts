@@ -7,12 +7,12 @@ import {
 } from "~/lib/schemas/ingest-conversation";
 
 export default defineEventHandler(async (event) => {
-  const { userId, conversation } = ingestConversationRequestSchema.parse(
-    await readBody(event),
-  );
+  const { userId, partitionKey, conversation } =
+    ingestConversationRequestSchema.parse(await readBody(event));
 
   const jobInput: IngestConversationJobInput = {
     userId,
+    partitionKey,
     conversationId: conversation.id,
     messages: conversation.messages.map((m) => ({
       id: m.id,

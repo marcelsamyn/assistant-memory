@@ -1,9 +1,11 @@
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { queryGraphNodeSchema, queryGraphClaimSchema } from "./query-graph.js";
 import { z } from "zod";
 
 export const nodeNeighborhoodRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   nodeId: typeIdSchema("node"),
   depth: z.union([z.literal(1), z.literal(2)]).default(1),
 });

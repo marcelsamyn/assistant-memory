@@ -1,5 +1,6 @@
 import { AssertedByKindEnum, TaskStatusEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 /**
@@ -17,6 +18,7 @@ import { z } from "zod";
  */
 export const setCommitmentStatusRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   taskId: typeIdSchema("node"),
   /** Target status. All four values are allowed (unlike `createCommitment`). */
   status: TaskStatusEnum,

@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId, type TypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -161,6 +162,7 @@ describeIfServer("getCommitment detail query", () => {
           "updated_at" timestamp with time zone DEFAULT now() NOT NULL
         );
       `);
+      await installPartitionCompatibilityFixture(client);
 
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
 
@@ -432,6 +434,7 @@ describeIfServer("getCommitment detail query", () => {
           "updated_at" timestamp with time zone DEFAULT now() NOT NULL
         );
       `);
+      await installPartitionCompatibilityFixture(client);
 
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
       await client.query(
@@ -616,6 +619,7 @@ describeIfServer("getCommitment detail — timed due date", () => {
           "updated_at" timestamp with time zone DEFAULT now() NOT NULL
         );
       `);
+      await installPartitionCompatibilityFixture(client);
 
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
 

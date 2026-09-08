@@ -37,6 +37,7 @@ import {
   nodeEmbeddings,
   sourceLinks,
 } from "~/db/schema";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import type { AssertedByKind, NodeType, Predicate, Scope } from "~/types/graph";
 import { TypeId, typeIdSchema } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
@@ -44,6 +45,7 @@ import { MODEL_MAX_OUTPUT_TOKENS } from "~/utils/models";
 
 export const CleanupGraphJobInputSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   since: z.coerce.date(),
   entryNodeLimit: z.number().int().positive().default(5),
   semanticNeighborLimit: z.number().int().positive().default(15),
@@ -63,6 +65,18 @@ export const CleanupGraphJobInputSchema = z.object({
     .optional()
     .describe("Optional manual seed node IDs"),
 });
+
+/** Partitioned cleanup is fenced until every legacy dispatcher operation is scoped. */
+export class PartitionedCleanupGraphUnsupportedError extends Error {
+  readonly code = "PARTITIONED_CLEANUP_GRAPH_UNSUPPORTED" as const;
+
+  constructor() {
+    super(
+      "Partitioned graph cleanup is not available until the legacy cleanup dispatcher is partition-scoped",
+    );
+    this.name = "PartitionedCleanupGraphUnsupportedError";
+  }
+}
 
 /**
  * Parameters for cleanup job

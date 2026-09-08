@@ -10,6 +10,7 @@
  * cache, context bundle cache, read-model cache.
  */
 import { contextBundleSchema, type ContextBundle } from "./types";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { shouldSkipJobEnqueue } from "~/utils/test-overrides";
 
 const CONTEXT_BUNDLE_PREFIX = "context-bundle:";
@@ -49,8 +50,8 @@ const inMemoryCacheClient: ContextCacheClient = {
   },
 };
 
-function buildKey(userId: string): string {
-  return `${CONTEXT_BUNDLE_PREFIX}${userId}`;
+function buildKey(userId: string, partitionKey?: ContextPartitionKey): string {
+  return `${CONTEXT_BUNDLE_PREFIX}${JSON.stringify([userId, partitionKey ?? null])}`;
 }
 
 async function getCacheClient(): Promise<ContextCacheClient> {
@@ -66,15 +67,16 @@ async function getCacheClient(): Promise<ContextCacheClient> {
 
 export async function getCachedBundle(
   userId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<ContextBundle | null> {
   try {
     const client = await getCacheClient();
-    const data = await client.get(buildKey(userId));
+    const data = await client.get(buildKey(userId, partitionKey));
     if (!data) return null;
     const parsed = contextBundleSchema.safeParse(JSON.parse(data));
     if (!parsed.success) {
       // Stale payload shape — drop it so the next call rebuilds cleanly.
-      await client.del(buildKey(userId));
+      await client.del(buildKey(userId, partitionKey));
       return null;
     }
     return parsed.data;
@@ -87,11 +89,12 @@ export async function getCachedBundle(
 export async function setCachedBundle(
   userId: string,
   bundle: ContextBundle,
+  partitionKey?: ContextPartitionKey,
 ): Promise<void> {
   try {
     const client = await getCacheClient();
     await client.set(
-      buildKey(userId),
+      buildKey(userId, partitionKey),
       JSON.stringify(bundle),
       "EX",
       TTL_SECONDS,
@@ -101,10 +104,13 @@ export async function setCachedBundle(
   }
 }
 
-export async function invalidateCachedBundle(userId: string): Promise<void> {
+export async function invalidateCachedBundle(
+  userId: string,
+  partitionKey?: ContextPartitionKey,
+): Promise<void> {
   try {
     const client = await getCacheClient();
-    await client.del(buildKey(userId));
+    await client.del(buildKey(userId, partitionKey));
   } catch (error) {
     console.error("Failed to invalidate cached context bundle:", error);
   }

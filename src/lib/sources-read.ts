@@ -16,6 +16,8 @@ import {
 } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { sourceLinks, sources } from "~/db/schema";
+import { assertPartitionReadAllowed } from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import {
   type SourceListableType,
   sourceListableTypeEnum,
@@ -73,6 +75,7 @@ function deriveAuthor(metadata: unknown): string | null {
 interface ListParams {
   db: DrizzleDB;
   userId: string;
+  partitionKey?: ContextPartitionKey;
   type: SourceListableType | undefined;
   limit: number;
   cursor: string | undefined;
@@ -82,7 +85,8 @@ export async function listSourcesPage(params: ListParams): Promise<{
   sources: SourceSummary[];
   nextCursor: string | null;
 }> {
-  const { db, userId, limit } = params;
+  const { db, userId, partitionKey, limit } = params;
+  await assertPartitionReadAllowed(db, userId, partitionKey);
   const typeFilter = params.type
     ? [params.type]
     : (LISTABLE_TYPES as SourceListableType[]);
@@ -94,6 +98,9 @@ export async function listSourcesPage(params: ListParams): Promise<{
 
   const whereClauses = [
     eq(sources.userId, userId),
+    partitionKey === undefined
+      ? isNull(sources.partitionKey)
+      : eq(sources.partitionKey, partitionKey),
     isNull(sources.deletedAt),
     inArray(sources.type, typeFilter),
   ];
@@ -115,6 +122,8 @@ export async function listSourcesPage(params: ListParams): Promise<{
   const rows = await db
     .select({
       id: sources.id,
+      partitionKey: sources.partitionKey,
+      version: sources.version,
       type: sources.type,
       status: sources.status,
       scope: sources.scope,
@@ -136,6 +145,8 @@ export async function listSourcesPage(params: ListParams): Promise<{
 
   const summaries: SourceSummary[] = page.map((row) => ({
     sourceId: row.id,
+    partitionKey: row.partitionKey,
+    version: row.version,
     type: row.type as SourceListableType,
     title: deriveSourceLabel({ type: row.type, metadata: row.metadata }),
     author: deriveAuthor(row.metadata),
@@ -160,10 +171,14 @@ export async function getSourceSummary(
   db: DrizzleDB,
   userId: string,
   sourceId: TypeId<"source">,
+  partitionKey?: ContextPartitionKey,
 ): Promise<SourceSummary | null> {
+  await assertPartitionReadAllowed(db, userId, partitionKey);
   const [row] = await db
     .select({
       id: sources.id,
+      partitionKey: sources.partitionKey,
+      version: sources.version,
       type: sources.type,
       status: sources.status,
       scope: sources.scope,
@@ -178,6 +193,9 @@ export async function getSourceSummary(
       and(
         eq(sources.id, sourceId),
         eq(sources.userId, userId),
+        partitionKey === undefined
+          ? isNull(sources.partitionKey)
+          : eq(sources.partitionKey, partitionKey),
         isNull(sources.deletedAt),
       ),
     )
@@ -189,6 +207,8 @@ export async function getSourceSummary(
 
   return {
     sourceId: row.id,
+    partitionKey: row.partitionKey,
+    version: row.version,
     type: row.type as SourceListableType,
     title: deriveSourceLabel({ type: row.type, metadata: row.metadata }),
     author: deriveAuthor(row.metadata),

@@ -7,13 +7,13 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const { userId, aliases } = backfillUserSelfIdentityRequestSchema.parse(
-    await readBody(event),
-  );
+  const { userId, partitionKey, aliases } =
+    backfillUserSelfIdentityRequestSchema.parse(await readBody(event));
   const db = await useDatabase();
   const result = await backfillUserSelfIdentity({
     db,
     userId,
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
     ...(aliases !== undefined ? { aliases } : {}),
   });
   return backfillUserSelfIdentityResponseSchema.parse(result);

@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
 const TEST_DB_PORT = Number(process.env["TEST_PG_PORT"] ?? 5431);
@@ -63,6 +64,7 @@ describeIfServer("ensureRollupSource", () => {
           UNIQUE ("user_id", "type", "external_id")
       );
     `);
+    await installPartitionCompatibilityFixture(client);
     await client.query(`INSERT INTO "users" ("id") VALUES ('user_rollup')`);
   });
 

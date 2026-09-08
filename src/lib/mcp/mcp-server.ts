@@ -162,8 +162,13 @@ server.resource(
 server.tool(
   "save_memory",
   ingestDocumentRequestSchema.shape,
-  async ({ userId, document }) => {
-    await saveMemory({ userId, document, updateExisting: false });
+  async ({ userId, partitionKey, document }) => {
+    await saveMemory({
+      userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
+      document,
+      updateExisting: false,
+    });
     return {
       content: [{ type: "text", text: "Memory saved" }],
     };
@@ -175,9 +180,10 @@ server.tool(
   "bootstrap_memory",
   BOOTSTRAP_MEMORY_DESCRIPTION,
   bootstrapMemoryRequestSchema.shape,
-  async ({ userId, forceRefresh }) => {
+  async ({ userId, partitionKey, forceRefresh }) => {
     const bundle = await getConversationBootstrapContext({
       userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
       ...(forceRefresh !== undefined && { options: { forceRefresh } }),
     });
     return {
@@ -197,7 +203,17 @@ server.tool(
   SEARCH_MEMORY_DESCRIPTION,
   cardSearchToolInputSchema.shape,
   async (input) => {
-    const result = await searchMemory(input);
+    const result = await searchMemory({
+      userId: input.userId,
+      ...(input.partitionKey !== undefined
+        ? { partitionKey: input.partitionKey }
+        : {}),
+      query: input.query,
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.excludeNodeTypes !== undefined
+        ? { excludeNodeTypes: input.excludeNodeTypes }
+        : {}),
+    });
     return {
       content: [
         {
@@ -219,7 +235,17 @@ server.tool(
   SEARCH_REFERENCE_DESCRIPTION,
   cardSearchToolInputSchema.shape,
   async (input) => {
-    const result = await searchReference(input);
+    const result = await searchReference({
+      userId: input.userId,
+      ...(input.partitionKey !== undefined
+        ? { partitionKey: input.partitionKey }
+        : {}),
+      query: input.query,
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.excludeNodeTypes !== undefined
+        ? { excludeNodeTypes: input.excludeNodeTypes }
+        : {}),
+    });
     return {
       content: [
         {
@@ -240,8 +266,12 @@ server.tool(
   "get_entity",
   GET_ENTITY_DESCRIPTION,
   getEntityRequestSchema.shape,
-  async ({ userId, nodeId }) => {
-    const card = await getNodeCard({ userId, nodeId });
+  async ({ userId, partitionKey, nodeId }) => {
+    const card = await getNodeCard({
+      userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
+      nodeId,
+    });
     if (!card) {
       return {
         content: [{ type: "text", text: "Entity not found" }],
@@ -263,9 +293,10 @@ server.tool(
 server.tool(
   "query_day_memories",
   queryDayRequestSchema.shape,
-  async ({ userId, date }) => {
+  async ({ userId, partitionKey, date }) => {
     const { formattedResult } = await queryDayMemories({
       userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
       date,
       includeFormattedResult: true,
     });
@@ -568,9 +599,10 @@ server.tool(
   "record_metric",
   RECORD_METRIC_DESCRIPTION,
   recordMetricRequestSchema.shape,
-  async ({ userId, metric, value, occurredAt, note }) => {
+  async ({ userId, partitionKey, metric, value, occurredAt, note }) => {
     const result = await recordMetricObservations({
       userId,
+      partitionKey,
       source: { type: "metric_manual" },
       createDefinitions: true,
       events: [],
@@ -729,8 +761,8 @@ server.tool(
 server.tool(
   "get_node",
   getNodeRequestSchema.shape,
-  async ({ userId, nodeId }) => {
-    const result = await getNodeById(userId, nodeId);
+  async ({ userId, partitionKey, nodeId }) => {
+    const result = await getNodeById(userId, nodeId, undefined, partitionKey);
     if (!result) {
       return {
         content: [{ type: "text", text: "Node not found" }],
@@ -747,8 +779,8 @@ server.tool(
 server.tool(
   "get_node_sources",
   getNodeSourcesRequestSchema.shape,
-  async ({ userId, nodeId }) => {
-    const result = await getNodeSources(userId, nodeId);
+  async ({ userId, partitionKey, nodeId }) => {
+    const result = await getNodeSources(userId, nodeId, partitionKey);
     if (result.sources.length === 0) {
       return {
         content: [{ type: "text", text: "No sources linked to this node" }],
@@ -764,11 +796,16 @@ server.tool(
 server.tool(
   "update_node",
   updateNodeRequestSchema.shape,
-  async ({ userId, nodeId, label, nodeType }) => {
-    const result = await updateNode(userId, nodeId, {
-      ...(label !== undefined && { label }),
-      ...(nodeType !== undefined && { nodeType }),
-    });
+  async ({ userId, partitionKey, nodeId, label, nodeType }) => {
+    const result = await updateNode(
+      userId,
+      nodeId,
+      {
+        ...(label !== undefined && { label }),
+        ...(nodeType !== undefined && { nodeType }),
+      },
+      partitionKey,
+    );
     if (!result) {
       return {
         content: [{ type: "text", text: "Node not found" }],
@@ -787,8 +824,12 @@ server.tool(
 server.tool(
   "delete_node",
   deleteNodeRequestSchema.shape,
-  async ({ userId, nodeId }) => {
-    const { deleted, affectedClaims } = await deleteNode(userId, nodeId);
+  async ({ userId, partitionKey, nodeId }) => {
+    const { deleted, affectedClaims } = await deleteNode(
+      userId,
+      nodeId,
+      partitionKey,
+    );
     if (!deleted) {
       return {
         content: [{ type: "text", text: "Node not found" }],

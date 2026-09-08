@@ -15,7 +15,11 @@ describe("POST /search", () => {
   });
 
   it("validates the request, calls the pipeline, and round-trips the response", async () => {
-    vi.stubGlobal("readBody", async () => ({ userId: "u", query: "Boox" }));
+    vi.stubGlobal("readBody", async () => ({
+      userId: "u",
+      partitionKey: "opaque:client-a",
+      query: "Boox",
+    }));
     mocks.explicitSearch.mockResolvedValue({
       query: "Boox",
       hits: [
@@ -37,6 +41,7 @@ describe("POST /search", () => {
     expect(mocks.explicitSearch).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: "u",
+        partitionKey: "opaque:client-a",
         query: "Boox",
         limit: 20,
         scope: "personal",

@@ -6,9 +6,9 @@ import {
 } from "~/lib/schemas/node";
 
 export default defineEventHandler(async (event) => {
-  const { userId, nodeId } = getNodeSourcesRequestSchema.parse(
+  const { userId, partitionKey, nodeId } = getNodeSourcesRequestSchema.parse(
     await readBody(event),
   );
-  const result = await getNodeSources(userId, nodeId);
+  const result = await getNodeSources(userId, nodeId, partitionKey);
   return getNodeSourcesResponseSchema.parse(result);
 });

@@ -10,6 +10,61 @@ has the _what to change_.
 
 ---
 
+## SDK addition — lossless lifecycle change feed
+
+- **NEW REST:** `POST /query/change-feed` and **NEW SDK methods**
+  `MemoryClient.queryChangeFeed(payload)` / `getChangeFeed(payload)`.
+- Request: `{ userId, partitionKey?, cursor?, limit? }`. The opaque cursor is
+  a keyset cursor over a stable per-user/partition sequence; it is never an
+  effective-time or bare-identity cursor. The first page freezes
+  `throughSequence`; send `nextCursor` unchanged until `complete` is `true`.
+- Response events retain the memory authority's stable `eventId`, feed epoch,
+  sequence/tie-breaker, opaque partition, effective change time, source and
+  provenance references, freshness/status coverage, and a typed lifecycle
+  kind. The union includes source, ingestion, claim, commitment, node,
+  provenance, redirect, deletion tombstone, freshness, and status transitions.
+  Alias rows are intentionally not a separate feed kind: aliases are derived
+  identity labels, while node and redirect lifecycle events are the authoritative
+  identity boundary. A consumer that materializes alias labels should refresh
+  that read model after the related node/redirect event (or during a shadow
+  resync); it must not infer identity changes from a capped recent-changes page.
+- `cursorInvalid` is a typed recovery signal (`malformed`, user/partition
+  mismatch, epoch mismatch, or unavailable sequence). A consumer must keep its
+  prior projection, build a shadow projection from a fresh first page, verify
+  completeness through the frozen watermark, then atomically swap. Never
+  advance a checkpoint before the inbox event and projection commit together.
+- Feed events are append-only and allocated transactionally behind a locked
+  per-(user, partition, feed-epoch) head. Reclassification emits an old-
+  partition tombstone and a new-partition snapshot in the same database
+  transaction. Deletion is represented as a tombstone even when the source or
+  node row is gone. Consumers identify tombstones by `action: "tombstone"`
+  plus `entityType`, not by `kind`: ordinary source/claim/commitment deletes
+  retain their entity-family kind, while partition retractions and
+  cascade-owned rows use `kind: "deletion"`.
+- **Compatibility:** `queryRecentChanges` remains the capped display API. Hosts
+  that need replay safety should use the lifecycle feed and treat
+  `ChangeFeedUnavailableError` as an explicit capability state while an older
+  Memory server is being upgraded; no local package links are supported.
+
+---
+
+## Opaque memory partitions and migration fencing
+
+- Treat every existing n8n ingestion flow as a rollout dependency. Before you
+  start migration for a user, update each n8n Memory request to obtain the
+  caller-owned partition key from its Petals project or room context and send
+  it as `partitionKey`. Keep that user's migration disabled until every active
+  flow does this; after migration starts, an old n8n flow will fail closed.
+- Configure a dedicated server credential of at least 32 characters as `PARTITION_MAINTENANCE_TOKEN` in Memory. Construct the operator client with `partitionMaintenanceToken`; the general `apiKey` is deliberately not used for maintenance calls. A missing server credential returns `503`, an invalid credential returns `401`, and the SDK fails locally with `PartitionMaintenanceUnavailableError` when its credential is absent.
+- Add `partitionKey` to partition-aware ingestion, search, context, digest, and commitment requests. The value is an opaque caller-owned identifier; Memory stores and compares it but does not interpret it.
+- Start migration with `setPartitionMigrationState({ expectedState: "unmigrated", expectedVersion: 0, nextState: "migrating" })`. From that point onward, legacy unpartitioned reads and writes for the user fail closed.
+- Reclassify each source with `reclassifySourcePartition`. Persist and reuse `bindingGeneration` when retrying the same intent. The response is replay-safe and includes the incremented `sourceVersion` plus any node split mappings. Memory owns `sourceVersion`: partition, parent, scope, type, external identity, metadata, ingestion time, status, deletion, and content-descriptor mutations increment it exactly once in PostgreSQL. Pass the enqueue-time version when fencing delayed work.
+- A `PartitionConflictError` with `SOURCE_VERSION_CONFLICT`, `SOURCE_PARTITION_CONFLICT`, or a migration-state code includes the current authoritative state. Reload it before issuing a new generation; do not retry stale intent under a different generation. `getPartitionProgress` returns the migration fence and optional source partition/version. `getPartitionInventory` paginates durable mappings, quarantines, and derivative-artifact receipts.
+- Finish with a compare-and-set transition to `migrated` only after every source and claim is assigned. Supply `unassignedPartitionKey` as the caller-owned destination for evidence-free legacy nodes that have no deterministic source provenance. Rollback is forward repair: issue a newer reclassification command; do not decrement versions or delete the ledger.
+- Temporal rollup state is partition-scoped. Legacy user-global rollups are discarded at migration completion and rebuilt from partitioned evidence; copying them would mix provenance. Scratchpads remain intentionally user-global assistant workspace and are not evidence memory.
+
+---
+
 ## `queryTimeline` bounds renamed to `since` / `until` (breaking)
 
 - `MemoryClient.queryTimeline({ ... })` no longer accepts `startDate` / `endDate`.

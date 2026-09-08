@@ -11,11 +11,16 @@ import {
   upsertMetricManualSource,
   upsertMetricPushSource,
 } from "~/lib/metrics/sources";
+import {
+  assertSourcePartition,
+  withSourceWriteFence,
+} from "~/lib/partition-access";
 import type {
   MetricDefinition,
   ProposedMetricDefinition,
 } from "~/lib/schemas/metric-definition";
 import type { MetricObservationErrorCode } from "~/lib/schemas/metric-observation";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { newTypeId, type TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -65,6 +70,7 @@ export interface MetricObservationRowError {
 
 export interface RecordMetricObservationsInput {
   userId: string;
+  partitionKey?: ContextPartitionKey | undefined;
   sourceId?: TypeId<"source"> | undefined;
   source?:
     | { sourceId: TypeId<"source"> }
@@ -160,6 +166,7 @@ function missingMetricError(index: number): MetricObservationRowError {
 async function resolveObservationDefinition(
   db: DrizzleDB,
   userId: string,
+  partitionKey: ContextPartitionKey | undefined,
   createDefinitions: boolean,
   observation: MetricObservationInput,
 ): Promise<MetricDefinitionResolution | MetricObservationRowError> {
@@ -169,6 +176,7 @@ async function resolveObservationDefinition(
         db,
         userId,
         toProposedMetricDefinition(observation.metric),
+        partitionKey,
       );
     }
     // Caller may not mint new definitions (e.g. LLM ingestion). Fall through
@@ -235,6 +243,7 @@ async function resolveMetricSourceId(
   if (input.source?.type === "metric_push") {
     return upsertMetricPushSource(db, {
       userId: input.userId,
+      partitionKey: input.partitionKey,
       externalId: input.source.externalId,
       metadata: input.source.metadata,
     });
@@ -243,6 +252,7 @@ async function resolveMetricSourceId(
   if (input.source?.type === "metric_manual") {
     return upsertMetricManualSource(db, {
       userId: input.userId,
+      partitionKey: input.partitionKey,
       externalId:
         input.source.externalId ?? `metric_manual:${newTypeId("source")}`,
       metadata: input.source.metadata,
@@ -259,17 +269,45 @@ export async function recordMetricObservations(
 ): Promise<RecordMetricObservationsResult> {
   const db = dbOverride ?? (await useDatabase());
   const sourceId = await resolveMetricSourceId(db, input);
+  await assertSourcePartition({
+    db,
+    userId: input.userId,
+    sourceId,
+    partitionKey: input.partitionKey,
+  });
   const observations: MetricObservationRowResult[] = [];
   const errors: MetricObservationRowError[] = [];
+
+  const liveSourceVersion = await withSourceWriteFence(
+    db,
+    {
+      userId: input.userId,
+      partitionKey: input.partitionKey,
+      sources: [{ sourceId }],
+    },
+    async (_tx, versions) => versions.get(sourceId),
+  );
+  if (liveSourceVersion === undefined) {
+    throw new Error(`Metric source ${sourceId} disappeared while recording`);
+  }
 
   if (
     input.deleteExistingForSource ??
     input.replaceSourceObservations ??
     true
   ) {
-    await db
-      .delete(metricObservations)
-      .where(eq(metricObservations.sourceId, sourceId));
+    await withSourceWriteFence(
+      db,
+      {
+        userId: input.userId,
+        partitionKey: input.partitionKey,
+        sources: [{ sourceId, expectedSourceVersion: liveSourceVersion }],
+      },
+      async (tx) =>
+        tx
+          .delete(metricObservations)
+          .where(eq(metricObservations.sourceId, sourceId)),
+    );
   }
 
   const observationsToInsert: Array<{
@@ -279,13 +317,23 @@ export async function recordMetricObservations(
   let nextObservationIndex = 0;
   for (const event of input.events ?? []) {
     try {
-      const eventNodeId = await ensureMetricEventNode(db, {
-        userId: input.userId,
-        sourceId,
-        metricEventKey: `${sourceId}:${event.eventKey}`,
-        label: event.label,
-        occurredAt: event.occurredAt,
-      });
+      const eventNodeId = await withSourceWriteFence(
+        db,
+        {
+          userId: input.userId,
+          partitionKey: input.partitionKey,
+          sources: [{ sourceId, expectedSourceVersion: liveSourceVersion }],
+        },
+        (tx) =>
+          ensureMetricEventNode(tx, {
+            userId: input.userId,
+            partitionKey: input.partitionKey,
+            sourceId,
+            metricEventKey: `${sourceId}:${event.eventKey}`,
+            label: event.label,
+            occurredAt: event.occurredAt,
+          }),
+      );
       observationsToInsert.push(
         ...event.observations.map((observation) => ({
           index: nextObservationIndex++,
@@ -324,6 +372,7 @@ export async function recordMetricObservations(
       const resolved = await resolveObservationDefinition(
         db,
         input.userId,
+        input.partitionKey,
         input.createDefinitions ?? true,
         observation,
       );
@@ -345,21 +394,32 @@ export async function recordMetricObservations(
     }
 
     try {
-      const [inserted] = await db
-        .insert(metricObservations)
-        .values({
+      const inserted = await withSourceWriteFence(
+        db,
+        {
           userId: input.userId,
-          metricDefinitionId: resolution.definition.id,
-          value: observation.value.toString(),
-          occurredAt: observation.occurredAt,
-          note: observation.note ?? undefined,
-          eventNodeId: observation.eventNodeId ?? undefined,
-          sourceId,
-        })
-        .returning({
-          id: metricObservations.id,
-          metricDefinitionId: metricObservations.metricDefinitionId,
-        });
+          partitionKey: input.partitionKey,
+          sources: [{ sourceId, expectedSourceVersion: liveSourceVersion }],
+        },
+        async (tx) => {
+          const [row] = await tx
+            .insert(metricObservations)
+            .values({
+              userId: input.userId,
+              metricDefinitionId: resolution.definition.id,
+              value: observation.value.toString(),
+              occurredAt: observation.occurredAt,
+              note: observation.note ?? undefined,
+              eventNodeId: observation.eventNodeId ?? undefined,
+              sourceId,
+            })
+            .returning({
+              id: metricObservations.id,
+              metricDefinitionId: metricObservations.metricDefinitionId,
+            });
+          return row;
+        },
+      );
 
       if (!inserted) throw new Error("Failed to insert metric observation");
 

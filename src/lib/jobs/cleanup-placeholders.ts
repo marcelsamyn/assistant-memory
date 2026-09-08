@@ -12,15 +12,19 @@
  * placeholder Person review, speaker placeholder explosion.
  */
 import { batchQueue } from "../queues";
-import { and, eq, inArray, lt, sql } from "drizzle-orm";
+import { PartitionedCleanupGraphUnsupportedError } from "./cleanup-graph";
+import { and, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import { nodes, nodeMetadata } from "~/db/schema";
+import { assertPartitionReadAllowed } from "~/lib/partition-access";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 import { modelForTask } from "~/utils/models";
 
 export const cleanupPlaceholdersInputSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   olderThanDays: z.number().int().positive().default(7),
   limit: z.number().int().positive().max(500).default(50),
 });
@@ -66,10 +70,11 @@ export interface CleanupPlaceholdersResult {
 export async function cleanupPlaceholders(
   rawInput: CleanupPlaceholdersInput,
 ): Promise<CleanupPlaceholdersResult> {
-  const { userId, olderThanDays, limit } =
+  const { userId, partitionKey, olderThanDays, limit } =
     cleanupPlaceholdersInputSchema.parse(rawInput);
 
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
 
   const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000);
 
@@ -84,6 +89,9 @@ export async function cleanupPlaceholders(
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         eq(nodes.nodeType, "Person"),
         lt(nodes.createdAt, cutoff),
         sql`(${nodeMetadata.additionalData} ->> 'unresolvedSpeaker') = 'true'`,
@@ -122,6 +130,9 @@ export async function cleanupPlaceholders(
         .where(
           and(
             eq(nodes.userId, userId),
+            partitionKey === undefined
+              ? isNull(nodes.partitionKey)
+              : eq(nodes.partitionKey, partitionKey),
             eq(nodes.nodeType, "Person"),
             inArray(nodeMetadata.canonicalLabel, distinctCanonicalLabels),
             sql`(${nodeMetadata.additionalData} ->> 'unresolvedSpeaker') IS DISTINCT FROM 'true'`,
@@ -169,10 +180,13 @@ export async function seedClaimsCleanupForPlaceholders(
   rawInput: CleanupPlaceholdersInput,
   result: CleanupPlaceholdersResult,
 ): Promise<SeedCleanupResult | null> {
-  const { userId, olderThanDays } =
+  const { userId, partitionKey, olderThanDays } =
     cleanupPlaceholdersInputSchema.parse(rawInput);
   const seedIds = result.placeholders.map((p) => p.id);
   if (seedIds.length === 0) return null;
+  if (partitionKey !== undefined) {
+    throw new PartitionedCleanupGraphUnsupportedError();
+  }
 
   const job = await batchQueue.add("cleanup-graph", {
     userId,

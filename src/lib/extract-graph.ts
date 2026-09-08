@@ -26,6 +26,10 @@ import { resolveIdentity } from "./identity-resolution";
 import { normalizeLabel } from "./label";
 import { recordMetricObservations } from "./metrics/observations";
 import {
+  assertSourcePartition,
+  withSourceWriteFence,
+} from "./partition-access";
+import {
   getCandidateCommitments,
   getOpenCommitments,
 } from "./query/open-commitments";
@@ -39,6 +43,7 @@ import {
   type LlmOutputRelationshipClaim,
 } from "./schemas/llm-extraction";
 import { type OpenCommitment } from "./schemas/open-commitments";
+import type { ContextPartitionKey } from "./schemas/partition";
 import { TemporaryIdMapper } from "./temporary-id-mapper";
 import { and, eq, inArray } from "drizzle-orm";
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
@@ -159,6 +164,9 @@ export async function extractGraph({
   onLlmIO,
 }: ExtractGraphParams) {
   const db = await useDatabase();
+  const parentSource = await _fetchSourceContext(db, userId, sourceId);
+  const partitionKey = parentSource.partitionKey ?? undefined;
+  await assertSourcePartition({ db, userId, sourceId, partitionKey });
   const resolvedSourceRefs =
     sourceRefs.length > 0
       ? sourceRefs
@@ -166,6 +174,10 @@ export async function extractGraph({
   const sourceRefMap = new Map(
     resolvedSourceRefs.map((sourceRef) => [sourceRef.externalId, sourceRef]),
   );
+  const sourceWriteFences = await _fetchSourceWriteFences(db, userId, [
+    sourceId,
+    ...resolvedSourceRefs.map((sourceRef) => sourceRef.sourceId),
+  ]);
   const sourceRefsForPrompt = resolvedSourceRefs
     .map(
       (sourceRef) =>
@@ -185,11 +197,20 @@ export async function extractGraph({
       text: content,
       limit: 50,
       minimumSimilarity: 0.3,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
     }),
-    findOneHopNodes(db, userId, [linkedNodeId]),
-    findNodesByType(userId, "Person"),
-    getOpenCommitments({ userId }),
-    getCandidateCommitments({ userId }),
+    findOneHopNodes(db, userId, [linkedNodeId], {
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
+    }),
+    findNodesByType(userId, "Person", 200, partitionKey),
+    getOpenCommitments({
+      userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
+    }),
+    getCandidateCommitments({
+      userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
+    }),
   ]);
 
   const cappedOpenCommitments = openCommitments.slice(0, 20);
@@ -487,56 +508,80 @@ ${content}
     parsedLlmOutput.aliases ?? [],
   );
 
-  const parentSourceScope = await _fetchSourceScope(db, userId, sourceId);
+  const parentSourceScope = parentSource.scope;
 
-  const detailsOfNewlyCreatedNodes = await _processAndInsertNewNodes(
+  const detailsOfNewlyCreatedNodes = await withSourceWriteFence(
     db,
-    userId,
-    parentSourceScope,
-    uniqueParsedLlmNodes,
-    idMap,
-    nodeLabels,
-  );
-
-  if (detailsOfNewlyCreatedNodes.length > 0) {
-    await db
-      .insert(sourceLinks)
-      .values(
-        detailsOfNewlyCreatedNodes.map((newNode) => ({
-          sourceId,
-          nodeId: newNode.id,
-        })),
-      )
-      .onConflictDoNothing();
-  }
-
-  const deletedClaimRecords = replaceClaimsForSources
-    ? await _deleteExistingClaimsForSources(
-        db,
+    { userId, sources: sourceWriteFences },
+    async (tx) => {
+      const details = await _processAndInsertNewNodes(
+        tx,
         userId,
-        resolvedSourceRefs.map((sourceRef) => sourceRef.sourceId),
-      )
-    : [];
-
-  // Tasks freshly minted in this run, so the claim insert can keep new tasks
-  // out of the trusted commitment band when their provenance is unclear.
-  const newTaskNodeIds = new Set(
-    detailsOfNewlyCreatedNodes
-      .filter((node) => node.nodeType === "Task")
-      .map((node) => node.id),
+        parentSourceScope,
+        partitionKey,
+        uniqueParsedLlmNodes,
+        idMap,
+        nodeLabels,
+      );
+      if (details.length > 0) {
+        await tx
+          .insert(sourceLinks)
+          .values(details.map((newNode) => ({ sourceId, nodeId: newNode.id })))
+          .onConflictDoNothing();
+      }
+      return details;
+    },
   );
 
-  const insertedClaimRecords = await _processAndInsertLlmClaims(
+  const {
+    deletedClaimRecords,
+    insertedClaimRecords,
+    synthesizedStatusRecords,
+  } = await withSourceWriteFence(
     db,
-    userId,
-    statedAt,
-    uniqueParsedLlmClaims,
-    uniqueParsedLlmAttributeClaims,
-    idMap,
-    sourceRefMap,
-    sourceType,
-    speakerMap,
-    newTaskNodeIds,
+    { userId, sources: sourceWriteFences },
+    async (tx) => {
+      const deleted = replaceClaimsForSources
+        ? await _deleteExistingClaimsForSources(
+            tx,
+            userId,
+            resolvedSourceRefs.map((sourceRef) => sourceRef.sourceId),
+          )
+        : [];
+      const newTaskNodeIds = new Set(
+        detailsOfNewlyCreatedNodes
+          .filter((node) => node.nodeType === "Task")
+          .map((node) => node.id),
+      );
+      const inserted = await _processAndInsertLlmClaims(
+        tx,
+        userId,
+        statedAt,
+        uniqueParsedLlmClaims,
+        uniqueParsedLlmAttributeClaims,
+        idMap,
+        sourceRefMap,
+        sourceType,
+        speakerMap,
+        newTaskNodeIds,
+        partitionKey,
+      );
+      const synthesized = await _synthesizeMissingTaskStatuses(
+        tx,
+        userId,
+        detailsOfNewlyCreatedNodes,
+        inserted,
+        sourceId,
+        parentSourceScope,
+        statedAt,
+        partitionKey,
+      );
+      return {
+        deletedClaimRecords: deleted,
+        insertedClaimRecords: inserted,
+        synthesizedStatusRecords: synthesized,
+      };
+    },
   );
 
   // Invariant repair: a Task the extractor minted without a usable
@@ -545,27 +590,24 @@ ${content}
   // statusless node — invisible to every commitment surface. Synthesize a
   // default candidate-band status for those so they surface as candidates
   // instead of vanishing. See src/lib/claims/default-task-status.ts.
-  const synthesizedStatusRecords = await _synthesizeMissingTaskStatuses(
-    db,
-    userId,
-    detailsOfNewlyCreatedNodes,
-    insertedClaimRecords,
-    sourceId,
-    parentSourceScope,
-    statedAt,
-  );
   const allInsertedClaimRecords =
     synthesizedStatusRecords.length > 0
       ? [...insertedClaimRecords, ...synthesizedStatusRecords]
       : insertedClaimRecords;
 
-  await _processAndInsertLlmAliases(db, userId, uniqueParsedLlmAliases, idMap);
-  await _processAndRecordLlmMetrics({
-    userId,
-    sourceId,
-    metrics: parsedLlmOutput.metrics,
-    idMap,
-  });
+  await withSourceWriteFence(db, { userId, sources: sourceWriteFences }, (tx) =>
+    _processAndInsertLlmAliases(tx, userId, uniqueParsedLlmAliases, idMap),
+  );
+  await withSourceWriteFence(db, { userId, sources: sourceWriteFences }, (tx) =>
+    _processAndRecordLlmMetrics({
+      db: tx,
+      userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
+      sourceId,
+      metrics: parsedLlmOutput.metrics,
+      idMap,
+    }),
+  );
 
   // Capture timestamp BEFORE lifecycle so the invalidation hook can detect
   // any claim that transitioned out of `active` during this run.
@@ -615,13 +657,18 @@ ${content}
         taskLabel: task.label,
       });
       if (excerpt !== null || why !== null) {
-        await upsertCommitmentPresentation(db, {
-          taskId: task.id,
-          userId,
-          sourceId,
-          excerpt,
-          why,
-        });
+        await withSourceWriteFence(
+          db,
+          { userId, sources: sourceWriteFences },
+          (tx) =>
+            upsertCommitmentPresentation(tx, {
+              taskId: task.id,
+              userId,
+              sourceId,
+              excerpt,
+              why,
+            }),
+        );
       }
     } catch (error) {
       console.warn(
@@ -658,8 +705,12 @@ ${content}
     attributeAffectedSubjectNodeIds.length > 0
   ) {
     await Promise.all([
-      enqueueProfileSynthesisJobs(userId, attributeAffectedSubjectNodeIds),
-      enqueueIdentityReevalJobs(userId, affectedSubjectNodeIds),
+      enqueueProfileSynthesisJobs(
+        userId,
+        attributeAffectedSubjectNodeIds,
+        partitionKey,
+      ),
+      enqueueIdentityReevalJobs(userId, affectedSubjectNodeIds, partitionKey),
     ]);
   }
 
@@ -711,6 +762,7 @@ const PROFILE_SYNTHESIS_DEBOUNCE_MS = 5 * 60_000;
 async function enqueueProfileSynthesisJobs(
   userId: string,
   nodeIds: TypeId<"node">[],
+  partitionKey?: ContextPartitionKey,
 ): Promise<void> {
   if (nodeIds.length === 0 || shouldSkipJobEnqueue()) return;
   const { batchQueue } = await import("./queues");
@@ -718,7 +770,11 @@ async function enqueueProfileSynthesisJobs(
     nodeIds.map((nodeId) =>
       batchQueue.add(
         "profile-synthesis",
-        { userId, nodeId },
+        {
+          userId,
+          ...(partitionKey !== undefined ? { partitionKey } : {}),
+          nodeId,
+        },
         {
           jobId: `profile-synthesis:${userId}:${nodeId}`,
           delay: PROFILE_SYNTHESIS_DEBOUNCE_MS,
@@ -733,6 +789,7 @@ async function enqueueProfileSynthesisJobs(
 async function enqueueIdentityReevalJobs(
   userId: string,
   nodeIds: TypeId<"node">[],
+  partitionKey?: ContextPartitionKey,
 ): Promise<void> {
   if (nodeIds.length === 0 || shouldSkipJobEnqueue()) return;
   const { batchQueue } = await import("./queues");
@@ -740,7 +797,11 @@ async function enqueueIdentityReevalJobs(
     nodeIds.map((nodeId) =>
       batchQueue.add(
         "identity-reeval",
-        { userId, nodeId },
+        {
+          userId,
+          ...(partitionKey !== undefined ? { partitionKey } : {}),
+          nodeId,
+        },
         {
           jobId: `identity-reeval:${userId}:${nodeId}`,
           removeOnComplete: true,
@@ -914,19 +975,45 @@ function _prepareInitialNodeMappings(similarNodes: SimilarNodeForPrompt[]) {
   return { nodesForPromptFormatting, idMap, nodeLabels };
 }
 
-async function _fetchSourceScope(
+async function _fetchSourceContext(
   db: DrizzleDB,
   userId: string,
   sourceId: TypeId<"source">,
-): Promise<Scope> {
+): Promise<{
+  scope: Scope;
+  partitionKey: ContextPartitionKey | null;
+}> {
   const [row] = await db
-    .select({ scope: sources.scope })
+    .select({ scope: sources.scope, partitionKey: sources.partitionKey })
     .from(sources)
     .where(and(eq(sources.userId, userId), eq(sources.id, sourceId)))
     .limit(1);
-  // Source must exist by the time extraction runs; default defensively to
-  // personal so we never silently widen scope on a misconfigured source.
-  return row?.scope ?? "personal";
+  if (!row)
+    throw new Error(`Source ${sourceId} was not found for user ${userId}`);
+  return row;
+}
+
+async function _fetchSourceWriteFences(
+  db: DrizzleDB,
+  userId: string,
+  sourceIds: TypeId<"source">[],
+): Promise<
+  Array<{ sourceId: TypeId<"source">; expectedSourceVersion: number }>
+> {
+  const uniqueSourceIds = [...new Set(sourceIds)];
+  const rows = await db
+    .select({ id: sources.id, version: sources.version })
+    .from(sources)
+    .where(
+      and(eq(sources.userId, userId), inArray(sources.id, uniqueSourceIds)),
+    );
+  if (rows.length !== uniqueSourceIds.length) {
+    throw new Error("A cited source was removed before extraction began");
+  }
+  return rows.map((row) => ({
+    sourceId: row.id,
+    expectedSourceVersion: row.version,
+  }));
 }
 
 async function _fetchNodeTypeMap(
@@ -949,6 +1036,7 @@ async function _processAndInsertNewNodes(
   db: DrizzleDB,
   userId: string,
   scope: Scope,
+  partitionKey: ContextPartitionKey | undefined,
   uniqueParsedLlmNodes: LlmOutputNode[],
   idMap: Map<string, TypeId<"node">>,
   nodeLabels: Map<TypeId<"node">, string>,
@@ -989,6 +1077,7 @@ async function _processAndInsertNewNodes(
         normalizedLabel: canonical,
         nodeType: llmNode.type,
         scope,
+        ...(partitionKey !== undefined ? { partitionKey } : {}),
       },
     });
 
@@ -1011,6 +1100,7 @@ async function _processAndInsertNewNodes(
       .values({
         userId,
         nodeType: llmNode.type,
+        ...(partitionKey !== undefined ? { partitionKey } : {}),
       })
       .returning();
 
@@ -1052,6 +1142,7 @@ async function _processAndInsertLlmClaims(
   sourceType: SourceType,
   speakerMap: ExtractGraphSpeakerMap | undefined,
   newTaskNodeIds: Set<TypeId<"node">>,
+  partitionKey: ContextPartitionKey | undefined,
 ): Promise<Array<typeof claims.$inferSelect>> {
   const claimInserts: Array<typeof claims.$inferInsert> = [];
   const sourceScopeMap = await _fetchSourceScopeMap(
@@ -1134,6 +1225,7 @@ async function _processAndInsertLlmClaims(
       statement: llmClaim.statement,
       description: llmClaim.statement,
       sourceId: claimSource.sourceId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
       scope,
       assertedByKind: provenance.kind,
       assertedByNodeId: provenance.nodeId,
@@ -1222,6 +1314,7 @@ async function _processAndInsertLlmClaims(
       statement: llmClaim.statement,
       description: llmClaim.statement,
       sourceId: claimSource.sourceId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
       scope,
       assertedByKind,
       assertedByNodeId: provenance.nodeId,
@@ -1263,6 +1356,7 @@ async function _synthesizeMissingTaskStatuses(
   sourceId: TypeId<"source">,
   scope: Scope,
   statedAt: Date,
+  partitionKey: ContextPartitionKey | undefined,
 ): Promise<Array<typeof claims.$inferSelect>> {
   const newTaskNodes = newlyCreatedNodes.filter(
     (node) => node.nodeType === "Task",
@@ -1294,6 +1388,7 @@ async function _synthesizeMissingTaskStatuses(
         statement: defaultTaskStatusStatement(task.label),
         description: defaultTaskStatusStatement(task.label),
         sourceId,
+        ...(partitionKey !== undefined ? { partitionKey } : {}),
         scope,
         assertedByKind: DEFAULT_TASK_STATUS_KIND,
         statedAt,
@@ -1322,12 +1417,16 @@ async function _fetchSourceScopeMap(
 }
 
 async function _processAndRecordLlmMetrics({
+  db,
   userId,
+  partitionKey,
   sourceId,
   metrics,
   idMap,
 }: {
+  db: DrizzleDB;
   userId: string;
+  partitionKey?: ContextPartitionKey;
   sourceId: TypeId<"source">;
   metrics: LlmOutputMetrics | null | undefined;
   idMap: Map<string, TypeId<"node">>;
@@ -1376,14 +1475,18 @@ async function _processAndRecordLlmMetrics({
   });
 
   if (observations.length === 0 && events.length === 0) return;
-  const result = await recordMetricObservations({
-    userId,
-    source: { sourceId },
-    createDefinitions: false,
-    replaceSourceObservations: true,
-    events,
-    observations,
-  });
+  const result = await recordMetricObservations(
+    {
+      userId,
+      partitionKey,
+      source: { sourceId },
+      createDefinitions: false,
+      replaceSourceObservations: true,
+      events,
+      observations,
+    },
+    db,
+  );
   const skippedUnknownDefinition = result.errors.filter(
     (error) => error.code === "DEFINITION_NOT_FOUND",
   );

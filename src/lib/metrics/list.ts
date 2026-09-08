@@ -13,6 +13,11 @@ import {
 } from "drizzle-orm";
 import { metricDefinitions, metricObservations } from "~/db/schema";
 import {
+  assertMetricPartitionRead,
+  metricDefinitionPartitionCondition,
+  metricObservationPartitionCondition,
+} from "~/lib/metrics/partition";
+import {
   type ListMetricsRequest,
   type MetricDefinitionWithStats,
 } from "~/lib/schemas/metric-read";
@@ -25,9 +30,11 @@ function numberOrNull(value: string | number | null): number | null {
 /** Return metric definitions for a user, optionally filtered for UI pickers and dashboards. */
 export async function listMetrics({
   userId,
+  partitionKey,
   filter,
 }: ListMetricsRequest): Promise<MetricDefinitionWithStats[]> {
   const db = await useDatabase();
+  await assertMetricPartitionRead(db, userId, partitionKey);
   const search = filter?.search === "" ? undefined : filter?.search;
   const definitions = await db
     .select()
@@ -35,6 +42,7 @@ export async function listMetrics({
     .where(
       and(
         eq(metricDefinitions.userId, userId),
+        metricDefinitionPartitionCondition(userId, partitionKey),
         filter?.needsReview === undefined
           ? undefined
           : eq(metricDefinitions.needsReview, filter.needsReview),
@@ -63,6 +71,7 @@ export async function listMetrics({
     .where(
       and(
         eq(metricObservations.userId, userId),
+        metricObservationPartitionCondition(userId, partitionKey),
         inArray(metricObservations.metricDefinitionId, definitionIds),
       ),
     )
@@ -81,6 +90,7 @@ export async function listMetrics({
     .where(
       and(
         eq(metricObservations.userId, userId),
+        metricObservationPartitionCondition(userId, partitionKey),
         inArray(metricObservations.metricDefinitionId, definitionIds),
       ),
     )

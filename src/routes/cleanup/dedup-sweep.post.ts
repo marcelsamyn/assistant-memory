@@ -6,7 +6,9 @@ import {
 } from "~/lib/schemas/cleanup";
 
 export default defineEventHandler(async (event) => {
-  const { userId } = dedupSweepRequestSchema.parse(await readBody(event));
-  const result = await runDedupSweep(userId);
+  const { userId, partitionKey } = dedupSweepRequestSchema.parse(
+    await readBody(event),
+  );
+  const result = await runDedupSweep(userId, undefined, partitionKey);
   return dedupSweepResponseSchema.parse(result);
 });

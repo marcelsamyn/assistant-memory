@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import {
   resetTestOverrides,
   setSkipEmbeddingPersistence,
@@ -67,6 +68,7 @@ describeIfServer("ensurePeriodNode", () => {
         CONSTRAINT "node_metadata_node_id_unique" UNIQUE ("node_id")
       );
     `);
+    await installPartitionCompatibilityFixture(client);
     await client.query(`INSERT INTO "users" ("id") VALUES ('user_t')`);
   });
 

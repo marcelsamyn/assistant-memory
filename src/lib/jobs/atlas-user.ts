@@ -17,12 +17,14 @@
 import { performStructuredAnalysis } from "../ai";
 import { ensureAtlasNode } from "../atlas";
 import { PREDICATE_POLICIES } from "../claims/predicate-policies";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { DrizzleDB } from "~/db";
 import { claims, nodeMetadata, userProfiles } from "~/db/schema";
 import { logEvent } from "~/lib/observability/log";
+import { preparePartitionWrite } from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import type { AssertedByKind, Predicate } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 
@@ -98,6 +100,7 @@ interface AtlasInputs {
 async function fetchCentralityCounts(
   db: DrizzleDB,
   userId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<Map<TypeId<"node">, number>> {
   const rows = await db
     .select({
@@ -108,6 +111,9 @@ async function fetchCentralityCounts(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         eq(claims.scope, "personal"),
         eq(claims.status, "active"),
         inArray(claims.assertedByKind, [...ATLAS_TRUSTED_KINDS]),
@@ -122,6 +128,7 @@ async function fetchCentralityCounts(
 async function fetchAtlasCandidateClaims(
   db: DrizzleDB,
   userId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<AtlasClaimRow[]> {
   return db
     .select({
@@ -139,6 +146,9 @@ async function fetchAtlasCandidateClaims(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         eq(claims.scope, "personal"),
         eq(claims.status, "active"),
         inArray(claims.assertedByKind, [...ATLAS_TRUSTED_KINDS]),
@@ -346,12 +356,14 @@ export interface AtlasJobResult {
 export async function processAtlasJob(
   db: DrizzleDB,
   userId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<AtlasJobResult> {
+  await preparePartitionWrite(db, userId, partitionKey);
   const asOf = new Date();
 
   const [centralityBySubject, candidates, pinned] = await Promise.all([
-    fetchCentralityCounts(db, userId),
-    fetchAtlasCandidateClaims(db, userId),
+    fetchCentralityCounts(db, userId, partitionKey),
+    fetchAtlasCandidateClaims(db, userId, partitionKey),
     fetchPinnedContent(db, userId),
   ]);
 
@@ -366,7 +378,7 @@ export async function processAtlasJob(
   const inputs: AtlasInputs = { pinned, rankedClaims, asOf };
   const hash = computeAtlasHash(inputs);
 
-  const atlasNodeId = await ensureAtlasNode(db, userId);
+  const atlasNodeId = await ensureAtlasNode(db, userId, partitionKey);
 
   const [metaRow] = await db
     .select({ additionalData: nodeMetadata.additionalData })

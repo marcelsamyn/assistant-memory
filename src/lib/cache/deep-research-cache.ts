@@ -3,6 +3,7 @@ import {
   DeepResearchResult,
   DeepResearchResultSchema,
 } from "../schemas/deep-research";
+import type { ContextPartitionKey } from "../schemas/partition";
 
 // Redis client from shared connection
 const redisClient = redisConnection;
@@ -15,8 +16,16 @@ const DEEP_RESEARCH_PREFIX = "deep-research:";
 /**
  * Build a consistent Redis key for deep research results
  */
-function buildDeepResearchKey(userId: string, conversationId: string): string {
-  return `${DEEP_RESEARCH_PREFIX}${userId}:${conversationId}`;
+function buildDeepResearchKey(
+  userId: string,
+  conversationId: string,
+  partitionKey?: ContextPartitionKey,
+): string {
+  return `${DEEP_RESEARCH_PREFIX}${JSON.stringify([
+    userId,
+    partitionKey ?? null,
+    conversationId,
+  ])}`;
 }
 
 /**
@@ -25,8 +34,8 @@ function buildDeepResearchKey(userId: string, conversationId: string): string {
 export async function storeDeepResearchResult(
   result: DeepResearchResult,
 ): Promise<void> {
-  const { userId, conversationId, ttl } = result;
-  const key = buildDeepResearchKey(userId, conversationId);
+  const { userId, partitionKey, conversationId, ttl } = result;
+  const key = buildDeepResearchKey(userId, conversationId, partitionKey);
 
   try {
     // Serialize with JSON
@@ -46,8 +55,9 @@ export async function storeDeepResearchResult(
 export async function getDeepResearchResult(
   userId: string,
   conversationId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<DeepResearchResult | null> {
-  const key = buildDeepResearchKey(userId, conversationId);
+  const key = buildDeepResearchKey(userId, conversationId, partitionKey);
 
   try {
     const data = await redisClient.get(key);
@@ -57,7 +67,15 @@ export async function getDeepResearchResult(
     const parsedData = JSON.parse(data);
 
     // Use Zod to validate and convert data (timestamp conversion happens automatically)
-    return DeepResearchResultSchema.parse(parsedData);
+    const result = DeepResearchResultSchema.parse(parsedData);
+    if (
+      result.userId !== userId ||
+      result.conversationId !== conversationId ||
+      result.partitionKey !== partitionKey
+    ) {
+      return null;
+    }
+    return result;
   } catch (error) {
     console.error("Failed to retrieve deep research results:", error);
     return null;

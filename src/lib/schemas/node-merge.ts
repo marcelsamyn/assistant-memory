@@ -1,9 +1,11 @@
 import { NodeTypeEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 export const mergeNodesRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   nodeIds: z.array(typeIdSchema("node")).min(2),
   targetLabel: z.string().optional(),
   targetDescription: z.string().optional(),

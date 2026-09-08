@@ -17,6 +17,8 @@ import { assemblePreferencesSection } from "./sections/preferences";
 import { assembleRecentSupersessionsSection } from "./sections/recent-supersessions";
 import type { ContextBundle, ContextSection } from "./types";
 import { logEvent } from "~/lib/observability/log";
+import { assertPartitionReadAllowed } from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { useDatabase } from "~/utils/db";
 
 export interface BootstrapContextOptions {
@@ -28,22 +30,24 @@ export interface BootstrapContextOptions {
 
 export interface BootstrapContextParams {
   userId: string;
+  partitionKey?: ContextPartitionKey;
   options?: BootstrapContextOptions;
 }
 
 export async function getConversationBootstrapContext(
   params: BootstrapContextParams,
 ): Promise<ContextBundle> {
-  const { userId, options } = params;
+  const { userId, partitionKey, options } = params;
   const forceRefresh = options?.forceRefresh ?? false;
   const asOf = options?.asOf ?? new Date();
 
+  const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
+
   if (!forceRefresh) {
-    const cached = await getCachedBundle(userId);
+    const cached = await getCachedBundle(userId, partitionKey);
     if (cached !== null) return cached;
   }
-
-  const db = await useDatabase();
 
   // Run independent reads in parallel; each assembler returns null when its
   // section is empty, so the order below is purely the render order.
@@ -56,11 +60,11 @@ export async function getConversationBootstrapContext(
     preferences,
   ] = await Promise.all([
     assemblePinnedSection(db, userId),
-    assembleAtlasSection(db, userId),
-    assembleOpenCommitmentsSection(userId),
-    assembleCandidateCommitmentsSection(userId),
-    assembleRecentSupersessionsSection(db, userId, asOf),
-    assemblePreferencesSection(db, userId),
+    assembleAtlasSection(db, userId, partitionKey),
+    assembleOpenCommitmentsSection(userId, partitionKey),
+    assembleCandidateCommitmentsSection(userId, partitionKey),
+    assembleRecentSupersessionsSection(db, userId, asOf, partitionKey),
+    assemblePreferencesSection(db, userId, partitionKey),
   ]);
 
   const sections: ContextSection[] = [
@@ -77,7 +81,7 @@ export async function getConversationBootstrapContext(
     assembledAt: asOf,
   };
 
-  await setCachedBundle(userId, bundle);
+  await setCachedBundle(userId, bundle, partitionKey);
 
   logEvent("bootstrap_context.assembled", {
     userId,

@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -99,8 +100,23 @@ describeIfServer("ensureSourceNode", () => {
           "type" varchar(50) NOT NULL,
           "external_id" text NOT NULL,
           "scope" varchar(16) DEFAULT 'personal' NOT NULL,
+          "version" integer DEFAULT 0 NOT NULL,
+          "deleted_at" timestamp with time zone,
           "status" varchar(20) DEFAULT 'completed',
           "created_at" timestamp with time zone DEFAULT now() NOT NULL
+        );
+        CREATE TABLE "source_tombstones" (
+          "user_id" text NOT NULL REFERENCES "users"("id"),
+          "source_id" text NOT NULL,
+          "partition_key" varchar(200),
+          "state" varchar(20) NOT NULL,
+          "storage_cleanup_state" varchar(20) NOT NULL DEFAULT 'not_required',
+          "erased_at" timestamp with time zone NOT NULL DEFAULT now(),
+          "restorable_until" timestamp with time zone,
+          "finalized_at" timestamp with time zone,
+          "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+          "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+          PRIMARY KEY ("user_id", "source_id")
         );
         CREATE TABLE "source_links" (
           "id" text PRIMARY KEY NOT NULL,
@@ -136,6 +152,7 @@ describeIfServer("ensureSourceNode", () => {
             CHECK (num_nonnulls("object_node_id", "object_value") = 1)
         );
       `);
+      await installPartitionCompatibilityFixture(client);
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
       await client.query(
         `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")

@@ -197,6 +197,69 @@
       "when": 1781872800000,
       "tag": "0027_organization_node_type",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1783945155645,
+      "tag": "0028_dizzy_norrin_radd",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1783951148683,
+      "tag": "0029_calm_lifecycle_feed",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1784194098356,
+      "tag": "0030_late_cannonball",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1784194992236,
+      "tag": "0031_omniscient_sharon_carter",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1784198511570,
+      "tag": "0032_vengeful_white_tiger",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1784199299520,
+      "tag": "0033_durable_source_blob_uploads",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1784200239968,
+      "tag": "0034_source_parent_liveness",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1784201200000,
+      "tag": "0035_legacy_read_model_retraction",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1788856923932,
+      "tag": "0036_redact_feed_tombstones",
+      "breakpoints": true
     }
   ]
 }

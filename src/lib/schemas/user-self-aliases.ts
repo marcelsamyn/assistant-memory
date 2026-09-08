@@ -5,10 +5,12 @@
  * speaker label. The handler replaces the full list — there is no
  * add/remove granularity by design.
  */
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 export const setUserSelfAliasesRequestSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   aliases: z.array(z.string().min(1)),
 });
 

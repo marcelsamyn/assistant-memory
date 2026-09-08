@@ -6,6 +6,7 @@
  */
 import "dotenv/config";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
+import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
@@ -39,85 +40,6 @@ const SERVER_AVAILABLE = await isServerReachable();
 const describeIfServer = SERVER_AVAILABLE ? describe : describe.skip;
 
 type TestDb = NodePgDatabase<typeof schema>;
-
-async function createTables(client: Client): Promise<void> {
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS "users" ("id" text PRIMARY KEY NOT NULL);
-    CREATE TABLE IF NOT EXISTS "nodes" (
-      "id" text PRIMARY KEY NOT NULL,
-      "user_id" text NOT NULL REFERENCES "users"("id"),
-      "node_type" varchar(50) NOT NULL,
-      "created_at" timestamp with time zone DEFAULT now() NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS "node_metadata" (
-      "id" text PRIMARY KEY NOT NULL,
-      "node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
-      "label" text,
-      "canonical_label" text,
-      "description" text,
-      "additional_data" jsonb,
-      "created_at" timestamp with time zone DEFAULT now() NOT NULL,
-      UNIQUE ("node_id")
-    );
-    CREATE TABLE IF NOT EXISTS "sources" (
-      "id" text PRIMARY KEY NOT NULL,
-      "user_id" text NOT NULL REFERENCES "users"("id"),
-      "type" varchar(50) NOT NULL,
-      "external_id" text NOT NULL,
-      "scope" varchar(16) DEFAULT 'personal' NOT NULL,
-      "metadata" jsonb,
-      "last_ingested_at" timestamp with time zone,
-      "status" varchar(20) DEFAULT 'completed',
-      "created_at" timestamp with time zone DEFAULT now() NOT NULL,
-      "deleted_at" timestamp with time zone,
-      "content_type" varchar(100),
-      "content_length" integer,
-      UNIQUE ("user_id", "type", "external_id")
-    );
-    CREATE TABLE IF NOT EXISTS "source_links" (
-      "id" text PRIMARY KEY NOT NULL,
-      "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
-      "node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
-      "specific_location" text,
-      "created_at" timestamp with time zone DEFAULT now() NOT NULL,
-      UNIQUE ("source_id", "node_id")
-    );
-    CREATE TABLE IF NOT EXISTS "claims" (
-      "id" text PRIMARY KEY NOT NULL,
-      "user_id" text NOT NULL REFERENCES "users"("id"),
-      "subject_node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
-      "object_node_id" text REFERENCES "nodes"("id") ON DELETE CASCADE,
-      "object_value" text,
-      "predicate" varchar(80) NOT NULL,
-      "statement" text NOT NULL,
-      "description" text,
-      "metadata" jsonb,
-      "source_id" text NOT NULL REFERENCES "sources"("id") ON DELETE CASCADE,
-      "scope" varchar(16) DEFAULT 'personal' NOT NULL,
-      "asserted_by_kind" varchar(24) NOT NULL,
-      "asserted_by_node_id" text REFERENCES "nodes"("id") ON DELETE SET NULL,
-      "superseded_by_claim_id" text REFERENCES "claims"("id") ON DELETE SET NULL,
-      "contradicted_by_claim_id" text REFERENCES "claims"("id") ON DELETE SET NULL,
-      "stated_at" timestamp with time zone NOT NULL,
-      "valid_from" timestamp with time zone,
-      "valid_to" timestamp with time zone,
-      "status" varchar(30) DEFAULT 'active' NOT NULL,
-      "created_at" timestamp with time zone DEFAULT now() NOT NULL,
-      "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-      CONSTRAINT "claims_object_shape_xor_ck"
-        CHECK (num_nonnulls("object_node_id", "object_value") = 1)
-    );
-    CREATE TABLE IF NOT EXISTS "aliases" (
-      "id" text PRIMARY KEY NOT NULL,
-      "user_id" text NOT NULL REFERENCES "users"("id"),
-      "alias_text" text NOT NULL,
-      "normalized_alias_text" text NOT NULL,
-      "canonical_node_id" text NOT NULL REFERENCES "nodes"("id") ON DELETE CASCADE,
-      "created_at" timestamp with time zone DEFAULT now() NOT NULL,
-      UNIQUE ("user_id", "normalized_alias_text", "canonical_node_id")
-    );
-  `);
-}
 
 async function seedNode(
   client: Client,
@@ -201,7 +123,7 @@ describeIfServer("pruneOrphanNodes", () => {
     rootClient = new Client({ connectionString: dsnFor(dbName) });
     await rootClient.connect();
     database = drizzle(rootClient, { schema, casing: "snake_case" });
-    await createTables(rootClient);
+    await migrate(database, { migrationsFolder: "./drizzle" });
   });
 
   afterAll(async () => {
@@ -365,12 +287,14 @@ describeIfServer("pruneOrphanNodes", () => {
     expect(result.sourceScanCount).toBe(1);
     expect(result.missingBlobSourceCandidateCount).toBe(1);
     expect(result.deletedMissingBlobSourceCount).toBe(1);
-    expect(result.candidateCount).toBe(1);
-    expect(result.deletedCount).toBe(1);
+    // Lifecycle tombstone retracts the linked node and claim itself; the
+    // ordinary orphan pass has nothing unsafe left to delete afterward.
+    expect(result.candidateCount).toBe(0);
+    expect(result.deletedCount).toBe(0);
     expect(result.missingBlobSources.map((source) => source.id)).toEqual([
       sourceId,
     ]);
-    expect(result.candidates.map((node) => node.id)).toEqual([nodeId]);
+    expect(result.candidates).toEqual([]);
 
     const counts = await rootClient.query<{
       nodes: string;
@@ -387,10 +311,16 @@ describeIfServer("pruneOrphanNodes", () => {
     );
     expect(counts.rows[0]).toEqual({
       nodes: "0",
-      sources: "0",
+      sources: "1",
       claims: "0",
       sourceLinks: "0",
     });
+    await expect(
+      rootClient.query(
+        `SELECT "state" FROM "source_tombstones" WHERE "user_id" = $1 AND "source_id" = $2`,
+        [userId, sourceId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ state: "tombstoned" }] });
   });
 
   it("preserves blob-backed sources whose objects still exist", async () => {

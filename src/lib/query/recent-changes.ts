@@ -6,6 +6,7 @@ import {
   exists,
   gte,
   inArray,
+  isNull,
   lt,
   lte,
   notInArray,
@@ -14,6 +15,7 @@ import {
 } from "drizzle-orm";
 import { z } from "zod";
 import { claims, nodeMetadata, nodes, sources } from "~/db/schema";
+import { assertPartitionReadAllowed } from "~/lib/partition-access";
 import {
   type ChangeKind,
   type QueryRecentChangesRequest,
@@ -77,7 +79,7 @@ function toTime(value: Date | string): number {
 export async function queryRecentChanges(
   params: QueryRecentChangesRequest,
 ): Promise<QueryRecentChangesResponse> {
-  const { userId, nodeTypes, limit } = params;
+  const { userId, partitionKey, nodeTypes, limit } = params;
   const since = new Date(params.since);
   const until = params.until ? new Date(params.until) : new Date();
 
@@ -87,6 +89,15 @@ export async function queryRecentChanges(
   }
 
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
+  const claimPartitionFilter =
+    partitionKey === undefined
+      ? isNull(claims.partitionKey)
+      : eq(claims.partitionKey, partitionKey);
+  const nodePartitionFilter =
+    partitionKey === undefined
+      ? isNull(nodes.partitionKey)
+      : eq(nodes.partitionKey, partitionKey);
 
   // A claim counts as changed when either its insert (createdAt) or its last
   // mutation (updatedAt) lands inside the window. GREATEST orders by whichever
@@ -159,6 +170,7 @@ export async function queryRecentChanges(
     .where(
       and(
         eq(claims.userId, userId),
+        claimPartitionFilter,
         eq(claims.status, "active"),
         eq(claims.scope, "personal"),
         claimChangedInWindow,
@@ -193,6 +205,7 @@ export async function queryRecentChanges(
     .where(
       and(
         eq(nodes.userId, userId),
+        nodePartitionFilter,
         gte(nodes.createdAt, since),
         lte(nodes.createdAt, until),
         nodeTypeFilter,
@@ -234,6 +247,7 @@ export async function queryRecentChanges(
           .where(
             and(
               eq(nodes.userId, userId),
+              nodePartitionFilter,
               inArray(nodes.id, candidateNodeIds),
               lt(nodes.createdAt, since),
               nodeTypeFilter,

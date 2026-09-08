@@ -19,11 +19,17 @@ import {
 import { explicitSearch } from "~/lib/search/explicit-search";
 
 export default defineEventHandler(async (event) => {
-  const { userId, query, limit, scope, filters } = searchRequestSchema.parse(
-    await readBody(event),
-  );
+  const { userId, partitionKey, query, limit, scope, filters } =
+    searchRequestSchema.parse(await readBody(event));
 
-  const result = await explicitSearch({ userId, query, limit, scope, filters });
+  const result = await explicitSearch({
+    userId,
+    ...(partitionKey === undefined ? {} : { partitionKey }),
+    query,
+    limit,
+    scope,
+    filters,
+  });
 
   return searchResponseSchema.parse(result);
 });

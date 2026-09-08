@@ -4,6 +4,7 @@
  * panel in one call, instead of an N+1 `getMetricSummary` fan-out.
  */
 import { z } from "zod";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition.js";
 import { typeIdSchema } from "~/types/typeid.js";
 
 export const metricMoverWindowSchema = z.enum(["7d", "30d", "90d"]);
@@ -28,6 +29,7 @@ export type MetricMover = z.infer<typeof metricMoverSchema>;
 
 export const getMetricMoversRequestSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   /** Restrict to these metrics; omitted = all metrics with observations. */
   metricIds: z.array(typeIdSchema("metric_definition")).optional(),
   /** Keep only the top-N movers by normalized magnitude. */

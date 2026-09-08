@@ -1,6 +1,7 @@
 import { AssertedByKindEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
 import { DUE_TIME_PATTERN } from "./due-claim-metadata.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 import { isValidTimeZone } from "~/lib/time-zone.js";
 
@@ -19,6 +20,7 @@ import { isValidTimeZone } from "~/lib/time-zone.js";
 export const setCommitmentDueRequestSchema = z
   .object({
     userId: z.string(),
+    partitionKey: contextPartitionKeySchema.optional(),
     taskId: typeIdSchema("node"),
     /**
      * `YYYY-MM-DD` to set the due date, or `null` to clear it. Pass the date

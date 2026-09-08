@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -140,6 +141,7 @@ describeIfServer("extractGraph claim-native insertion", () => {
           UNIQUE ("user_id", "normalized_alias_text", "canonical_node_id")
       );
     `);
+    await installPartitionCompatibilityFixture(client);
   }
 
   it("inserts relationships, attributes, aliases, and applies source-scoped replacement", async () => {

@@ -1,6 +1,6 @@
 /** Detail read model for a single commitment (current state + history + sources). */
 import { readDueQualifier, type DueQualifierFields } from "./due-qualifier";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { claims, sources } from "~/db/schema";
 import { coerceTaskStatus } from "~/lib/claims/task-status";
 import { TaskNotFoundError } from "~/lib/commitments";
@@ -11,6 +11,7 @@ import type {
   GetCommitmentResponse,
   TaskLifecycleEntry,
 } from "~/lib/schemas/get-commitment";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { sourceMetadataSchema } from "~/lib/sources";
 import { type ClaimStatus, type Predicate } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
@@ -55,14 +56,20 @@ function deriveSourceTitle(metadata: unknown): string | null {
 export async function getCommitment(
   params: GetCommitmentRequest,
 ): Promise<GetCommitmentResponse> {
-  const { userId, taskId, includeHistory, includeSources } = params;
+  const { userId, partitionKey, taskId, includeHistory, includeSources } =
+    params;
 
   const db = await useDatabase();
 
-  const result = await getNodeById(userId, taskId, {
-    predicates: [...TASK_PREDICATES],
-    statuses: [],
-  });
+  const result = await getNodeById(
+    userId,
+    taskId,
+    {
+      predicates: [...TASK_PREDICATES],
+      statuses: [],
+    },
+    partitionKey,
+  );
 
   if (!result || result.node.nodeType !== "Task") {
     throw new TaskNotFoundError(taskId);
@@ -121,6 +128,7 @@ export async function getCommitment(
     ? await loadSources(
         userId,
         taskClaims.map((claim) => claim.sourceId),
+        partitionKey,
       )
     : [];
 
@@ -132,7 +140,15 @@ export async function getCommitment(
         objectInstant: claims.objectInstant,
       })
       .from(claims)
-      .where(and(eq(claims.id, activeDue.id), eq(claims.userId, userId)))
+      .where(
+        and(
+          eq(claims.id, activeDue.id),
+          eq(claims.userId, userId),
+          partitionKey === undefined
+            ? isNull(claims.partitionKey)
+            : eq(claims.partitionKey, partitionKey),
+        ),
+      )
       .limit(1);
     if (dueRow) due = readDueQualifier(dueRow.metadata, dueRow.objectInstant);
   }
@@ -161,6 +177,7 @@ export async function getCommitment(
 async function loadSources(
   userId: string,
   sourceIds: ReadonlyArray<TypeId<"source">>,
+  partitionKey: ContextPartitionKey | undefined,
 ): Promise<CommitmentSource[]> {
   const distinctIds = [...new Set(sourceIds)];
   if (distinctIds.length === 0) return [];
@@ -176,7 +193,15 @@ async function loadSources(
       lastIngestedAt: sources.lastIngestedAt,
     })
     .from(sources)
-    .where(and(inArray(sources.id, distinctIds), eq(sources.userId, userId)));
+    .where(
+      and(
+        inArray(sources.id, distinctIds),
+        eq(sources.userId, userId),
+        partitionKey === undefined
+          ? isNull(sources.partitionKey)
+          : eq(sources.partitionKey, partitionKey),
+      ),
+    );
 
   return rows.map((row) => ({
     sourceId: row.id,

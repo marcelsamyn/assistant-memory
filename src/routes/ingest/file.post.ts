@@ -1,5 +1,8 @@
+import { eq } from "drizzle-orm";
 import { createError, defineEventHandler, readMultipartFormData } from "h3";
 import { v4 as uuid } from "uuid";
+import db from "~/db";
+import { sources } from "~/db/schema";
 import { batchQueue } from "~/lib/queues";
 import {
   ingestFileFieldsSchema,
@@ -64,6 +67,7 @@ export default defineEventHandler(async (event) => {
 
   const parsed = ingestFileFieldsSchema.parse({
     userId: fields["userId"],
+    partitionKey: fields["partitionKey"],
     filename,
     mimeType,
     title: fields["title"],
@@ -98,6 +102,9 @@ export default defineEventHandler(async (event) => {
   const { successes, failures } = await sourceService.insertMany([
     {
       userId: parsed.userId,
+      ...(parsed.partitionKey !== undefined
+        ? { partitionKey: parsed.partitionKey }
+        : {}),
       sourceType: "document",
       externalId,
       scope: parsed.scope,
@@ -118,10 +125,18 @@ export default defineEventHandler(async (event) => {
   }
 
   const sourceId = successes[0]!;
+  const [source] = await db
+    .select({ version: sources.version })
+    .from(sources)
+    .where(eq(sources.id, sourceId))
+    .limit(1);
+  if (!source) throw new Error(`Created source ${sourceId} was not found`);
 
   await batchQueue.add("ingest-file", {
     userId: parsed.userId,
+    partitionKey: parsed.partitionKey,
     sourceId,
+    expectedSourceVersion: source.version,
     filename: parsed.filename,
     mimeType: parsed.mimeType,
     timestamp: timestamp.toISOString(),

@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -198,6 +199,7 @@ describeIfServer("runIdentityReeval", () => {
         "created_at" timestamp with time zone DEFAULT now() NOT NULL
       );
     `);
+    await installPartitionCompatibilityFixture(client);
   }
 
   // Two near-aligned unit vectors: vecA points along axis 0, vecB shares 99% of

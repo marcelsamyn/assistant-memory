@@ -1,6 +1,7 @@
 import { findDayNode } from "../graph";
+import { assertPartitionReadAllowed } from "../partition-access";
 import { QueryDayRequest, QueryDayResponse } from "../schemas/query-day";
-import { and, eq, ne, or } from "drizzle-orm";
+import { and, eq, isNull, ne, or } from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
 import { useDatabase } from "~/utils/db";
 
@@ -10,10 +11,11 @@ import { useDatabase } from "~/utils/db";
 export async function queryDayMemories(
   params: QueryDayRequest,
 ): Promise<QueryDayResponse> {
-  const { userId, date, includeFormattedResult } = params;
+  const { userId, partitionKey, date, includeFormattedResult } = params;
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
 
-  const dayNodeId = await findDayNode(db, userId, date);
+  const dayNodeId = await findDayNode(db, userId, date, partitionKey);
   if (!dayNodeId) {
     return {
       date,
@@ -50,8 +52,14 @@ export async function queryDayMemories(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         eq(claims.status, "active"),
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         ne(nodes.id, dayNodeId),
       ),
     );

@@ -14,6 +14,7 @@ import {
   metricDefinitionSchema,
   proposedMetricDefinitionSchema,
 } from "~/lib/schemas/metric-definition";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 import { shouldSkipEmbeddingPersistence } from "~/utils/test-overrides";
@@ -129,6 +130,7 @@ async function createReviewTask(
   userId: string,
   proposed: ProposedMetricDefinition,
   existing: Pick<MetricDefinitionRow, "label" | "slug">,
+  partitionKey?: ContextPartitionKey,
 ): Promise<TypeId<"node">> {
   const task = await createNode(
     userId,
@@ -143,6 +145,7 @@ async function createReviewTask(
         assertedByKind: "system",
       },
     ],
+    partitionKey,
   );
   return task.id;
 }
@@ -152,6 +155,7 @@ export async function resolveMetricDefinition(
   db: DrizzleDB,
   userId: string,
   proposedMetric: ProposedMetricDefinition,
+  partitionKey?: ContextPartitionKey,
 ): Promise<MetricDefinitionResolution> {
   const metric = proposedMetricDefinitionSchema.parse(proposedMetric);
   const [exact] = await db
@@ -210,6 +214,7 @@ export async function resolveMetricDefinition(
     userId,
     metric,
     similar.definition,
+    partitionKey,
   );
   const [updated] = await db
     .update(metricDefinitions)

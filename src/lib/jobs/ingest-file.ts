@@ -19,12 +19,19 @@ import { sources } from "~/db/schema";
 import { convertToMarkdown } from "~/lib/converters/markitdown";
 import { ensureUser } from "~/lib/ingestion/ensure-user";
 import { extractDocumentGraph } from "~/lib/ingestion/extract-document-graph";
+import {
+  assertSourcePartition,
+  withSourceWriteFence,
+} from "~/lib/partition-access";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import { sourceMetadataSchema, sourceService } from "~/lib/sources";
 import { typeIdSchema, type TypeId } from "~/types/typeid";
 
 export const IngestFileJobInputSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   sourceId: typeIdSchema("source"),
+  expectedSourceVersion: z.number().int().nonnegative(),
   filename: z.string().min(1),
   mimeType: z.string().min(1),
   timestamp: z.string().datetime().pipe(z.coerce.date()),
@@ -38,12 +45,22 @@ interface IngestFileParams extends IngestFileJobInput {
 export async function ingestFile({
   db,
   userId,
+  partitionKey,
   sourceId,
+  expectedSourceVersion,
   filename,
   mimeType,
   timestamp,
 }: IngestFileParams): Promise<void> {
   await ensureUser(db, userId);
+  await assertSourcePartition({
+    db,
+    userId,
+    sourceId,
+    partitionKey,
+    expectedSourceVersion,
+  });
+  let sourceVersion = expectedSourceVersion;
 
   const [row] = await db
     .select({
@@ -71,16 +88,19 @@ export async function ingestFile({
   const explicitAuthor = existingMeta.author;
   const explicitTitle = existingMeta.title;
 
-  await db
-    .update(sources)
-    .set({ status: "processing" })
-    .where(eq(sources.id, sourceId));
+  sourceVersion = await updateSourceWhileLive({
+    db,
+    userId,
+    sourceId,
+    expectedSourceVersion: sourceVersion,
+    set: { status: "processing" },
+  });
 
   const [raw] = await sourceService.fetchRaw(userId, [
     sourceId as TypeId<"source">,
   ]);
   if (!raw) {
-    await markFailed(db, sourceId);
+    await markFailed(db, userId, sourceId, sourceVersion);
     throw new Error(
       `ingest-file: source ${sourceId} has no payload to convert`,
     );
@@ -95,7 +115,7 @@ export async function ingestFile({
   try {
     converted = await convertToMarkdown({ buffer, filename, mimeType });
   } catch (error) {
-    await markFailed(db, sourceId);
+    await markFailed(db, userId, sourceId, sourceVersion);
     throw error;
   }
 
@@ -110,12 +130,22 @@ export async function ingestFile({
       ? sql`(CASE WHEN COALESCE(${sources.metadata}, '{}'::jsonb) ? 'title' THEN '{}'::jsonb ELSE jsonb_build_object('title', ${converted.title}::text) END)`
       : sql`'{}'::jsonb`;
 
-  await db
-    .update(sources)
-    .set({
-      metadata: sql`COALESCE(${sources.metadata}, '{}'::jsonb) || jsonb_build_object('rawContent', ${converted.markdown}::text) || ${titleClause}`,
-    })
-    .where(eq(sources.id, sourceId));
+  sourceVersion = await withSourceWriteFence(
+    db,
+    { userId, sources: [{ sourceId, expectedSourceVersion: sourceVersion }] },
+    async (tx) => {
+      const [updated] = await tx
+        .update(sources)
+        .set({
+          metadata: sql`COALESCE(${sources.metadata}, '{}'::jsonb) || jsonb_build_object('rawContent', ${converted.markdown}::text) || ${titleClause}`,
+        })
+        .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)))
+        .returning({ version: sources.version });
+      if (!updated)
+        throw new Error(`Source ${sourceId} disappeared during conversion`);
+      return updated.version;
+    },
+  );
 
   // Surface the converter-derived title (or filename as fallback) so the LLM
   // knows the content was authored by an external party — without this hint
@@ -127,6 +157,7 @@ export async function ingestFile({
     db,
     userId,
     sourceId: sourceId as TypeId<"source">,
+    expectedSourceVersion: sourceVersion,
     externalId: row.externalId,
     content: converted.markdown,
     timestamp,
@@ -135,18 +166,58 @@ export async function ingestFile({
     ...(explicitAuthor !== undefined && { author: explicitAuthor }),
   });
 
-  await db
-    .update(sources)
-    .set({ status: "completed" })
-    .where(eq(sources.id, sourceId));
+  await updateSourceWhileLive({
+    db,
+    userId,
+    sourceId,
+    expectedSourceVersion: sourceVersion,
+    set: { status: "completed" },
+  });
 }
 
-async function markFailed(db: DrizzleDB, sourceId: string): Promise<void> {
+async function updateSourceWhileLive({
+  db,
+  userId,
+  sourceId,
+  expectedSourceVersion,
+  set,
+}: {
+  db: DrizzleDB;
+  userId: string;
+  sourceId: TypeId<"source">;
+  expectedSourceVersion: number;
+  set: Pick<typeof sources.$inferInsert, "status">;
+}): Promise<number> {
+  return withSourceWriteFence(
+    db,
+    { userId, sources: [{ sourceId, expectedSourceVersion }] },
+    async (tx) => {
+      const [updated] = await tx
+        .update(sources)
+        .set(set)
+        .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)))
+        .returning({ version: sources.version });
+      if (!updated)
+        throw new Error(`Source ${sourceId} disappeared during ingestion`);
+      return updated.version;
+    },
+  );
+}
+
+async function markFailed(
+  db: DrizzleDB,
+  userId: string,
+  sourceId: TypeId<"source">,
+  expectedSourceVersion: number,
+): Promise<void> {
   try {
-    await db
-      .update(sources)
-      .set({ status: "failed" })
-      .where(eq(sources.id, sourceId as TypeId<"source">));
+    await updateSourceWhileLive({
+      db,
+      userId,
+      sourceId,
+      expectedSourceVersion,
+      set: { status: "failed" },
+    });
   } catch (err) {
     console.error(
       `ingest-file: failed to mark source ${sourceId} as failed`,

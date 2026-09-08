@@ -257,7 +257,14 @@ async function runSpinePrepass(params: {
     const themes = spine.spineConcepts.map((concept) => concept.label);
 
     try {
-      await applyDocumentSpine({ documentNodeId, title, logLabel, spine });
+      await applyDocumentSpine({
+        userId,
+        sourceId,
+        documentNodeId,
+        title,
+        logLabel,
+        spine,
+      });
     } catch (err) {
       console.warn(
         `chunked-extract: src=${sourceId} failed to write spine to source node:`,

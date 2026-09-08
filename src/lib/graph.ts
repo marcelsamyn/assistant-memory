@@ -26,6 +26,8 @@ import {
   sources,
 } from "~/db/schema";
 import { generateEmbeddings } from "~/lib/embeddings";
+import { assertPartitionReadAllowed } from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import {
   type AssertedByKind,
   type ClaimStatus,
@@ -96,6 +98,7 @@ export type SimilaritySearchBase = (
   minimumSimilarity?: number;
   limit?: number;
   userId: string;
+  partitionKey?: ContextPartitionKey;
 };
 
 /** Options for semantic search */
@@ -143,6 +146,7 @@ export interface ClaimSearchResult {
 
 export interface LexicalSearchParams {
   userId: string;
+  partitionKey?: ContextPartitionKey;
   query: string;
   limit?: number;
   /** Single scope to restrict to. Defaults to "personal"; never blends. */
@@ -182,7 +186,11 @@ export async function generateTextEmbedding(text: string): Promise<number[]> {
   return embedding;
 }
 
-function nodeHasScopeSupport(userId: string, scope: Scope): SQL<boolean> {
+function nodeHasScopeSupport(
+  userId: string,
+  scope: Scope,
+  partitionKey?: ContextPartitionKey,
+): SQL<boolean> {
   return sql<boolean>`(
     EXISTS (
       SELECT 1
@@ -191,12 +199,14 @@ function nodeHasScopeSupport(userId: string, scope: Scope): SQL<boolean> {
       WHERE ${sourceLinks.nodeId} = ${nodes.id}
         AND ${sources.userId} = ${userId}
         AND ${sources.scope} = ${scope}
+        AND ${partitionKey === undefined ? isNull(sources.partitionKey) : eq(sources.partitionKey, partitionKey)}
     )
     OR EXISTS (
       SELECT 1
       FROM ${claims}
       WHERE ${claims.userId} = ${userId}
         AND ${claims.scope} = ${scope}
+        AND ${partitionKey === undefined ? isNull(claims.partitionKey) : eq(claims.partitionKey, partitionKey)}
         AND ${claims.status} = 'active'
         AND (
           ${claims.subjectNodeId} = ${nodes.id}
@@ -210,11 +220,6 @@ function nodeHasScopeSupport(userId: string, scope: Scope): SQL<boolean> {
 export async function findSimilarNodes(
   opts: FindSimilarNodesOptions,
 ): Promise<NodeSearchResult[]> {
-  const substringQuery = getSemanticSearchSubstringQuery();
-  if (substringQuery !== null) {
-    return findSimilarNodesViaSubstring(opts, substringQuery);
-  }
-  if (shouldSkipSemanticSearch()) return [];
   const {
     userId,
     limit = 10,
@@ -223,23 +228,33 @@ export async function findSimilarNodes(
     includeNodeTypes,
     includeReference = false,
     scope,
+    partitionKey,
   } = opts;
+  const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
+  const substringQuery = getSemanticSearchSubstringQuery();
+  if (substringQuery !== null) {
+    return findSimilarNodesViaSubstring(opts, substringQuery);
+  }
+  if (shouldSkipSemanticSearch()) return [];
 
   const emb =
     "embedding" in opts
       ? opts.embedding
       : await generateTextEmbedding(opts.text);
   const similarity = sql<number>`1 - (${cosineDistance(nodeEmbeddings.embedding, emb)})`;
-  const db = await useDatabase();
 
   // Base conditions
   let whereCondition = and(
     eq(nodes.userId, userId),
+    partitionKey === undefined
+      ? isNull(nodes.partitionKey)
+      : eq(nodes.partitionKey, partitionKey),
     scope
-      ? nodeHasScopeSupport(userId, scope)
+      ? nodeHasScopeSupport(userId, scope, partitionKey)
       : includeReference
         ? undefined
-        : nodeHasScopeSupport(userId, "personal"),
+        : nodeHasScopeSupport(userId, "personal", partitionKey),
     sql`${similarity} IS NOT NULL`,
   );
 
@@ -301,6 +316,7 @@ export async function findSimilarClaims(
     includeReference = false,
     scope,
     includeAssistantInferred = false,
+    partitionKey,
   } = opts;
 
   const emb =
@@ -309,10 +325,14 @@ export async function findSimilarClaims(
       : await generateTextEmbedding(opts.text);
   const similarity = sql<number>`1 - (${cosineDistance(claimEmbeddings.embedding, emb)})`;
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
 
   // Base conditions
   let whereCondition = and(
     eq(claims.userId, userId),
+    partitionKey === undefined
+      ? isNull(claims.partitionKey)
+      : eq(claims.partitionKey, partitionKey),
     scope
       ? eq(claims.scope, scope)
       : includeReference
@@ -401,16 +421,21 @@ async function findSimilarNodesViaSubstring(
     excludeNodeTypes,
     includeReference = false,
     scope,
+    partitionKey,
   } = opts;
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
 
   let where = and(
     eq(nodes.userId, userId),
+    partitionKey === undefined
+      ? isNull(nodes.partitionKey)
+      : eq(nodes.partitionKey, partitionKey),
     scope
-      ? nodeHasScopeSupport(userId, scope)
+      ? nodeHasScopeSupport(userId, scope, partitionKey)
       : includeReference
         ? undefined
-        : nodeHasScopeSupport(userId, "personal"),
+        : nodeHasScopeSupport(userId, "personal", partitionKey),
     sql`lower(${nodeMetadata.label}) LIKE ${`%${query.toLowerCase()}%`}`,
   );
   if (excludeNodeTypes && excludeNodeTypes.length > 0) {
@@ -451,14 +476,19 @@ async function findSimilarClaimsViaSubstring(
     includeReference = false,
     scope,
     includeAssistantInferred = false,
+    partitionKey,
   } = opts;
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
 
   const subjectNodeMetadata = aliasedTable(nodeMetadata, "subjectNodeMetadata");
   const objectNodeMetadata = aliasedTable(nodeMetadata, "objectNodeMetadata");
 
   const where = and(
     eq(claims.userId, userId),
+    partitionKey === undefined
+      ? isNull(claims.partitionKey)
+      : eq(claims.partitionKey, partitionKey),
     scope
       ? eq(claims.scope, scope)
       : includeReference
@@ -515,11 +545,16 @@ export async function findOneHopNodes(
   options: {
     includeReference?: boolean;
     includeAssistantInferred?: boolean;
+    partitionKey?: ContextPartitionKey;
   } = {},
 ): Promise<OneHopNode[]> {
   if (nodeIds.length === 0) return [];
-  const { includeReference = false, includeAssistantInferred = false } =
-    options;
+  const {
+    includeReference = false,
+    includeAssistantInferred = false,
+    partitionKey,
+  } = options;
+  await assertPartitionReadAllowed(db, userId, partitionKey);
   const sub = db
     .select({
       claimId: claims.id,
@@ -539,6 +574,9 @@ export async function findOneHopNodes(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         includeReference ? undefined : eq(claims.scope, "personal"),
         includeAssistantInferred
           ? undefined
@@ -590,8 +628,10 @@ export async function findNodesByType(
   userId: string,
   nodeType: NodeType,
   limit = 200,
+  partitionKey?: ContextPartitionKey,
 ): Promise<NodeSearchResult[]> {
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
   return db
     .select({
       id: nodes.id,
@@ -606,6 +646,9 @@ export async function findNodesByType(
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         eq(nodes.nodeType, nodeType),
         isNotNull(nodeMetadata.label),
       ),
@@ -619,7 +662,9 @@ export async function findDayNode(
   db: DrizzleDB,
   userId: string,
   date: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<TypeId<"node"> | null> {
+  await assertPartitionReadAllowed(db, userId, partitionKey);
   const [day] = await db
     .select({ id: nodes.id })
     .from(nodes)
@@ -627,6 +672,9 @@ export async function findDayNode(
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         eq(nodes.nodeType, NodeTypeEnum.enum.Temporal),
         eq(nodeMetadata.label, date),
       ),
@@ -641,7 +689,9 @@ export async function findDayNode(
  */
 export async function fetchSourceIdsForNodes(
   db: DrizzleDB,
+  userId: string,
   nodeIds: TypeId<"node">[],
+  partitionKey?: ContextPartitionKey,
 ): Promise<Map<TypeId<"node">, string[]>> {
   if (nodeIds.length === 0) return new Map();
 
@@ -651,7 +701,16 @@ export async function fetchSourceIdsForNodes(
       sourceId: sourceLinks.sourceId,
     })
     .from(sourceLinks)
-    .where(inArray(sourceLinks.nodeId, nodeIds));
+    .innerJoin(sources, eq(sources.id, sourceLinks.sourceId))
+    .where(
+      and(
+        eq(sources.userId, userId),
+        partitionKey === undefined
+          ? isNull(sources.partitionKey)
+          : eq(sources.partitionKey, partitionKey),
+        inArray(sourceLinks.nodeId, nodeIds),
+      ),
+    );
 
   const result = new Map<TypeId<"node">, string[]>();
   for (const row of rows) {
@@ -673,8 +732,10 @@ export async function fetchClaimsBetweenNodeIds(
   db: DrizzleDB,
   userId: string,
   nodeIds: TypeId<"node">[],
+  partitionKey?: ContextPartitionKey,
 ) {
   if (nodeIds.length === 0) return [];
+  await assertPartitionReadAllowed(db, userId, partitionKey);
   const src = aliasedTable(nodeMetadata, "src");
   const tgt = aliasedTable(nodeMetadata, "tgt");
   return db
@@ -700,6 +761,9 @@ export async function fetchClaimsBetweenNodeIds(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         eq(claims.status, "active"),
         inArray(claims.subjectNodeId, nodeIds),
         inArray(claims.objectNodeId, nodeIds),
@@ -724,8 +788,10 @@ export async function findNodesByLexical(
     scope = "personal",
     excludeNodeTypes,
     includeNodeTypes,
+    partitionKey,
   } = params;
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
 
   const tsq = sql`websearch_to_tsquery('english', ${query})`;
   // search_tsv is a migration-managed generated column, intentionally not
@@ -744,7 +810,10 @@ export async function findNodesByLexical(
 
   let where = and(
     eq(nodes.userId, userId),
-    nodeHasScopeSupport(userId, scope),
+    partitionKey === undefined
+      ? isNull(nodes.partitionKey)
+      : eq(nodes.partitionKey, partitionKey),
+    nodeHasScopeSupport(userId, scope, partitionKey),
     matched,
   );
   if (includeNodeTypes && includeNodeTypes.length > 0) {
@@ -795,8 +864,10 @@ export async function findClaimsByLexical(
     asOf = new Date(),
     statedBetween,
     includeAssistantInferred = false,
+    partitionKey,
   } = params;
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
 
   const tsq = sql`websearch_to_tsquery('english', ${query})`;
   // search_tsv is a migration-managed generated column (see findNodesByLexical).
@@ -812,6 +883,9 @@ export async function findClaimsByLexical(
 
   let where = and(
     eq(claims.userId, userId),
+    partitionKey === undefined
+      ? isNull(claims.partitionKey)
+      : eq(claims.partitionKey, partitionKey),
     eq(claims.scope, scope),
     includeAssistantInferred
       ? undefined

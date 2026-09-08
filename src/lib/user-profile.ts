@@ -9,6 +9,7 @@
 import { eq, sql } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { userProfiles } from "~/db/schema";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import {
   userProfileMetadataSchema,
   type UserProfileMetadata,
@@ -52,6 +53,7 @@ export async function setUserSelfAliases(
   db: DrizzleDB,
   userId: string,
   aliases: string[],
+  partitionKey?: ContextPartitionKey,
 ): Promise<{ aliases: string[] }> {
   // Validate via the metadata schema — same path the read takes, so an
   // alias that survives the writer round-trips through the reader cleanly.
@@ -81,7 +83,7 @@ export async function setUserSelfAliases(
   }
 
   // Keep the self node's label + distinguishing aliases in sync with config.
-  await ensureUserSelfIdentity(db, userId, nextAliases);
+  await ensureUserSelfIdentity(db, userId, nextAliases, partitionKey);
 
   return { aliases: nextAliases };
 }

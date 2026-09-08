@@ -6,14 +6,19 @@ import {
 } from "~/lib/schemas/node-merge";
 
 export default defineEventHandler(async (event) => {
-  const { userId, nodeIds, targetLabel, targetDescription } =
+  const { userId, partitionKey, nodeIds, targetLabel, targetDescription } =
     mergeNodesRequestSchema.parse(await readBody(event));
   let result;
   try {
-    result = await mergeNodes(userId, nodeIds, {
-      ...(targetLabel !== undefined && { targetLabel }),
-      ...(targetDescription !== undefined && { targetDescription }),
-    });
+    result = await mergeNodes(
+      userId,
+      nodeIds,
+      {
+        ...(targetLabel !== undefined && { targetLabel }),
+        ...(targetDescription !== undefined && { targetDescription }),
+      },
+      partitionKey,
+    );
   } catch (err) {
     if (err instanceof CrossScopeMergeError) {
       throw createError({

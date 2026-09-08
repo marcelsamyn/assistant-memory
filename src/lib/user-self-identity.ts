@@ -12,11 +12,13 @@
  * Common aliases: user self node, self identity, primary self label,
  * distinguishing aliases, user identity prompt note, isUserSelf.
  */
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { nodeMetadata, nodes } from "~/db/schema";
 import { createAlias } from "~/lib/alias";
 import { normalizeLabel } from "~/lib/label";
+import { preparePartitionWrite } from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import type { TypeId } from "~/types/typeid";
 
 /** Count whitespace-separated tokens in an alias (after trimming). */
@@ -100,10 +102,12 @@ export function buildUserIdentityNote(aliases: string[]): string | null {
 export async function ensureUserSelfPersonNode(
   db: DrizzleDB,
   userId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<TypeId<"node">> {
+  await preparePartitionWrite(db, userId, partitionKey);
   return db.transaction(async (tx) => {
     await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtext(${"user_self_person:" + userId}))`,
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`user_self_person:${userId}:${partitionKey ?? "unpartitioned"}`}))`,
     );
 
     const existing = await tx
@@ -114,6 +118,9 @@ export async function ensureUserSelfPersonNode(
         and(
           eq(nodes.userId, userId),
           eq(nodes.nodeType, "Person"),
+          partitionKey === undefined
+            ? isNull(nodes.partitionKey)
+            : eq(nodes.partitionKey, partitionKey),
           sql`${nodeMetadata.additionalData}->>'isUserSelf' = 'true'`,
         ),
       )
@@ -122,7 +129,7 @@ export async function ensureUserSelfPersonNode(
 
     const [newNode] = await tx
       .insert(nodes)
-      .values({ userId, nodeType: "Person" })
+      .values({ userId, partitionKey, nodeType: "Person" })
       .returning();
     if (!newNode) {
       throw new Error(`Failed to create user-self Person node for ${userId}`);
@@ -150,8 +157,9 @@ export async function ensureUserSelfIdentity(
   db: DrizzleDB,
   userId: string,
   aliases: string[],
+  partitionKey?: ContextPartitionKey,
 ): Promise<TypeId<"node">> {
-  const nodeId = await ensureUserSelfPersonNode(db, userId);
+  const nodeId = await ensureUserSelfPersonNode(db, userId, partitionKey);
 
   const primaryLabel = selectPrimarySelfLabel(aliases);
   if (primaryLabel) {
@@ -176,7 +184,12 @@ export async function ensureUserSelfIdentity(
 
   await Promise.all(
     distinguishingAliases(aliases).map((alias) =>
-      createAlias(db, { userId, canonicalNodeId: nodeId, aliasText: alias }),
+      createAlias(db, {
+        userId,
+        partitionKey,
+        canonicalNodeId: nodeId,
+        aliasText: alias,
+      }),
     ),
   );
 

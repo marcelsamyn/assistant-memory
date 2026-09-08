@@ -6,10 +6,9 @@ import {
 } from "~/lib/schemas/node-neighborhood";
 
 export default defineEventHandler(async (event) => {
-  const { userId, nodeId, depth } = nodeNeighborhoodRequestSchema.parse(
-    await readBody(event),
-  );
-  const result = await getNodeNeighborhood(userId, nodeId, depth);
+  const { userId, partitionKey, nodeId, depth } =
+    nodeNeighborhoodRequestSchema.parse(await readBody(event));
+  const result = await getNodeNeighborhood(userId, nodeId, depth, partitionKey);
   if (!result) {
     throw createError({ statusCode: 404, statusMessage: "Node not found" });
   }

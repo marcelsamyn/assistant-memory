@@ -23,6 +23,7 @@ import {
 import { TemporaryIdMapper } from "../temporary-id-mapper";
 import { z } from "zod";
 import { DrizzleDB } from "~/db";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { useDatabase } from "~/utils/db";
 import { shuffleArray } from "~/utils/shuffle";
 
@@ -45,7 +46,8 @@ const MAX_SEARCH_LOOPS = 4;
 export async function performDeepResearch(
   data: DeepResearchJobInput,
 ): Promise<void> {
-  const { userId, conversationId, messages, lastNMessages } = data;
+  const { userId, partitionKey, conversationId, messages, lastNMessages } =
+    data;
   const db = await useDatabase();
 
   console.log(`Starting deep research for conversation ${conversationId}`);
@@ -66,12 +68,15 @@ export async function performDeepResearch(
     const searchResults = await runIterativeSearch(
       db,
       userId,
+      partitionKey,
       recentMessages,
       queries,
     );
 
     // Cache the combined results
-    await cacheDeepResearchResults(userId, conversationId, [searchResults]);
+    await cacheDeepResearchResults(userId, partitionKey, conversationId, [
+      searchResults,
+    ]);
 
     console.log(`Deep research completed for conversation ${conversationId}`);
   } catch (error) {
@@ -130,6 +135,7 @@ Come up with 1-5 search queries that explore adjacent or less obvious connection
 async function runIterativeSearch(
   db: DrizzleDB,
   userId: string,
+  partitionKey: ContextPartitionKey | undefined,
   messages: DeepResearchJobInput["messages"],
   initialQueries: string[],
 ): Promise<RerankResult<SearchGroups>> {
@@ -158,6 +164,7 @@ async function runIterativeSearch(
       const res = await executeSearchWithEmbedding(
         db,
         userId,
+        partitionKey,
         query,
         embedding,
         20,
@@ -267,6 +274,7 @@ Remove irrelevant results by listing their ids in dropIds. If more searching is 
 async function executeSearchWithEmbedding(
   db: DrizzleDB,
   userId: string,
+  partitionKey: ContextPartitionKey | undefined,
   query: string,
   embedding: number[],
   limit: number,
@@ -275,12 +283,14 @@ async function executeSearchWithEmbedding(
     const [similarNodes, similarClaims] = await Promise.all([
       findSimilarNodes({
         userId,
+        ...(partitionKey !== undefined ? { partitionKey } : {}),
         embedding,
         limit,
         minimumSimilarity: 0.35, // Lower threshold for deep search
       }),
       findSimilarClaims({
         userId,
+        ...(partitionKey !== undefined ? { partitionKey } : {}),
         embedding,
         limit,
         minimumSimilarity: 0.35, // Lower threshold for deep search
@@ -297,7 +307,12 @@ async function executeSearchWithEmbedding(
       ),
     ]);
 
-    const connections = await findOneHopNodes(db, userId, Array.from(nodeIds));
+    const connections = await findOneHopNodes(
+      db,
+      userId,
+      Array.from(nodeIds),
+      partitionKey === undefined ? {} : { partitionKey },
+    );
 
     // Build search result items without reranking
     const allResults: RerankResult<SearchGroups> = [
@@ -333,6 +348,7 @@ async function executeSearchWithEmbedding(
  */
 async function cacheDeepResearchResults(
   userId: string,
+  partitionKey: ContextPartitionKey | undefined,
   conversationId: string,
   results: RerankResult<SearchGroups>[],
 ): Promise<void> {
@@ -349,6 +365,7 @@ async function cacheDeepResearchResults(
 
   const result: DeepResearchResult = {
     userId,
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
     conversationId,
     results: validResults,
     timestamp: now,

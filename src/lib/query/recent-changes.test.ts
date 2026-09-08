@@ -3,6 +3,7 @@ import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
 import { queryRecentChangesResponseSchema } from "~/lib/schemas/query-recent-changes";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -153,6 +154,7 @@ describeIfServer("recent changes query", () => {
           "updated_at" timestamp with time zone DEFAULT now() NOT NULL
         );
       `);
+      await installPartitionCompatibilityFixture(client);
 
       await database.insert(schema.users).values({ id: userId });
 

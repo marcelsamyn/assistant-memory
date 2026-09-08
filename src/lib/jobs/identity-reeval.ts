@@ -22,7 +22,7 @@ import {
   resolveIdentity,
   type IdentityCandidateClaim,
 } from "../identity-resolution";
-import { and, eq, exists, inArray, or, sql } from "drizzle-orm";
+import { and, eq, exists, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DrizzleDB } from "~/db";
 import {
@@ -33,6 +33,11 @@ import {
   sourceLinks,
   sources,
 } from "~/db/schema";
+import { assertPartitionReadAllowed } from "~/lib/partition-access";
+import {
+  contextPartitionKeySchema,
+  type ContextPartitionKey,
+} from "~/lib/schemas/partition";
 import {
   type AssertedByKind,
   type NodeType,
@@ -44,11 +49,13 @@ import { useDatabase } from "~/utils/db";
 
 export interface IdentityReevalJobInput {
   userId: string;
+  partitionKey?: ContextPartitionKey;
   nodeId: TypeId<"node">;
 }
 
 export const IdentityReevalJobInputSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   nodeId: z.string().min(1),
 });
 
@@ -94,10 +101,11 @@ export interface IdentityReevalResult {
 export async function runIdentityReeval(
   input: IdentityReevalJobInput,
 ): Promise<IdentityReevalResult> {
-  const { userId, nodeId } = input;
+  const { userId, partitionKey, nodeId } = input;
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
 
-  const nodeRow = await _fetchNodeForReeval(db, userId, nodeId);
+  const nodeRow = await _fetchNodeForReeval(db, userId, nodeId, partitionKey);
   if (!nodeRow) return { status: "skipped_node_missing" };
   if (nodeRow.normalizedLabel.length === 0)
     return { status: "skipped_no_label" };
@@ -109,10 +117,12 @@ export async function runIdentityReeval(
     db,
     userId,
     nodeId,
+    partitionKey,
   );
 
   const resolution = await resolveIdentity({
     userId,
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
     candidate: {
       proposedLabel: nodeRow.label ?? nodeRow.normalizedLabel,
       normalizedLabel: nodeRow.normalizedLabel,
@@ -171,6 +181,7 @@ async function _fetchNodeForReeval(
   db: DrizzleDB,
   userId: string,
   nodeId: TypeId<"node">,
+  partitionKey?: ContextPartitionKey,
 ): Promise<NodeReevalRow | null> {
   const [row] = await db
     .select({
@@ -180,15 +191,29 @@ async function _fetchNodeForReeval(
     })
     .from(nodes)
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-    .where(and(eq(nodes.id, nodeId), eq(nodes.userId, userId)))
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
+      ),
+    )
     .limit(1);
 
   if (!row) return null;
 
-  const personal = await _hasScopeSupport(db, userId, nodeId, "personal");
+  const personal = await _hasScopeSupport(
+    db,
+    userId,
+    nodeId,
+    "personal",
+    partitionKey,
+  );
   const scope: Scope = personal
     ? "personal"
-    : (await _hasScopeSupport(db, userId, nodeId, "reference"))
+    : (await _hasScopeSupport(db, userId, nodeId, "reference", partitionKey))
       ? "reference"
       : "personal";
 
@@ -205,6 +230,7 @@ async function _hasScopeSupport(
   userId: string,
   nodeId: TypeId<"node">,
   scope: Scope,
+  partitionKey?: ContextPartitionKey,
 ): Promise<boolean> {
   const sourceLink = db
     .select({ one: sql<number>`1` })
@@ -214,6 +240,9 @@ async function _hasScopeSupport(
       and(
         eq(sourceLinks.nodeId, nodeId),
         eq(sources.userId, userId),
+        partitionKey === undefined
+          ? isNull(sources.partitionKey)
+          : eq(sources.partitionKey, partitionKey),
         eq(sources.scope, scope),
       ),
     );
@@ -223,6 +252,9 @@ async function _hasScopeSupport(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         eq(claims.scope, scope),
         eq(claims.status, "active"),
         or(eq(claims.subjectNodeId, nodeId), eq(claims.objectNodeId, nodeId)),
@@ -234,7 +266,15 @@ async function _hasScopeSupport(
       supported: sql<boolean>`(${exists(sourceLink)} OR ${exists(claim)})`,
     })
     .from(nodes)
-    .where(and(eq(nodes.id, nodeId), eq(nodes.userId, userId)))
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
+      ),
+    )
     .limit(1);
 
   return row?.supported === true;
@@ -256,6 +296,7 @@ async function _fetchSupportingClaims(
   db: DrizzleDB,
   userId: string,
   nodeId: TypeId<"node">,
+  partitionKey?: ContextPartitionKey,
 ): Promise<IdentityCandidateClaim[]> {
   const rows = await db
     .select({
@@ -268,6 +309,9 @@ async function _fetchSupportingClaims(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         eq(claims.subjectNodeId, nodeId),
         eq(claims.status, "active"),
         eq(claims.scope, "personal"),

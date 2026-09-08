@@ -2,6 +2,11 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { metricDefinitions, metricObservations } from "~/db/schema";
 import {
+  assertMetricPartitionRead,
+  metricDefinitionPartitionCondition,
+  metricObservationPartitionCondition,
+} from "~/lib/metrics/partition";
+import {
   type GetMetricSummariesRequest,
   type GetMetricSummariesResponse,
   type GetMetricSummaryRequest,
@@ -93,9 +98,11 @@ function windowStarts(now: Date) {
 /** Return latest reading, 7d/30d/90d stats, and coarse trend for one metric. */
 export async function getMetricSummary({
   userId,
+  partitionKey,
   metricId,
 }: GetMetricSummaryRequest): Promise<GetMetricSummaryResponse> {
   const db = await useDatabase();
+  await assertMetricPartitionRead(db, userId, partitionKey);
   const [definition] = await db
     .select({
       id: metricDefinitions.id,
@@ -123,6 +130,7 @@ export async function getMetricSummary({
     .where(
       and(
         eq(metricObservations.userId, userId),
+        metricObservationPartitionCondition(userId, partitionKey),
         eq(metricObservations.metricDefinitionId, metricId),
       ),
     )
@@ -144,6 +152,7 @@ export async function getMetricSummary({
       .where(
         and(
           eq(metricObservations.userId, userId),
+          metricObservationPartitionCondition(userId, partitionKey),
           eq(metricObservations.metricDefinitionId, metricId),
           sql`${metricObservations.occurredAt} >= ${since}`,
         ),
@@ -200,10 +209,12 @@ type MetricId = TypeId<"metric_definition">;
  */
 export async function getMetricSummaries({
   userId,
+  partitionKey,
   metricIds,
   filter,
 }: GetMetricSummariesRequest): Promise<GetMetricSummariesResponse> {
   const db = await useDatabase();
+  await assertMetricPartitionRead(db, userId, partitionKey);
 
   const definitions = await db
     .select({
@@ -214,6 +225,9 @@ export async function getMetricSummaries({
     .where(
       and(
         eq(metricDefinitions.userId, userId),
+        metricIds === undefined
+          ? metricDefinitionPartitionCondition(userId, partitionKey)
+          : undefined,
         metricIds === undefined
           ? undefined
           : inArray(metricDefinitions.id, metricIds),
@@ -257,7 +271,13 @@ export async function getMetricSummaries({
       occurredAt: metricObservations.occurredAt,
     })
     .from(metricObservations)
-    .where(and(eq(metricObservations.userId, userId), definitionScope))
+    .where(
+      and(
+        eq(metricObservations.userId, userId),
+        metricObservationPartitionCondition(userId, partitionKey),
+        definitionScope,
+      ),
+    )
     .orderBy(
       metricObservations.metricDefinitionId,
       desc(metricObservations.occurredAt),
@@ -279,6 +299,7 @@ export async function getMetricSummaries({
       .where(
         and(
           eq(metricObservations.userId, userId),
+          metricObservationPartitionCondition(userId, partitionKey),
           definitionScope,
           sql`${metricObservations.occurredAt} >= ${since}`,
         ),

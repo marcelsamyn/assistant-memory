@@ -2,6 +2,8 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId, type TypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -106,6 +108,7 @@ async function createBundleTestTables(client: Client): Promise<void> {
         CHECK (num_nonnulls("object_node_id", "object_value") = 1)
     );
   `);
+  await installPartitionCompatibilityFixture(client);
 }
 
 interface FakeRedis {
@@ -653,6 +656,75 @@ describeIfServer("getConversationBootstrapContext", () => {
     });
   });
 
+  it("checks partition authority before returning a legacy cached bundle", async () => {
+    await withFreshSchema(async (client, database) => {
+      const userId = "user_cached_partition_fence";
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+
+      const fakeRedis = createFakeRedis();
+      vi.resetModules();
+      vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+      vi.doMock("../queues", () => ({ redisConnection: fakeRedis }));
+
+      try {
+        const { setCachedBundle } = await import("./cache");
+        await setCachedBundle(userId, {
+          sections: [{ kind: "pinned", content: "legacy", usage: "legacy" }],
+          assembledAt: new Date(),
+        });
+        await client.query(
+          `INSERT INTO "partition_migration_state" ("user_id", "state") VALUES ($1, 'migrating')`,
+          [userId],
+        );
+
+        const { getConversationBootstrapContext } = await import(
+          "./assemble-bootstrap-context"
+        );
+        await expect(
+          getConversationBootstrapContext({ userId }),
+        ).rejects.toMatchObject({ code: "PARTITION_REQUIRED" });
+      } finally {
+        vi.doUnmock("~/utils/db");
+        vi.doUnmock("../queues");
+        vi.resetModules();
+      }
+    });
+  });
+
+  it("keeps the unpartitioned cache distinct from a partition named legacy", async () => {
+    const fakeRedis = createFakeRedis();
+    const partitionKey = contextPartitionKeySchema.parse("legacy");
+    vi.resetModules();
+    vi.doMock("../queues", () => ({ redisConnection: fakeRedis }));
+
+    try {
+      const { getCachedBundle, setCachedBundle } = await import("./cache");
+      await setCachedBundle("cache-user", {
+        sections: [{ kind: "pinned", content: "global", usage: "global" }],
+        assembledAt: new Date(),
+      });
+      await setCachedBundle(
+        "cache-user",
+        {
+          sections: [{ kind: "pinned", content: "room", usage: "room" }],
+          assembledAt: new Date(),
+        },
+        partitionKey,
+      );
+
+      expect((await getCachedBundle("cache-user"))?.sections[0]?.content).toBe(
+        "global",
+      );
+      expect(
+        (await getCachedBundle("cache-user", partitionKey))?.sections[0]
+          ?.content,
+      ).toBe("room");
+    } finally {
+      vi.doUnmock("../queues");
+      vi.resetModules();
+    }
+  });
+
   it("recent supersessions window: 25h-old excluded, 1h-old included", async () => {
     await withFreshSchema(async (client, database) => {
       const userId = "user_window";
@@ -828,6 +900,67 @@ describeIfServer("getConversationBootstrapContext", () => {
         vi.doUnmock("../queues");
         vi.resetModules();
       }
+    });
+  });
+
+  it("keeps preferences inside the requested partition", async () => {
+    await withFreshSchema(async (client, database) => {
+      const userId = "user_partitioned_preferences";
+      const partitionA = contextPartitionKeySchema.parse("opaque:prefs-a");
+      const partitionB = contextPartitionKeySchema.parse("opaque:prefs-b");
+      const sourceA = newTypeId("source");
+      const sourceB = newTypeId("source");
+      const personA = newTypeId("node");
+      const personB = newTypeId("node");
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "partition_key")
+         VALUES ($1, $2, 'conversation_message', 'prefs-a', $3),
+                ($4, $2, 'conversation_message', 'prefs-b', $5)`,
+        [sourceA, userId, partitionA, sourceB, partitionB],
+      );
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type", "partition_key")
+         VALUES ($1, $2, 'Person', $3), ($4, $2, 'Person', $5)`,
+        [personA, userId, partitionA, personB, partitionB],
+      );
+      await database.insert(schema.claims).values([
+        {
+          id: newTypeId("claim"),
+          userId,
+          partitionKey: partitionA,
+          subjectNodeId: personA,
+          objectValue: "room-a-only",
+          predicate: "HAS_PREFERENCE",
+          statement: "Preference from room A.",
+          sourceId: sourceA,
+          assertedByKind: "user",
+          statedAt: new Date(),
+        },
+        {
+          id: newTypeId("claim"),
+          userId,
+          partitionKey: partitionB,
+          subjectNodeId: personB,
+          objectValue: "room-b-only",
+          predicate: "HAS_PREFERENCE",
+          statement: "Preference from room B.",
+          sourceId: sourceB,
+          assertedByKind: "user",
+          statedAt: new Date(),
+        },
+      ]);
+
+      const { assemblePreferencesSection } = await import(
+        "./sections/preferences"
+      );
+      const section = await assemblePreferencesSection(
+        database,
+        userId,
+        partitionA,
+      );
+      expect(section?.content).toContain("room-a-only");
+      expect(section?.content).not.toContain("room-b-only");
     });
   });
 });

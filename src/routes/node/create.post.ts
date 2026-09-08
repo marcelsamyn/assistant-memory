@@ -7,7 +7,7 @@ import {
 } from "~/lib/schemas/node";
 
 export default defineEventHandler(async (event) => {
-  const { userId, nodeType, label, description, initialClaims } =
+  const { userId, partitionKey, nodeType, label, description, initialClaims } =
     createNodeRequestSchema.parse(await readBody(event));
   try {
     const { initialClaimIds, ...node } = await createNode(
@@ -16,6 +16,7 @@ export default defineEventHandler(async (event) => {
       label,
       description,
       initialClaims,
+      partitionKey,
     );
     return createNodeResponseSchema.parse({ node, initialClaimIds });
   } catch (e) {

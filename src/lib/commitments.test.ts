@@ -7,6 +7,7 @@ import { setCommitmentDueRequestSchema } from "~/lib/schemas/set-commitment-due"
 import { setCommitmentOwnerRequestSchema } from "~/lib/schemas/set-commitment-owner";
 import { setCommitmentStatusRequestSchema } from "~/lib/schemas/set-commitment-status";
 import { updateCommitmentRequestSchema } from "~/lib/schemas/update-commitment";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -133,6 +134,7 @@ async function provisionSchema(client: Client): Promise<void> {
       CONSTRAINT "aliases_user_normalized_canonical_unique" UNIQUE ("user_id", "normalized_alias_text", "canonical_node_id")
     );
   `);
+  await installPartitionCompatibilityFixture(client);
 }
 
 describeIfServer("createCommitment", () => {

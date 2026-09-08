@@ -10,12 +10,19 @@ import {
 
 export default defineEventHandler(async (event) => {
   // Parse the request
-  const { userId, query, limit, excludeNodeTypes, conversationId } =
-    querySearchRequestSchema.parse(await readBody(event));
+  const {
+    userId,
+    partitionKey,
+    query,
+    limit,
+    excludeNodeTypes,
+    conversationId,
+  } = querySearchRequestSchema.parse(await readBody(event));
 
   // Get the standard search results
   const { searchResults } = await searchMemory({
     userId,
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
     query,
     limit,
     excludeNodeTypes,
@@ -31,7 +38,11 @@ export default defineEventHandler(async (event) => {
   }
 
   // Try to get deep research results from cache
-  const deepResults = await getDeepResearchResult(userId, conversationId);
+  const deepResults = await getDeepResearchResult(
+    userId,
+    conversationId,
+    partitionKey,
+  );
 
   // If no deep research results, format and return standard results
   if (!deepResults) {

@@ -20,4 +20,16 @@ describe("SDK exports", () => {
     expect(sdk.metricMoverSchema).toBeDefined();
     expect(sdk.queryRecentChangesResponseSchema).toBeDefined();
   });
+
+  it("re-exports opaque partition migration contracts", async () => {
+    const sdk = await import("./index");
+    expect(sdk.contextPartitionKeySchema.parse("tenant:opaque/key")).toBe(
+      "tenant:opaque/key",
+    );
+    expect(sdk.reclassifySourcePartitionRequestSchema).toBeDefined();
+    expect(sdk.setPartitionMigrationStateRequestSchema).toBeDefined();
+    expect(sdk.partitionInventoryResponseSchema).toBeDefined();
+    expect(sdk.PartitionConflictError).toBeDefined();
+    expect(sdk.PartitionMaintenanceUnavailableError).toBeDefined();
+  });
 });

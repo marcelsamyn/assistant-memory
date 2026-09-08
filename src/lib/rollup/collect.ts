@@ -10,10 +10,11 @@
  * fingerprint, day entries.
  */
 import { monthKeysOfYear, weekDayKeys, weeksOverlappingMonth } from "./period";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import type { DrizzleDB } from "~/db";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import type { TypeId } from "~/types/typeid";
 
 /** Initial caps — tunable. Bounds even heavy days (e.g. screenpipe docs). */
@@ -160,6 +161,7 @@ export async function fetchTemporalNodesByLabels(
   db: DrizzleDB,
   userId: string,
   labels: string[],
+  partitionKey?: ContextPartitionKey,
 ): Promise<Map<string, TemporalNodeRow>> {
   if (labels.length === 0) return new Map();
   const rows = await db
@@ -174,6 +176,9 @@ export async function fetchTemporalNodesByLabels(
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         eq(nodes.nodeType, "Temporal"),
         inArray(nodeMetadata.label, labels),
       ),
@@ -201,6 +206,7 @@ export async function fetchDayEntries(
   db: DrizzleDB,
   userId: string,
   dayNodeId: TypeId<"node">,
+  partitionKey?: ContextPartitionKey,
 ): Promise<DayEntry[]> {
   return (
     db
@@ -216,6 +222,9 @@ export async function fetchDayEntries(
       .where(
         and(
           eq(claims.userId, userId),
+          partitionKey === undefined
+            ? isNull(claims.partitionKey)
+            : eq(claims.partitionKey, partitionKey),
           eq(claims.objectNodeId, dayNodeId),
           eq(claims.predicate, "OCCURRED_ON"),
           eq(claims.status, "active"),
@@ -244,20 +253,31 @@ export async function collectPeriodInput(
   userId: string,
   periodKey: string,
   level: "day" | "week" | "month" | "year",
+  partitionKey?: ContextPartitionKey,
 ): Promise<CollectedInput | null> {
   if (level === "day") {
     const dayNode = (
-      await fetchTemporalNodesByLabels(db, userId, [periodKey])
+      await fetchTemporalNodesByLabels(db, userId, [periodKey], partitionKey)
     ).get(periodKey);
     if (!dayNode) return null;
-    const entries = await fetchDayEntries(db, userId, dayNode.nodeId);
+    const entries = await fetchDayEntries(
+      db,
+      userId,
+      dayNode.nodeId,
+      partitionKey,
+    );
     const inputText = buildDayInputText(periodKey, entries);
     return inputText ? { inputText, childNodeIds: [] } : null;
   }
 
   if (level === "week") {
     const dayKeys = weekDayKeys(periodKey);
-    const dayNodes = await fetchTemporalNodesByLabels(db, userId, dayKeys);
+    const dayNodes = await fetchTemporalNodesByLabels(
+      db,
+      userId,
+      dayKeys,
+      partitionKey,
+    );
     const inputText = buildWeekInputText(
       periodKey,
       dayKeys.map((key) => ({
@@ -280,6 +300,7 @@ export async function collectPeriodInput(
       db,
       userId,
       weeks.map((w) => w.weekKey),
+      partitionKey,
     );
     const inputText = buildMonthInputText(
       periodKey,
@@ -299,7 +320,12 @@ export async function collectPeriodInput(
   }
 
   const monthKeys = monthKeysOfYear(periodKey);
-  const monthNodes = await fetchTemporalNodesByLabels(db, userId, monthKeys);
+  const monthNodes = await fetchTemporalNodesByLabels(
+    db,
+    userId,
+    monthKeys,
+    partitionKey,
+  );
   const inputText = buildYearInputText(
     periodKey,
     monthKeys.map((key) => ({

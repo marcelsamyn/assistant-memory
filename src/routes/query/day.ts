@@ -10,10 +10,14 @@ import {
 //      and what's mentioned inside is one hop further
 
 export default defineEventHandler(async (event) => {
-  const { userId, date, includeFormattedResult } = queryDayRequestSchema.parse(
-    await readBody(event),
-  );
+  const { userId, partitionKey, date, includeFormattedResult } =
+    queryDayRequestSchema.parse(await readBody(event));
   return queryDayResponseSchema.parse(
-    await queryDayMemories({ userId, date, includeFormattedResult }),
+    await queryDayMemories({
+      userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
+      date,
+      includeFormattedResult,
+    }),
   );
 });

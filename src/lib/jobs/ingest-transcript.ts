@@ -24,7 +24,12 @@ import { ensureSourceNode } from "~/lib/ingestion/ensure-source-node";
 import { ensureUser } from "~/lib/ingestion/ensure-user";
 import { insertNewSources } from "~/lib/ingestion/insert-new-sources";
 import { logEvent } from "~/lib/observability/log";
+import {
+  assertSourcePartition,
+  withSourceWriteFence,
+} from "~/lib/partition-access";
 import { safeToISOString } from "~/lib/safe-date";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import {
   resolveSpeakers,
   type ResolvedSpeaker,
@@ -61,6 +66,9 @@ const transcriptContentJobSchema = z.discriminatedUnion("kind", [
 
 export const IngestTranscriptJobInputSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
+  sourceId: typeIdSchema("source"),
+  expectedSourceVersion: z.number().int().nonnegative(),
   transcriptId: z.string().min(1),
   scope: ScopeEnum.optional().default("personal"),
   occurredAt: z.string().datetime().pipe(z.coerce.date()),
@@ -80,8 +88,11 @@ export interface IngestTranscriptResult {
   unresolvedSpeakers: number;
 }
 
-export interface IngestTranscriptParams extends IngestTranscriptJobInput {
+export interface IngestTranscriptParams
+  extends Omit<IngestTranscriptJobInput, "sourceId" | "expectedSourceVersion"> {
   db: DrizzleDB;
+  sourceId?: TypeId<"source">;
+  expectedSourceVersion?: number;
   /** Test seam — defaults to the LLM-backed segmenter. */
   segmenter?: SegmentTranscriptClient;
 }
@@ -92,6 +103,9 @@ export async function ingestTranscript(
   const {
     db,
     userId,
+    partitionKey,
+    sourceId,
+    expectedSourceVersion,
     transcriptId,
     scope,
     occurredAt,
@@ -102,6 +116,20 @@ export async function ingestTranscript(
   } = params;
 
   await ensureUser(db, userId);
+  if ((sourceId === undefined) !== (expectedSourceVersion === undefined)) {
+    throw new Error(
+      "Transcript sourceId and expectedSourceVersion must be provided together",
+    );
+  }
+  if (sourceId !== undefined && expectedSourceVersion !== undefined) {
+    await assertSourcePartition({
+      db,
+      userId,
+      sourceId,
+      partitionKey,
+      expectedSourceVersion,
+    });
+  }
 
   const utterances = await loadUtterances({
     userId,
@@ -120,12 +148,13 @@ export async function ingestTranscript(
   // request and never call /user/self-aliases, so the stored list may be
   // empty. Use the EFFECTIVE list so the self node still gets a distinguishing
   // label + aliases on the real ingestion path.
-  await ensureUserSelfIdentity(db, userId, userSelfAliases);
+  await ensureUserSelfIdentity(db, userId, userSelfAliases, partitionKey);
 
   const speakerLabels = utterances.map((u) => u.speakerLabel);
   const speakerMap = await resolveSpeakers({
     db,
     userId,
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
     speakerLabels,
     userSelfAliases,
     ...(knownParticipants !== undefined ? { knownParticipants } : {}),
@@ -150,14 +179,24 @@ export async function ingestTranscript(
   const { sourceId: transcriptSourceId, sourceRefs } = await insertNewSources({
     db,
     userId,
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
     parentSourceType: "meeting_transcript",
     parentSourceId: transcriptId,
     childSourceType: "conversation_message",
     scope,
     childSources,
+    ...(sourceId !== undefined && expectedSourceVersion !== undefined
+      ? {
+          parentWriteFence: {
+            sourceId,
+            expectedSourceVersion,
+          },
+        }
+      : {}),
   });
   await linkSpeakersToTranscriptSources({
     db,
+    userId,
     transcriptSourceId,
     sourceRefs,
     utterances,
@@ -283,6 +322,7 @@ function formatTranscriptForExtraction(
 
 async function linkSpeakersToTranscriptSources({
   db,
+  userId,
   transcriptSourceId,
   sourceRefs,
   utterances,
@@ -290,6 +330,7 @@ async function linkSpeakersToTranscriptSources({
   speakerMap,
 }: {
   db: DrizzleDB;
+  userId: string;
   transcriptSourceId: TypeId<"source">;
   sourceRefs: Array<{ externalId: string; sourceId: TypeId<"source"> }>;
   utterances: SegmentedUtterance[];
@@ -323,7 +364,13 @@ async function linkSpeakersToTranscriptSources({
   const linkRows = [...linkRowsByKey.values()];
   if (linkRows.length === 0) return;
 
-  await db.insert(sourceLinks).values(linkRows).onConflictDoNothing();
+  await withSourceWriteFence(
+    db,
+    { userId, sources: [{ sourceId: transcriptSourceId }] },
+    async (tx) => {
+      await tx.insert(sourceLinks).values(linkRows).onConflictDoNothing();
+    },
+  );
 }
 
 function escapeXml(value: string): string {

@@ -1,9 +1,21 @@
+import { assertPartitionReadAllowed } from "../partition-access";
 import {
   QueryTimelineRequest,
   QueryTimelineResponse,
 } from "../schemas/query-timeline";
 import { loadTimelinePeriods } from "./timeline-periods";
-import { and, eq, or, gte, lte, desc, inArray, sql, count } from "drizzle-orm";
+import {
+  and,
+  eq,
+  or,
+  gte,
+  lte,
+  desc,
+  inArray,
+  sql,
+  count,
+  isNull,
+} from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
 import { NodeTypeEnum } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
@@ -24,6 +36,7 @@ export async function queryTimeline(
 ): Promise<QueryTimelineResponse> {
   const {
     userId,
+    partitionKey,
     since,
     until,
     limit = 30,
@@ -33,15 +46,19 @@ export async function queryTimeline(
   } = params;
 
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
 
   const periods = includePeriods
-    ? await loadTimelinePeriods(db, userId, since, until)
+    ? await loadTimelinePeriods(db, userId, since, until, partitionKey)
     : [];
 
   // Shared WHERE clause for day-node lookups. `since`/`until` are inclusive
   // bounds; an omitted bound is open on that side.
   const dayNodeWhere = and(
     eq(nodes.userId, userId),
+    partitionKey === undefined
+      ? isNull(nodes.partitionKey)
+      : eq(nodes.partitionKey, partitionKey),
     eq(nodes.nodeType, NodeTypeEnum.enum.Temporal),
     sql`${nodeMetadata.label} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`,
     ...(since ? [gte(nodeMetadata.label, since)] : []),
@@ -125,8 +142,14 @@ export async function queryTimeline(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         eq(claims.status, "active"),
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         or(
           inArray(claims.subjectNodeId, dayNodeIds),
           inArray(claims.objectNodeId, dayNodeIds),

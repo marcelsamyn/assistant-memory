@@ -21,10 +21,14 @@ import {
  * deleted node by label or id — that is content drift, not a broken FK.
  */
 export default defineEventHandler(async (event) => {
-  const { userId, nodeId } = deleteNodeRequestSchema.parse(
+  const { userId, partitionKey, nodeId } = deleteNodeRequestSchema.parse(
     await readBody(event),
   );
-  const { deleted, affectedClaims } = await deleteNode(userId, nodeId);
+  const { deleted, affectedClaims } = await deleteNode(
+    userId,
+    nodeId,
+    partitionKey,
+  );
   if (!deleted) {
     throw createError({ statusCode: 404, statusMessage: "Node not found" });
   }

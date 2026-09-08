@@ -14,11 +14,17 @@ import {
 } from "~/lib/schemas/context-search";
 
 export default defineEventHandler(async (event) => {
-  const { userId, query, limit, scope, excludeNodeTypes } =
+  const { userId, partitionKey, query, limit, scope, excludeNodeTypes } =
     contextSearchRequestSchema.parse(await readBody(event));
 
   const fn = scope === "reference" ? searchReference : searchMemory;
-  const result = await fn({ userId, query, limit, excludeNodeTypes });
+  const result = await fn({
+    userId,
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
+    query,
+    limit,
+    excludeNodeTypes,
+  });
 
   return contextSearchResponseSchema.parse(result);
 });

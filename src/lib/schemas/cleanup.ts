@@ -1,3 +1,4 @@
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 const cleanupSinceSchema = z
@@ -27,6 +28,7 @@ export type CleanupResponse = z.infer<typeof cleanupResponseSchema>;
 
 export const dedupSweepRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
 });
 
 export const dedupSweepResponseSchema = z.object({

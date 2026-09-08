@@ -1,6 +1,7 @@
 import { AssertedByKindEnum, TaskStatusEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
 import { DUE_TIME_PATTERN } from "./due-claim-metadata.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 import { isValidTimeZone } from "~/lib/time-zone.js";
 
@@ -25,6 +26,7 @@ import { isValidTimeZone } from "~/lib/time-zone.js";
 export const createCommitmentRequestSchema = z
   .object({
     userId: z.string(),
+    partitionKey: contextPartitionKeySchema.optional(),
     label: z.string().min(1),
     description: z.string().min(1).optional(),
     /**

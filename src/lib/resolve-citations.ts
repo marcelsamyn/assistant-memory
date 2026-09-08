@@ -1,9 +1,11 @@
 /** Batch-resolve node/claim/source ids to citation-ready records. */
 import { resolveNodeRedirects } from "./node-redirects";
 import type { ResolvedCitation } from "./schemas/resolve-citations";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { claims, nodeMetadata, nodes, sources } from "~/db/schema";
+import { assertPartitionReadAllowed } from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import type { TypeId } from "~/types/typeid";
 
 type Database =
@@ -34,7 +36,9 @@ export async function resolveCitations(
   db: Database,
   userId: string,
   ids: string[],
+  partitionKey?: ContextPartitionKey,
 ): Promise<ResolvedCitation[]> {
+  await assertPartitionReadAllowed(db, userId, partitionKey);
   const nodeIds = [
     ...new Set(ids.filter((i) => prefixOf(i) === "node")),
   ] as TypeId<"node">[];
@@ -46,7 +50,12 @@ export async function resolveCitations(
   ] as TypeId<"source">[];
 
   // --- nodes: follow merge redirects, then load metadata ---
-  const redirects = await resolveNodeRedirects(db, userId, nodeIds);
+  const redirects = await resolveNodeRedirects(
+    db,
+    userId,
+    nodeIds,
+    partitionKey,
+  );
   const canonicalNodeIds = [...new Set(redirects.values())];
   const nodeRows = canonicalNodeIds.length
     ? await db
@@ -58,7 +67,13 @@ export async function resolveCitations(
         .from(nodes)
         .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
         .where(
-          and(eq(nodes.userId, userId), inArray(nodes.id, canonicalNodeIds)),
+          and(
+            eq(nodes.userId, userId),
+            partitionKey === undefined
+              ? isNull(nodes.partitionKey)
+              : eq(nodes.partitionKey, partitionKey),
+            inArray(nodes.id, canonicalNodeIds),
+          ),
         )
     : [];
   const nodeById = new Map(nodeRows.map((r) => [r.id, r]));
@@ -91,7 +106,15 @@ export async function resolveCitations(
         })
         .from(claims)
         .leftJoin(sources, eq(sources.id, claims.sourceId))
-        .where(and(eq(claims.userId, userId), inArray(claims.id, claimIds)))
+        .where(
+          and(
+            eq(claims.userId, userId),
+            partitionKey === undefined
+              ? isNull(claims.partitionKey)
+              : eq(claims.partitionKey, partitionKey),
+            inArray(claims.id, claimIds),
+          ),
+        )
     : [];
   const claimById = new Map(claimRows.map((r) => [r.id, r]));
   const claimCitations: ResolvedCitation[] = claimIds.map((requestedId) => {
@@ -124,7 +147,15 @@ export async function resolveCitations(
           deletedAt: sources.deletedAt,
         })
         .from(sources)
-        .where(and(eq(sources.userId, userId), inArray(sources.id, sourceIds)))
+        .where(
+          and(
+            eq(sources.userId, userId),
+            partitionKey === undefined
+              ? isNull(sources.partitionKey)
+              : eq(sources.partitionKey, partitionKey),
+            inArray(sources.id, sourceIds),
+          ),
+        )
     : [];
   const sourceById = new Map(sourceRows.map((r) => [r.id, r]));
   const sourceCitations: ResolvedCitation[] = sourceIds.map((requestedId) => {

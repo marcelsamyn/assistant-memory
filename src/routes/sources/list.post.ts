@@ -7,10 +7,16 @@ import { listSourcesPage } from "~/lib/sources-read";
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const { userId, type, limit, cursor } = listSourcesRequestSchema.parse(
-    await readBody(event),
-  );
+  const { userId, partitionKey, type, limit, cursor } =
+    listSourcesRequestSchema.parse(await readBody(event));
   const db = await useDatabase();
-  const result = await listSourcesPage({ db, userId, type, limit, cursor });
+  const result = await listSourcesPage({
+    db,
+    userId,
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
+    type,
+    limit,
+    cursor,
+  });
   return listSourcesResponseSchema.parse(result);
 });

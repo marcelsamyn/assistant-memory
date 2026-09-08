@@ -11,6 +11,7 @@
  */
 import { ScopeEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 export const sourceListableTypeEnum = z.enum([
@@ -32,6 +33,8 @@ export const sourceStatusEnum = z.enum([
 
 export const sourceSummarySchema = z.object({
   sourceId: typeIdSchema("source"),
+  partitionKey: contextPartitionKeySchema.nullable(),
+  version: z.number().int().nonnegative(),
   type: sourceListableTypeEnum,
   /**
    * Best-effort display title. For documents this is whatever was passed
@@ -68,6 +71,7 @@ export type SourceSummary = z.infer<typeof sourceSummarySchema>;
 
 export const listSourcesRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   type: sourceListableTypeEnum.optional(),
   limit: z.number().int().min(1).max(200).optional().default(50),
   cursor: z.string().optional(),
@@ -82,6 +86,7 @@ export type ListSourcesResponse = z.infer<typeof listSourcesResponseSchema>;
 
 export const getSourceRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   sourceId: typeIdSchema("source"),
   /** Include the stored textual representation used by memory. */
   includeContent: z.boolean().optional(),

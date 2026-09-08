@@ -6,9 +6,9 @@ import {
 } from "~/lib/schemas/node-batch-delete";
 
 export default defineEventHandler(async (event) => {
-  const { userId, nodeIds } = batchDeleteNodesRequestSchema.parse(
+  const { userId, partitionKey, nodeIds } = batchDeleteNodesRequestSchema.parse(
     await readBody(event),
   );
-  const count = await batchDeleteNodes(userId, nodeIds);
+  const count = await batchDeleteNodes(userId, nodeIds, partitionKey);
   return batchDeleteNodesResponseSchema.parse({ deleted: true, count });
 });

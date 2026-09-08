@@ -17,6 +17,7 @@ interface ExtractDocumentGraphParams {
   db: DrizzleDB;
   userId: string;
   sourceId: TypeId<"source">;
+  expectedSourceVersion?: number;
   externalId: string;
   /** Markdown (or markdown-equivalent plain text) content to extract from. */
   content: string;
@@ -36,6 +37,7 @@ export async function extractDocumentGraph(
     db,
     userId,
     sourceId,
+    expectedSourceVersion,
     externalId,
     content,
     timestamp,
@@ -48,6 +50,7 @@ export async function extractDocumentGraph(
     db,
     userId,
     sourceId,
+    ...(expectedSourceVersion !== undefined ? { expectedSourceVersion } : {}),
     timestamp,
     nodeType: NodeTypeEnum.enum.Document,
   });

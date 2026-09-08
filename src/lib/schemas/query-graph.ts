@@ -6,10 +6,12 @@ import {
   ScopeEnum,
 } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 export const queryGraphRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   query: z.string().optional(),
   maxNodes: z.number().int().positive().default(100),
   nodeTypes: z.array(NodeTypeEnum).optional(),

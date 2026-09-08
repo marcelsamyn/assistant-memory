@@ -1,7 +1,9 @@
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 export const queryAtlasNodesRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   assistantId: z.string(),
 });
 

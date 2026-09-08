@@ -6,6 +6,7 @@ import type { DrizzleDB } from "~/db";
 import * as schema from "~/db/schema";
 import { ROLLUP_TEST_TABLES_SQL, stubLlm } from "~/lib/rollup/test-helpers";
 import { ensurePeriodNode } from "~/lib/temporal";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 import {
   resetTestOverrides,
@@ -58,6 +59,7 @@ describeIfServer("runRollup", () => {
     client = new Client({ connectionString: dsnFor(dbName) });
     await client.connect();
     await client.query(ROLLUP_TEST_TABLES_SQL);
+    await installPartitionCompatibilityFixture(client);
     db = drizzle(client, { schema, casing: "snake_case" });
   });
 

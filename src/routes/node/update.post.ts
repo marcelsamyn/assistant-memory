@@ -6,13 +6,18 @@ import {
 } from "~/lib/schemas/node";
 
 export default defineEventHandler(async (event) => {
-  const { userId, nodeId, label, nodeType, description } =
+  const { userId, partitionKey, nodeId, label, nodeType, description } =
     updateNodeRequestSchema.parse(await readBody(event));
-  const result = await updateNode(userId, nodeId, {
-    ...(label !== undefined && { label }),
-    ...(nodeType !== undefined && { nodeType }),
-    ...(description !== undefined && { description }),
-  });
+  const result = await updateNode(
+    userId,
+    nodeId,
+    {
+      ...(label !== undefined && { label }),
+      ...(nodeType !== undefined && { nodeType }),
+      ...(description !== undefined && { description }),
+    },
+    partitionKey,
+  );
   if (!result) {
     throw createError({ statusCode: 404, statusMessage: "Node not found" });
   }

@@ -5,6 +5,7 @@ import {
   proposedMetricDefinitionSchema,
 } from "./metric-definition.js";
 import { metricObservationErrorCodeSchema } from "./metric-observation.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 export { metricAggregationHintSchema } from "./metric-definition.js";
@@ -22,6 +23,7 @@ export const metricDefinitionInputSchema = proposedMetricDefinitionSchema;
 
 export const recordMetricRequestSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   metric: metricDefinitionInputSchema,
   value: z.number(),
   occurredAt: z.string().datetime().pipe(z.coerce.date()),
@@ -37,6 +39,7 @@ export const bulkRecordMetricObservationSchema = z.object({
 
 export const bulkRecordMetricsRequestSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   sourceExternalId: z.string().min(1).max(200),
   observations: z.array(bulkRecordMetricObservationSchema).min(1).max(5000),
 });

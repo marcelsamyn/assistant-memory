@@ -109,6 +109,21 @@ describe("recordMetricObservations with createDefinitions: false", () => {
     vi.doMock("~/lib/metrics/event-nodes", () => ({
       ensureMetricEventNode: async () => newTypeId("node"),
     }));
+    vi.doMock("~/lib/partition-access", () => ({
+      assertSourcePartition: async () => undefined,
+      withSourceWriteFence: async (
+        _database: unknown,
+        input: { sources: ReadonlyArray<{ sourceId: string }> },
+        write: (
+          database: typeof fakeDb,
+          versions: Map<string, number>,
+        ) => unknown,
+      ) =>
+        write(
+          fakeDb,
+          new Map(input.sources.map((source) => [source.sourceId, 0])),
+        ),
+    }));
     vi.doMock("~/utils/db", () => ({ useDatabase: async () => fakeDb }));
 
     const { recordMetricObservations } = await import(
@@ -163,6 +178,21 @@ describe("recordMetricObservations with createDefinitions: false", () => {
     }));
     vi.doMock("~/lib/metrics/event-nodes", () => ({
       ensureMetricEventNode: async () => newTypeId("node"),
+    }));
+    vi.doMock("~/lib/partition-access", () => ({
+      assertSourcePartition: async () => undefined,
+      withSourceWriteFence: async (
+        _database: unknown,
+        input: { sources: ReadonlyArray<{ sourceId: string }> },
+        write: (
+          database: typeof fakeDb,
+          versions: Map<string, number>,
+        ) => unknown,
+      ) =>
+        write(
+          fakeDb,
+          new Map(input.sources.map((source) => [source.sourceId, 0])),
+        ),
     }));
     vi.doMock("~/utils/db", () => ({ useDatabase: async () => fakeDb }));
 

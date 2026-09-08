@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -141,6 +142,7 @@ describeIfServer("runProfileSynthesis", () => {
           UNIQUE ("user_id", "normalized_alias_text", "canonical_node_id")
       );
     `);
+    await installPartitionCompatibilityFixture(client);
   }
 
   it("synthesizes a description from trusted claims, ignores assistant_inferred, and short-circuits on a hash cache hit", async () => {

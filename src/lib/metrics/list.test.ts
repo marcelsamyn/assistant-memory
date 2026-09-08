@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { listMetricsRequestSchema } from "~/lib/schemas/metric-read";
 import { newTypeId } from "~/types/typeid";
 
+vi.mock("~/lib/metrics/partition", () => ({
+  assertMetricPartitionRead: async () => undefined,
+  metricDefinitionPartitionCondition: () => undefined,
+  metricObservationPartitionCondition: () => undefined,
+}));
+
 type QueryResult = ReadonlyArray<unknown>;
 
 class FakeQuery {

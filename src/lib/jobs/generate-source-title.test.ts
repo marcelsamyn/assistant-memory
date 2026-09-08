@@ -4,6 +4,7 @@ import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
 import { sources } from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -98,6 +99,7 @@ describeIfServer("generateSourceTitle", () => {
           UNIQUE ("user_id", "type", "external_id")
       );
     `);
+    await installPartitionCompatibilityFixture(client);
   }
 
   it("generates and stores a title for an untitled conversation", async () => {

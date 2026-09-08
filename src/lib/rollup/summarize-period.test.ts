@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
 import { createCompletionClient } from "~/lib/ai";
 import { ensurePeriodNode } from "~/lib/temporal";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 import {
   resetTestOverrides,
@@ -56,6 +57,7 @@ describeIfServer("summarizePeriod", () => {
     client = new Client({ connectionString: dsnFor(dbName) });
     await client.connect();
     await client.query(ROLLUP_TEST_TABLES_SQL);
+    await installPartitionCompatibilityFixture(client);
     await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
   });
 

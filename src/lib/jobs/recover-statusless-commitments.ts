@@ -24,7 +24,7 @@
  * Common aliases: recover statusless tasks, backfill task status, statusless
  * commitment repair, orphan task status.
  */
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
 import { createClaim } from "~/lib/claim";
 import {
@@ -33,6 +33,10 @@ import {
   defaultTaskStatusStatement,
 } from "~/lib/claims/default-task-status";
 import { logEvent } from "~/lib/observability/log";
+import {
+  assertPartitionReadAllowed,
+  preparePartitionWrite,
+} from "~/lib/partition-access";
 import {
   recoverStatuslessCommitmentsRequestSchema,
   type RecoverStatuslessCommitmentsRequest,
@@ -51,6 +55,11 @@ export async function recoverStatuslessCommitments(
 ): Promise<RecoverStatuslessCommitmentsResponse> {
   const input = recoverStatuslessCommitmentsRequestSchema.parse(rawInput);
   const db = await useDatabase();
+  if (input.dryRun) {
+    await assertPartitionReadAllowed(db, input.userId, input.partitionKey);
+  } else {
+    await preparePartitionWrite(db, input.userId, input.partitionKey);
+  }
 
   // Task nodes with NO HAS_TASK_STATUS claim in any lifecycle state. The
   // "any state" NOT EXISTS is the carve-out: a deliberately-dismissed task has
@@ -66,10 +75,14 @@ export async function recoverStatuslessCommitments(
     .where(
       and(
         eq(nodes.userId, input.userId),
+        input.partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, input.partitionKey),
         eq(nodes.nodeType, "Task"),
         sql`NOT EXISTS (
           SELECT 1 FROM ${claims}
           WHERE ${claims.userId} = ${input.userId}
+            AND ${input.partitionKey === undefined ? isNull(claims.partitionKey) : eq(claims.partitionKey, input.partitionKey)}
             AND ${claims.subjectNodeId} = ${nodes.id}
             AND ${claims.predicate} = 'HAS_TASK_STATUS'
         )`,
@@ -89,6 +102,9 @@ export async function recoverStatuslessCommitments(
       // defaults to `personal` so the recovered task is visible as a candidate.
       await createClaim({
         userId: input.userId,
+        ...(input.partitionKey !== undefined
+          ? { partitionKey: input.partitionKey }
+          : {}),
         subjectNodeId: task.id,
         predicate: "HAS_TASK_STATUS",
         statement: defaultTaskStatusStatement(task.label),

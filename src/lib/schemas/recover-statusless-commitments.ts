@@ -16,11 +16,13 @@
  * is safe (a repaired task now has a status, so it no longer matches), which is
  * also why it doubles as an ongoing self-heal net.
  */
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 import { typeIdSchema } from "~/types/typeid.js";
 
 export const recoverStatuslessCommitmentsRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   limit: z.number().int().positive().max(10_000).default(1_000),
   sampleLimit: z.number().int().nonnegative().max(500).default(50),
   /**

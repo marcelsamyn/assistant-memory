@@ -1,10 +1,12 @@
 import { generateEmbeddings } from "./embeddings";
 import { periodLevelOf, type PeriodLevel } from "./rollup/period";
 import { format } from "date-fns";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { type NodePgDatabase } from "drizzle-orm/node-postgres";
 import * as schema from "~/db/schema";
 import { nodeEmbeddings, nodeMetadata, nodes } from "~/db/schema";
+import { preparePartitionWrite } from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { NodeTypeEnum } from "~/types/graph";
 import { type TypeId } from "~/types/typeid";
 import { shouldSkipEmbeddingPersistence } from "~/utils/test-overrides";
@@ -28,8 +30,14 @@ export async function ensureDayNode(
   db: Database,
   userId: string,
   targetDate: Date = new Date(),
+  partitionKey?: ContextPartitionKey,
 ): Promise<TypeId<"node">> {
-  return ensurePeriodNode(db, userId, format(targetDate, "yyyy-MM-dd"));
+  return ensurePeriodNode(
+    db,
+    userId,
+    format(targetDate, "yyyy-MM-dd"),
+    partitionKey,
+  );
 }
 
 /**
@@ -43,7 +51,9 @@ export async function ensurePeriodNode(
   db: Database,
   userId: string,
   periodKey: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<TypeId<"node">> {
+  await preparePartitionWrite(db, userId, partitionKey);
   const level = periodLevelOf(periodKey);
 
   const [existingNode] = await db
@@ -53,6 +63,9 @@ export async function ensurePeriodNode(
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         eq(nodes.nodeType, NodeTypeEnum.enum.Temporal),
         eq(nodeMetadata.label, periodKey),
       ),
@@ -75,6 +88,7 @@ export async function ensurePeriodNode(
       .insert(nodes)
       .values({
         userId,
+        partitionKey,
         nodeType: NodeTypeEnum.enum.Temporal,
       })
       .returning({ id: nodes.id });

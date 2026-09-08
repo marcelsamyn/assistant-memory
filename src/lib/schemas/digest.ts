@@ -10,11 +10,13 @@ import { z } from "zod";
 import { contextBundleSchema } from "~/lib/context/types.js";
 import { metricMoverSchema } from "~/lib/schemas/metric-movers.js";
 import { openCommitmentSchema } from "~/lib/schemas/open-commitments.js";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition.js";
 import { queryRecentChangesResponseSchema } from "~/lib/schemas/query-recent-changes.js";
 import { isValidTimeZone } from "~/lib/time-zone.js";
 
 export const getDigestRequestSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   /** The digest's calendar day (the caller's local "today"). */
   date: z
     .string()

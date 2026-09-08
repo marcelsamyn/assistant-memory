@@ -17,6 +17,7 @@ import {
   exists,
   inArray,
   isNotNull,
+  isNull,
   or,
   sql,
 } from "drizzle-orm";
@@ -25,6 +26,11 @@ import { z } from "zod";
 import type { DrizzleDB } from "~/db";
 import { claims, nodeMetadata, nodes, sourceLinks, sources } from "~/db/schema";
 import { logEvent } from "~/lib/observability/log";
+import { preparePartitionWrite } from "~/lib/partition-access";
+import {
+  contextPartitionKeySchema,
+  type ContextPartitionKey,
+} from "~/lib/schemas/partition";
 import {
   AttributePredicateEnum,
   type AssertedByKind,
@@ -35,11 +41,13 @@ import { useDatabase } from "~/utils/db";
 
 export interface ProfileSynthesisJobInput {
   userId: string;
+  partitionKey?: ContextPartitionKey;
   nodeId: TypeId<"node">;
 }
 
 export const ProfileSynthesisJobInputSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   nodeId: z.string().min(1),
 });
 
@@ -248,6 +256,7 @@ async function hasPersonalScopeSupport(
   db: DrizzleDB,
   userId: string,
   nodeId: TypeId<"node">,
+  partitionKey?: ContextPartitionKey,
 ): Promise<boolean> {
   const personalSourceLink = db
     .select({ one: sql<number>`1` })
@@ -257,6 +266,9 @@ async function hasPersonalScopeSupport(
       and(
         eq(sourceLinks.nodeId, nodeId),
         eq(sources.userId, userId),
+        partitionKey === undefined
+          ? isNull(sources.partitionKey)
+          : eq(sources.partitionKey, partitionKey),
         eq(sources.scope, "personal"),
       ),
     );
@@ -267,6 +279,9 @@ async function hasPersonalScopeSupport(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         eq(claims.scope, "personal"),
         eq(claims.status, "active"),
         or(eq(claims.subjectNodeId, nodeId), eq(claims.objectNodeId, nodeId)),
@@ -278,7 +293,15 @@ async function hasPersonalScopeSupport(
       supported: sql<boolean>`(${exists(personalSourceLink)} OR ${exists(personalClaim)})`,
     })
     .from(nodes)
-    .where(and(eq(nodes.id, nodeId), eq(nodes.userId, userId)))
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
+      ),
+    )
     .limit(1);
 
   return row?.supported === true;
@@ -288,6 +311,7 @@ async function fetchNodeProfileInputs(
   db: DrizzleDB,
   userId: string,
   nodeId: TypeId<"node">,
+  partitionKey?: ContextPartitionKey,
 ): Promise<{
   inputs: NodeProfileInputs;
   nodeType: string;
@@ -302,7 +326,15 @@ async function fetchNodeProfileInputs(
     })
     .from(nodes)
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-    .where(and(eq(nodes.id, nodeId), eq(nodes.userId, userId)))
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
+      ),
+    )
     .limit(1);
 
   if (!nodeRow) return null;
@@ -322,6 +354,9 @@ async function fetchNodeProfileInputs(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         eq(claims.subjectNodeId, nodeId),
         eq(claims.status, "active"),
         eq(claims.scope, "personal"),
@@ -347,6 +382,9 @@ async function fetchNodeProfileInputs(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         eq(claims.subjectNodeId, nodeId),
         eq(claims.status, "active"),
         eq(claims.scope, "personal"),
@@ -358,7 +396,12 @@ async function fetchNodeProfileInputs(
     .orderBy(desc(claims.statedAt), asc(claims.id))
     .limit(RELATIONSHIP_CLAIM_LIMIT);
 
-  const aliasMap = await listAliasesForNodeIds(db, userId, [nodeId]);
+  const aliasMap = await listAliasesForNodeIds(
+    db,
+    userId,
+    [nodeId],
+    partitionKey,
+  );
   const aliasRows = aliasMap.get(nodeId) ?? [];
   const aliasTexts = aliasRows.map((row) => row.aliasText);
 
@@ -398,15 +441,26 @@ export interface ProfileSynthesisResult {
 export async function runProfileSynthesis(
   input: ProfileSynthesisJobInput,
 ): Promise<ProfileSynthesisResult> {
-  const { userId, nodeId } = input;
+  const { userId, partitionKey, nodeId } = input;
   const db = await useDatabase();
+  await preparePartitionWrite(db, userId, partitionKey);
 
-  const supported = await hasPersonalScopeSupport(db, userId, nodeId);
+  const supported = await hasPersonalScopeSupport(
+    db,
+    userId,
+    nodeId,
+    partitionKey,
+  );
   if (!supported) {
     return { status: "skipped_reference_only" };
   }
 
-  const fetched = await fetchNodeProfileInputs(db, userId, nodeId);
+  const fetched = await fetchNodeProfileInputs(
+    db,
+    userId,
+    nodeId,
+    partitionKey,
+  );
   if (!fetched) {
     return { status: "skipped_node_missing" };
   }
@@ -426,6 +480,12 @@ export async function runProfileSynthesis(
   });
 
   const description = z.string().parse(parsed["description"]).trim();
+
+  if (!(await hasPersonalScopeSupport(db, userId, nodeId, partitionKey))) {
+    throw new Error(
+      `Node ${nodeId} left the requested memory partition during profile synthesis`,
+    );
+  }
 
   await db
     .update(nodeMetadata)

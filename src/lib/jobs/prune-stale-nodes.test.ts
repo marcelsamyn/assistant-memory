@@ -11,6 +11,7 @@ import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId, type TypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -128,6 +129,7 @@ async function createTables(client: Client): Promise<void> {
       "created_at" timestamp with time zone DEFAULT now() NOT NULL
     );
   `);
+  await installPartitionCompatibilityFixture(client);
 }
 
 const USER_ID = "user_stale_sweep";

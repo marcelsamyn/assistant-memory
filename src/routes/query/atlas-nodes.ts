@@ -1,4 +1,4 @@
-import { and, eq, or } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import { defineEventHandler } from "h3";
 import { claims } from "~/db/schema";
 import { ensureAssistantAtlasNode } from "~/lib/atlas";
@@ -9,11 +9,15 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const { userId, assistantId } = queryAtlasNodesRequestSchema.parse(
-    await readBody(event),
-  );
+  const { userId, partitionKey, assistantId } =
+    queryAtlasNodesRequestSchema.parse(await readBody(event));
   const db = await useDatabase();
-  const atlasNodeId = await ensureAssistantAtlasNode(db, userId, assistantId);
+  const atlasNodeId = await ensureAssistantAtlasNode(
+    db,
+    userId,
+    assistantId,
+    partitionKey,
+  );
 
   const claimRows = await db
     .select({
@@ -24,6 +28,9 @@ export default defineEventHandler(async (event) => {
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         eq(claims.status, "active"),
         or(
           eq(claims.subjectNodeId, atlasNodeId),

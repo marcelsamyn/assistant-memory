@@ -16,6 +16,7 @@ import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
 import type { SegmentTranscriptClient } from "~/lib/transcript/segment-transcript";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId, type TypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -111,9 +112,23 @@ describeIfServer("ingestTranscript", () => {
         "content_type" varchar(100),
         "content_length" integer,
         "deleted_at" timestamp with time zone,
+        "version" integer DEFAULT 0 NOT NULL,
         "created_at" timestamp with time zone DEFAULT now() NOT NULL,
         CONSTRAINT "sources_user_type_external_unique"
           UNIQUE ("user_id", "type", "external_id")
+      );
+      CREATE TABLE IF NOT EXISTS "source_tombstones" (
+        "user_id" text NOT NULL REFERENCES "users"("id"),
+        "source_id" text NOT NULL,
+        "partition_key" varchar(200),
+        "state" varchar(20) NOT NULL,
+        "storage_cleanup_state" varchar(20) NOT NULL DEFAULT 'not_required',
+        "erased_at" timestamp with time zone NOT NULL DEFAULT now(),
+        "restorable_until" timestamp with time zone,
+        "finalized_at" timestamp with time zone,
+        "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+        "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+        PRIMARY KEY ("user_id", "source_id")
       );
       CREATE TABLE IF NOT EXISTS "source_links" (
         "id" text PRIMARY KEY NOT NULL,
@@ -171,6 +186,7 @@ describeIfServer("ingestTranscript", () => {
         "created_at" timestamp with time zone DEFAULT now() NOT NULL
       );
     `);
+    await installPartitionCompatibilityFixture(client);
   }
 
   /**
@@ -235,9 +251,6 @@ describeIfServer("ingestTranscript", () => {
         },
         async fetchText() {
           return "";
-        },
-        async deleteHard() {
-          /* no-op */
         },
       },
       ensureSystemSource: async () => newTypeId("source"),

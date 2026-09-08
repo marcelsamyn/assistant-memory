@@ -1,8 +1,9 @@
 import { subDays } from "date-fns";
-import { and, eq, gte } from "drizzle-orm";
+import { and, eq, gte, isNull } from "drizzle-orm";
 import { DrizzleDB } from "~/db";
 import { nodes, nodeMetadata } from "~/db/schema";
 import { formatLabelDescList } from "~/lib/formatting";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { NodeTypeEnum } from "~/types/graph";
 
 /**
@@ -11,6 +12,7 @@ import { NodeTypeEnum } from "~/types/graph";
 export async function fetchDailyConversationsList(
   db: DrizzleDB,
   userId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<string> {
   const from = subDays(new Date(), 1);
   const convs = await db
@@ -20,6 +22,9 @@ export async function fetchDailyConversationsList(
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         eq(nodes.nodeType, NodeTypeEnum.enum.Conversation),
         gte(nodes.createdAt, from),
       ),
