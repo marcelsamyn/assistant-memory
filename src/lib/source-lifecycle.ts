@@ -207,28 +207,26 @@ async function loadAndLockSourceTree(
     sourceIds = rediscoveredSourceIds;
   }
 
-  const rows: LockedSource[] = [];
-  for (const sourceId of sourceIds) {
-    const [row] = await tx
-      .select({
-        id: sources.id,
-        partitionKey: sources.partitionKey,
-        version: sources.version,
-        deletedAt: sources.deletedAt,
-        contentType: sources.contentType,
-        contentLength: sources.contentLength,
-      })
-      .from(sources)
-      .where(and(eq(sources.userId, userId), eq(sources.id, sourceId)))
-      .for("update")
-      .limit(1);
-    if (!row) {
-      throw new SourceLifecycleError(
-        "SOURCE_NOT_FOUND",
-        "A descendant source disappeared while locking the source tree",
-      );
-    }
-    rows.push(row);
+  if (sourceIds.length === 0) return [];
+
+  const rows = await tx
+    .select({
+      id: sources.id,
+      partitionKey: sources.partitionKey,
+      version: sources.version,
+      deletedAt: sources.deletedAt,
+      contentType: sources.contentType,
+      contentLength: sources.contentLength,
+    })
+    .from(sources)
+    .where(and(eq(sources.userId, userId), inArray(sources.id, sourceIds)))
+    .orderBy(asc(sources.id))
+    .for("update");
+  if (rows.length !== sourceIds.length) {
+    throw new SourceLifecycleError(
+      "SOURCE_NOT_FOUND",
+      "A descendant source disappeared while locking the source tree",
+    );
   }
   return rows;
 }
