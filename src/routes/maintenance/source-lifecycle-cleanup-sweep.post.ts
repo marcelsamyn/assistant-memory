@@ -19,6 +19,7 @@ export default defineEventHandler(async (event) => {
     db,
     (objectKey) => sourceService.deleteRawBlobObjectKeyIfPresent(objectKey),
     request.limit,
+    (objectKey) => sourceService.rawBlobObjectKeyExists(objectKey),
   );
   return sourceLifecycleStorageCleanupSweepResponseSchema.parse(result);
 });

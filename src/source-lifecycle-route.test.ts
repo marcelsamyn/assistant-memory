@@ -97,36 +97,51 @@ describe("source lifecycle maintenance route", () => {
     expect(applySourceLifecycleCommand).toHaveBeenCalledOnce();
   });
 
-  it("does not report completion until the existing blob seam confirms deletion", async () => {
-    applySourceLifecycleCommand.mockResolvedValueOnce({
-      sourceId: body.sourceId,
-      commandId: body.commandId,
-      action: body.action,
-      state: "tombstoned",
-      replayed: false,
-      freshIngestionRequired: false,
-      storageCleanupState: "pending",
-      sourceVersion: 4,
-      restorableUntil: new Date("2026-08-01T00:00:00.000Z"),
-    });
-    const response = await routeFetch(
-      new Request("http://memory.test/maintenance/source-lifecycle", {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${"m".repeat(32)}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(body),
-      }),
-    );
-    await expect(response.json()).resolves.toMatchObject({
-      storageCleanupState: "completed",
-    });
-    expect(deleteRawBlobObjectKeyIfPresent).toHaveBeenCalledWith(
-      "user/source-key",
-    );
-    expect(markSourceTreeStorageCleanupCompleted).toHaveBeenCalledOnce();
-  });
+  it.each(["completed", "pending"] as const)(
+    "returns the durable cleanup outcome after deletion: %s",
+    async (storageCleanupState) => {
+      applySourceLifecycleCommand.mockResolvedValueOnce({
+        sourceId: body.sourceId,
+        commandId: body.commandId,
+        action: body.action,
+        state: "tombstoned",
+        replayed: false,
+        freshIngestionRequired: false,
+        storageCleanupState: "pending",
+        sourceVersion: 4,
+        restorableUntil: new Date("2026-08-01T00:00:00.000Z"),
+      });
+      applySourceLifecycleCommand.mockResolvedValueOnce({
+        sourceId: body.sourceId,
+        commandId: body.commandId,
+        action: body.action,
+        state: "tombstoned",
+        replayed: true,
+        freshIngestionRequired: false,
+        storageCleanupState,
+        sourceVersion: 4,
+        restorableUntil: new Date("2026-08-01T00:00:00.000Z"),
+      });
+      const response = await routeFetch(
+        new Request("http://memory.test/maintenance/source-lifecycle", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${"m".repeat(32)}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(body),
+        }),
+      );
+      await expect(response.json()).resolves.toMatchObject({
+        storageCleanupState,
+        replayed: false,
+      });
+      expect(deleteRawBlobObjectKeyIfPresent).toHaveBeenCalledWith(
+        "user/source-key",
+      );
+      expect(markSourceTreeStorageCleanupCompleted).toHaveBeenCalledOnce();
+    },
+  );
 
   it("keeps the durable cleanup receipt pending when object deletion fails for a retry", async () => {
     applySourceLifecycleCommand.mockResolvedValueOnce({

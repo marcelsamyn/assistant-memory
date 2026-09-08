@@ -14,6 +14,8 @@ import {
 } from "~/db/schema";
 import {
   applySourceLifecycleCommand,
+  markSourceStorageCleanupCompleted,
+  markSourceTreeStorageCleanupCompleted,
   retryPendingSourceTombstoneStorageCleanup,
 } from "~/lib/source-lifecycle";
 import { sourceBlobObjectKey, SourceService } from "~/lib/sources";
@@ -256,7 +258,223 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
     expect(completed?.state).toBe("cleanup_completed");
   });
 
-  it("cancels a stalled response after a real MinIO commit and leaves stale recovery to reclaim it", async () => {
+  it.each([true, false])(
+    "retains an unknown upload through tombstone and purge until a buffered PUT arrives: %s",
+    async (arrives) => {
+      const received = deferred();
+      const release = deferred();
+      const committed = deferred();
+      const proxy = createServer((request, response) => {
+        const forward = (buffer?: Buffer): void => {
+          const upstream = httpRequest(
+            {
+              hostname: MINIO_ENDPOINT,
+              port: MINIO_PORT,
+              method: request.method,
+              path: request.url,
+              headers: request.headers,
+            },
+            (storageResponse) => {
+              if (request.method === "PUT") {
+                storageResponse.resume();
+                storageResponse.on("end", () => committed.resolve());
+              } else {
+                response.writeHead(
+                  storageResponse.statusCode ?? 502,
+                  storageResponse.headers,
+                );
+                storageResponse.pipe(response);
+              }
+            },
+          );
+          upstream.on("error", () => response.destroy());
+          if (buffer) upstream.end(buffer);
+          else request.pipe(upstream);
+        };
+        if (request.method !== "PUT") {
+          forward();
+          return;
+        }
+        const chunks: Buffer[] = [];
+        request.on("data", (chunk: Buffer) => chunks.push(chunk));
+        request.on("end", () => {
+          received.resolve();
+          void release.promise.then(() => {
+            if (arrives) forward(Buffer.concat(chunks));
+          });
+        });
+      });
+      await new Promise<void>((resolve) =>
+        proxy.listen(0, "127.0.0.1", resolve),
+      );
+      const address = proxy.address();
+      if (!address || typeof address === "string")
+        throw new Error("Missing proxy address");
+      const proxyMinio = new MinioClient({
+        endPoint: "127.0.0.1",
+        port: address.port,
+        useSSL: false,
+        accessKey: MINIO_ACCESS_KEY,
+        secretKey: MINIO_SECRET_KEY,
+      });
+      const userId = `source-upload-late-${arrives}`;
+      try {
+        await database.insert(users).values({ id: userId });
+        const service = new SourceService(
+          database,
+          proxyMinio,
+          bucket,
+          1,
+          {},
+          250,
+        );
+        const result = await service.insertMany([
+          {
+            userId,
+            sourceType: "document",
+            externalId: "buffered-put",
+            timestamp: new Date(),
+            fileBuffer: Buffer.from(
+              "the server can commit after the client socket closes",
+            ),
+          },
+        ]);
+        await received.promise;
+        expect(result.successes).toEqual([]);
+        expect(result.failures[0]?.reason).toContain(
+          "storage outcome is unknown",
+        );
+        const [upload] = await lifecycleDatabase
+          .select()
+          .from(sourceBlobUploads)
+          .where(eq(sourceBlobUploads.userId, userId));
+        if (!upload) throw new Error("Missing upload receipt");
+        expect(upload.state).toBe("upload_unknown");
+        const [source] = await lifecycleDatabase
+          .select()
+          .from(sources)
+          .where(eq(sources.id, upload.sourceId));
+        if (!source) throw new Error("Missing source");
+        expect(source.status).toBe("failed");
+        const tombstone = await applySourceLifecycleCommand(lifecycleDatabase, {
+          userId,
+          commandId: `late-tombstone-${arrives}`,
+          sourceId: source.id,
+          expectedPartitionKey: null,
+          expectedSourceVersion: source.version,
+          action: "tombstone",
+        });
+        await markSourceStorageCleanupCompleted(
+          lifecycleDatabase,
+          userId,
+          source.id,
+        );
+        await markSourceTreeStorageCleanupCompleted(
+          lifecycleDatabase,
+          userId,
+          source.id,
+        );
+        const cleanup = new SourceService(lifecycleDatabase, minio, bucket);
+        const sweep = () =>
+          retryPendingSourceTombstoneStorageCleanup(
+            lifecycleDatabase,
+            (key) => cleanup.deleteRawBlobObjectKeyIfPresent(key),
+            1,
+            (key) => cleanup.rawBlobObjectKeyExists(key),
+          );
+        expect(await sweep()).toEqual({ attempted: 1, completed: 0 });
+        await applySourceLifecycleCommand(lifecycleDatabase, {
+          userId,
+          commandId: `late-purge-${arrives}`,
+          sourceId: source.id,
+          expectedPartitionKey: null,
+          expectedSourceVersion: tombstone.sourceVersion ?? source.version,
+          action: "purge",
+        });
+        await lifecycleDatabase
+          .update(sourceBlobUploads)
+          .set({ updatedAt: new Date(0) })
+          .where(eq(sourceBlobUploads.sourceId, source.id));
+        expect(await sweep()).toEqual({ attempted: 1, completed: 0 });
+        const [pending] = await lifecycleDatabase
+          .select()
+          .from(sourceTombstones)
+          .where(eq(sourceTombstones.sourceId, source.id));
+        expect(pending?.storageCleanupState).toBe("pending");
+        release.resolve();
+        if (arrives) {
+          await committed.promise;
+          await expect(
+            minio.statObject(bucket, upload.objectKey),
+          ).resolves.toBeDefined();
+          await expect(
+            retryPendingSourceTombstoneStorageCleanup(
+              lifecycleDatabase,
+              async () => {
+                // A direct route may have listed its keys before this upload was
+                // observed. It cannot complete that omitted key during the sweep.
+                await markSourceStorageCleanupCompleted(
+                  lifecycleDatabase,
+                  userId,
+                  source.id,
+                );
+                await markSourceTreeStorageCleanupCompleted(
+                  lifecycleDatabase,
+                  userId,
+                  source.id,
+                );
+                const [stillPending] = await lifecycleDatabase
+                  .select()
+                  .from(sourceTombstones)
+                  .where(eq(sourceTombstones.sourceId, source.id));
+                expect(stillPending?.storageCleanupState).toBe("pending");
+                throw new Error("retry physical deletion");
+              },
+              1,
+              (key) => cleanup.rawBlobObjectKeyExists(key),
+            ),
+          ).rejects.toThrow("retry physical deletion");
+          expect(await sweep()).toEqual({ attempted: 1, completed: 1 });
+        } else {
+          expect(await sweep()).toEqual({ attempted: 1, completed: 0 });
+          const laterId = newTypeId("source");
+          await lifecycleDatabase.insert(sourceBlobUploads).values({
+            userId,
+            sourceId: laterId,
+            objectKey: sourceBlobObjectKey(userId, laterId),
+            state: "cleanup_pending",
+          });
+          await lifecycleDatabase
+            .update(sourceBlobUploads)
+            .set({ updatedAt: new Date(0) })
+            .where(eq(sourceBlobUploads.sourceId, source.id));
+          expect(await sweep()).toEqual({ attempted: 1, completed: 0 });
+          expect(await sweep()).toEqual({ attempted: 1, completed: 1 });
+        }
+        const [finalUpload] = await lifecycleDatabase
+          .select()
+          .from(sourceBlobUploads)
+          .where(eq(sourceBlobUploads.sourceId, source.id));
+        expect(finalUpload?.state).toBe(
+          arrives ? "cleanup_completed" : "upload_unknown",
+        );
+        await expect(
+          minio.statObject(bucket, upload.objectKey),
+        ).rejects.toMatchObject({
+          code: expect.stringMatching(/NoSuchKey|NotFound/),
+        });
+      } finally {
+        release.resolve();
+        proxy.closeAllConnections();
+        await new Promise<void>((resolve, reject) =>
+          proxy.close((error) => (error ? reject(error) : resolve())),
+        );
+        await lifecycleDatabase.delete(users).where(eq(users.id, userId));
+      }
+    },
+  );
+
+  it("cancels a stalled response after a real MinIO commit and requires observation before cleanup", async () => {
     const committed = deferred();
     const proxy = createServer((request, response) => {
       const upstream = httpRequest(
@@ -327,7 +545,7 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
         .from(sourceBlobUploads)
         .where(eq(sourceBlobUploads.userId, userId));
       if (!upload) throw new Error("Timeout upload reservation is missing");
-      expect(upload.state).toBe("uploading");
+      expect(upload.state).toBe("upload_unknown");
       await expect(
         minio.statObject(bucket, upload.objectKey),
       ).resolves.toBeDefined();
@@ -342,7 +560,7 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
           (key) => cleanupService.deleteRawBlobObjectKeyIfPresent(key),
           10,
         ),
-      ).resolves.toEqual({ attempted: 0, completed: 0 });
+      ).resolves.toEqual({ attempted: 1, completed: 0 });
       await lifecycleDatabase
         .update(sourceBlobUploads)
         .set({ updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000) })
@@ -352,6 +570,7 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
           lifecycleDatabase,
           (key) => cleanupService.deleteRawBlobObjectKeyIfPresent(key),
           10,
+          (key) => cleanupService.rawBlobObjectKeyExists(key),
         ),
       ).resolves.toEqual({ attempted: 1, completed: 1 });
       await expect(

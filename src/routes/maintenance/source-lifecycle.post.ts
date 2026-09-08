@@ -38,9 +38,10 @@ export default defineEventHandler(async (event) => {
         request.userId,
         request.sourceId,
       );
+      const refreshed = await applySourceLifecycleCommand(db, request);
       return sourceLifecycleCommandResponseSchema.parse({
         ...receipt,
-        storageCleanupState: "completed",
+        storageCleanupState: refreshed.storageCleanupState,
       });
     }
     return sourceLifecycleCommandResponseSchema.parse(receipt);

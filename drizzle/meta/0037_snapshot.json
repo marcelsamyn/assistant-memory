@@ -2769,7 +2769,7 @@
       "checkConstraints": {
         "source_blob_uploads_state_ck": {
           "name": "source_blob_uploads_state_ck",
-          "value": "\"state\" IN ('reserved', 'uploading', 'uploaded', 'cleanup_pending', 'cleanup_completed')"
+          "value": "\"state\" IN ('reserved', 'uploading', 'upload_unknown', 'uploaded', 'cleanup_pending', 'cleanup_completed')"
         }
       },
       "isRLSEnabled": false
