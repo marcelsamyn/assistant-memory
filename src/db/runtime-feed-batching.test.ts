@@ -114,6 +114,58 @@ describeWithPostgres("statement-batched runtime change feed", () => {
     ).toEqual([{ count: 0 }]);
   });
 
+  it("allocates independent sequences for mixed tenants and partitions in one statement", async () => {
+    await client.query("BEGIN");
+    try {
+      await client.query(`
+        INSERT INTO users (id) VALUES ('mixed-a'), ('mixed-b');
+        INSERT INTO memory_partitions (user_id, partition_key)
+        VALUES ('mixed-a', 'project'), ('mixed-b', 'project');
+        INSERT INTO nodes (id, user_id, partition_key, node_type) VALUES
+          ('mixed-1', 'mixed-b', 'project', 'Person'),
+          ('mixed-2', 'mixed-a', NULL, 'Person'),
+          ('mixed-3', 'mixed-a', 'project', 'Person'),
+          ('mixed-4', 'mixed-b', NULL, 'Person'),
+          ('mixed-5', 'mixed-a', NULL, 'Person'),
+          ('mixed-6', 'mixed-b', 'project', 'Person');
+      `);
+      const events = await client.query(`
+        SELECT user_id, partition_key, array_agg(entity_id ORDER BY sequence) AS ids,
+          array_agg(sequence::int ORDER BY sequence) AS sequences
+        FROM memory_change_feed_events WHERE user_id IN ('mixed-a', 'mixed-b')
+        GROUP BY user_id, partition_key ORDER BY user_id, partition_key NULLS FIRST
+      `);
+      expect(events.rows).toEqual([
+        {
+          user_id: "mixed-a",
+          partition_key: null,
+          ids: ["mixed-2", "mixed-5"],
+          sequences: [1, 2],
+        },
+        {
+          user_id: "mixed-a",
+          partition_key: "project",
+          ids: ["mixed-3"],
+          sequences: [1],
+        },
+        {
+          user_id: "mixed-b",
+          partition_key: null,
+          ids: ["mixed-4"],
+          sequences: [1],
+        },
+        {
+          user_id: "mixed-b",
+          partition_key: "project",
+          ids: ["mixed-1", "mixed-6"],
+          sequences: [1, 2],
+        },
+      ]);
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  });
+
   it("matches the original emitter across all tables, upserts, nested writes, and cascades", async () => {
     const original = await readFile(
       "drizzle/0029_calm_lifecycle_feed.sql",
