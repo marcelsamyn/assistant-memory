@@ -2,6 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client as MinioClient } from "minio";
+import { createServer, request as httpRequest } from "node:http";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
@@ -253,6 +254,117 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
       )
       .limit(1);
     expect(completed?.state).toBe("cleanup_completed");
+  });
+
+  it("cancels a stalled response after a real MinIO commit and leaves stale recovery to reclaim it", async () => {
+    const committed = deferred();
+    const proxy = createServer((request, response) => {
+      const upstream = httpRequest(
+        {
+          hostname: MINIO_ENDPOINT,
+          port: MINIO_PORT,
+          method: request.method,
+          path: request.url,
+          headers: request.headers,
+        },
+        (storageResponse) => {
+          if (request.method === "PUT" && storageResponse.statusCode === 200) {
+            storageResponse.resume();
+            storageResponse.on("end", () => committed.resolve());
+          } else {
+            response.writeHead(
+              storageResponse.statusCode ?? 502,
+              storageResponse.headers,
+            );
+            storageResponse.pipe(response);
+          }
+        },
+      );
+      upstream.on("error", () => response.destroy());
+      request.pipe(upstream);
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+    const address = proxy.address();
+    if (!address || typeof address === "string")
+      throw new Error("Missing proxy address");
+    const proxyMinio = new MinioClient({
+      endPoint: "127.0.0.1",
+      port: address.port,
+      useSSL: false,
+      accessKey: MINIO_ACCESS_KEY,
+      secretKey: MINIO_SECRET_KEY,
+    });
+    const userId = "source-upload-timeout-user";
+    try {
+      await database.insert(users).values({ id: userId });
+      const service = new SourceService(
+        database,
+        proxyMinio,
+        bucket,
+        1,
+        {},
+        250,
+      );
+      const result = await service.insertMany([
+        {
+          userId,
+          sourceType: "document",
+          externalId: "timeout-after-storage-commit",
+          timestamp: new Date(),
+          fileBuffer: Buffer.from("committed but acknowledgement was lost"),
+        },
+      ]);
+      await committed.promise;
+      expect(result.successes).toEqual([]);
+      expect(result.failures).toEqual([
+        {
+          sourceId: expect.any(String),
+          reason: expect.stringContaining("storage outcome is unknown"),
+        },
+      ]);
+      const [upload] = await lifecycleDatabase
+        .select()
+        .from(sourceBlobUploads)
+        .where(eq(sourceBlobUploads.userId, userId));
+      if (!upload) throw new Error("Timeout upload reservation is missing");
+      expect(upload.state).toBe("uploading");
+      await expect(
+        minio.statObject(bucket, upload.objectKey),
+      ).resolves.toBeDefined();
+      const cleanupService = new SourceService(
+        lifecycleDatabase,
+        minio,
+        bucket,
+      );
+      await expect(
+        retryPendingSourceTombstoneStorageCleanup(
+          lifecycleDatabase,
+          (key) => cleanupService.deleteRawBlobObjectKeyIfPresent(key),
+          10,
+        ),
+      ).resolves.toEqual({ attempted: 0, completed: 0 });
+      await lifecycleDatabase
+        .update(sourceBlobUploads)
+        .set({ updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000) })
+        .where(eq(sourceBlobUploads.sourceId, upload.sourceId));
+      await expect(
+        retryPendingSourceTombstoneStorageCleanup(
+          lifecycleDatabase,
+          (key) => cleanupService.deleteRawBlobObjectKeyIfPresent(key),
+          10,
+        ),
+      ).resolves.toEqual({ attempted: 1, completed: 1 });
+      await expect(
+        minio.statObject(bucket, upload.objectKey),
+      ).rejects.toMatchObject({
+        code: expect.stringMatching(/NoSuchKey|NotFound/),
+      });
+    } finally {
+      proxy.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        proxy.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
   });
 
   it("recovers a crash after the real object write but before descriptor commit", async () => {
