@@ -1,39 +1,15 @@
 import { env } from "./env";
-import pg from "pg";
 import type { DrizzleDB } from "~/db";
-
-const { Client } = pg;
 
 let _db: DrizzleDB | null = null;
 let _dbInit: Promise<DrizzleDB> | null = null;
-
-async function runMigrations(db: DrizzleDB): Promise<void> {
-  const { migrate } = await import("drizzle-orm/node-postgres/migrator");
-  const lockClient = new Client({
-    connectionString: env.DATABASE_URL,
-    ssl: false,
-  });
-
-  await lockClient.connect();
-  try {
-    await lockClient.query("SELECT pg_advisory_lock($1, $2)", [1777558586, 0]);
-    await migrate(db, {
-      migrationsFolder: "./drizzle",
-    });
-  } finally {
-    await lockClient.query(
-      "SELECT pg_advisory_unlock($1, $2)",
-      [1777558586, 0],
-    );
-    await lockClient.end();
-  }
-}
 
 async function loadDatabase(): Promise<DrizzleDB> {
   const db = await import("~/db");
 
   if (env.RUN_MIGRATIONS === "true") {
-    await runMigrations(db.default);
+    const { runDatabaseMigrations } = await import("./migrations");
+    await runDatabaseMigrations(env.DATABASE_URL);
   }
 
   _db = db.default;

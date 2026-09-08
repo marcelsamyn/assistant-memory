@@ -308,111 +308,103 @@ CREATE TRIGGER memory_change_feed_redirects AFTER INSERT OR UPDATE OR DELETE ON 
 CREATE TRIGGER memory_change_feed_source_links AFTER INSERT OR UPDATE OR DELETE ON source_links FOR EACH ROW EXECUTE FUNCTION emit_memory_change_feed_event();
 --> statement-breakpoint
 
--- Deterministic initial backfill. Triggers are installed above before any
--- snapshot is appended, so a concurrent writer is serialized by the same
--- per-partition head lock and cannot be skipped between the two phases.
+-- The migration transaction holds the DDL locks acquired above until commit.
+-- Build the initial feed in bulk; repeatedly updating a head in one transaction
+-- accumulates row versions and makes a large backfill progressively slower.
 DO $$
 DECLARE
-	row_data record;
+	v_count bigint;
 BEGIN
-	FOR row_data IN
-		SELECT id, user_id, partition_key, created_at
+	RAISE NOTICE 'memory_migration:0029:backfill_preparing';
+	CREATE TEMP TABLE initial_memory_feed ON COMMIT DROP AS
+	SELECT *, row_number() OVER (
+		PARTITION BY user_id, partition_key ORDER BY phase, sort_id, subphase
+	) AS sequence
+	FROM (
+		SELECT user_id, partition_key, 1 AS phase, id AS sort_id, 1 AS subphase,
+			'node'::text AS kind, 'snapshot'::text AS action, 'node'::text AS entity_type,
+			id AS entity_id, NULL::text AS source_id, COALESCE(created_at, now()) AS effective_change_time,
+			NULL::jsonb AS provenance, NULL::jsonb AS freshness, NULL::text AS status,
+			jsonb_build_object('backfill', true, 'nodeId', id) AS payload
 		FROM nodes
-		ORDER BY user_id, partition_key NULLS FIRST, id
-	LOOP
-		PERFORM append_memory_change_feed_event(
-			row_data.user_id, row_data.partition_key, 'node', 'snapshot',
-			'node', row_data.id, NULL, row_data.created_at, NULL, NULL, NULL,
-			jsonb_build_object('backfill', true, 'nodeId', row_data.id)
-		);
-	END LOOP;
-
-	FOR row_data IN
-		SELECT id, user_id, partition_key, type, external_id, status,
-			created_at, last_ingested_at, metadata
+		UNION ALL
+		SELECT user_id, partition_key, 2, id, event.subphase,
+			event.kind, event.action, 'source', id, id,
+			COALESCE(last_ingested_at, created_at, now()),
+			jsonb_build_object('type', type, 'externalId', external_id),
+			jsonb_build_object('status', status, 'lastIngestedAt', last_ingested_at),
+			status, event.payload
 		FROM sources
-		ORDER BY user_id, partition_key NULLS FIRST, id
-	LOOP
-		PERFORM append_memory_change_feed_event(
-			row_data.user_id, row_data.partition_key, 'source', 'snapshot',
-			'source', row_data.id, row_data.id,
-			COALESCE(row_data.last_ingested_at, row_data.created_at),
-			jsonb_build_object('type', row_data.type, 'externalId', row_data.external_id),
-			jsonb_build_object('status', row_data.status, 'lastIngestedAt', row_data.last_ingested_at),
-			row_data.status,
-			jsonb_build_object('backfill', true, 'sourceId', row_data.id, 'metadata', row_data.metadata)
-		);
-		PERFORM append_memory_change_feed_event(
-			row_data.user_id, row_data.partition_key, 'ingestion', COALESCE(row_data.status, 'pending'),
-			'source', row_data.id, row_data.id,
-			COALESCE(row_data.last_ingested_at, row_data.created_at),
-			jsonb_build_object('type', row_data.type, 'externalId', row_data.external_id),
-			jsonb_build_object('status', row_data.status, 'lastIngestedAt', row_data.last_ingested_at),
-			row_data.status,
-			jsonb_build_object('backfill', true, 'sourceId', row_data.id)
-		);
-	END LOOP;
-
-	FOR row_data IN
-		SELECT id, user_id, partition_key, predicate, subject_node_id,
-			object_node_id, source_id, status, asserted_by_kind, scope, created_at
+		CROSS JOIN LATERAL (VALUES
+			(1, 'source', 'snapshot', jsonb_build_object('backfill', true, 'sourceId', id, 'metadata', metadata)),
+			(2, 'ingestion', COALESCE(status, 'pending'), jsonb_build_object('backfill', true, 'sourceId', id))
+		) AS event(subphase, kind, action, payload)
+		UNION ALL
+		SELECT user_id, partition_key, 3, id, event.subphase,
+			event.kind, 'snapshot', event.kind, event.entity_id, source_id,
+			COALESCE(created_at, now()), event.provenance, NULL::jsonb, status, event.payload
 		FROM claims
-		ORDER BY user_id, partition_key NULLS FIRST, id
-	LOOP
-		PERFORM append_memory_change_feed_event(
-			row_data.user_id, row_data.partition_key, 'claim', 'snapshot',
-			'claim', row_data.id, row_data.source_id, row_data.created_at,
-			jsonb_build_object('sourceId', row_data.source_id, 'assertedByKind', row_data.asserted_by_kind, 'scope', row_data.scope),
-			NULL, row_data.status,
-			jsonb_build_object('backfill', true, 'claimId', row_data.id)
-		);
-		IF row_data.predicate IN ('HAS_TASK_STATUS', 'ASSIGNED_TO', 'DUE_ON') THEN
-			PERFORM append_memory_change_feed_event(
-				row_data.user_id, row_data.partition_key, 'commitment', 'snapshot',
-				'commitment', row_data.subject_node_id, row_data.source_id, row_data.created_at,
-				jsonb_build_object('sourceId', row_data.source_id, 'predicate', row_data.predicate),
-				NULL, row_data.status,
-				jsonb_build_object('backfill', true, 'claimId', row_data.id, 'predicate', row_data.predicate)
-			);
-		END IF;
-	END LOOP;
+		CROSS JOIN LATERAL (VALUES
+			(1, 'claim', id,
+				jsonb_build_object('sourceId', source_id, 'assertedByKind', asserted_by_kind, 'scope', scope),
+				jsonb_build_object('backfill', true, 'claimId', id)),
+			(2, 'commitment', subject_node_id,
+				jsonb_build_object('sourceId', source_id, 'predicate', predicate),
+				jsonb_build_object('backfill', true, 'claimId', id, 'predicate', predicate))
+		) AS event(subphase, kind, entity_id, provenance, payload)
+		WHERE event.subphase = 1 OR predicate IN ('HAS_TASK_STATUS', 'ASSIGNED_TO', 'DUE_ON')
+		UNION ALL
+		SELECT user_id, partition_key, 4, from_node_id, 1,
+			'redirect', 'snapshot', 'redirect', from_node_id, NULL::text,
+			COALESCE(created_at, now()),
+			jsonb_build_object('fromNodeId', from_node_id, 'toNodeId', to_node_id),
+			NULL::jsonb, NULL::text, jsonb_build_object('backfill', true)
+		FROM node_redirects
+		UNION ALL
+		SELECT s.user_id, s.partition_key, 5, sl.id, 1,
+			'provenance', 'attached', 'source_link', sl.id, sl.source_id,
+			COALESCE(sl.created_at, now()),
+			jsonb_build_object('sourceId', sl.source_id, 'nodeId', sl.node_id),
+			NULL::jsonb, NULL::text, jsonb_build_object('backfill', true, 'sourceLinkId', sl.id)
+		FROM source_links sl JOIN sources s ON s.id = sl.source_id
+	) events;
 
-	FOR row_data IN
-		SELECT r.user_id, r.partition_key, r.from_node_id, r.to_node_id, r.created_at
-		FROM node_redirects r
-		ORDER BY r.user_id, r.partition_key NULLS FIRST, r.from_node_id
-	LOOP
-		PERFORM append_memory_change_feed_event(
-			row_data.user_id, row_data.partition_key, 'redirect', 'snapshot',
-			'redirect', row_data.from_node_id, NULL, row_data.created_at,
-			jsonb_build_object('fromNodeId', row_data.from_node_id, 'toNodeId', row_data.to_node_id),
-			NULL, NULL, jsonb_build_object('backfill', true)
-		);
-	END LOOP;
+	GET DIAGNOSTICS v_count = ROW_COUNT;
+	RAISE NOTICE 'memory_migration:0029:backfill_prepared:%', v_count;
 
-	FOR row_data IN
-		SELECT sl.id, s.user_id, s.partition_key, sl.source_id, sl.node_id, sl.created_at
-		FROM source_links sl
-		JOIN sources s ON s.id = sl.source_id
-		ORDER BY s.user_id, s.partition_key NULLS FIRST, sl.id
-	LOOP
-		PERFORM append_memory_change_feed_event(
-			row_data.user_id, row_data.partition_key, 'provenance', 'attached',
-			'source_link', row_data.id, row_data.source_id, row_data.created_at,
-			jsonb_build_object('sourceId', row_data.source_id, 'nodeId', row_data.node_id),
-			NULL, NULL, jsonb_build_object('backfill', true, 'sourceLinkId', row_data.id)
-		);
-	END LOOP;
+	INSERT INTO memory_change_feed_heads (id, user_id, partition_key, next_sequence)
+	SELECT 'mcfh_' || md5(jsonb_build_array(user_id, partition_key)::text),
+		user_id, partition_key, max(sequence) + 1
+	FROM initial_memory_feed
+	GROUP BY user_id, partition_key;
 
-	-- Conservation checks make a partial migration fail closed instead of
-	-- presenting a deceptively complete feed to the first consumer.
-	IF (SELECT count(*) FROM nodes) <> (SELECT count(*) FROM memory_change_feed_events WHERE kind = 'node' AND payload->>'backfill' = 'true')
-		OR (SELECT count(*) FROM sources) <> (SELECT count(*) FROM memory_change_feed_events WHERE kind = 'source' AND payload->>'backfill' = 'true')
-		OR (SELECT count(*) FROM claims) <> (SELECT count(*) FROM memory_change_feed_events WHERE kind = 'claim' AND payload->>'backfill' = 'true')
-		OR (SELECT count(*) FROM node_redirects) <> (SELECT count(*) FROM memory_change_feed_events WHERE kind = 'redirect' AND payload->>'backfill' = 'true')
-		OR (SELECT count(*) FROM source_links) <> (SELECT count(*) FROM memory_change_feed_events WHERE kind = 'provenance' AND payload->>'backfill' = 'true')
+	RAISE NOTICE 'memory_migration:0029:backfill_inserting:%', v_count;
+	INSERT INTO memory_change_feed_events (
+		event_id, user_id, partition_key, feed_epoch, sequence, kind, action,
+		entity_type, entity_id, source_id, effective_change_time, provenance,
+		freshness, status, payload
+	)
+	SELECT 'mcfe_' || md5(jsonb_build_array(user_id, partition_key, 1, sequence)::text),
+		user_id, partition_key, 1, sequence, kind, action,
+		entity_type, entity_id, source_id, effective_change_time, provenance,
+		freshness, status, payload
+	FROM initial_memory_feed
+	ORDER BY user_id, partition_key NULLS FIRST, sequence;
+
+	GET DIAGNOSTICS v_count = ROW_COUNT;
+	RAISE NOTICE 'memory_migration:0029:backfill_inserted:%', v_count;
+
+	-- Verify every event class, including secondary source and commitment events.
+	IF (SELECT count(*) FROM nodes) <> (SELECT count(*) FROM memory_change_feed_events WHERE kind = 'node')
+		OR (SELECT count(*) FROM sources) <> (SELECT count(*) FROM memory_change_feed_events WHERE kind = 'source')
+		OR (SELECT count(*) FROM sources) <> (SELECT count(*) FROM memory_change_feed_events WHERE kind = 'ingestion')
+		OR (SELECT count(*) FROM claims) <> (SELECT count(*) FROM memory_change_feed_events WHERE kind = 'claim')
+		OR (SELECT count(*) FROM claims WHERE predicate IN ('HAS_TASK_STATUS', 'ASSIGNED_TO', 'DUE_ON')) <> (SELECT count(*) FROM memory_change_feed_events WHERE kind = 'commitment')
+		OR (SELECT count(*) FROM node_redirects) <> (SELECT count(*) FROM memory_change_feed_events WHERE kind = 'redirect')
+		OR (SELECT count(*) FROM source_links) <> (SELECT count(*) FROM memory_change_feed_events WHERE kind = 'provenance')
 	THEN
 		RAISE EXCEPTION 'lifecycle feed backfill conservation check failed';
 	END IF;
+	RAISE NOTICE 'memory_migration:0029:backfill_verified:%', v_count;
 END;
 $$;
