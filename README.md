@@ -4,6 +4,24 @@ _Give all your AI assistants **combined, long-term** memory while keeping full c
 
 Assistant Memory is a lightweight memory service built around the **Model Context Protocol (MCP)**. It speaks MCP over HTTP today (stdio support is on the way) and also exposes classic REST endpoints. Store conversations and documents and let any MCP-enabled assistant recall them when needed.
 
+## Database migration logs
+
+With `RUN_MIGRATIONS=true`, the first database request applies pending migrations.
+The server can print “listening” before this happens. Other database requests wait
+until migrations finish.
+
+Container logs include `database.migrations.started`, a progress event every ten
+seconds, and `database.migrations.completed` after commit or
+`database.migrations.failed` on error. The progress phase distinguishes
+`connecting`, `waiting_for_lock`, and `applying`; `elapsedMs` and
+`statementsStarted` help identify a long-running operation. Migration 0029 also
+reports backfill stages and row counts. These stage counts describe work inside
+the transaction; only the completion event confirms it committed.
+
+Avoid restarting a container while its migration is running: the unfinished
+transaction rolls back and its work starts again. Logs exclude connection
+strings, SQL, and memory content.
+
 ## Feeding it
 
 Anything can become memory. Tools that ingest into Assistant Memory:

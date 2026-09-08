@@ -4,13 +4,15 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import * as schema from "~/db/schema";
 import { claims, nodes, sourceLinks, sources, users } from "~/db/schema";
+import { type LogEvent, setLogSink } from "~/lib/observability/log";
 import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import { ensureUserSelfIdentity } from "~/lib/user-self-identity";
 import { newTypeId } from "~/types/typeid";
+import { runDatabaseMigrations } from "~/utils/migrations";
 import {
   resetTestOverrides,
   setSkipEmbeddingPersistence,
@@ -88,6 +90,7 @@ describeIfServer("partition migration upgrade", () => {
   let client: Client;
   let database: NodePgDatabase<typeof schema>;
   let legacyMigrations: string;
+  let preFeedMigrations: string;
   let preRedactionMigrations: string;
 
   beforeAll(async () => {
@@ -99,6 +102,7 @@ describeIfServer("partition migration upgrade", () => {
     await client.connect();
     database = drizzle(client, { schema, casing: "snake_case" });
     legacyMigrations = await makeMigrationPrefix(27);
+    preFeedMigrations = await makeMigrationPrefix(28);
     preRedactionMigrations = await makeMigrationPrefix(35);
   });
 
@@ -106,6 +110,7 @@ describeIfServer("partition migration upgrade", () => {
     await client.end();
     await Promise.all([
       rm(legacyMigrations, { recursive: true, force: true }),
+      rm(preFeedMigrations, { recursive: true, force: true }),
       rm(preRedactionMigrations, { recursive: true, force: true }),
     ]);
     const admin = new Client({ connectionString: adminDsn() });
@@ -144,12 +149,103 @@ describeIfServer("partition migration upgrade", () => {
       `INSERT INTO claims
         (id, user_id, subject_node_id, predicate, statement, object_value,
          source_id, stated_at, status, scope, asserted_by_kind)
-       VALUES ($1, $2, $3, 'HAS_ATTRIBUTE', 'Legacy fact', 'present',
+       VALUES ($1, $2, $3, 'HAS_TASK_STATUS', 'Legacy task', 'pending',
          $4, now(), 'active', 'personal', 'user')`,
       [claimId, userId, nodeId, sourceId],
     );
 
-    await migrate(database, { migrationsFolder: preRedactionMigrations });
+    await client.query(
+      "INSERT INTO users (id) VALUES ('backfill-volume-user')",
+    );
+    await client.query(`INSERT INTO nodes (id, user_id, node_type)
+      SELECT 'node_' || lpad(i::text, 26, '0'), 'backfill-volume-user', 'Person'
+      FROM generate_series(1, 12000) i`);
+    await migrate(database, { migrationsFolder: preFeedMigrations });
+    await client.query(`INSERT INTO memory_partitions (user_id, partition_key)
+      VALUES ('backfill-volume-user', 'room:backfill')`);
+    await client.query(`UPDATE nodes SET partition_key = 'room:backfill'
+      WHERE user_id = 'backfill-volume-user' AND id <= 'node_' || lpad('6000', 26, '0')`);
+    await client.query(`INSERT INTO node_redirects (user_id, partition_key, from_node_id, to_node_id)
+      VALUES ('backfill-volume-user', 'room:backfill', 'node_' || lpad('1', 26, '0'), 'node_' || lpad('2', 26, '0'))`);
+    const upgradeStarted = performance.now();
+    const migrationEvents: LogEvent[] = [];
+    setLogSink((event) => migrationEvents.push(event));
+    try {
+      await runDatabaseMigrations(dsnFor(dbName), preRedactionMigrations);
+    } finally {
+      setLogSink();
+    }
+    expect(migrationEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "database.migrations.started",
+          phase: "connecting",
+        }),
+        expect.objectContaining({
+          event: "database.migrations.progress",
+          phase: "waiting_for_lock",
+        }),
+        expect.objectContaining({
+          event: "database.migrations.backfill",
+          step: "backfill_verified",
+          rows: 12007,
+        }),
+        expect.objectContaining({
+          event: "database.migrations.completed",
+          phase: "committed",
+        }),
+      ]),
+    );
+    console.info(
+      `Populated migration upgrade: ${Math.round(performance.now() - upgradeStarted)}ms`,
+    );
+    const volumeFeed =
+      await client.query(`SELECT partition_key, count(*)::int AS count,
+      min(sequence)::int AS first, max(sequence)::int AS last,
+      count(DISTINCT event_id)::int AS unique_ids
+      FROM memory_change_feed_events WHERE user_id = 'backfill-volume-user'
+      GROUP BY partition_key ORDER BY partition_key NULLS FIRST`);
+    expect(volumeFeed.rows).toEqual([
+      {
+        partition_key: null,
+        count: 6000,
+        first: 1,
+        last: 6000,
+        unique_ids: 6000,
+      },
+      {
+        partition_key: "room:backfill",
+        count: 6001,
+        first: 1,
+        last: 6001,
+        unique_ids: 6001,
+      },
+    ]);
+    const volumeHead =
+      await client.query(`SELECT partition_key, next_sequence::int AS next
+      FROM memory_change_feed_heads WHERE user_id = 'backfill-volume-user'
+      ORDER BY partition_key NULLS FIRST`);
+    expect(volumeHead.rows).toEqual([
+      { partition_key: null, next: 6001 },
+      { partition_key: "room:backfill", next: 6002 },
+    ]);
+    const legacyFeed = await client.query(
+      `SELECT kind FROM memory_change_feed_events
+      WHERE user_id = $1 ORDER BY sequence`,
+      [userId],
+    );
+    expect(legacyFeed.rows.map((row) => row.kind)).toEqual([
+      "node",
+      "source",
+      "ingestion",
+      "claim",
+      "commitment",
+      "provenance",
+    ]);
+    const invalidEventIds = await client.query(`SELECT count(*)::int AS count
+      FROM memory_change_feed_events
+      WHERE event_id <> 'mcfe_' || md5(jsonb_build_array(user_id, partition_key, feed_epoch, sequence)::text)`);
+    expect(invalidEventIds.rows).toEqual([{ count: 0 }]);
     await client.query(
       `UPDATE memory_change_feed_heads
        SET next_sequence = 1000002
@@ -254,6 +350,71 @@ describeIfServer("partition migration upgrade", () => {
     });
   }, 120_000);
 
+  it("does not replay an applied migration when its SQL hash changes", async () => {
+    const snapshotQuery = `SELECT count(*)::int AS count,
+      md5(string_agg(event_id, ',' ORDER BY event_id)) AS fingerprint
+      FROM memory_change_feed_events`;
+    const before = await client.query(snapshotQuery);
+    await client.query(`UPDATE drizzle.__drizzle_migrations
+      SET hash = 'previously-applied-migration-content'
+      WHERE created_at = (SELECT created_at FROM drizzle.__drizzle_migrations ORDER BY created_at OFFSET 29 LIMIT 1)`);
+    const events: LogEvent[] = [];
+    setLogSink((event) => events.push(event));
+    try {
+      await runDatabaseMigrations(dsnFor(dbName));
+    } finally {
+      setLogSink();
+    }
+    expect((await client.query(snapshotQuery)).rows).toEqual(before.rows);
+    expect(
+      events.some((event) => event.event === "database.migrations.backfill"),
+    ).toBe(false);
+    expect(events.at(-1)).toMatchObject({
+      event: "database.migrations.completed",
+      phase: "committed",
+    });
+  });
+
+  it("reports a heartbeat while another session holds the migration lock", async () => {
+    await client.query("SELECT pg_advisory_lock(1777558586, 0)");
+    const events: LogEvent[] = [];
+    setLogSink((event) => events.push(event));
+    const pending = runDatabaseMigrations(dsnFor(dbName));
+    try {
+      await vi.waitFor(
+        () => {
+          expect(events).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                event: "database.migrations.progress",
+                phase: "waiting_for_lock",
+                elapsedMs: expect.any(Number),
+              }),
+            ]),
+          );
+          expect(
+            events.some(
+              (event) =>
+                event["phase"] === "waiting_for_lock" &&
+                Number(event["elapsedMs"]) >= 10_000,
+            ),
+          ).toBe(true);
+        },
+        { timeout: 12_000, interval: 100 },
+      );
+    } finally {
+      await client.query("SELECT pg_advisory_unlock(1777558586, 0)");
+      try {
+        await pending;
+      } finally {
+        setLogSink();
+      }
+    }
+    expect(events.at(-1)).toMatchObject({
+      event: "database.migrations.completed",
+    });
+  }, 15_000);
+
   it("fails with repair guidance for a legacy cross-user parent link", async () => {
     const invalidDbName = `memory_partition_invalid_parent_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     const admin = new Client({ connectionString: adminDsn() });
@@ -295,9 +456,28 @@ describeIfServer("partition migration upgrade", () => {
         migrationsFolder: invalidPreRedactionMigrations,
       });
 
-      await expect(
-        migrate(invalidDatabase, { migrationsFolder: "./drizzle" }),
-      ).rejects.toThrow(/legacy sources contain cross-user parent links/);
+      const events: LogEvent[] = [];
+      setLogSink((event) => events.push(event));
+      try {
+        await expect(
+          runDatabaseMigrations(dsnFor(invalidDbName)),
+        ).rejects.toThrow(/legacy sources contain cross-user parent links/);
+      } finally {
+        setLogSink();
+      }
+      expect(events.at(-1)).toMatchObject({
+        event: "database.migrations.failed",
+        phase: "applying",
+      });
+      expect(
+        events.some((event) => event.event === "database.migrations.completed"),
+      ).toBe(false);
+      expect(JSON.stringify(events)).not.toContain(dsnFor(invalidDbName));
+      const lock = await invalidClient.query<{ acquired: boolean }>(
+        "SELECT pg_try_advisory_lock(1777558586, 0) AS acquired",
+      );
+      expect(lock.rows[0]?.acquired).toBe(true);
+      await invalidClient.query("SELECT pg_advisory_unlock(1777558586, 0)");
     } finally {
       await invalidClient.end();
       await Promise.all([
