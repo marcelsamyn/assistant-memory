@@ -22,6 +22,20 @@ Avoid restarting a container while its migration is running: the unfinished
 transaction rolls back and its work starts again. Logs exclude connection
 strings, SQL, and memory content.
 
+## Runtime limits
+
+Initial `POST /query/graph` reads honor `maxNodes` (100 by default) and select
+nodes in stable ID order. Use graph search or neighborhood expansion to inspect
+other nodes. Claims and source references are limited to the selected nodes.
+
+`SOURCE_BLOB_UPLOAD_TIMEOUT_MS` limits the storage PUT to 60,000 ms by default.
+The client cancels a stalled request before releasing database locks. Cancellation
+does not prove that storage rejected the upload: a lost response can leave saved
+bytes. An unknown-outcome receipt stays open until cleanup observes and deletes
+the object. If the object never arrives, the receipt stays pending rather than
+reporting deletion complete. Bucket preparation and URL signing run outside the
+locked PUT and its deadline.
+
 ## Feeding it
 
 Anything can become memory. Tools that ingest into Assistant Memory:

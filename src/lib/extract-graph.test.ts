@@ -5,6 +5,16 @@ import * as schema from "~/db/schema";
 import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 
+// Exercise the real queue API without workers using fixture connections.
+vi.mock("bullmq", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("bullmq")>()),
+  Worker: class {
+    async close(): Promise<void> {
+      return undefined;
+    }
+  },
+}));
+
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
 const TEST_DB_PORT = Number(process.env["TEST_PG_PORT"] ?? 5431);
 const TEST_DB_USER = process.env["TEST_PG_USER"] ?? "postgres";
