@@ -4,6 +4,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -135,6 +136,7 @@ describeIfServer("resolveCitations", () => {
             PRIMARY KEY ("user_id","from_node_id")
         );
       `);
+      await installPartitionCompatibilityFixture(client);
 
       await client.query(`INSERT INTO "users" ("id") VALUES ('user_A')`);
       await client.query(

@@ -10,10 +10,12 @@
 import { z } from "zod";
 import { nodeCardSchema } from "~/lib/context/node-card-types.js";
 import { claimEvidenceSchema } from "~/lib/context/types.js";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition.js";
 import { NodeTypeEnum } from "~/types/graph.js";
 
 export const contextSearchRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   query: z.string().min(1),
   limit: z.number().int().min(1).max(50).optional().default(10),
   /**
@@ -48,6 +50,7 @@ export type ContextSearchResponse = z.infer<typeof contextSearchResponseSchema>;
  */
 export const cardSearchToolInputSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   query: z.string().min(1),
   limit: z.number().int().min(1).max(50).optional(),
   excludeNodeTypes: z.array(NodeTypeEnum).optional(),

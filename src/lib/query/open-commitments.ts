@@ -5,6 +5,7 @@ import {
   eq,
   inArray,
   isNotNull,
+  isNull,
   lte,
   ne,
   aliasedTable,
@@ -12,6 +13,7 @@ import {
 } from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
 import { coerceTaskStatus } from "~/lib/claims/task-status";
+import { assertPartitionReadAllowed } from "~/lib/partition-access";
 import {
   type OpenCommitment,
   type OpenCommitmentsRequest,
@@ -118,8 +120,11 @@ async function queryCommitments(
   params: OpenCommitmentsRequest,
   provenance: CommitmentProvenance,
 ): Promise<OpenCommitment[]> {
-  const { userId, ownedBy, dueBefore } = params;
+  const { userId, partitionKey, ownedBy, dueBefore } = params;
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
+  const partitionFilter = (column: typeof claims.partitionKey) =>
+    partitionKey === undefined ? isNull(column) : eq(column, partitionKey);
   const ownerClaim = aliasedTable(claims, "ownerClaim");
   const ownerMetadata = aliasedTable(nodeMetadata, "ownerMetadata");
   const dueClaim = aliasedTable(claims, "dueClaim");
@@ -144,6 +149,9 @@ async function queryCommitments(
       and(
         eq(nodes.id, claims.subjectNodeId),
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         eq(nodes.nodeType, "Task"),
       ),
     )
@@ -156,6 +164,7 @@ async function queryCommitments(
         eq(ownerClaim.predicate, "ASSIGNED_TO"),
         eq(ownerClaim.status, "active"),
         eq(ownerClaim.scope, "personal"),
+        partitionFilter(ownerClaim.partitionKey),
         subJoinProvenanceFilter(ownerClaim.assertedByKind, provenance),
         isNotNull(ownerClaim.objectNodeId),
       ),
@@ -169,6 +178,7 @@ async function queryCommitments(
         eq(dueClaim.predicate, "DUE_ON"),
         eq(dueClaim.status, "active"),
         eq(dueClaim.scope, "personal"),
+        partitionFilter(dueClaim.partitionKey),
         subJoinProvenanceFilter(dueClaim.assertedByKind, provenance),
         isNotNull(dueClaim.objectNodeId),
       ),
@@ -177,6 +187,7 @@ async function queryCommitments(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionFilter(claims.partitionKey),
         eq(claims.predicate, "HAS_TASK_STATUS"),
         eq(claims.status, "active"),
         eq(claims.scope, "personal"),

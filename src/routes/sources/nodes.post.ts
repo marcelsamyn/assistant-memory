@@ -7,12 +7,20 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const { userId, sourceIds, nodeTypes, includeClaims, limit, cursor } =
-    nodesBySourceRequestSchema.parse(await readBody(event));
+  const {
+    userId,
+    partitionKey,
+    sourceIds,
+    nodeTypes,
+    includeClaims,
+    limit,
+    cursor,
+  } = nodesBySourceRequestSchema.parse(await readBody(event));
   const db = await useDatabase();
   const result = await fetchNodesBySource({
     db,
     userId,
+    ...(partitionKey === undefined ? {} : { partitionKey }),
     sourceIds,
     nodeTypes,
     includeClaims,

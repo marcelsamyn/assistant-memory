@@ -4,6 +4,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -118,6 +119,7 @@ describeIfServer("runDedupSweep", () => {
           CHECK (num_nonnulls("object_node_id", "object_value") = 1)
       );
     `);
+    await installPartitionCompatibilityFixture(client);
   }
 
   async function seedNode(

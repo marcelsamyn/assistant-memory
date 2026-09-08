@@ -13,6 +13,7 @@
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import * as schema from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 
 // `pg` is CommonJS; under raw Node ESM (the `tsx` eval CLIs) a named import
 // like `import { Client } from "pg"` isn't exposed, so destructure from the
@@ -201,6 +202,7 @@ export async function createEvalDatabase(
   const client = new Client({ connectionString: dsnFor(dbName) });
   await client.connect();
   await client.query(HARNESS_DDL);
+  await installPartitionCompatibilityFixture(client);
 
   const db = drizzle(client, { schema, casing: "snake_case" });
 

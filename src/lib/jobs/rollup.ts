@@ -17,14 +17,17 @@ import {
 } from "../rollup/period";
 import { ensureRollupSource } from "../rollup/source";
 import { summarizePeriod } from "../rollup/summarize-period";
-import { and, eq, gt, max, type SQL } from "drizzle-orm";
+import { and, eq, gt, isNull, max, type SQL } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { claims, nodeMetadata, nodes, rollupState } from "~/db/schema";
 import { createCompletionClient } from "~/lib/ai";
+import { preparePartitionWrite } from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 
 export interface RunRollupParams {
   db: DrizzleDB;
   userId: string;
+  partitionKey?: ContextPartitionKey;
   /** Hard cap on LLM calls this sweep (fingerprint skips are free). */
   maxLlmCalls: number;
   /** History floor: periods ending before this day key are excluded. */
@@ -45,20 +48,34 @@ export interface RollupJobResult {
 export async function runRollup({
   db,
   userId,
+  partitionKey,
   maxLlmCalls,
   startDate,
   todayKey = dayKeyOf(new Date()),
 }: RunRollupParams): Promise<RollupJobResult> {
+  await preparePartitionWrite(db, userId, partitionKey);
+  const partitionCondition =
+    partitionKey === undefined
+      ? isNull(claims.partitionKey)
+      : eq(claims.partitionKey, partitionKey);
   const [state] = await db
     .select()
     .from(rollupState)
-    .where(eq(rollupState.userId, userId))
+    .where(
+      and(
+        eq(rollupState.userId, userId),
+        partitionKey === undefined
+          ? isNull(rollupState.partitionKey)
+          : eq(rollupState.partitionKey, partitionKey),
+      ),
+    )
     .limit(1);
 
   // 1. Discover: day labels touched by active OCCURRED_ON claims since
   //    the watermark (all claims on the first sweep).
   const conditions: SQL[] = [
     eq(claims.userId, userId),
+    partitionCondition,
     eq(claims.predicate, "OCCURRED_ON"),
     eq(claims.status, "active"),
     eq(nodes.nodeType, "Temporal"),
@@ -138,7 +155,7 @@ export async function runRollup({
   const client = await createCompletionClient(userId, {
     task: "temporal_summary",
   });
-  const rollupSourceId = await ensureRollupSource(db, userId);
+  const rollupSourceId = await ensureRollupSource(db, userId, partitionKey);
 
   for (const periodKey of sortForProcessing(ready)) {
     if (budget <= 0) {
@@ -153,6 +170,7 @@ export async function runRollup({
       const outcome = await summarizePeriod({
         db,
         userId,
+        ...(partitionKey !== undefined ? { partitionKey } : {}),
         periodKey,
         client,
         rollupSourceId,
@@ -184,12 +202,13 @@ export async function runRollup({
     .insert(rollupState)
     .values({
       userId,
+      partitionKey,
       watermark,
       pendingPeriods,
       updatedAt: new Date(),
     })
     .onConflictDoUpdate({
-      target: rollupState.userId,
+      target: [rollupState.userId, rollupState.partitionKey],
       set: { watermark, pendingPeriods, updatedAt: new Date() },
     });
 

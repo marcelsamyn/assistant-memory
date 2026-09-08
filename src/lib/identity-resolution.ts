@@ -21,7 +21,7 @@
  * cleanup pipeline picks up later.
  */
 import { findSimilarNodes } from "./graph";
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import {
   aliases,
   claims,
@@ -31,6 +31,8 @@ import {
   sources,
 } from "~/db/schema";
 import { logEvent } from "~/lib/observability/log";
+import { assertPartitionReadAllowed } from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import {
   type AssertedByKind,
   type NodeType,
@@ -66,6 +68,8 @@ export interface IdentityCandidate {
   normalizedLabel: string;
   nodeType: NodeType;
   scope: Scope;
+  /** Opaque caller-owned boundary. Identity never crosses partitions. */
+  partitionKey?: ContextPartitionKey;
   /** Optional dense embedding for signal 3. Skip signal 3 if absent. */
   embedding?: number[];
   /** Trustworthy supporting claims for signal 4. Untrusted kinds are filtered internally. */
@@ -163,6 +167,8 @@ export async function resolveIdentity({
   userId,
   candidate,
 }: ResolveIdentityInput): Promise<IdentityResolution> {
+  const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, candidate.partitionKey);
   const trace: SignalTrace[] = [];
   const excluded = candidate.excludeNodeIds;
 
@@ -316,6 +322,9 @@ async function _findNodesByCanonicalLabel(
     .where(
       and(
         eq(nodes.userId, userId),
+        candidate.partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, candidate.partitionKey),
         eq(nodes.nodeType, candidate.nodeType),
         eq(nodeMetadata.canonicalLabel, candidate.normalizedLabel),
       ),
@@ -324,6 +333,7 @@ async function _findNodesByCanonicalLabel(
   return _annotateScope(
     userId,
     matches.map((m) => m.id),
+    candidate.partitionKey,
   );
 }
 
@@ -346,6 +356,12 @@ async function _signalAlias(
     .where(
       and(
         eq(aliases.userId, userId),
+        candidate.partitionKey === undefined
+          ? isNull(aliases.partitionKey)
+          : eq(aliases.partitionKey, candidate.partitionKey),
+        candidate.partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, candidate.partitionKey),
         eq(aliases.normalizedAliasText, candidate.normalizedLabel),
         eq(nodes.nodeType, candidate.nodeType),
       ),
@@ -358,6 +374,7 @@ async function _signalAlias(
   const scoped = await _annotateScope(
     userId,
     aliasMatches.map((m) => m.canonicalNodeId),
+    candidate.partitionKey,
   );
   return _classifyScopeMatches("alias", candidate.scope, scoped);
 }
@@ -390,6 +407,9 @@ async function _signalEmbeddingSim(
     minimumSimilarity: threshold,
     limit: 25,
     includeReference: candidate.scope === "reference",
+    ...(candidate.partitionKey !== undefined
+      ? { partitionKey: candidate.partitionKey }
+      : {}),
   });
 
   // Filter to same nodeType + same scope. findSimilarNodes returns nodes that
@@ -407,6 +427,7 @@ async function _signalEmbeddingSim(
   const scoped = await _annotateScope(
     userId,
     sameType.map((row) => row.id),
+    candidate.partitionKey,
   );
   const scopeOk = new Set(
     scoped
@@ -474,6 +495,7 @@ async function _signalProfileCompat(
   const existingClaims = await _fetchTrustedProfileClaims(
     userId,
     candidateNodeIds,
+    candidate.partitionKey,
   );
 
   const claimsByNode = new Map<TypeId<"node">, ExistingClaimRow[]>();
@@ -552,6 +574,7 @@ function _profileKey(claim: IdentityCandidateClaim | ExistingClaimRow): string {
 async function _fetchTrustedProfileClaims(
   userId: string,
   candidateNodeIds: TypeId<"node">[],
+  partitionKey?: ContextPartitionKey,
 ): Promise<ExistingClaimRow[]> {
   if (candidateNodeIds.length === 0) return [];
   const db = await useDatabase();
@@ -567,6 +590,9 @@ async function _fetchTrustedProfileClaims(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         eq(claims.status, "active"),
         inArray(claims.subjectNodeId, candidateNodeIds),
         inArray(claims.assertedByKind, [
@@ -592,6 +618,7 @@ async function _fetchTrustedProfileClaims(
 async function _annotateScope(
   userId: string,
   nodeIds: TypeId<"node">[],
+  partitionKey?: ContextPartitionKey,
 ): Promise<ScopedNodeRow[]> {
   if (nodeIds.length === 0) return [];
   const db = await useDatabase();
@@ -607,7 +634,13 @@ async function _annotateScope(
     .from(sourceLinks)
     .innerJoin(sources, eq(sources.id, sourceLinks.sourceId))
     .where(
-      and(eq(sources.userId, userId), inArray(sourceLinks.nodeId, nodeIds)),
+      and(
+        eq(sources.userId, userId),
+        partitionKey === undefined
+          ? isNull(sources.partitionKey)
+          : eq(sources.partitionKey, partitionKey),
+        inArray(sourceLinks.nodeId, nodeIds),
+      ),
     );
   const claimRows = await db
     .select({
@@ -619,6 +652,9 @@ async function _annotateScope(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         eq(claims.status, "active"),
         or(
           inArray(claims.subjectNodeId, nodeIds),

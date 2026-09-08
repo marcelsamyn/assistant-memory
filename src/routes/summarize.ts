@@ -6,9 +6,15 @@ import {
 } from "~/lib/schemas/summarize";
 
 export default defineEventHandler(async (event) => {
-  const { userId } = summarizeRequestSchema.parse(await readBody(event));
+  const { userId, partitionKey } = summarizeRequestSchema.parse(
+    await readBody(event),
+  );
 
-  await batchQueue.add("summarize", { userId }, SUMMARIZE_JOB_OPTIONS);
+  await batchQueue.add(
+    "summarize",
+    { userId, ...(partitionKey !== undefined ? { partitionKey } : {}) },
+    SUMMARIZE_JOB_OPTIONS,
+  );
 
   console.log(`Enqueued 'summarize' job for user: ${userId}`);
 

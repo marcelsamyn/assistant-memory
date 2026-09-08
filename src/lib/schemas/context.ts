@@ -7,10 +7,12 @@
  * Common aliases: bootstrap memory schema, get_entity schema, bootstrap_memory.
  */
 import { z } from "zod";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition.js";
 import { typeIdSchema } from "~/types/typeid.js";
 
 export const bootstrapMemoryRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   forceRefresh: z.boolean().optional(),
 });
 export type BootstrapMemoryRequest = z.infer<
@@ -19,6 +21,7 @@ export type BootstrapMemoryRequest = z.infer<
 
 export const getEntityRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   nodeId: typeIdSchema("node"),
 });
 export type GetEntityRequest = z.infer<typeof getEntityRequestSchema>;

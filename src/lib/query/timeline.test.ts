@@ -6,6 +6,7 @@ import {
   queryTimelineRequestSchema,
   queryTimelineResponseSchema,
 } from "~/lib/schemas/query-timeline";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -138,6 +139,7 @@ describeIfServer("queryTimeline", () => {
           "updated_at" timestamp with time zone DEFAULT now() NOT NULL
         );
       `);
+      await installPartitionCompatibilityFixture(client);
 
       await database.insert(schema.users).values({ id: userId });
       await database.insert(schema.sources).values({

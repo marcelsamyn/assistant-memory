@@ -10,6 +10,8 @@ import { safeToISOString } from "../safe-date";
 import { z } from "zod";
 import { DrizzleDB } from "~/db";
 import { type ConversationTurn } from "~/lib/conversation-store";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { getUserSelfAliases } from "~/lib/user-profile";
 import { buildUserIdentityNote } from "~/lib/user-self-identity";
 import { NodeTypeEnum } from "~/types/graph";
@@ -27,6 +29,7 @@ type Message = z.infer<typeof MessageSchema>;
 
 export const IngestConversationJobInputSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   conversationId: z.string(),
   messages: z.array(MessageSchema),
 });
@@ -47,12 +50,14 @@ interface IngestConversationParams extends IngestConversationJobInput {
 export async function ingestConversation({
   db,
   userId,
+  partitionKey,
   conversationId,
   messages,
 }: IngestConversationParams): Promise<{ insertedTurns: ConversationTurn[] }> {
   const { sourceId, insertedTurns, sourceRefs } = await initializeConversation(
     db,
     userId,
+    partitionKey,
     conversationId,
     messages,
   );
@@ -73,6 +78,7 @@ export async function ingestConversation({
   );
   await extractGraph({
     userId,
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
     sourceType: "conversation",
     sourceId,
     statedAt: firstTurn.timestamp,
@@ -98,6 +104,7 @@ export async function ingestConversation({
 async function initializeConversation(
   db: DrizzleDB,
   userId: string,
+  partitionKey: ContextPartitionKey | undefined,
   conversationId: string,
   messages: Message[],
 ): Promise<{
@@ -109,6 +116,7 @@ async function initializeConversation(
   const { sourceId, newSourceSourceIds, sourceRefs } = await insertNewSources({
     db,
     userId,
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
     parentSourceType: "conversation",
     parentSourceId: conversationId,
     childSourceType: "conversation_message",

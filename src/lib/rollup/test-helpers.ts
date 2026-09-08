@@ -66,10 +66,13 @@ export const ROLLUP_TEST_TABLES_SQL = `
     "updated_at" timestamp with time zone DEFAULT now() NOT NULL
   );
   CREATE TABLE "rollup_state" (
-    "user_id" text PRIMARY KEY NOT NULL REFERENCES "users"("id"),
+    "user_id" text NOT NULL REFERENCES "users"("id"),
+    "partition_key" varchar(200),
     "watermark" timestamp with time zone,
     "pending_periods" jsonb DEFAULT '[]' NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+    "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT "rollup_state_user_partition_unique"
+      UNIQUE NULLS NOT DISTINCT ("user_id", "partition_key")
   );
 `;
 

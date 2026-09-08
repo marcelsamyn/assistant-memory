@@ -12,6 +12,7 @@ import { Client } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
 import { getUserSelfAliases, setUserSelfAliases } from "~/lib/user-profile";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
 const TEST_DB_PORT = Number(process.env["TEST_PG_PORT"] ?? 5431);
@@ -82,6 +83,7 @@ async function createTables(client: Client): Promise<void> {
         UNIQUE ("user_id", "normalized_alias_text", "canonical_node_id")
     );
   `);
+  await installPartitionCompatibilityFixture(client);
 }
 
 describeIfServer("user-profile self-aliases helpers", () => {
@@ -251,6 +253,7 @@ describeIfServer("migration 0013 (user_profiles.metadata) idempotence", () => {
           "created_at" timestamp with time zone DEFAULT now() NOT NULL
         );
       `);
+      await installPartitionCompatibilityFixture(client);
       await client.query(`INSERT INTO "users" ("id") VALUES ('user_mig')`);
       await client.query(
         `INSERT INTO "user_profiles" ("id", "user_id", "content")

@@ -3,10 +3,15 @@ import { batchQueue, DreamJobData } from "~/lib/queues";
 import { dreamRequestSchema, dreamResponseSchema } from "~/lib/schemas/dream";
 
 export default defineEventHandler(async (event) => {
-  const { userId, assistantId, assistantDescription } =
+  const { userId, partitionKey, assistantId, assistantDescription } =
     dreamRequestSchema.parse(await readBody(event));
 
-  const jobData: DreamJobData = { userId, assistantId, assistantDescription };
+  const jobData: DreamJobData = {
+    userId,
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
+    assistantId,
+    assistantDescription,
+  };
 
   await batchQueue.add("dream", jobData);
 

@@ -14,9 +14,11 @@ import {
   rewireSourceLinks,
   deleteNode,
 } from "./cleanup-graph";
-import { and, eq, sql, isNotNull, inArray } from "drizzle-orm";
+import { and, eq, sql, isNotNull, inArray, isNull } from "drizzle-orm";
 import { DrizzleDB } from "~/db";
 import { nodes, nodeMetadata, claims, sourceLinks, sources } from "~/db/schema";
+import { preparePartitionWrite } from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { LABEL_MERGEABLE_NODE_TYPES, type Scope } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
@@ -56,6 +58,7 @@ interface DuplicateGroupingResult {
 async function findDuplicateGroupingsByScope(
   db: DrizzleDB,
   userId: string,
+  partitionKey: ContextPartitionKey | undefined,
 ): Promise<DuplicateGroupingResult> {
   // Per-node effective scope. A node is 'reference' iff every claim and every
   // source it touches is 'reference'. Personal evidence wins; absence of any
@@ -94,14 +97,28 @@ async function findDuplicateGroupingsByScope(
       claims,
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         sql`(${claims.subjectNodeId} = ${nodes.id} OR ${claims.objectNodeId} = ${nodes.id})`,
       ),
     )
     .leftJoin(sourceLinks, eq(sourceLinks.nodeId, nodes.id))
-    .leftJoin(sources, eq(sources.id, sourceLinks.sourceId))
+    .leftJoin(
+      sources,
+      and(
+        eq(sources.id, sourceLinks.sourceId),
+        partitionKey === undefined
+          ? isNull(sources.partitionKey)
+          : eq(sources.partitionKey, partitionKey),
+      ),
+    )
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         inArray(nodes.nodeType, [...LABEL_MERGEABLE_NODE_TYPES]),
         isNotNull(nodeMetadata.canonicalLabel),
         sql`trim(${nodeMetadata.canonicalLabel}) != ''`,
@@ -207,11 +224,14 @@ export interface DedupSweepResult {
 export async function runDedupSweep(
   userId: string,
   dbOverride?: DrizzleDB,
+  partitionKey?: ContextPartitionKey,
 ): Promise<DedupSweepResult> {
   const db = dbOverride ?? (await useDatabase());
+  await preparePartitionWrite(db, userId, partitionKey);
   const { groups, crossScopeCollisions } = await findDuplicateGroupingsByScope(
     db,
     userId,
+    partitionKey,
   );
 
   if (crossScopeCollisions.length > 0) {

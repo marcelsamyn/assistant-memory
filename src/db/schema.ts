@@ -12,9 +12,11 @@ import {
   unique,
   primaryKey,
   integer,
+  bigint,
   boolean,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import {
   AssertedByKind,
   ClaimStatus,
@@ -31,6 +33,62 @@ export const users = pgTable("users", {
   id: text().primaryKey().notNull(),
 });
 
+/** Caller-owned opaque partitions registered for a user. */
+export const memoryPartitions = pgTable(
+  "memory_partitions",
+  {
+    userId: text("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    partitionKey: varchar("partition_key", { length: 200 })
+      .$type<ContextPartitionKey>()
+      .notNull(),
+    status: varchar({ length: 20 })
+      .$type<"active" | "quarantined">()
+      .default("active")
+      .notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.partitionKey] }),
+    check(
+      "memory_partitions_status_ck",
+      sql`"status" IN ('active', 'quarantined')`,
+    ),
+  ],
+);
+
+/**
+ * Compatibility fence for legacy unpartitioned callers. Missing row means
+ * `unmigrated`; once present, unpartitioned reads and writes fail closed.
+ */
+export const partitionMigrationState = pgTable(
+  "partition_migration_state",
+  {
+    userId: text("user_id")
+      .primaryKey()
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    state: varchar({ length: 20 }).$type<"migrating" | "migrated">().notNull(),
+    version: integer().default(1).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  () => [
+    check(
+      "partition_migration_state_state_ck",
+      sql`"state" IN ('migrating', 'migrated')`,
+    ),
+    check("partition_migration_state_version_ck", sql`"version" > 0`),
+  ],
+);
+
 export const nodes = pgTable(
   "nodes",
   {
@@ -38,12 +96,16 @@ export const nodes = pgTable(
     userId: text()
       .references(() => users.id)
       .notNull(),
+    partitionKey: varchar("partition_key", {
+      length: 200,
+    }).$type<ContextPartitionKey>(),
     nodeType: varchar("node_type", { length: 50 }).notNull().$type<NodeType>(),
     createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
     // Index on (userId, nodeType) might be useful
   },
   (table) => [
     index("nodes_user_id_idx").on(table.userId),
+    index("nodes_user_partition_idx").on(table.userId, table.partitionKey),
     index("nodes_user_id_node_type_idx").on(table.userId, table.nodeType),
   ],
 );
@@ -122,6 +184,9 @@ export const claims = pgTable(
         onDelete: "cascade",
       })
       .notNull(),
+    partitionKey: varchar("partition_key", {
+      length: 200,
+    }).$type<ContextPartitionKey>(),
     scope: varchar("scope", { length: 16 })
       .notNull()
       .$type<Scope>()
@@ -226,6 +291,12 @@ export const claims = pgTable(
         sql`${table.predicate} = 'OCCURRED_ON' AND ${table.status} = 'active'`,
       ),
     index("claims_source_id_idx").on(table.sourceId),
+    index("claims_user_partition_status_stated_at_idx").on(
+      table.userId,
+      table.partitionKey,
+      table.status,
+      table.statedAt,
+    ),
     check(
       "claims_object_shape_xor_ck",
       sql`(("object_node_id" IS NOT NULL AND "object_value" IS NULL) OR ("object_node_id" IS NULL AND "object_value" IS NOT NULL))`,
@@ -349,6 +420,9 @@ export const aliases = pgTable(
     canonicalNodeId: typeId("node")
       .references(() => nodes.id, { onDelete: "cascade" })
       .notNull(),
+    partitionKey: varchar("partition_key", {
+      length: 200,
+    }).$type<ContextPartitionKey>(),
     createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
@@ -356,6 +430,11 @@ export const aliases = pgTable(
       table.userId,
       table.normalizedAliasText,
       table.canonicalNodeId,
+    ),
+    index("aliases_user_partition_normalized_idx").on(
+      table.userId,
+      table.partitionKey,
+      table.normalizedAliasText,
     ),
   ],
 );
@@ -382,6 +461,15 @@ export const sources = pgTable(
       .notNull(),
     type: varchar("type", { length: 50 }).notNull().$type<SourceType>(),
     externalId: text().notNull(),
+    partitionKey: varchar("partition_key", {
+      length: 200,
+    }).$type<ContextPartitionKey>(),
+    /**
+     * Database-managed ABA fence. The migration trigger increments this once
+     * when partition, parent, scope, type, external identity, metadata,
+     * ingestion time, status, deletion, or content descriptors change.
+     */
+    version: integer().default(0).notNull(),
     parentSource: typeIdNoDefault("source"),
     scope: varchar("scope", { length: 16 })
       .notNull()
@@ -401,13 +489,174 @@ export const sources = pgTable(
   (table) => [
     unique().on(table.userId, table.type, table.externalId),
     index("sources_user_id_idx").on(table.userId),
+    index("sources_user_partition_idx").on(table.userId, table.partitionKey),
     index("sources_status_idx").on(table.status),
     check("sources_scope_ck", sql`"scope" IN ('personal', 'reference')`),
+    check("sources_version_ck", sql`"version" >= 0`),
   ],
 );
 
 export type SourcesInsert = typeof sources.$inferInsert;
 export type SourcesSelect = typeof sources.$inferSelect;
+
+/**
+ * Non-content terminal record used to redact historical feed events after a
+ * source is erased. It intentionally has no FK to `sources`: purge removes
+ * the source row while this privacy boundary must survive.
+ */
+export const sourceTombstones = pgTable(
+  "source_tombstones",
+  {
+    userId: text("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    sourceId: typeIdNoDefault("source", { name: "source_id" }).notNull(),
+    partitionKey: varchar("partition_key", {
+      length: 200,
+    }).$type<ContextPartitionKey>(),
+    state: varchar({ length: 20 })
+      .$type<"tombstoned" | "restored" | "purged">()
+      .notNull(),
+    storageCleanupState: varchar("storage_cleanup_state", { length: 20 })
+      .$type<"not_required" | "pending" | "completed">()
+      .notNull()
+      .default("not_required"),
+    /** Durable completion receipt for legacy read-model erasure recovery. */
+    readModelCleanupState: varchar("read_model_cleanup_state", { length: 20 })
+      .$type<"not_required" | "pending" | "completed">()
+      .notNull()
+      .default("not_required"),
+    /** Opaque object-store key captured before the source row can disappear. */
+    storageObjectKey: text("storage_object_key"),
+    erasedAt: timestamp("erased_at", { withTimezone: true }).notNull(),
+    restorableUntil: timestamp("restorable_until", { withTimezone: true }),
+    finalizedAt: timestamp("finalized_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.sourceId] }),
+    index("source_tombstones_user_source_idx").on(table.userId, table.sourceId),
+    check(
+      "source_tombstones_state_ck",
+      sql`"state" IN ('tombstoned', 'restored', 'purged')`,
+    ),
+    check(
+      "source_tombstones_storage_cleanup_state_ck",
+      sql`"storage_cleanup_state" IN ('not_required', 'pending', 'completed')`,
+    ),
+    check(
+      "source_tombstones_read_model_cleanup_state_ck",
+      sql`"read_model_cleanup_state" IN ('not_required', 'pending', 'completed')`,
+    ),
+  ],
+);
+
+/**
+ * Durable coordination record for a source blob upload.
+ *
+ * The object store is deliberately outside the source transaction. This row
+ * gives source erasure a database fence around that external side effect: an
+ * uploader must claim it before putting bytes, and a tombstone transitions it
+ * to cleanup before its own object-cleanup receipt may complete. It has no
+ * foreign key because a purge must leave the cleanup authority intact.
+ */
+export const sourceBlobUploads = pgTable(
+  "source_blob_uploads",
+  {
+    userId: text("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    sourceId: typeIdNoDefault("source", { name: "source_id" }).notNull(),
+    objectKey: text("object_key").notNull(),
+    state: varchar({ length: 24 })
+      .$type<
+        | "reserved"
+        | "uploading"
+        | "uploaded"
+        | "cleanup_pending"
+        | "cleanup_completed"
+      >()
+      .notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    uploadedAt: timestamp("uploaded_at", { withTimezone: true }),
+    cleanupCompletedAt: timestamp("cleanup_completed_at", {
+      withTimezone: true,
+    }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.sourceId] }),
+    index("source_blob_uploads_cleanup_idx").on(table.state, table.updatedAt),
+    check(
+      "source_blob_uploads_state_ck",
+      sql`"state" IN ('reserved', 'uploading', 'uploaded', 'cleanup_pending', 'cleanup_completed')`,
+    ),
+  ],
+);
+
+/** Immutable, non-content command receipt for source lifecycle maintenance. */
+export const sourceLifecycleCommands = pgTable(
+  "source_lifecycle_commands",
+  {
+    userId: text("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    commandId: varchar("command_id", { length: 200 }).notNull(),
+    sourceId: typeIdNoDefault("source", { name: "source_id" }).notNull(),
+    expectedPartitionKey: varchar("expected_partition_key", {
+      length: 200,
+    }).$type<ContextPartitionKey>(),
+    expectedSourceVersion: integer("expected_source_version").notNull(),
+    action: varchar({ length: 20 })
+      .$type<"tombstone" | "restore" | "purge">()
+      .notNull(),
+    state: varchar({ length: 20 })
+      .$type<"tombstoned" | "restored" | "purged">()
+      .notNull(),
+    sourceVersion: integer("source_version"),
+    restorableUntil: timestamp("restorable_until", { withTimezone: true }),
+    storageCleanupState: varchar("storage_cleanup_state", { length: 20 })
+      .$type<"not_required" | "pending" | "completed">()
+      .notNull()
+      .default("not_required"),
+    /** Complete root-operation cleanup snapshot; survives restore and purge. */
+    storageObjectKeys: text("storage_object_keys")
+      .array()
+      .notNull()
+      .default([]),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.commandId] }),
+    check(
+      "source_lifecycle_commands_action_ck",
+      sql`"action" IN ('tombstone', 'restore', 'purge')`,
+    ),
+    check(
+      "source_lifecycle_commands_state_ck",
+      sql`"state" IN ('tombstoned', 'restored', 'purged')`,
+    ),
+    check(
+      "source_lifecycle_commands_expected_version_ck",
+      sql`"expected_source_version" >= 0`,
+    ),
+    check(
+      "source_lifecycle_commands_storage_cleanup_state_ck",
+      sql`"storage_cleanup_state" IN ('not_required', 'pending', 'completed')`,
+    ),
+  ],
+);
 
 export const sourcesRelations = relations(sources, ({ one }) => ({
   user: one(users, {
@@ -468,11 +717,266 @@ export const nodeRedirects = pgTable(
     toNodeId: typeId("node", { name: "to_node_id" })
       .references(() => nodes.id, { onDelete: "cascade" })
       .notNull(),
+    partitionKey: varchar("partition_key", {
+      length: 200,
+    }).$type<ContextPartitionKey>(),
     createdAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
     primaryKey({ columns: [table.userId, table.fromNodeId] }),
     index("node_redirects_user_to_node_idx").on(table.userId, table.toNodeId),
+  ],
+);
+
+/**
+ * Durable old-to-new identity split ledger. A completed mapping proves the
+ * old node's partition-specific support was rebuilt under `replacementNodeId`;
+ * quarantined mappings are excluded from partition-specific retrieval.
+ */
+export const partitionNodeMappings = pgTable(
+  "partition_node_mappings",
+  {
+    userId: text("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    sourceNodeId: typeIdNoDefault("node", {
+      name: "source_node_id",
+    }).notNull(),
+    partitionKey: varchar("partition_key", { length: 200 })
+      .$type<ContextPartitionKey>()
+      .notNull(),
+    replacementNodeId: typeIdNoDefault("node", {
+      name: "replacement_node_id",
+    }),
+    sourceId: typeIdNoDefault("source", { name: "source_id" }).notNull(),
+    bindingGeneration: varchar("binding_generation", { length: 200 }).notNull(),
+    state: varchar({ length: 20 })
+      .$type<"quarantined" | "completed">()
+      .notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.userId, table.sourceNodeId, table.partitionKey],
+    }),
+    index("partition_node_mappings_replacement_idx").on(
+      table.userId,
+      table.replacementNodeId,
+    ),
+    check(
+      "partition_node_mappings_state_ck",
+      sql`"state" IN ('quarantined', 'completed')`,
+    ),
+    check(
+      "partition_node_mappings_completion_ck",
+      sql`"state" <> 'completed' OR "replacement_node_id" IS NOT NULL`,
+    ),
+  ],
+);
+
+/**
+ * Durable disposition for derivative data encountered while splitting a node.
+ * Stable text identifiers deliberately survive ordinary source or node
+ * deletion; deleting the owning user still removes the recovery history.
+ */
+export const partitionArtifactReceipts = pgTable(
+  "partition_artifact_receipts",
+  {
+    userId: text("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    sourceNodeId: typeIdNoDefault("node", {
+      name: "source_node_id",
+    }).notNull(),
+    partitionKey: varchar("partition_key", { length: 200 })
+      .$type<ContextPartitionKey>()
+      .notNull(),
+    artifactKind: varchar("artifact_kind", { length: 40 })
+      .$type<
+        | "aliases"
+        | "node_embeddings"
+        | "redirects"
+        | "summary"
+        | "user_profile"
+        | "commitment_presentation"
+      >()
+      .notNull(),
+    disposition: varchar({ length: 24 })
+      .$type<"pending" | "rebuilt" | "quarantined" | "not_applicable">()
+      .notNull(),
+    sourceCount: integer("source_count").notNull(),
+    rebuiltCount: integer("rebuilt_count").notNull(),
+    quarantinedCount: integer("quarantined_count").notNull(),
+    details: jsonb(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.userId,
+        table.sourceNodeId,
+        table.partitionKey,
+        table.artifactKind,
+      ],
+    }),
+    check(
+      "partition_artifact_receipts_kind_ck",
+      sql`"artifact_kind" IN ('aliases', 'node_embeddings', 'redirects', 'summary', 'user_profile', 'commitment_presentation')`,
+    ),
+    check(
+      "partition_artifact_receipts_disposition_ck",
+      sql`"disposition" IN ('pending', 'rebuilt', 'quarantined', 'not_applicable')`,
+    ),
+    check(
+      "partition_artifact_receipts_counts_ck",
+      sql`"source_count" >= 0 AND "rebuilt_count" >= 0 AND "quarantined_count" >= 0 AND "rebuilt_count" + "quarantined_count" <= "source_count"`,
+    ),
+    check(
+      "partition_artifact_receipts_terminal_counts_ck",
+      sql`"disposition" = 'pending' OR "rebuilt_count" + "quarantined_count" = "source_count"`,
+    ),
+  ],
+);
+
+/** Idempotency and compare-and-set receipt for cross-repository moves. */
+export const sourcePartitionCommands = pgTable(
+  "source_partition_commands",
+  {
+    userId: text("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    bindingGeneration: varchar("binding_generation", { length: 200 }).notNull(),
+    sourceId: typeIdNoDefault("source", { name: "source_id" }).notNull(),
+    expectedPartitionKey: varchar("expected_partition_key", {
+      length: 200,
+    }).$type<ContextPartitionKey>(),
+    targetPartitionKey: varchar("target_partition_key", { length: 200 })
+      .$type<ContextPartitionKey>()
+      .notNull(),
+    expectedSourceVersion: integer("expected_source_version").notNull(),
+    sourceVersion: integer("source_version").notNull(),
+    movedClaimCount: integer("moved_claim_count").notNull(),
+    /** Every parent/child source moved by this atomic command. */
+    sourceIds: jsonb("source_ids").notNull().default([]),
+    nodeMappings: jsonb("node_mappings").notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.bindingGeneration] }),
+    unique("source_partition_commands_source_version_unique").on(
+      table.userId,
+      table.sourceId,
+      table.sourceVersion,
+    ),
+    check(
+      "source_partition_commands_versions_ck",
+      sql`"expected_source_version" >= 0 AND "source_version" = "expected_source_version" + 1`,
+    ),
+    check(
+      "source_partition_commands_claim_count_ck",
+      sql`"moved_claim_count" >= 0`,
+    ),
+  ],
+);
+
+/**
+ * Per-user/partition append heads for the lossless lifecycle feed. The
+ * nullable partition key deliberately uses a NULLS NOT DISTINCT unique
+ * constraint: unmigrated users have one global feed head, while partitioned
+ * users have one independent sequence per opaque partition.
+ */
+export const memoryChangeFeedHeads = pgTable(
+  "memory_change_feed_heads",
+  {
+    id: text().primaryKey().notNull(),
+    userId: text("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    partitionKey: varchar("partition_key", {
+      length: 200,
+    }).$type<ContextPartitionKey>(),
+    feedEpoch: integer("feed_epoch").notNull().default(1),
+    nextSequence: bigint("next_sequence", { mode: "number" })
+      .notNull()
+      .default(1),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("memory_change_feed_heads_user_partition_unique")
+      .on(table.userId, table.partitionKey)
+      .nullsNotDistinct(),
+    check("memory_change_feed_heads_epoch_ck", sql`${table.feedEpoch} > 0`),
+    check(
+      "memory_change_feed_heads_sequence_ck",
+      sql`${table.nextSequence} > 0`,
+    ),
+  ],
+);
+
+/**
+ * Immutable lifecycle events. Event rows are append-only; the database
+ * trigger allocates `sequence` while holding the matching head row lock, so
+ * a committed transaction can never expose a gap or advance a consumer
+ * checkpoint ahead of its projection.
+ */
+export const memoryChangeFeedEvents = pgTable(
+  "memory_change_feed_events",
+  {
+    eventId: text("event_id").primaryKey().notNull(),
+    userId: text("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    partitionKey: varchar("partition_key", {
+      length: 200,
+    }).$type<ContextPartitionKey>(),
+    feedEpoch: integer("feed_epoch").notNull(),
+    sequence: bigint("sequence", { mode: "number" }).notNull(),
+    kind: varchar("kind", { length: 32 }).notNull(),
+    action: varchar("action", { length: 40 }).notNull(),
+    entityType: varchar("entity_type", { length: 32 }).notNull(),
+    entityId: text("entity_id"),
+    sourceId: typeIdNoDefault("source", { name: "source_id" }),
+    effectiveChangeTime: timestamp("effective_change_time", {
+      withTimezone: true,
+    }).notNull(),
+    provenance: jsonb(),
+    freshness: jsonb(),
+    status: varchar("status", { length: 30 }),
+    payload: jsonb().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("memory_change_feed_events_user_partition_epoch_sequence_unique")
+      .on(table.userId, table.partitionKey, table.feedEpoch, table.sequence)
+      .nullsNotDistinct(),
+    index("memory_change_feed_events_cursor_idx").on(
+      table.userId,
+      table.partitionKey,
+      table.feedEpoch,
+      table.sequence,
+    ),
+    index("memory_change_feed_events_source_idx").on(
+      table.userId,
+      table.sourceId,
+    ),
+    check("memory_change_feed_events_epoch_ck", sql`${table.feedEpoch} > 0`),
+    check("memory_change_feed_events_sequence_ck", sql`${table.sequence} > 0`),
   ],
 );
 
@@ -504,6 +1008,7 @@ export const scratchpads = pgTable(
     userId: text()
       .references(() => users.id)
       .notNull(),
+    /** User-global assistant workspace; never evidence or room memory. */
     content: text().notNull().default(""),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .defaultNow()
@@ -535,15 +1040,25 @@ export const scratchpadsRelations = relations(scratchpads, ({ one }) => ({
  * `pendingPeriods`: period keys (day/week/month/year) awaiting
  * summarization — incomplete periods, over-budget leftovers, failures.
  */
-export const rollupState = pgTable("rollup_state", {
-  userId: text()
-    .primaryKey()
-    .notNull()
-    .references(() => users.id),
-  watermark: timestamp({ withTimezone: true }),
-  pendingPeriods: jsonb().$type<string[]>().notNull().default([]),
-  updatedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
-});
+export const rollupState = pgTable(
+  "rollup_state",
+  {
+    userId: text()
+      .notNull()
+      .references(() => users.id),
+    partitionKey: varchar("partition_key", {
+      length: 200,
+    }).$type<ContextPartitionKey>(),
+    watermark: timestamp({ withTimezone: true }),
+    pendingPeriods: jsonb().$type<string[]>().notNull().default([]),
+    updatedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    unique("rollup_state_user_partition_unique")
+      .on(table.userId, table.partitionKey)
+      .nullsNotDistinct(),
+  ],
+);
 
 export const rollupStateRelations = relations(rollupState, ({ one }) => ({
   user: one(users, {

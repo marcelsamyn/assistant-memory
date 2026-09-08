@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { newTypeId } from "~/types/typeid";
 
+vi.mock("~/lib/metrics/partition", () => ({
+  assertMetricPartitionRead: async () => undefined,
+  metricObservationPartitionCondition: () => undefined,
+}));
+
 type QueryResult = ReadonlyArray<unknown>;
 
 class FakeQuery {

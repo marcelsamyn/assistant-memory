@@ -10,9 +10,10 @@
  * forceRefreshOnSupersede dispatch.
  */
 import { PREDICATE_POLICIES } from "../claims/predicate-policies";
-import { and, eq, gte, inArray } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { claims } from "~/db/schema";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import type { Predicate } from "~/types/graph";
 
 /**
@@ -39,6 +40,7 @@ export async function hasAtlasInvalidatingSupersession(
   db: DrizzleDB,
   userId: string,
   since: Date,
+  partitionKey?: ContextPartitionKey,
 ): Promise<boolean> {
   if (FORCE_REFRESH_PREDICATES.length === 0) return false;
   const [row] = await db
@@ -47,6 +49,9 @@ export async function hasAtlasInvalidatingSupersession(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         inArray(claims.predicate, [...FORCE_REFRESH_PREDICATES]),
         inArray(claims.status, ["superseded", "contradicted", "retracted"]),
         gte(claims.updatedAt, since),
@@ -70,13 +75,21 @@ const ATLAS_SUPERSEDE_DEBOUNCE_MS = 5 * 60_000;
  */
 export async function enqueueAtlasUserRefreshOnSupersede(
   userId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<void> {
   const { batchQueue } = await import("../queues");
   await batchQueue.add(
     "atlas-user",
-    { userId, trigger: "supersede" },
     {
-      jobId: `atlas-user:${userId}:supersede`,
+      userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
+      trigger: "supersede",
+    },
+    {
+      jobId:
+        partitionKey === undefined
+          ? `atlas-user:${userId}:supersede`
+          : `atlas-user:${userId}:${partitionKey}:supersede`,
       delay: ATLAS_SUPERSEDE_DEBOUNCE_MS,
       removeOnComplete: true,
       removeOnFail: 50,
@@ -100,11 +113,17 @@ export async function maybeEnqueueAtlasInvalidation(
   db: DrizzleDB,
   userId: string,
   since: Date,
+  partitionKey?: ContextPartitionKey,
 ): Promise<boolean> {
-  const triggered = await hasAtlasInvalidatingSupersession(db, userId, since);
+  const triggered = await hasAtlasInvalidatingSupersession(
+    db,
+    userId,
+    since,
+    partitionKey,
+  );
   if (!triggered) return false;
-  await enqueueAtlasUserRefreshOnSupersede(userId);
+  await enqueueAtlasUserRefreshOnSupersede(userId, partitionKey);
   const { invalidateCachedBundle } = await import("../context/cache");
-  await invalidateCachedBundle(userId);
+  await invalidateCachedBundle(userId, partitionKey);
   return true;
 }

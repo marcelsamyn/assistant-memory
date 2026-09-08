@@ -1,3 +1,4 @@
+import { defineEventHandler } from "h3";
 import { saveMemory } from "~/lib/ingestion/save-document";
 import {
   ingestDocumentRequestSchema,
@@ -5,9 +6,9 @@ import {
 } from "~/lib/schemas/ingest-document-request";
 
 export default defineEventHandler(async (event) => {
-  const { userId, document, updateExisting } =
+  const { userId, partitionKey, document, updateExisting } =
     ingestDocumentRequestSchema.parse(await readBody(event));
   return ingestDocumentResponseSchema.parse(
-    await saveMemory({ userId, document, updateExisting }),
+    await saveMemory({ userId, partitionKey, document, updateExisting }),
   );
 });

@@ -16,12 +16,14 @@ export {
   type ProposedMetricDefinition,
 } from "../lib/schemas/metric-definition.js";
 export * from "../lib/schemas/query-search.js";
+export * from "../lib/schemas/partition.js";
 export * from "../lib/schemas/search.js";
 export * from "../lib/schemas/resolve-citations.js";
 export * from "../lib/schemas/query-atlas.js";
 export * from "../lib/schemas/query-day.js";
 export * from "../lib/schemas/query-node-type.js";
 export * from "../lib/schemas/query-recent-changes.js";
+export * from "../lib/schemas/query-change-feed.js";
 export * from "../lib/schemas/query-graph.js";
 export * from "../lib/schemas/sample-nodes.js";
 export * from "../lib/schemas/query-timeline.js";
@@ -50,6 +52,7 @@ export * from "../lib/schemas/set-commitment-due.js";
 export * from "../lib/schemas/create-commitment.js";
 export * from "../lib/schemas/commitment-action.js";
 export * from "../lib/schemas/sources.js";
+export * from "../lib/schemas/source-lifecycle.js";
 export * from "../lib/schemas/nodes-by-source.js";
 export * from "../lib/schemas/ingest-file.js";
 export * from "../lib/schemas/set-commitment-status.js";

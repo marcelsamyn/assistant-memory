@@ -3,11 +3,13 @@
  * surfacing-only by default; pass `triggerCleanup: true` to also enqueue an
  * iterative cleanup job seeded with the surfaced placeholder ids.
  */
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 import { typeIdSchema } from "~/types/typeid.js";
 
 export const cleanupPlaceholdersRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   olderThanDays: z.number().int().positive().default(7),
   limit: z.number().int().positive().max(500).default(50),
   /**

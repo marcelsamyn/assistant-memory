@@ -14,6 +14,7 @@ import { rollupRequestSchema } from "./schemas/rollup";
 import { FlowProducer, Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
 import { z } from "zod";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 import { env } from "~/utils/env";
@@ -79,16 +80,19 @@ export const flowProducer = new FlowProducer({ connection: redisConnection });
 // Define Job Data Schemas (using Zod could be an option here too)
 interface SummarizeJobData {
   userId: string;
+  partitionKey?: import("~/lib/schemas/partition").ContextPartitionKey;
 }
 
 export const AtlasUserJobInputSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   // Trigger tag is informational only — used for log/metrics correlation.
   trigger: z.enum(["scheduled", "supersede"]).default("scheduled"),
 });
 
 export interface DreamJobData {
   userId: string;
+  partitionKey?: import("~/lib/schemas/partition").ContextPartitionKey;
   assistantId: string;
   assistantDescription: string;
 }
@@ -103,7 +107,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
 
     try {
       if (job.name === "summarize") {
-        const { userId } = job.data as SummarizeJobData;
+        const { userId, partitionKey } = job.data as SummarizeJobData;
         console.log(`Starting summarize job for user ${userId}`);
 
         // 1. Summarize conversations. On the final BullMQ retry give up
@@ -113,19 +117,20 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
           onMalformedUpstream: isFinalBullMQAttempt(job)
             ? "mark-failed"
             : "retry-job",
+          ...(partitionKey !== undefined ? { partitionKey } : {}),
         });
         console.log(
           `Summarized ${summaryResult.summarizedCount} conversations for user ${userId}.`,
         );
       } else if (job.name === "rollup") {
-        const { userId, maxLlmCalls, startDate } = rollupRequestSchema.parse(
-          job.data,
-        );
+        const { userId, partitionKey, maxLlmCalls, startDate } =
+          rollupRequestSchema.parse(job.data);
         console.log(`Starting rollup job for user ${userId}`);
         const { runRollup } = await import("./jobs/rollup");
         const result = await runRollup({
           db,
           userId,
+          ...(partitionKey !== undefined ? { partitionKey } : {}),
           maxLlmCalls,
           ...(startDate !== undefined ? { startDate } : {}),
         });
@@ -133,7 +138,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
           `Rollup for user ${userId}: ${result.summarized} summarized, ${result.skippedUnchanged} unchanged, ${result.skippedEmpty} empty, ${result.failed} failed, ${result.deferred} deferred.`,
         );
       } else if (job.name === "dream") {
-        const { userId, assistantId, assistantDescription } =
+        const { userId, partitionKey, assistantId, assistantDescription } =
           job.data as DreamJobData;
         console.log(
           `Starting dream job for user ${userId}, assistant ${assistantId}`,
@@ -143,18 +148,26 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         // the next standalone summarize batch retries them.
         const summaryResult = await summarizeUserConversations(db, userId, {
           onMalformedUpstream: "skip",
+          ...(partitionKey !== undefined ? { partitionKey } : {}),
         });
         console.log(
           `Summarized ${summaryResult.summarizedCount} conversations for user ${userId} in dream job.`,
         );
         // 2. Run both Atlas updates in parallel
         await Promise.all([
-          processAtlasJob(db, userId),
-          assistantDreamJob(db, userId, assistantId, assistantDescription),
+          processAtlasJob(db, userId, partitionKey),
+          assistantDreamJob(
+            db,
+            userId,
+            assistantId,
+            assistantDescription,
+            partitionKey,
+          ),
         ]);
 
         await dream({
           userId,
+          ...(partitionKey !== undefined ? { partitionKey } : {}),
           assistantDescription,
         });
 
@@ -166,11 +179,13 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         // hook (Phase 3.4) and any caller that wants to schedule a refresh
         // outside the dream cadence. The full dream job runs the atlas
         // synchronously already.
-        const { userId } = AtlasUserJobInputSchema.parse(job.data);
-        const result = await processAtlasJob(db, userId);
+        const { userId, partitionKey } = AtlasUserJobInputSchema.parse(
+          job.data,
+        );
+        const result = await processAtlasJob(db, userId, partitionKey);
         console.log(`Atlas user job for ${userId}: ${result.status}`);
       } else if (job.name === "ingest-conversation") {
-        const { userId, conversationId, messages } =
+        const { userId, partitionKey, conversationId, messages } =
           IngestConversationJobInputSchema.parse(job.data);
         console.log(
           `Starting ingest-conversation job for user ${userId}, conversation ${conversationId}`,
@@ -182,6 +197,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         await ingestConversation({
           db,
           userId,
+          ...(partitionKey !== undefined ? { partitionKey } : {}),
           conversationId,
           messages,
         });
@@ -191,7 +207,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
 
         // Run dedup sweep after ingestion to clean up any duplicates
         const { runDedupSweep } = await import("./jobs/dedup-sweep");
-        await runDedupSweep(userId);
+        await runDedupSweep(userId, undefined, partitionKey);
 
         // Queue deep research job if there are messages
         if (messages.length > 0) {
@@ -208,6 +224,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
                 "deep-research",
                 {
                   userId,
+                  ...(partitionKey !== undefined ? { partitionKey } : {}),
                   conversationId,
                   messages,
                   lastNMessages: 3,
@@ -229,8 +246,13 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
           }
         }
       } else if (job.name === "deep-research") {
-        const { userId, conversationId, messages, lastNMessages } =
-          DeepResearchJobInputSchema.parse(job.data);
+        const {
+          userId,
+          partitionKey,
+          conversationId,
+          messages,
+          lastNMessages,
+        } = DeepResearchJobInputSchema.parse(job.data);
         console.log(
           `Starting deep-research job for user ${userId}, conversation ${conversationId}`,
         );
@@ -238,6 +260,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         const { performDeepResearch } = await import("./jobs/deep-research");
         await performDeepResearch({
           userId,
+          ...(partitionKey !== undefined ? { partitionKey } : {}),
           conversationId,
           messages,
           lastNMessages,
@@ -294,24 +317,26 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         );
         await runTranscriptDedupSweep(data.userId);
       } else if (job.name === "profile-synthesis") {
-        const { userId, nodeId } = ProfileSynthesisJobInputSchema.parse(
-          job.data,
-        );
+        const { userId, partitionKey, nodeId } =
+          ProfileSynthesisJobInputSchema.parse(job.data);
         const { runProfileSynthesis } = await import(
           "./jobs/profile-synthesis"
         );
         const result = await runProfileSynthesis({
           userId,
+          ...(partitionKey !== undefined ? { partitionKey } : {}),
           nodeId: nodeId as TypeId<"node">,
         });
         console.log(
           `Profile synthesis for user ${userId} node ${nodeId}: ${result.status}`,
         );
       } else if (job.name === "identity-reeval") {
-        const { userId, nodeId } = IdentityReevalJobInputSchema.parse(job.data);
+        const { userId, partitionKey, nodeId } =
+          IdentityReevalJobInputSchema.parse(job.data);
         const { runIdentityReeval } = await import("./jobs/identity-reeval");
         const result = await runIdentityReeval({
           userId,
+          ...(partitionKey !== undefined ? { partitionKey } : {}),
           nodeId: nodeId as TypeId<"node">,
         });
         console.log(
@@ -333,6 +358,12 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
           ...job.data,
           llmModelId: modelForTask("graph_cleanup"),
         });
+        if (data.partitionKey !== undefined) {
+          const { PartitionedCleanupGraphUnsupportedError } = await import(
+            "./jobs/cleanup-graph"
+          );
+          throw new PartitionedCleanupGraphUnsupportedError();
+        }
         console.log(
           `Starting cleanup-graph job for user ${data.userId}, since ${data.since.toISOString()}`,
         );

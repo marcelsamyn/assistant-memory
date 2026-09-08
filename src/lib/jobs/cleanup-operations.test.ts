@@ -22,6 +22,7 @@ import {
 } from "vitest";
 import * as schema from "~/db/schema";
 import type { GraphNode } from "~/lib/jobs/cleanup-graph";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId, type TypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -144,6 +145,7 @@ async function createTables(client: Client): Promise<void> {
         PRIMARY KEY ("user_id","from_node_id")
     );
   `);
+  await installPartitionCompatibilityFixture(client);
 }
 
 async function seedUserAndNodes(

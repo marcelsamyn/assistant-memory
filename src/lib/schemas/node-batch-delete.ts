@@ -1,8 +1,10 @@
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 export const batchDeleteNodesRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   nodeIds: z.array(typeIdSchema("node")).min(1),
 });
 

@@ -7,11 +7,11 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const { userId, aliasId } = deleteAliasRequestSchema.parse(
+  const { userId, partitionKey, aliasId } = deleteAliasRequestSchema.parse(
     await readBody(event),
   );
   const db = await useDatabase();
-  const deleted = await deleteAlias(db, userId, aliasId);
+  const deleted = await deleteAlias(db, userId, aliasId, partitionKey);
   if (!deleted) {
     throw createError({ statusCode: 404, statusMessage: "Alias not found" });
   }

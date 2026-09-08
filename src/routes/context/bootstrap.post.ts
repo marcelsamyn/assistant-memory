@@ -12,12 +12,12 @@ import { contextBundleSchema } from "~/lib/context/types";
 import { bootstrapMemoryRequestSchema } from "~/lib/schemas/context";
 
 export default defineEventHandler(async (event) => {
-  const { userId, forceRefresh } = bootstrapMemoryRequestSchema.parse(
-    await readBody(event),
-  );
+  const { userId, partitionKey, forceRefresh } =
+    bootstrapMemoryRequestSchema.parse(await readBody(event));
 
   const bundle = await getConversationBootstrapContext({
     userId,
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
     ...(forceRefresh !== undefined && { options: { forceRefresh } }),
   });
 

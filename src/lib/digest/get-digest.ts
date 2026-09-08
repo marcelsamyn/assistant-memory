@@ -88,6 +88,7 @@ export async function getDigest(
 ): Promise<GetDigestResponse> {
   const {
     userId,
+    partitionKey,
     date,
     timeZone,
     upcomingWithinDays = DEFAULT_UPCOMING_WITHIN_DAYS,
@@ -101,18 +102,26 @@ export async function getDigest(
   const now = new Date();
 
   const [commitments, metricMovers, whatsNew, bundle] = await Promise.all([
-    getOpenCommitments({ userId }),
+    getOpenCommitments({
+      userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
+    }),
     getMetricMovers({
       userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
       ...(metricMoverLimit !== undefined && { limit: metricMoverLimit }),
     }),
     queryRecentChanges({
       userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
       since: since.toISOString(),
       limit: whatsNewLimit ?? DEFAULT_WHATS_NEW_LIMIT,
     }),
     includePinned
-      ? getConversationBootstrapContext({ userId })
+      ? getConversationBootstrapContext({
+          userId,
+          ...(partitionKey !== undefined ? { partitionKey } : {}),
+        })
       : Promise.resolve(null),
   ]);
 

@@ -12,6 +12,7 @@
  */
 import { ScopeEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 /**
@@ -37,6 +38,7 @@ export type SupportedFileMimeType = (typeof supportedFileMimeTypes)[number];
  */
 export const ingestFileFieldsSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   filename: z.string().min(1),
   mimeType: z.string().min(1),
   title: z.string().min(1).optional(),
@@ -73,6 +75,7 @@ export type IngestFileResponse = z.infer<typeof ingestFileResponseSchema>;
  */
 export interface IngestFileRequest {
   userId: string;
+  partitionKey?: import("./partition.js").ContextPartitionKey;
   file: Buffer | Blob | Uint8Array;
   filename: string;
   mimeType: string;

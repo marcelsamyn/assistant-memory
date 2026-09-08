@@ -1,11 +1,13 @@
 import { NodeTypeEnum, PredicateEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
 export const queryTimelineRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   since: z
     .string()
     .regex(dateRegex, "since must be in YYYY-MM-DD format")

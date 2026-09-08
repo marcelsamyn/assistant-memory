@@ -1,4 +1,4 @@
-import { eq, and, ne } from "drizzle-orm";
+import { eq, and, isNull, ne } from "drizzle-orm";
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
 import { z } from "zod";
 import { DrizzleDB } from "~/db";
@@ -9,11 +9,19 @@ import {
 } from "~/lib/conversation-store";
 import { debug } from "~/lib/debug-utils";
 import { formatConversationAsXml } from "~/lib/formatting";
+import {
+  assertSourcePartition,
+  preparePartitionWrite,
+  withSourceWriteFence,
+} from "~/lib/partition-access";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { MODEL_MAX_OUTPUT_TOKENS, modelForTask } from "~/utils/models";
 
 // Job input schema
 export const SummarizeConversationJobInputSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
 });
 export type SummarizeConversationJobInput = z.infer<
   typeof SummarizeConversationJobInputSchema
@@ -46,6 +54,7 @@ export type MalformedUpstreamStrategy = "retry-job" | "mark-failed" | "skip";
 export interface SummarizeUserConversationsOptions {
   /** See {@link MalformedUpstreamStrategy}. Defaults to `"retry-job"`. */
   onMalformedUpstream?: MalformedUpstreamStrategy;
+  partitionKey?: ContextPartitionKey;
 }
 
 /**
@@ -57,15 +66,30 @@ export async function summarizeUserConversations(
   userId: string,
   opts: SummarizeUserConversationsOptions = {},
 ): Promise<SummarizeConversationJobResult> {
+  const { partitionKey } = opts;
+  await preparePartitionWrite(db, userId, partitionKey);
+  const partitionFilter =
+    partitionKey === undefined
+      ? isNull(sources.partitionKey)
+      : eq(sources.partitionKey, partitionKey);
   const convsToSummarize = await db
-    .select({ sourceId: sources.id, conversationNodeId: sourceLinks.nodeId })
+    .select({
+      sourceId: sources.id,
+      sourceVersion: sources.version,
+      conversationNodeId: sourceLinks.nodeId,
+    })
     .from(sources)
     .innerJoin(sourceLinks, eq(sourceLinks.sourceId, sources.id))
     .innerJoin(nodes, eq(nodes.id, sourceLinks.nodeId))
     .where(
       and(
         eq(sources.userId, userId),
+        partitionFilter,
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         eq(sources.type, "conversation"),
+        isNull(sources.deletedAt),
         ne(sources.status, "summarized"),
       ),
     );
@@ -87,7 +111,18 @@ export async function summarizeUserConversations(
     task: "conversation_summary",
   });
 
-  for (const { sourceId, conversationNodeId } of convsToSummarize) {
+  for (const {
+    sourceId,
+    sourceVersion,
+    conversationNodeId,
+  } of convsToSummarize) {
+    await assertSourcePartition({
+      db,
+      userId,
+      sourceId,
+      partitionKey,
+      expectedSourceVersion: sourceVersion,
+    });
     // load conversation turns
     let turns: ConversationTurn[];
     try {
@@ -97,14 +132,28 @@ export async function summarizeUserConversations(
       await db
         .update(sources)
         .set({ status: "failed" })
-        .where(eq(sources.id, sourceId));
+        .where(
+          and(
+            eq(sources.id, sourceId),
+            eq(sources.version, sourceVersion),
+            isNull(sources.deletedAt),
+            partitionFilter,
+          ),
+        );
       continue;
     }
     if (turns.length === 0) {
       await db
         .update(sources)
         .set({ status: "summarized" })
-        .where(eq(sources.id, sourceId));
+        .where(
+          and(
+            eq(sources.id, sourceId),
+            eq(sources.version, sourceVersion),
+            isNull(sources.deletedAt),
+            partitionFilter,
+          ),
+        );
       continue;
     }
 
@@ -166,6 +215,13 @@ ${formatConversationAsXml(turns)}
       );
 
       const parsed = completion.choices[0]?.message.parsed;
+      await assertSourcePartition({
+        db,
+        userId,
+        sourceId,
+        partitionKey,
+        expectedSourceVersion: sourceVersion,
+      });
       debug(`Summarize - parsed result for source ${sourceId}:`, parsed);
 
       if (!parsed) {
@@ -173,7 +229,7 @@ ${formatConversationAsXml(turns)}
         await db
           .update(sources)
           .set({ status: "failed" })
-          .where(eq(sources.id, sourceId));
+          .where(and(eq(sources.id, sourceId), partitionFilter));
         continue;
       }
 
@@ -182,23 +238,36 @@ ${formatConversationAsXml(turns)}
         label: parsed.title,
         description: parsed.summary,
       };
-      await db
-        .insert(nodeMetadata)
-        .values(metadataInsert)
-        .onConflictDoUpdate({
-          target: nodeMetadata.nodeId,
-          set: {
-            label: parsed.title,
-            description: parsed.summary,
-          },
-        });
-
-      await db
-        .update(sources)
-        .set({
-          status: "summarized",
-        })
-        .where(eq(sources.id, sourceId));
+      await withSourceWriteFence(
+        db,
+        {
+          userId,
+          sources: [{ sourceId, expectedSourceVersion: sourceVersion }],
+        },
+        async (tx) => {
+          await tx
+            .insert(nodeMetadata)
+            .values(metadataInsert)
+            .onConflictDoUpdate({
+              target: nodeMetadata.nodeId,
+              set: {
+                label: parsed.title,
+                description: parsed.summary,
+              },
+            });
+          await tx
+            .update(sources)
+            .set({ status: "summarized" })
+            .where(
+              and(
+                eq(sources.id, sourceId),
+                eq(sources.version, sourceVersion),
+                isNull(sources.deletedAt),
+                partitionFilter,
+              ),
+            );
+        },
+      );
 
       summarizedCount++;
     } catch (error) {
@@ -217,7 +286,14 @@ ${formatConversationAsXml(turns)}
           await db
             .update(sources)
             .set({ status: "failed" })
-            .where(eq(sources.id, sourceId));
+            .where(
+              and(
+                eq(sources.id, sourceId),
+                eq(sources.version, sourceVersion),
+                isNull(sources.deletedAt),
+                partitionFilter,
+              ),
+            );
           continue;
         }
         // "skip": leave the source untouched for the next batch.
@@ -230,7 +306,14 @@ ${formatConversationAsXml(turns)}
       await db
         .update(sources)
         .set({ status: "failed" })
-        .where(eq(sources.id, sourceId));
+        .where(
+          and(
+            eq(sources.id, sourceId),
+            eq(sources.version, sourceVersion),
+            isNull(sources.deletedAt),
+            partitionFilter,
+          ),
+        );
       // Do not re-throw here, allow the loop to continue with other sources
     }
   }
@@ -240,3 +323,15 @@ ${formatConversationAsXml(turns)}
     summarizedCount,
   };
 }
+/**
+ * Worker for `POST /ingest/document`. The route already created the source
+ * row (status `completed`, content stored inline) and queued this job with
+ * the resulting `sourceId`. The worker:
+ *
+ *   1. Loads the inline content back from the source row.
+ *   2. Converts HTML → markdown via the markitdown sidecar when the caller
+ *      flagged `contentType: "html"`, persisting the converted text back
+ *      onto `sources.metadata.rawContent` so later reads/re-extractions
+ *      see clean markdown.
+ *   3. Runs the shared `extractDocumentGraph` pipeline.
+ */

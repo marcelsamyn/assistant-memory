@@ -1,11 +1,14 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { nodes, nodeMetadata, sourceLinks } from "~/db/schema";
 import { normalizeLabel } from "~/lib/label";
+import { preparePartitionWrite } from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import type { TypeId } from "~/types/typeid";
 
 export interface MetricEventNodeInput {
   userId: string;
+  partitionKey?: ContextPartitionKey | undefined;
   metricEventKey: string;
   label: string;
   occurredAt: Date;
@@ -28,6 +31,7 @@ export async function ensureMetricEventNode(
   db: DrizzleDB,
   input: MetricEventNodeInput,
 ): Promise<TypeId<"node">> {
+  await preparePartitionWrite(db, input.userId, input.partitionKey);
   const [existing] = await db
     .select({ id: nodes.id })
     .from(nodes)
@@ -35,6 +39,9 @@ export async function ensureMetricEventNode(
     .where(
       and(
         eq(nodes.userId, input.userId),
+        input.partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, input.partitionKey),
         eq(nodes.nodeType, "Event"),
         sql`${nodeMetadata.additionalData} ->> 'metricEventKey' = ${input.metricEventKey}`,
       ),
@@ -53,7 +60,11 @@ export async function ensureMetricEventNode(
 
   const [inserted] = await db
     .insert(nodes)
-    .values({ userId: input.userId, nodeType: "Event" })
+    .values({
+      userId: input.userId,
+      partitionKey: input.partitionKey,
+      nodeType: "Event",
+    })
     .returning({ id: nodes.id });
   if (!inserted) throw new Error("Failed to create metric event node");
 

@@ -1,8 +1,10 @@
 import { ensureUser } from "./ingestion/ensure-user";
 import { ensureSystemSource } from "./sources";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { DrizzleDB } from "~/db";
 import { nodes, nodeMetadata, claims, sourceLinks } from "~/db/schema";
+import { preparePartitionWrite } from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { NodeTypeEnum } from "~/types/graph";
 import { type TypeId } from "~/types/typeid";
 
@@ -13,8 +15,10 @@ import { type TypeId } from "~/types/typeid";
 export async function ensureAtlasNode(
   db: DrizzleDB,
   userId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<TypeId<"node">> {
   await ensureUser(db, userId);
+  await preparePartitionWrite(db, userId, partitionKey);
 
   // Check for existing atlas node
   const [existing] = await db
@@ -24,6 +28,9 @@ export async function ensureAtlasNode(
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         eq(nodes.nodeType, NodeTypeEnum.enum.Atlas),
         eq(nodeMetadata.label, "Atlas"),
       ),
@@ -37,7 +44,7 @@ export async function ensureAtlasNode(
   // Create new atlas node
   const [inserted] = await db
     .insert(nodes)
-    .values({ userId, nodeType: NodeTypeEnum.enum.Atlas })
+    .values({ userId, partitionKey, nodeType: NodeTypeEnum.enum.Atlas })
     .returning({ id: nodes.id });
 
   if (!inserted) {
@@ -51,7 +58,7 @@ export async function ensureAtlasNode(
     label: "Atlas",
     description: "",
   });
-  const sourceId = await ensureSystemSource(db, userId, "manual");
+  const sourceId = await ensureSystemSource(db, userId, "manual", partitionKey);
   await db
     .insert(sourceLinks)
     .values({ sourceId, nodeId: atlasNodeId })
@@ -67,12 +74,13 @@ export async function ensureAtlasNode(
 export async function getAtlas(
   db: DrizzleDB,
   userId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<{
   nodeId: TypeId<"node">;
   label: string | null;
   description: string | null;
 }> {
-  const atlasNodeId = await ensureAtlasNode(db, userId);
+  const atlasNodeId = await ensureAtlasNode(db, userId, partitionKey);
   const [meta] = await db
     .select({
       label: nodeMetadata.label,
@@ -96,8 +104,9 @@ export async function updateAtlas(
   db: DrizzleDB,
   userId: string,
   newDescription: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<void> {
-  const atlasNodeId = await ensureAtlasNode(db, userId);
+  const atlasNodeId = await ensureAtlasNode(db, userId, partitionKey);
   await db
     .update(nodeMetadata)
     .set({ description: newDescription })
@@ -110,8 +119,10 @@ export async function ensureAssistantEntity(
   db: DrizzleDB,
   userId: string,
   assistantId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<TypeId<"node">> {
   await ensureUser(db, userId);
+  await preparePartitionWrite(db, userId, partitionKey);
 
   const [existing] = await db
     .select({ id: nodes.id })
@@ -120,6 +131,9 @@ export async function ensureAssistantEntity(
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         eq(nodes.nodeType, NodeTypeEnum.enum.Person),
         eq(nodeMetadata.label, assistantId),
       ),
@@ -128,14 +142,14 @@ export async function ensureAssistantEntity(
   if (existing) return existing.id;
   const [inserted] = await db
     .insert(nodes)
-    .values({ userId, nodeType: NodeTypeEnum.enum.Person })
+    .values({ userId, partitionKey, nodeType: NodeTypeEnum.enum.Person })
     .returning({ id: nodes.id });
   if (!inserted) throw new Error("Failed to create assistant entity");
   const assistantNodeId = inserted.id;
   await db
     .insert(nodeMetadata)
     .values({ nodeId: assistantNodeId, label: assistantId, description: "" });
-  const sourceId = await ensureSystemSource(db, userId, "manual");
+  const sourceId = await ensureSystemSource(db, userId, "manual", partitionKey);
   await db
     .insert(sourceLinks)
     .values({ sourceId, nodeId: assistantNodeId })
@@ -148,8 +162,14 @@ export async function ensureAssistantAtlasNode(
   db: DrizzleDB,
   userId: string,
   assistantId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<TypeId<"node">> {
-  const assistantNodeId = await ensureAssistantEntity(db, userId, assistantId);
+  const assistantNodeId = await ensureAssistantEntity(
+    db,
+    userId,
+    assistantId,
+    partitionKey,
+  );
   const [existing] = await db
     .select({ id: nodes.id })
     .from(nodes)
@@ -157,6 +177,9 @@ export async function ensureAssistantAtlasNode(
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         eq(nodes.nodeType, NodeTypeEnum.enum.Atlas),
         eq(nodeMetadata.label, assistantId),
       ),
@@ -165,20 +188,21 @@ export async function ensureAssistantAtlasNode(
   if (existing) return existing.id;
   const [inserted] = await db
     .insert(nodes)
-    .values({ userId, nodeType: NodeTypeEnum.enum.Atlas })
+    .values({ userId, partitionKey, nodeType: NodeTypeEnum.enum.Atlas })
     .returning({ id: nodes.id });
   if (!inserted) throw new Error("Failed to create assistant atlas");
   const atlasNodeId = inserted.id;
   await db
     .insert(nodeMetadata)
     .values({ nodeId: atlasNodeId, label: assistantId, description: "" });
-  const sourceId = await ensureSystemSource(db, userId, "manual");
+  const sourceId = await ensureSystemSource(db, userId, "manual", partitionKey);
   await db
     .insert(sourceLinks)
     .values({ sourceId, nodeId: atlasNodeId })
     .onConflictDoNothing();
   await db.insert(claims).values({
     userId,
+    partitionKey,
     subjectNodeId: assistantNodeId,
     objectNodeId: atlasNodeId,
     predicate: "OWNS",
@@ -197,12 +221,18 @@ export async function getAssistantAtlas(
   db: DrizzleDB,
   userId: string,
   assistantId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<{
   nodeId: TypeId<"node">;
   label: string | null;
   description: string | null;
 }> {
-  const atlasNodeId = await ensureAssistantAtlasNode(db, userId, assistantId);
+  const atlasNodeId = await ensureAssistantAtlasNode(
+    db,
+    userId,
+    assistantId,
+    partitionKey,
+  );
   const [meta] = await db
     .select({
       label: nodeMetadata.label,
@@ -224,8 +254,14 @@ export async function updateAssistantAtlas(
   userId: string,
   assistantId: string,
   newDescription: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<void> {
-  const atlasNodeId = await ensureAssistantAtlasNode(db, userId, assistantId);
+  const atlasNodeId = await ensureAssistantAtlasNode(
+    db,
+    userId,
+    assistantId,
+    partitionKey,
+  );
   await db
     .update(nodeMetadata)
     .set({ description: newDescription })

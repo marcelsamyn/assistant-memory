@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId, type TypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -117,6 +118,7 @@ describeIfServer("claim operations", () => {
             CHECK (num_nonnulls("object_node_id", "object_value") = 1)
         );
       `);
+      await installPartitionCompatibilityFixture(client);
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
       await client.query(
         `INSERT INTO "nodes" ("id", "user_id", "node_type")
@@ -248,6 +250,7 @@ describeIfServer("claim operations", () => {
           "canonical_label" text NOT NULL
         );
       `);
+      await installPartitionCompatibilityFixture(client);
 
       await client.query(
         `INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`,
@@ -394,6 +397,7 @@ describeIfServer("reattributeClaim", () => {
           CHECK (num_nonnulls("object_node_id", "object_value") = 1)
       );
     `);
+    await installPartitionCompatibilityFixture(client);
   }
 
   async function seedNode(

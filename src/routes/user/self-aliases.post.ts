@@ -7,10 +7,9 @@ import { setUserSelfAliases } from "~/lib/user-profile";
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const { userId, aliases } = setUserSelfAliasesRequestSchema.parse(
-    await readBody(event),
-  );
+  const { userId, partitionKey, aliases } =
+    setUserSelfAliasesRequestSchema.parse(await readBody(event));
   const db = await useDatabase();
-  const result = await setUserSelfAliases(db, userId, aliases);
+  const result = await setUserSelfAliases(db, userId, aliases, partitionKey);
   return setUserSelfAliasesResponseSchema.parse(result);
 });

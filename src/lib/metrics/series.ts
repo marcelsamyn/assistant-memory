@@ -2,6 +2,10 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { metricDefinitions, metricObservations } from "~/db/schema";
 import {
+  assertMetricPartitionRead,
+  metricObservationPartitionCondition,
+} from "~/lib/metrics/partition";
+import {
   type GetMetricSeriesRequest,
   type GetMetricSeriesResponse,
   type MetricSeriesAggregation,
@@ -74,6 +78,7 @@ async function fetchMetricAggregationHints(
 /** Return raw or bucketed points for the requested metrics over a UTC range. */
 export async function getMetricSeries({
   userId,
+  partitionKey,
   metricIds,
   from,
   to,
@@ -81,6 +86,7 @@ export async function getMetricSeries({
   agg,
 }: GetMetricSeriesRequest): Promise<GetMetricSeriesResponse> {
   const db = await useDatabase();
+  await assertMetricPartitionRead(db, userId, partitionKey);
   const aggregationHints = await fetchMetricAggregationHints(userId, metricIds);
   const requestedSeries = metricIds.map((metricId) => ({
     metricId,
@@ -103,6 +109,7 @@ export async function getMetricSeries({
           .where(
             and(
               eq(metricObservations.userId, userId),
+              metricObservationPartitionCondition(userId, partitionKey),
               eq(metricObservations.metricDefinitionId, metricId),
               sql`${metricObservations.occurredAt} >= ${from}`,
               sql`${metricObservations.occurredAt} <= ${to}`,
@@ -140,6 +147,7 @@ export async function getMetricSeries({
         .where(
           and(
             eq(metricObservations.userId, userId),
+            metricObservationPartitionCondition(userId, partitionKey),
             eq(metricObservations.metricDefinitionId, metricId),
             sql`${metricObservations.occurredAt} >= ${from}`,
             sql`${metricObservations.occurredAt} <= ${to}`,

@@ -13,16 +13,19 @@ import {
   lt,
   notInArray,
   or,
+  isNull,
   sql,
 } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
-import { claims, nodeMetadata, nodes, sourceLinks } from "~/db/schema";
+import { claims, nodeMetadata, nodes, sourceLinks, sources } from "~/db/schema";
+import { assertPartitionReadAllowed } from "~/lib/partition-access";
 import type { GetNodeResponse } from "~/lib/schemas/node";
 import {
   DEFAULT_EXCLUDED_NODE_TYPES,
   type NodesBySourceResponse,
   type SourceNode,
 } from "~/lib/schemas/nodes-by-source";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import type { NodeType } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 
@@ -54,6 +57,7 @@ function decodeCursor(raw: string): NodesCursor | null {
 interface FetchParams {
   db: DrizzleDB;
   userId: string;
+  partitionKey?: ContextPartitionKey;
   sourceIds: TypeId<"source">[];
   nodeTypes: NodeType[] | undefined;
   includeClaims: boolean;
@@ -64,11 +68,29 @@ interface FetchParams {
 export async function fetchNodesBySource(
   params: FetchParams,
 ): Promise<NodesBySourceResponse> {
-  const { db, userId, sourceIds, nodeTypes, includeClaims, limit } = params;
+  const {
+    db,
+    userId,
+    partitionKey,
+    sourceIds,
+    nodeTypes,
+    includeClaims,
+    limit,
+  } = params;
+  await assertPartitionReadAllowed(db, userId, partitionKey);
   const decoded = params.cursor ? decodeCursor(params.cursor) : null;
+  const partitionFilter =
+    partitionKey === undefined
+      ? isNull(nodes.partitionKey)
+      : eq(nodes.partitionKey, partitionKey);
+  const sourcePartitionFilter =
+    partitionKey === undefined
+      ? isNull(sources.partitionKey)
+      : eq(sources.partitionKey, partitionKey);
 
   const whereClauses = [
     eq(nodes.userId, userId),
+    partitionFilter,
     inArray(sourceLinks.sourceId, sourceIds),
   ];
 
@@ -100,6 +122,7 @@ export async function fetchNodesBySource(
     })
     .from(nodes)
     .innerJoin(sourceLinks, eq(sourceLinks.nodeId, nodes.id))
+    .innerJoin(sources, eq(sources.id, sourceLinks.sourceId))
     .where(and(...whereClauses))
     .orderBy(desc(nodes.createdAt), desc(nodes.id))
     .limit(limit + 1);
@@ -128,6 +151,8 @@ export async function fetchNodesBySource(
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionFilter,
+        sourcePartitionFilter,
         inArray(nodes.id, pageIds),
         inArray(sourceLinks.sourceId, sourceIds),
       ),
@@ -186,6 +211,9 @@ export async function fetchNodesBySource(
       .where(
         and(
           eq(claims.userId, userId),
+          partitionKey === undefined
+            ? isNull(claims.partitionKey)
+            : eq(claims.partitionKey, partitionKey),
           eq(claims.status, "active"),
           inArray(claims.subjectNodeId, pageIds),
         ),

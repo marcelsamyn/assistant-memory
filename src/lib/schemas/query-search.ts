@@ -7,11 +7,13 @@ import {
 } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
 import { rerankResultItemSchema } from "../schemas/rerank.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 // Define the request schema
 export const querySearchRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   query: z.string().min(1),
   limit: z.number().int().min(1).max(50).default(10),
   excludeNodeTypes: z

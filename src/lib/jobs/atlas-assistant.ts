@@ -2,6 +2,7 @@ import { format } from "date-fns/format";
 import { DrizzleDB } from "~/db";
 import { fetchDailyConversationsList } from "~/lib/analysis/conversations";
 import { getAssistantAtlas, updateAssistantAtlas } from "~/lib/atlas";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 
 /**
  * Job to process the assistant-specific Atlas:
@@ -20,15 +21,17 @@ export async function assistantDreamJob(
   userId: string,
   assistantId: string,
   assistantDescription: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<string> {
   // 1. Fetch daily conversation summaries
-  const convList = await fetchDailyConversationsList(db, userId);
+  const convList = await fetchDailyConversationsList(db, userId, partitionKey);
 
   // 2. Fetch current assistant-specific atlas content
   const { description: currentAtlas } = await getAssistantAtlas(
     db,
     userId,
     assistantId,
+    partitionKey,
   );
 
   // 3. Build messages for LLM
@@ -78,6 +81,6 @@ ${convList}
   if (!updated) throw new Error("Failed to generate assistant dream atlas");
 
   // 5. Persist updated assistant atlas
-  await updateAssistantAtlas(db, userId, assistantId, updated);
+  await updateAssistantAtlas(db, userId, assistantId, updated, partitionKey);
   return updated;
 }

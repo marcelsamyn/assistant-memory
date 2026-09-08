@@ -1,9 +1,11 @@
 import { z } from "zod";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition.js";
 import { TaskStatusEnum } from "~/types/graph.js";
 import { typeIdSchema } from "~/types/typeid.js";
 
 export const openCommitmentsRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   ownedBy: typeIdSchema("node").optional(),
   dueBefore: z
     .string()

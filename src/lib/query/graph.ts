@@ -5,8 +5,9 @@ import {
   fetchSourceIdsForNodes,
   fetchClaimsBetweenNodeIds,
 } from "../graph";
+import { assertPartitionReadAllowed } from "../partition-access";
 import { QueryGraphRequest, QueryGraphResponse } from "../schemas/query-graph";
-import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { nodes, nodeMetadata } from "~/db/schema";
 import type { NodeType } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
@@ -22,13 +23,17 @@ interface GraphNodeResult {
 export async function queryKnowledgeGraph(
   params: QueryGraphRequest,
 ): Promise<QueryGraphResponse> {
-  const { userId, query, maxNodes } = params;
+  const { userId, partitionKey, query, maxNodes } = params;
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
 
   // If no query -> return full labeled graph
   if (!query) {
     let whereCondition = and(
       eq(nodes.userId, userId),
+      partitionKey === undefined
+        ? isNull(nodes.partitionKey)
+        : eq(nodes.partitionKey, partitionKey),
       isNotNull(nodeMetadata.label),
     );
     if (params.nodeTypes && params.nodeTypes.length > 0) {
@@ -60,8 +65,8 @@ export async function queryKnowledgeGraph(
     }
 
     const [claimRows, sourceIdMap] = await Promise.all([
-      fetchClaimsBetweenNodeIds(db, userId, nodeIds),
-      fetchSourceIdsForNodes(db, nodeIds),
+      fetchClaimsBetweenNodeIds(db, userId, nodeIds, partitionKey),
+      fetchSourceIdsForNodes(db, userId, nodeIds, partitionKey),
     ]);
 
     return {
@@ -89,6 +94,7 @@ export async function queryKnowledgeGraph(
       embedding,
       limit: Math.min(maxNodes, 5),
       minimumSimilarity: 0.4,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
     })
   ).filter((n) => n.label);
 
@@ -109,7 +115,9 @@ export async function queryKnowledgeGraph(
 
   let currentIds = filteredSeeds.map((s) => s.id);
   while (nodeMap.size < maxNodes && currentIds.length) {
-    const rawConns = await findOneHopNodes(db, userId, currentIds);
+    const rawConns = await findOneHopNodes(db, userId, currentIds, {
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
+    });
     const conns = params.nodeTypes?.length
       ? rawConns.filter((c) => params.nodeTypes!.includes(c.type))
       : rawConns;
@@ -134,8 +142,8 @@ export async function queryKnowledgeGraph(
   }
 
   const [claimRows, sourceIdMap] = await Promise.all([
-    fetchClaimsBetweenNodeIds(db, userId, nodeIds),
-    fetchSourceIdsForNodes(db, nodeIds),
+    fetchClaimsBetweenNodeIds(db, userId, nodeIds, partitionKey),
+    fetchSourceIdsForNodes(db, userId, nodeIds, partitionKey),
   ]);
 
   return {

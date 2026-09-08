@@ -7,12 +7,14 @@
  * made evidence-free by that repair. It is intentionally separate from LLM
  * cleanup because these are structural invariants, not model judgments.
  */
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 import { NodeTypeEnum } from "~/types/graph.js";
 import { typeIdSchema } from "~/types/typeid.js";
 
 export const pruneOrphanNodesRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   olderThanDays: z.number().int().nonnegative().default(7),
   limit: z.number().int().positive().max(10_000).default(1_000),
   sourceScanLimit: z.number().int().positive().max(50_000).default(10_000),

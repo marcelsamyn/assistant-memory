@@ -7,6 +7,42 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5431:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5431/postgres
+      MEMORY_OPENAI_API_KEY: test
+      MEMORY_OPENAI_API_BASE_URL: http://localhost
+      MODEL_ID_GRAPH_EXTRACTION: test
+      JINA_API_KEY: test
+      REDIS_URL: redis://localhost:6380
+      MINIO_ENDPOINT: localhost
+      MINIO_PORT: 9000
+      MINIO_USE_SSL: "false"
+      MINIO_ACCESS_KEY: minio
+      MINIO_SECRET_KEY: minio123
+      SOURCES_BUCKET: test
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,6 +60,21 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Start MinIO
+        run: |
+          docker run --detach --publish 9000:9000 \
+            --env MINIO_ROOT_USER=minio \
+            --env MINIO_ROOT_PASSWORD=minio123 \
+            minio/minio:latest server /data
+          for attempt in {1..20}; do
+            curl --fail --silent http://127.0.0.1:9000/minio/health/ready && exit 0
+            sleep 1
+          done
+          exit 1
+
+      - name: Test
+        run: pnpm test --run
 
       - name: Lint
         run: pnpm run lint

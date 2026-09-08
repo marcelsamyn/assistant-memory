@@ -10,6 +10,7 @@ import { newTypeId } from "~/types/typeid";
 const claim = {
   id: newTypeId("claim"),
   userId: "user_A",
+  partitionKey: null,
   subjectNodeId: newTypeId("node"),
   objectNodeId: newTypeId("node"),
   objectValue: null,

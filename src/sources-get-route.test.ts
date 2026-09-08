@@ -120,6 +120,8 @@ describe("POST /sources/get", () => {
 function makeSourceSummary(type: SourceSummary["type"]): SourceSummary {
   return {
     sourceId: newTypeId("source"),
+    partitionKey: null,
+    version: 0,
     type,
     title: "Source title",
     author: null,

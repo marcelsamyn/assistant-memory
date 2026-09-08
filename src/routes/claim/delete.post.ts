@@ -6,10 +6,10 @@ import {
 } from "~/lib/schemas/claim";
 
 export default defineEventHandler(async (event) => {
-  const { userId, claimId } = deleteClaimRequestSchema.parse(
+  const { userId, partitionKey, claimId } = deleteClaimRequestSchema.parse(
     await readBody(event),
   );
-  const deleted = await deleteClaim(userId, claimId);
+  const deleted = await deleteClaim(userId, claimId, partitionKey);
   if (!deleted) {
     throw createError({ statusCode: 404, statusMessage: "Claim not found" });
   }

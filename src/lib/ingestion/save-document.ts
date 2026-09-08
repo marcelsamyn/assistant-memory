@@ -6,9 +6,9 @@
  * project auto-attach flows. Heavy work — HTML→markdown conversion and graph
  * extraction — runs in the queued `ingest-document` worker.
  *
- * On `updateExisting`, the prior nodes/sources for this externalId are
- * cascaded away here too, so the worker only ever sees a freshly-inserted
- * row to extract from.
+ * On `updateExisting`, the prior source is retired through the durable source
+ * lifecycle. The replacement deliberately receives a new source identity;
+ * no prior content, evidence, or feed payload is revived.
  */
 import { batchQueue } from "../queues";
 import {
@@ -17,10 +17,18 @@ import {
 } from "../schemas/ingest-document-request";
 import { sourceService } from "../sources";
 import { ensureUser } from "./ensure-user";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { createError } from "h3";
+import { randomUUID } from "node:crypto";
 import db from "~/db";
-import { nodes, sourceLinks, sources } from "~/db/schema";
+import { sourceTombstones, sources } from "~/db/schema";
+import { preparePartitionWrite } from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import {
+  applySourceLifecycleCommand,
+  listSourceTreeStorageCleanupIds,
+  markSourceTreeStorageCleanupCompleted,
+} from "~/lib/source-lifecycle";
 import type { TypeId } from "~/types/typeid";
 
 /**
@@ -32,47 +40,36 @@ export async function saveMemory(
   const { userId, document, updateExisting = false } = req;
 
   await ensureUser(db, userId);
+  await preparePartitionWrite(db, userId, req.partitionKey);
 
   if (updateExisting) {
-    // Cascade: delete graph nodes derived from any prior source row carrying
-    // this externalId, then drop the source rows themselves. The worker used
-    // to do this, but pre-creating the source row in the route forces this
-    // step to live alongside the insert so re-ingests stay atomic.
-    await db.delete(nodes).where(
-      and(
-        eq(nodes.userId, userId),
-        inArray(
-          nodes.id,
-          db
-            .select({ nodeId: sourceLinks.nodeId })
-            .from(sourceLinks)
-            .where(
-              inArray(
-                sourceLinks.sourceId,
-                db
-                  .select({ id: sources.id })
-                  .from(sources)
-                  .where(
-                    and(
-                      eq(sources.userId, userId),
-                      eq(sources.type, "document"),
-                      eq(sources.externalId, document.id),
-                    ),
-                  ),
-              ),
-            ),
-        ),
-      ),
-    );
-    await db
-      .delete(sources)
+    const existingDocuments = await db
+      .select({
+        id: sources.id,
+        version: sources.version,
+        deletedAt: sources.deletedAt,
+      })
+      .from(sources)
       .where(
         and(
           eq(sources.userId, userId),
+          req.partitionKey === undefined
+            ? isNull(sources.partitionKey)
+            : eq(sources.partitionKey, req.partitionKey),
           eq(sources.type, "document"),
           eq(sources.externalId, document.id),
         ),
-      );
+      )
+      .orderBy(sources.id);
+    for (const existing of existingDocuments) {
+      await releaseDocumentIdentity({
+        userId,
+        sourceId: existing.id,
+        sourceVersion: existing.version,
+        partitionKey: req.partitionKey ?? null,
+        alreadyTombstoned: existing.deletedAt !== null,
+      });
+    }
   }
 
   const timestamp = document.timestamp ?? new Date();
@@ -80,6 +77,9 @@ export async function saveMemory(
   const { successes, failures } = await sourceService.insertMany([
     {
       userId,
+      ...(req.partitionKey !== undefined
+        ? { partitionKey: req.partitionKey }
+        : {}),
       sourceType: "document",
       externalId: document.id,
       scope: document.scope,
@@ -95,14 +95,22 @@ export async function saveMemory(
   ]);
 
   let sourceId: TypeId<"source">;
+  let expectedSourceVersion: number;
   if (successes.length > 0) {
     sourceId = successes[0]!;
+    const [created] = await db
+      .select({ version: sources.version })
+      .from(sources)
+      .where(eq(sources.id, sourceId))
+      .limit(1);
+    if (!created) throw new Error(`Created source ${sourceId} was not found`);
+    expectedSourceVersion = created.version;
   } else {
     // Conflict path: the row already existed and updateExisting was false.
     // Look up the existing sourceId so the caller can still auto-attach,
     // and skip the worker (no extraction work to do).
     const [existing] = await db
-      .select({ id: sources.id })
+      .select({ id: sources.id, partitionKey: sources.partitionKey })
       .from(sources)
       .where(
         and(
@@ -121,6 +129,13 @@ export async function saveMemory(
         }`,
       });
     }
+    if (existing.partitionKey !== (req.partitionKey ?? null)) {
+      throw createError({
+        statusCode: 409,
+        statusMessage:
+          "document source already belongs to a different memory partition",
+      });
+    }
 
     return {
       message: "Document already ingested; reusing existing source",
@@ -131,7 +146,9 @@ export async function saveMemory(
 
   await batchQueue.add("ingest-document", {
     userId,
+    partitionKey: req.partitionKey,
     sourceId,
+    expectedSourceVersion,
     documentId: document.id,
     contentType: document.contentType,
     timestamp: timestamp.toISOString(),
@@ -144,4 +161,64 @@ export async function saveMemory(
     jobId: document.id,
     sourceId,
   };
+}
+
+/** Erases a prior document source before releasing its external-id slot. */
+async function releaseDocumentIdentity(input: {
+  userId: string;
+  sourceId: TypeId<"source">;
+  sourceVersion: number;
+  partitionKey: ContextPartitionKey | null;
+  alreadyTombstoned: boolean;
+}): Promise<void> {
+  let sourceVersion = input.sourceVersion;
+  if (!input.alreadyTombstoned) {
+    const tombstone = await applySourceLifecycleCommand(db, {
+      userId: input.userId,
+      sourceId: input.sourceId,
+      expectedPartitionKey: input.partitionKey,
+      expectedSourceVersion: sourceVersion,
+      commandId: randomUUID(),
+      action: "tombstone",
+    });
+    sourceVersion = tombstone.sourceVersion ?? sourceVersion;
+  } else {
+    const [tombstone] = await db
+      .select({ state: sourceTombstones.state })
+      .from(sourceTombstones)
+      .where(
+        and(
+          eq(sourceTombstones.userId, input.userId),
+          eq(sourceTombstones.sourceId, input.sourceId),
+        ),
+      )
+      .limit(1);
+    if (tombstone?.state !== "tombstoned") {
+      throw createError({
+        statusCode: 409,
+        statusMessage:
+          "document replacement requires a live source or a pending tombstone",
+      });
+    }
+  }
+
+  const sourceIds = await listSourceTreeStorageCleanupIds(
+    db,
+    input.userId,
+    input.sourceId,
+  );
+  await Promise.all(
+    sourceIds.map((sourceId) =>
+      sourceService.deleteRawBlobIfPresent(input.userId, sourceId),
+    ),
+  );
+  await markSourceTreeStorageCleanupCompleted(db, input.userId, input.sourceId);
+  await applySourceLifecycleCommand(db, {
+    userId: input.userId,
+    sourceId: input.sourceId,
+    expectedPartitionKey: input.partitionKey,
+    expectedSourceVersion: sourceVersion,
+    commandId: randomUUID(),
+    action: "restore",
+  });
 }

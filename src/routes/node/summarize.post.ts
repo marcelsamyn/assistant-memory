@@ -6,10 +6,14 @@ import {
 } from "~/lib/schemas/node";
 
 export default defineEventHandler(async (event) => {
-  const { userId, nodeId } = summarizeNodeRequestSchema.parse(
+  const { userId, partitionKey, nodeId } = summarizeNodeRequestSchema.parse(
     await readBody(event),
   );
-  const result = await summarizeNode({ userId, nodeId });
+  const result = await summarizeNode({
+    userId,
+    nodeId,
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
+  });
   if (!result) {
     throw createError({ statusCode: 404, statusMessage: "Node not found" });
   }

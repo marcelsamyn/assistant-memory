@@ -1,7 +1,8 @@
 /** Node merge redirects: follow a consumed node id to its current survivor. */
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { nodeRedirects } from "~/db/schema";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import type { TypeId } from "~/types/typeid";
 
 /** Accepts the db or an open transaction. */
@@ -23,6 +24,7 @@ export async function writeNodeRedirects(
   userId: string,
   survivorId: TypeId<"node">,
   consumedIds: TypeId<"node">[],
+  partitionKey?: ContextPartitionKey,
 ): Promise<void> {
   if (consumedIds.length === 0) return;
   const uniqueConsumedIds = [...new Set(consumedIds)];
@@ -33,6 +35,9 @@ export async function writeNodeRedirects(
     .where(
       and(
         eq(nodeRedirects.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodeRedirects.partitionKey)
+          : eq(nodeRedirects.partitionKey, partitionKey),
         inArray(nodeRedirects.toNodeId, uniqueConsumedIds),
       ),
     );
@@ -42,13 +47,14 @@ export async function writeNodeRedirects(
     .values(
       uniqueConsumedIds.map((fromNodeId) => ({
         userId,
+        partitionKey,
         fromNodeId,
         toNodeId: survivorId,
       })),
     )
     .onConflictDoUpdate({
       target: [nodeRedirects.userId, nodeRedirects.fromNodeId],
-      set: { toNodeId: survivorId },
+      set: { toNodeId: survivorId, partitionKey },
     });
 }
 
@@ -60,6 +66,7 @@ export async function resolveNodeRedirects(
   db: Database,
   userId: string,
   ids: TypeId<"node">[],
+  partitionKey?: ContextPartitionKey,
 ): Promise<Map<TypeId<"node">, TypeId<"node">>> {
   const out = new Map<TypeId<"node">, TypeId<"node">>(
     ids.map((id) => [id, id]),
@@ -76,6 +83,9 @@ export async function resolveNodeRedirects(
     .where(
       and(
         eq(nodeRedirects.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodeRedirects.partitionKey)
+          : eq(nodeRedirects.partitionKey, partitionKey),
         inArray(nodeRedirects.fromNodeId, uniqueIds),
       ),
     );

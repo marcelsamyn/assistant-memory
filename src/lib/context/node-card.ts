@@ -23,7 +23,7 @@ import type {
   NodeCardRecentEvidence,
   NodeCardSource,
 } from "./node-card-types";
-import { and, desc, eq, exists, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, exists, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { claims, nodeMetadata, nodes, sourceLinks, sources } from "~/db/schema";
 import { listAliasesForNodeIds } from "~/lib/alias";
@@ -31,7 +31,9 @@ import {
   PREDICATE_POLICIES,
   resolvePredicatePolicy,
 } from "~/lib/claims/predicate-policies";
+import { assertPartitionReadAllowed } from "~/lib/partition-access";
 import { getOpenCommitments } from "~/lib/query/open-commitments";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import {
   AttributePredicateEnum,
   type AssertedByKind,
@@ -44,11 +46,13 @@ import { useDatabase } from "~/utils/db";
 
 export interface GetNodeCardParams {
   userId: string;
+  partitionKey?: ContextPartitionKey;
   nodeId: TypeId<"node">;
 }
 
 export interface GetNodeCardsParams {
   userId: string;
+  partitionKey?: ContextPartitionKey;
   nodeIds: readonly TypeId<"node">[];
 }
 
@@ -119,6 +123,7 @@ interface ActiveClaimRow {
 async function loadNodesBasicsMany(
   userId: string,
   nodeIds: readonly TypeId<"node">[],
+  partitionKey?: ContextPartitionKey,
 ): Promise<Map<TypeId<"node">, NodeBasics>> {
   const result = new Map<TypeId<"node">, NodeBasics>();
   if (nodeIds.length === 0) return result;
@@ -192,6 +197,9 @@ async function loadNodesBasicsMany(
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         inArray(nodes.id, nodeIds as TypeId<"node">[]),
       ),
     );
@@ -515,16 +523,17 @@ function assembleCard(
 export async function getNodeCards(
   params: GetNodeCardsParams,
 ): Promise<Map<TypeId<"node">, NodeCard>> {
-  const { userId } = params;
+  const { userId, partitionKey } = params;
   const uniqueIds = [...new Set(params.nodeIds)];
   const result = new Map<TypeId<"node">, NodeCard>();
   if (uniqueIds.length === 0) return result;
 
-  const basicsMap = await loadNodesBasicsMany(userId, uniqueIds);
+  const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
+  const basicsMap = await loadNodesBasicsMany(userId, uniqueIds, partitionKey);
   const resolvedIds = uniqueIds.filter((id) => basicsMap.has(id));
   if (resolvedIds.length === 0) return result;
 
-  const db = await useDatabase();
   const [claimsBySubject, aliasMap] = await Promise.all([
     loadActiveClaimsBySubjectMany(userId, resolvedIds),
     listAliasesForNodeIds(db, userId, resolvedIds),
@@ -548,7 +557,7 @@ export async function getNodeCards(
     await Promise.all([
       batchResolveLabels(Array.from(objectIdSet)),
       loadSourceMetadataMany(userId, resolvedIds),
-      loadOpenCommitmentsForPersons(userId, personIds),
+      loadOpenCommitmentsForPersons(userId, personIds, partitionKey),
     ]);
 
   for (const nodeId of resolvedIds) {
@@ -581,12 +590,17 @@ export async function getNodeCards(
 async function loadOpenCommitmentsForPersons(
   userId: string,
   personIds: readonly TypeId<"node">[],
+  partitionKey?: ContextPartitionKey,
 ): Promise<Map<TypeId<"node">, NodeCard["openCommitments"]>> {
   const result = new Map<TypeId<"node">, NodeCard["openCommitments"]>();
   if (personIds.length === 0) return result;
   const entries = await Promise.all(
     personIds.map(async (id) => {
-      const commitments = await getOpenCommitments({ userId, ownedBy: id });
+      const commitments = await getOpenCommitments({
+        userId,
+        ...(partitionKey !== undefined ? { partitionKey } : {}),
+        ownedBy: id,
+      });
       return [id, commitments] as const;
     }),
   );
@@ -601,6 +615,9 @@ export async function getNodeCard(
 ): Promise<NodeCard | null> {
   const cards = await getNodeCards({
     userId: params.userId,
+    ...(params.partitionKey !== undefined
+      ? { partitionKey: params.partitionKey }
+      : {}),
     nodeIds: [params.nodeId],
   });
   return cards.get(params.nodeId) ?? null;

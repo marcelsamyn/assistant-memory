@@ -6,9 +6,10 @@ import {
   yearKeyForMonth,
 } from "../rollup/period";
 import type { QueryTimelinePeriod } from "../schemas/query-timeline";
-import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { nodeMetadata, nodes } from "~/db/schema";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { NodeTypeEnum } from "~/types/graph";
 
 /**
@@ -30,6 +31,7 @@ export async function loadTimelinePeriods(
   userId: string,
   since?: string,
   until?: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<QueryTimelinePeriod[]> {
   // 1. Distinct day-node labels in range (day nodes are `YYYY-MM-DD`).
   const dayRows = await db
@@ -39,6 +41,9 @@ export async function loadTimelinePeriods(
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         eq(nodes.nodeType, NodeTypeEnum.enum.Temporal),
         sql`${nodeMetadata.label} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'`,
         ...(since ? [gte(nodeMetadata.label, since)] : []),
@@ -70,6 +75,9 @@ export async function loadTimelinePeriods(
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         eq(nodes.nodeType, NodeTypeEnum.enum.Temporal),
         inArray(nodeMetadata.label, [...keys]),
       ),

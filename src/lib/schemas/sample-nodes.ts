@@ -1,9 +1,11 @@
 import { NodeTypeEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 export const sampleNodesRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   limit: z.number().int().min(1).max(24).default(6),
   nodeTypes: z.array(NodeTypeEnum).optional(),
 });

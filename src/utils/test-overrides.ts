@@ -18,6 +18,7 @@
  * enqueue, no worker, no redis.
  */
 import type OpenAI from "openai";
+import type { SourceWriteFence } from "~/lib/partition-access";
 import type { SourceCreateInput } from "~/lib/sources";
 import type { TypeId } from "~/types/typeid";
 
@@ -36,6 +37,7 @@ export interface StubSourceServiceInsertResult {
 export interface StubSourceService {
   insertMany(
     inputs: SourceCreateInput[],
+    rootWriteFence?: { userId: string; source: SourceWriteFence },
   ): Promise<StubSourceServiceInsertResult>;
 }
 

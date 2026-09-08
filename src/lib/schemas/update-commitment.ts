@@ -1,4 +1,5 @@
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 /**
@@ -16,6 +17,7 @@ import { z } from "zod";
 export const updateCommitmentRequestSchema = z
   .object({
     userId: z.string(),
+    partitionKey: contextPartitionKeySchema.optional(),
     taskId: typeIdSchema("node"),
     /** New label. Omit to leave the label unchanged. */
     label: z.string().min(1).optional(),

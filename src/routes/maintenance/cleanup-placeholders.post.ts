@@ -13,6 +13,9 @@ export default defineEventHandler(async (event) => {
 
   const result = await cleanupPlaceholders({
     userId: params.userId,
+    ...(params.partitionKey !== undefined
+      ? { partitionKey: params.partitionKey }
+      : {}),
     olderThanDays: params.olderThanDays,
     limit: params.limit,
   });
@@ -28,6 +31,9 @@ export default defineEventHandler(async (event) => {
     const seeded = await seedClaimsCleanupForPlaceholders(
       {
         userId: params.userId,
+        ...(params.partitionKey !== undefined
+          ? { partitionKey: params.partitionKey }
+          : {}),
         olderThanDays: params.olderThanDays,
         limit: params.limit,
       },

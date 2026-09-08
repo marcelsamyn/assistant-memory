@@ -1,7 +1,9 @@
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 export const rollupRequestSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   /** Hard cap on LLM calls this sweep; leftovers resume on the next call. */
   maxLlmCalls: z.number().int().positive().max(500).default(50),
   /**

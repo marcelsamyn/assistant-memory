@@ -15,12 +15,14 @@
  * ranked candidates with per-node `reasons`; a second call with the same
  * thresholds and `dryRun: false` deletes them.
  */
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 import { NodeTypeEnum } from "~/types/graph.js";
 import { typeIdSchema } from "~/types/typeid.js";
 
 export const pruneStaleNodesRequestSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   /**
    * Single tuning knob in `[0, 1]`. Higher prunes more. Maps to the score
    * threshold as `threshold = 1 - aggressiveness` (so `0.5` keeps everything

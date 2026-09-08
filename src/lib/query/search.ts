@@ -18,7 +18,7 @@ import { useDatabase } from "~/utils/db";
 export async function searchMemory(
   params: QuerySearchRequest,
 ): Promise<Pick<QuerySearchResponse, "query" | "searchResults">> {
-  const { userId, query, limit, excludeNodeTypes } = params;
+  const { userId, partitionKey, query, limit, excludeNodeTypes } = params;
   const db = await useDatabase();
 
   const embeddingsResponse = await generateEmbeddings({
@@ -33,6 +33,7 @@ export async function searchMemory(
   const [similarNodes, similarClaims] = await Promise.all([
     findSimilarNodes({
       userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
       embedding,
       limit,
       excludeNodeTypes,
@@ -40,6 +41,7 @@ export async function searchMemory(
     }),
     findSimilarClaims({
       userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
       embedding,
       limit,
       minimumSimilarity: 0.4,
@@ -55,14 +57,21 @@ export async function searchMemory(
     ),
   ]);
 
-  const connections = await findOneHopNodes(db, userId, Array.from(nodeIds));
+  const connections = await findOneHopNodes(db, userId, Array.from(nodeIds), {
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
+  });
 
   // Collect all node IDs to batch-fetch sourceIds
   const allNodeIds = [
     ...similarNodes.map((n) => n.id),
     ...connections.map((c) => c.id),
   ];
-  const sourceIdMap = await fetchSourceIdsForNodes(db, allNodeIds);
+  const sourceIdMap = await fetchSourceIdsForNodes(
+    db,
+    userId,
+    allNodeIds,
+    partitionKey,
+  );
 
   // Attach sourceIds to nodes and connections
   const similarNodesWithSources = similarNodes.map((n) => ({

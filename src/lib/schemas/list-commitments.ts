@@ -1,5 +1,6 @@
 import { TaskStatusEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 export const presentationSourceSchema = z.object({
@@ -44,6 +45,7 @@ export type CommitmentProvenance = z.infer<typeof commitmentProvenanceEnum>;
 export const listCommitmentsRequestSchema = z
   .object({
     userId: z.string(),
+    partitionKey: contextPartitionKeySchema.optional(),
     /** Status filter; omit to include all four statuses. */
     statuses: z.array(TaskStatusEnum).optional(),
     provenance: commitmentProvenanceEnum.default("trusted"),

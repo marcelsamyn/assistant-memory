@@ -28,6 +28,7 @@ import {
   sources,
 } from "~/db/schema";
 import { coerceTaskStatus } from "~/lib/claims/task-status";
+import { assertPartitionReadAllowed } from "~/lib/partition-access";
 import type {
   CommitmentListItem,
   CommitmentPresentation,
@@ -155,6 +156,7 @@ export async function listCommitments(
 ): Promise<ListCommitmentsResponse> {
   const {
     userId,
+    partitionKey,
     statuses,
     provenance,
     ownedBy,
@@ -172,6 +174,9 @@ export async function listCommitments(
   } = params;
 
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
+  const partitionFilter = (column: typeof claims.partitionKey) =>
+    partitionKey === undefined ? isNull(column) : eq(column, partitionKey);
   const ownerClaim = aliasedTable(claims, "ownerClaim");
   const ownerMetadata = aliasedTable(nodeMetadata, "ownerMetadata");
   const dueClaim = aliasedTable(claims, "dueClaim");
@@ -196,6 +201,7 @@ export async function listCommitments(
 
   const whereClauses: (SQL | undefined)[] = [
     eq(claims.userId, userId),
+    partitionFilter(claims.partitionKey),
     eq(claims.predicate, "HAS_TASK_STATUS"),
     eq(claims.status, "active"),
     eq(claims.scope, "personal"),
@@ -264,6 +270,9 @@ export async function listCommitments(
       and(
         eq(nodes.id, claims.subjectNodeId),
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         eq(nodes.nodeType, "Task"),
       ),
     )
@@ -276,6 +285,7 @@ export async function listCommitments(
         eq(ownerClaim.predicate, "ASSIGNED_TO"),
         eq(ownerClaim.status, "active"),
         eq(ownerClaim.scope, "personal"),
+        partitionFilter(ownerClaim.partitionKey),
         subJoinProvenanceFilter(ownerClaim.assertedByKind, provenance),
         isNotNull(ownerClaim.objectNodeId),
       ),
@@ -289,6 +299,7 @@ export async function listCommitments(
         eq(dueClaim.predicate, "DUE_ON"),
         eq(dueClaim.status, "active"),
         eq(dueClaim.scope, "personal"),
+        partitionFilter(dueClaim.partitionKey),
         subJoinProvenanceFilter(dueClaim.assertedByKind, provenance),
         isNotNull(dueClaim.objectNodeId),
       ),

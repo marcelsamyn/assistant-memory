@@ -6,7 +6,7 @@ import type {
   SummarizeNodeResponse,
 } from "./schemas/node";
 import { format } from "date-fns";
-import { and, eq, or, inArray, aliasedTable, sql } from "drizzle-orm";
+import { and, eq, or, inArray, aliasedTable, sql, isNull } from "drizzle-orm";
 import {
   nodes,
   nodeMetadata,
@@ -33,6 +33,11 @@ import { ensureUser } from "~/lib/ingestion/ensure-user";
 import { normalizeLabel } from "~/lib/label";
 import { writeNodeRedirects } from "~/lib/node-redirects";
 import { getEffectiveNodeScopes } from "~/lib/node-scope";
+import {
+  assertPartitionReadAllowed,
+  preparePartitionWrite,
+} from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { ensureSystemSource } from "~/lib/sources";
 import { ensureDayNode } from "~/lib/temporal";
 import type { AssertedByKind, NodeType, Predicate, Scope } from "~/types/graph";
@@ -91,8 +96,10 @@ export async function getNodeById(
   userId: string,
   nodeId: TypeId<"node">,
   claimFilter?: GetNodeClaimFilter,
+  partitionKey?: ContextPartitionKey,
 ): Promise<GetNodeResponse | null> {
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
 
   const [row] = await db
     .select({
@@ -104,7 +111,15 @@ export async function getNodeById(
     })
     .from(nodes)
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-    .where(and(eq(nodes.id, nodeId), eq(nodes.userId, userId)))
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
+      ),
+    )
     .limit(1);
 
   if (!row) return null;
@@ -151,14 +166,27 @@ export async function getNodeById(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         statusFilter,
         predicateFilter,
         or(eq(claims.subjectNodeId, nodeId), eq(claims.objectNodeId, nodeId)),
       ),
     );
 
-  const sourceIdMap = await fetchSourceIdsForNodes(db, [nodeId]);
-  const aliasMap = await listAliasesForNodeIds(db, userId, [nodeId]);
+  const sourceIdMap = await fetchSourceIdsForNodes(
+    db,
+    userId,
+    [nodeId],
+    partitionKey,
+  );
+  const aliasMap = await listAliasesForNodeIds(
+    db,
+    userId,
+    [nodeId],
+    partitionKey,
+  );
 
   return {
     node: {
@@ -180,14 +208,24 @@ export async function getNodeById(
 export async function getNodeSources(
   userId: string,
   nodeId: TypeId<"node">,
+  partitionKey?: ContextPartitionKey,
 ): Promise<GetNodeSourcesResponse> {
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
 
   // Verify node ownership
   const [nodeRow] = await db
     .select({ id: nodes.id })
     .from(nodes)
-    .where(and(eq(nodes.id, nodeId), eq(nodes.userId, userId)))
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
+      ),
+    )
     .limit(1);
 
   if (!nodeRow) return { sources: [] };
@@ -201,7 +239,14 @@ export async function getNodeSources(
     })
     .from(sourceLinks)
     .innerJoin(sources, eq(sources.id, sourceLinks.sourceId))
-    .where(eq(sourceLinks.nodeId, nodeId));
+    .where(
+      and(
+        eq(sourceLinks.nodeId, nodeId),
+        partitionKey === undefined
+          ? isNull(sources.partitionKey)
+          : eq(sources.partitionKey, partitionKey),
+      ),
+    );
 
   if (linkedSources.length === 0) return { sources: [] };
 
@@ -284,11 +329,13 @@ const MAX_CLAIMS_FOR_SUMMARY = 100;
 export async function summarizeNode({
   userId,
   nodeId,
+  partitionKey,
 }: {
   userId: string;
   nodeId: TypeId<"node">;
+  partitionKey?: ContextPartitionKey;
 }): Promise<SummarizeNodeResponse | null> {
-  const result = await getNodeById(userId, nodeId);
+  const result = await getNodeById(userId, nodeId, undefined, partitionKey);
   if (!result) return null;
 
   // `getNodeById` returns only active claims by default — exactly the grounding
@@ -363,6 +410,7 @@ export async function updateNode(
     nodeType?: NodeType | undefined;
     description?: string | undefined;
   },
+  partitionKey?: ContextPartitionKey,
 ): Promise<{
   id: TypeId<"node">;
   nodeType: string;
@@ -370,6 +418,7 @@ export async function updateNode(
   description: string | null;
 } | null> {
   const db = await useDatabase();
+  await preparePartitionWrite(db, userId, partitionKey);
 
   // Verify ownership and fetch current state
   const [row] = await db
@@ -382,7 +431,15 @@ export async function updateNode(
     })
     .from(nodes)
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-    .where(and(eq(nodes.id, nodeId), eq(nodes.userId, userId)))
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
+      ),
+    )
     .limit(1);
 
   if (!row) return null;
@@ -478,11 +535,13 @@ export async function updateNode(
 export async function deleteNode(
   userId: string,
   nodeId: TypeId<"node">,
+  partitionKey?: ContextPartitionKey,
 ): Promise<{
   deleted: boolean;
   affectedClaims: { cascadeDeleted: number; assertedByCleared: number };
 }> {
   const db = await useDatabase();
+  await preparePartitionWrite(db, userId, partitionKey);
 
   return db.transaction(async (tx) => {
     // Count affected claims BEFORE the delete so we can report cascade vs
@@ -494,6 +553,9 @@ export async function deleteNode(
       .where(
         and(
           eq(claims.userId, userId),
+          partitionKey === undefined
+            ? isNull(claims.partitionKey)
+            : eq(claims.partitionKey, partitionKey),
           or(eq(claims.subjectNodeId, nodeId), eq(claims.objectNodeId, nodeId)),
         ),
       );
@@ -502,12 +564,26 @@ export async function deleteNode(
       .select({ count: sql<number>`count(*)::int` })
       .from(claims)
       .where(
-        and(eq(claims.userId, userId), eq(claims.assertedByNodeId, nodeId)),
+        and(
+          eq(claims.userId, userId),
+          partitionKey === undefined
+            ? isNull(claims.partitionKey)
+            : eq(claims.partitionKey, partitionKey),
+          eq(claims.assertedByNodeId, nodeId),
+        ),
       );
 
     const result = await tx
       .delete(nodes)
-      .where(and(eq(nodes.id, nodeId), eq(nodes.userId, userId)))
+      .where(
+        and(
+          eq(nodes.id, nodeId),
+          eq(nodes.userId, userId),
+          partitionKey === undefined
+            ? isNull(nodes.partitionKey)
+            : eq(nodes.partitionKey, partitionKey),
+        ),
+      )
       .returning({ id: nodes.id });
 
     const deleted = result.length > 0;
@@ -557,6 +633,7 @@ export async function createNode(
   label: string,
   description?: string,
   initialClaims?: ReadonlyArray<CreateNodeInitialClaimInput>,
+  partitionKey?: ContextPartitionKey,
 ): Promise<{
   id: TypeId<"node">;
   nodeType: NodeType;
@@ -566,10 +643,11 @@ export async function createNode(
 }> {
   const db = await useDatabase();
   await ensureUser(db, userId);
+  await preparePartitionWrite(db, userId, partitionKey);
 
   const [inserted] = await db
     .insert(nodes)
-    .values({ userId, nodeType })
+    .values({ userId, partitionKey, nodeType })
     .returning({ id: nodes.id });
 
   if (!inserted) throw new Error("Failed to create node");
@@ -588,7 +666,7 @@ export async function createNode(
     { id: inserted.id, label, description: description ?? null },
   ]);
 
-  const sourceId = await ensureSystemSource(db, userId, "manual");
+  const sourceId = await ensureSystemSource(db, userId, "manual", partitionKey);
   await db
     .insert(sourceLinks)
     .values({ sourceId, nodeId: inserted.id })
@@ -598,9 +676,10 @@ export async function createNode(
   // Skip for Temporal nodes themselves to avoid a self-link / cycle.
   if (nodeType !== "Temporal") {
     const now = new Date();
-    const dayNodeId = await ensureDayNode(db, userId, now);
+    const dayNodeId = await ensureDayNode(db, userId, now, partitionKey);
     await db.insert(claims).values({
       userId,
+      partitionKey,
       predicate: "RECORDED_ON",
       subjectNodeId: inserted.id,
       objectNodeId: dayNodeId,
@@ -643,6 +722,7 @@ export async function createNode(
       for (const claim of effectiveInitialClaims) {
         const created = await createClaim({
           userId,
+          partitionKey,
           subjectNodeId: inserted.id,
           predicate: claim.predicate,
           statement: claim.statement,
@@ -680,6 +760,7 @@ export async function mergeNodes(
   userId: string,
   nodeIds: TypeId<"node">[],
   overrides?: { targetLabel?: string; targetDescription?: string },
+  partitionKey?: ContextPartitionKey,
 ): Promise<{
   id: TypeId<"node">;
   nodeType: string;
@@ -687,6 +768,7 @@ export async function mergeNodes(
   description: string | null;
 } | null> {
   const db = await useDatabase();
+  await preparePartitionWrite(db, userId, partitionKey);
 
   const foundNodes = await db
     .select({
@@ -698,7 +780,15 @@ export async function mergeNodes(
     })
     .from(nodes)
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-    .where(and(eq(nodes.userId, userId), inArray(nodes.id, nodeIds)));
+    .where(
+      and(
+        eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
+        inArray(nodes.id, nodeIds),
+      ),
+    );
 
   if (foundNodes.length !== nodeIds.length) return null;
 
@@ -801,7 +891,7 @@ export async function mergeNodes(
     }
 
     // Record redirects so stale references (e.g. citations) follow consumed → survivor.
-    await writeNodeRedirects(tx, userId, survivorId, consumedIds);
+    await writeNodeRedirects(tx, userId, survivorId, consumedIds, partitionKey);
 
     // Delete consumed nodes
     await tx
@@ -872,11 +962,21 @@ export async function mergeNodes(
 export async function batchDeleteNodes(
   userId: string,
   nodeIds: TypeId<"node">[],
+  partitionKey?: ContextPartitionKey,
 ): Promise<number> {
   const db = await useDatabase();
+  await preparePartitionWrite(db, userId, partitionKey);
   const result = await db
     .delete(nodes)
-    .where(and(eq(nodes.userId, userId), inArray(nodes.id, nodeIds)))
+    .where(
+      and(
+        eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
+        inArray(nodes.id, nodeIds),
+      ),
+    )
     .returning({ id: nodes.id });
   return result.length;
 }
@@ -886,6 +986,7 @@ export async function getNodeNeighborhood(
   userId: string,
   nodeId: TypeId<"node">,
   depth: 1 | 2 = 1,
+  partitionKey?: ContextPartitionKey,
 ): Promise<{
   nodes: {
     id: TypeId<"node">;
@@ -909,6 +1010,7 @@ export async function getNodeNeighborhood(
   }[];
 } | null> {
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
 
   const [focal] = await db
     .select({
@@ -919,7 +1021,15 @@ export async function getNodeNeighborhood(
     })
     .from(nodes)
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-    .where(and(eq(nodes.id, nodeId), eq(nodes.userId, userId)))
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
+      ),
+    )
     .limit(1);
 
   if (!focal) return null;
@@ -941,7 +1051,9 @@ export async function getNodeNeighborhood(
     description: focal.description,
   });
 
-  const hop1 = await findOneHopNodes(db, userId, [nodeId]);
+  const hop1 = await findOneHopNodes(db, userId, [nodeId], {
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
+  });
   for (const n of hop1) {
     if (!allNodeIds.has(n.id)) {
       allNodeIds.add(n.id);
@@ -957,7 +1069,9 @@ export async function getNodeNeighborhood(
   if (depth === 2) {
     const hop1Ids = hop1.map((n) => n.id).filter((id) => id !== nodeId);
     if (hop1Ids.length > 0) {
-      const hop2 = await findOneHopNodes(db, userId, hop1Ids);
+      const hop2 = await findOneHopNodes(db, userId, hop1Ids, {
+        ...(partitionKey !== undefined ? { partitionKey } : {}),
+      });
       for (const n of hop2) {
         if (!allNodeIds.has(n.id)) {
           allNodeIds.add(n.id);
@@ -974,8 +1088,8 @@ export async function getNodeNeighborhood(
 
   const ids = Array.from(allNodeIds);
   const [claimRows, sourceIdMap] = await Promise.all([
-    fetchClaimsBetweenNodeIds(db, userId, ids),
-    fetchSourceIdsForNodes(db, ids),
+    fetchClaimsBetweenNodeIds(db, userId, ids, partitionKey),
+    fetchSourceIdsForNodes(db, userId, ids, partitionKey),
   ]);
 
   return {

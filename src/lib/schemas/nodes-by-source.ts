@@ -9,6 +9,7 @@
 import { NodeTypeEnum, ScopeEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
 import { getNodeClaimSchema } from "./node.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 const DEFAULT_EXCLUDED_NODE_TYPES = [
@@ -19,6 +20,7 @@ const DEFAULT_EXCLUDED_NODE_TYPES = [
 
 export const nodesBySourceRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   sourceIds: z.array(typeIdSchema("source")).min(1).max(100),
   /**
    * Optional node-type allow-list. When omitted, the response excludes

@@ -1,5 +1,5 @@
 import { addDays, formatISO } from "date-fns";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import type { DrizzleDB } from "~/db";
 import { claims, nodes, nodeMetadata, nodeEmbeddings } from "~/db/schema";
@@ -7,7 +7,10 @@ import { crateTextCompletion, performStructuredAnalysis } from "~/lib/ai";
 import { generateEmbeddings } from "~/lib/embeddings";
 import { formatNodesForPrompt } from "~/lib/formatting";
 import { findSimilarNodes, type NodeSearchResult } from "~/lib/graph";
+import { preparePartitionWrite } from "~/lib/partition-access";
 import { safeToISOString } from "~/lib/safe-date";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { ensureSystemSource } from "~/lib/sources";
 import { NodeTypeEnum } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
@@ -15,6 +18,7 @@ import { useDatabase } from "~/utils/db";
 
 export const DreamJobDataSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   assistantDescription: z.string(),
 });
 
@@ -22,29 +26,52 @@ export type DreamJobData = z.infer<typeof DreamJobDataSchema>;
 
 // High-level dream workflow
 export async function dream(data: DreamJobData): Promise<void> {
-  const { userId, assistantDescription } = data;
+  const { userId, partitionKey, assistantDescription } = data;
   if (Math.random() > env.DREAM_PROBABILITY) return;
 
   const db = await useDatabase();
+  await preparePartitionWrite(db, userId, partitionKey);
   const date = formatISO(addDays(new Date(), -1), { representation: "date" });
-  const dayNode = await fetchDayNode(db, date);
+  const dayNode = await fetchDayNode(db, userId, date, partitionKey);
   if (!dayNode) return;
 
   const topics = await proposeTopics(userId, date, assistantDescription);
   await Promise.all(
     topics
       .filter(() => Math.random() < env.DREAM_SELECTION_PROBABILITY)
-      .map((t) => handleTopic(db, userId, assistantDescription, dayNode.id, t)),
+      .map((t) =>
+        handleTopic(
+          db,
+          userId,
+          partitionKey,
+          assistantDescription,
+          dayNode.id,
+          t,
+        ),
+      ),
   );
 }
 
 // 1. Find the day node for a given date
-async function fetchDayNode(db: DrizzleDB, date: string) {
+async function fetchDayNode(
+  db: DrizzleDB,
+  userId: string,
+  date: string,
+  partitionKey?: ContextPartitionKey,
+) {
   const rows = await db
     .select({ id: nodes.id })
     .from(nodes)
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-    .where(eq(nodeMetadata.label, date))
+    .where(
+      and(
+        eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
+        eq(nodeMetadata.label, date),
+      ),
+    )
     .limit(1);
   return rows[0] ?? null;
 }
@@ -82,12 +109,13 @@ Suggest up to 3 topics, questions or dream scenarios to start off with. This can
 async function handleTopic(
   db: DrizzleDB,
   userId: string,
+  partitionKey: ContextPartitionKey | undefined,
   systemPrompt: string,
   dayId: TypeId<"node">,
   topic: string,
 ) {
   const queries = await proposeQueries(userId, systemPrompt, topic);
-  const nodes = await retrieveRelevantNodes(userId, queries);
+  const nodes = await retrieveRelevantNodes(userId, queries, partitionKey);
   const nodesForPrompt = nodes.map((n) => ({
     id: n.id,
     type: n.type,
@@ -105,7 +133,7 @@ async function handleTopic(
   );
   const score = await scoreDream(userId, systemPrompt, dream);
   if (score < 0.7) return;
-  await persistDream(db, userId, dayId, topic, dream);
+  await persistDream(db, userId, partitionKey, dayId, topic, dream);
 }
 
 // 1. Structured analysis: propose search queries
@@ -140,11 +168,13 @@ If you want more information, fetched from a semantic graph database built from 
 async function retrieveRelevantNodes(
   userId: string,
   queries: string[],
+  partitionKey?: ContextPartitionKey,
 ): Promise<NodeSearchResult[]> {
   const map = new Map<string, NodeSearchResult>();
   for (const q of queries) {
     const results = await findSimilarNodes({
       userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
       text: q,
       limit: 10,
       minimumSimilarity: 0.4,
@@ -220,17 +250,19 @@ Rate the following dream on a 0–1 scale for relevance and usefulness. If you d
 async function persistDream(
   db: DrizzleDB,
   userId: string,
+  partitionKey: ContextPartitionKey | undefined,
   dayId: TypeId<"node">,
   label: string,
   dreamContent: string,
 ) {
-  const sourceId = await ensureSystemSource(db, userId, "manual");
+  const sourceId = await ensureSystemSource(db, userId, "manual", partitionKey);
   const createdAt = new Date();
   const newNode = await db.transaction(async (tx) => {
     const [inserted] = await tx
       .insert(nodes)
       .values({
         userId,
+        partitionKey,
         nodeType: NodeTypeEnum.enum.AssistantDream,
         createdAt,
       })
@@ -243,6 +275,7 @@ async function persistDream(
     });
     await tx.insert(claims).values({
       userId,
+      partitionKey,
       predicate: "OCCURRED_ON",
       subjectNodeId: inserted.id,
       objectNodeId: dayId,

@@ -7,16 +7,17 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const { userId, assistantId } = queryAtlasRequestSchema.parse(
+  const { userId, partitionKey, assistantId } = queryAtlasRequestSchema.parse(
     await readBody(event),
   );
   const db = await useDatabase();
 
-  const { description: userDesc } = await getAtlas(db, userId);
+  const { description: userDesc } = await getAtlas(db, userId, partitionKey);
   const { description: assistantDesc } = await getAssistantAtlas(
     db,
     userId,
     assistantId,
+    partitionKey,
   );
 
   // Combine both atlases into a single string

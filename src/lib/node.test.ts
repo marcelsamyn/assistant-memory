@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -165,6 +166,7 @@ describeIfServer("node operations", () => {
             UNIQUE ("user_id", "normalized_alias_text", "canonical_node_id")
         );
       `);
+      await installPartitionCompatibilityFixture(client);
 
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
       await client.query(
@@ -368,6 +370,7 @@ describeIfServer("node operations", () => {
           PRIMARY KEY ("user_id","from_node_id")
       );
     `);
+    await installPartitionCompatibilityFixture(client);
   }
 
   async function ensureCreateNodeTables(client: Client): Promise<void> {
@@ -440,6 +443,7 @@ describeIfServer("node operations", () => {
           CHECK (num_nonnulls("object_node_id", "object_value") = 1)
       );
     `);
+    await installPartitionCompatibilityFixture(client);
   }
 
   it("rewires assertedByNodeId on merge so participant provenance survives", async () => {

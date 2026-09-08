@@ -1,4 +1,5 @@
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 const aliasTextSchema = z.string().refine((value) => value.trim().length > 0, {
@@ -8,6 +9,7 @@ const aliasTextSchema = z.string().refine((value) => value.trim().length > 0, {
 export const aliasSchema = z.object({
   id: typeIdSchema("alias"),
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.nullable(),
   aliasText: z.string(),
   normalizedAliasText: z.string(),
   canonicalNodeId: typeIdSchema("node"),
@@ -16,6 +18,7 @@ export const aliasSchema = z.object({
 
 export const createAliasRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   canonicalNodeId: typeIdSchema("node"),
   aliasText: aliasTextSchema,
 });
@@ -29,6 +32,7 @@ export type CreateAliasResponse = z.infer<typeof createAliasResponseSchema>;
 
 export const deleteAliasRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   aliasId: typeIdSchema("alias"),
 });
 

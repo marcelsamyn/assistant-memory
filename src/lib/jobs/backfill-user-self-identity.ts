@@ -10,10 +10,11 @@
  * distinguishing aliases and therefore removes ALL existing alias rows on the
  * self node — the intended clean-slate behavior for this maintenance job.
  */
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { aliases as aliasesTable } from "~/db/schema";
 import { normalizeAliasText } from "~/lib/alias";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { getUserSelfAliases } from "~/lib/user-profile";
 import {
   distinguishingAliases,
@@ -23,6 +24,7 @@ import {
 export interface BackfillUserSelfIdentityParams {
   db: DrizzleDB;
   userId: string;
+  partitionKey?: ContextPartitionKey;
   aliases?: string[];
 }
 
@@ -35,11 +37,16 @@ export interface BackfillUserSelfIdentityResult {
 export async function backfillUserSelfIdentity(
   params: BackfillUserSelfIdentityParams,
 ): Promise<BackfillUserSelfIdentityResult> {
-  const { db, userId } = params;
+  const { db, userId, partitionKey } = params;
   const effectiveAliases =
     params.aliases ?? (await getUserSelfAliases(db, userId));
 
-  const selfNodeId = await ensureUserSelfIdentity(db, userId, effectiveAliases);
+  const selfNodeId = await ensureUserSelfIdentity(
+    db,
+    userId,
+    effectiveAliases,
+    partitionKey,
+  );
   const seeded = distinguishingAliases(effectiveAliases);
   const keep = new Set(seeded.map((a) => normalizeAliasText(a)));
 
@@ -54,6 +61,9 @@ export async function backfillUserSelfIdentity(
     .where(
       and(
         eq(aliasesTable.userId, userId),
+        partitionKey === undefined
+          ? isNull(aliasesTable.partitionKey)
+          : eq(aliasesTable.partitionKey, partitionKey),
         eq(aliasesTable.canonicalNodeId, selfNodeId),
       ),
     );

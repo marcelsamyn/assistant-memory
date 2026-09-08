@@ -3,6 +3,7 @@ import {
   metricAggregationHintSchema,
   metricSeriesAggregationSchema,
 } from "./metric-write.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 export const metricDefinitionSchema = z.object({
@@ -31,6 +32,7 @@ export const metricDefinitionWithStatsSchema = metricDefinitionSchema.extend({
 
 export const listMetricsRequestSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   filter: z
     .object({
       active: z.boolean().optional(),
@@ -54,6 +56,7 @@ export const metricSeriesBucketSchema = z.enum([
 
 export const getMetricSeriesRequestSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   metricIds: z.array(typeIdSchema("metric_definition")).min(1).max(20),
   from: z.string().datetime().pipe(z.coerce.date()),
   to: z.string().datetime().pipe(z.coerce.date()),
@@ -78,6 +81,7 @@ export const getMetricSeriesResponseSchema = z.object({
 
 export const getMetricSummaryRequestSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   metricId: typeIdSchema("metric_definition"),
 });
 
@@ -106,6 +110,7 @@ export const getMetricSummaryResponseSchema = z.object({
 
 export const getMetricSummariesRequestSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   // Explicit selection. Omit to summarize every (optionally filtered) metric.
   metricIds: z
     .array(typeIdSchema("metric_definition"))

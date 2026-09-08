@@ -10,18 +10,25 @@
  *      see clean markdown.
  *   3. Runs the shared `extractDocumentGraph` pipeline.
  */
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { DrizzleDB } from "~/db";
 import { sources } from "~/db/schema";
 import { convertToMarkdown } from "~/lib/converters/markitdown";
 import { extractDocumentGraph } from "~/lib/ingestion/extract-document-graph";
+import {
+  assertSourcePartition,
+  withSourceWriteFence,
+} from "~/lib/partition-access";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import { sourceService } from "~/lib/sources";
 import { typeIdSchema, type TypeId } from "~/types/typeid";
 
 export const IngestDocumentJobInputSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   sourceId: typeIdSchema("source"),
+  expectedSourceVersion: z.number().int().nonnegative(),
   documentId: z.string(),
   contentType: z
     .enum(["markdown", "text", "html"])
@@ -43,13 +50,23 @@ interface IngestDocumentParams extends IngestDocumentJobInput {
 export async function ingestDocument({
   db,
   userId,
+  partitionKey,
   sourceId,
+  expectedSourceVersion,
   documentId,
   contentType,
   timestamp,
   author,
   title,
 }: IngestDocumentParams): Promise<void> {
+  await assertSourcePartition({
+    db,
+    userId,
+    sourceId,
+    partitionKey,
+    expectedSourceVersion,
+  });
+  let sourceVersion = expectedSourceVersion;
   const text = await sourceService.fetchText(userId, sourceId);
 
   let content = text;
@@ -74,18 +91,37 @@ export async function ingestDocument({
       converted.title !== null
         ? sql`(CASE WHEN COALESCE(${sources.metadata}, '{}'::jsonb) ? 'title' THEN '{}'::jsonb ELSE jsonb_build_object('title', ${converted.title}::text) END)`
         : sql`'{}'::jsonb`;
-    await db
-      .update(sources)
-      .set({
-        metadata: sql`COALESCE(${sources.metadata}, '{}'::jsonb) || jsonb_build_object('rawContent', ${content}::text) || ${titleClause}`,
-      })
-      .where(eq(sources.id, sourceId as TypeId<"source">));
+    sourceVersion = await withSourceWriteFence(
+      db,
+      {
+        userId,
+        sources: [{ sourceId, expectedSourceVersion: sourceVersion }],
+      },
+      async (tx) => {
+        const [updated] = await tx
+          .update(sources)
+          .set({
+            metadata: sql`COALESCE(${sources.metadata}, '{}'::jsonb) || jsonb_build_object('rawContent', ${content}::text) || ${titleClause}`,
+          })
+          .where(
+            and(
+              eq(sources.id, sourceId as TypeId<"source">),
+              eq(sources.userId, userId),
+            ),
+          )
+          .returning({ version: sources.version });
+        if (!updated)
+          throw new Error(`Source ${sourceId} disappeared during conversion`);
+        return updated.version;
+      },
+    );
   }
 
   await extractDocumentGraph({
     db,
     userId,
     sourceId: sourceId as TypeId<"source">,
+    expectedSourceVersion: sourceVersion,
     externalId: documentId,
     content,
     timestamp,

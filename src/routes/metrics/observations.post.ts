@@ -5,10 +5,11 @@ import {
 } from "~/lib/schemas/metric-write";
 
 export default defineEventHandler(async (event) => {
-  const { userId, metric, value, occurredAt, note } =
+  const { userId, partitionKey, metric, value, occurredAt, note } =
     recordMetricRequestSchema.parse(await readBody(event));
   const result = await recordMetricObservations({
     userId,
+    partitionKey,
     source: { type: "metric_manual" },
     createDefinitions: true,
     events: [],

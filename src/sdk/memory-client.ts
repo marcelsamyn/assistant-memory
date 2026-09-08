@@ -174,6 +174,20 @@ import {
   openCommitmentsResponseSchema,
 } from "../lib/schemas/open-commitments.js";
 import {
+  ReclassifySourcePartitionRequest,
+  ReclassifySourcePartitionResponse,
+  PartitionInventoryRequest,
+  PartitionInventoryResponse,
+  PartitionProgressRequest,
+  PartitionProgressResponse,
+  SetPartitionMigrationStateRequest,
+  SetPartitionMigrationStateResponse,
+  partitionInventoryResponseSchema,
+  partitionProgressResponseSchema,
+  reclassifySourcePartitionResponseSchema,
+  setPartitionMigrationStateResponseSchema,
+} from "../lib/schemas/partition.js";
+import {
   PruneOrphanNodesRequest,
   PruneOrphanNodesResponse,
   pruneOrphanNodesResponseSchema,
@@ -193,6 +207,11 @@ import {
   QueryAtlasResponse,
   queryAtlasResponseSchema,
 } from "../lib/schemas/query-atlas.js";
+import {
+  QueryChangeFeedRequest,
+  QueryChangeFeedResponse,
+  queryChangeFeedResponseSchema,
+} from "../lib/schemas/query-change-feed.js";
 import {
   QueryDayRequest,
   QueryDayResponse,
@@ -268,6 +287,17 @@ import {
   setCommitmentStatusResponseSchema,
 } from "../lib/schemas/set-commitment-status.js";
 import {
+  SourceLifecycleCommandRequest,
+  SourceLifecycleCommandResponse,
+  SourceLifecycleReadModelRetractionSweepRequest,
+  SourceLifecycleReadModelRetractionSweepResponse,
+  SourceLifecycleStorageCleanupSweepRequest,
+  SourceLifecycleStorageCleanupSweepResponse,
+  sourceLifecycleCommandResponseSchema,
+  sourceLifecycleReadModelRetractionSweepResponseSchema,
+  sourceLifecycleStorageCleanupSweepResponseSchema,
+} from "../lib/schemas/source-lifecycle.js";
+import {
   GetSourceRequest,
   GetSourceResponse,
   ListSourcesRequest,
@@ -295,7 +325,46 @@ import { z } from "zod";
 export interface MemoryClientOptions {
   baseUrl: string;
   apiKey?: string;
+  /** Dedicated server-to-server token for partition maintenance endpoints. */
+  partitionMaintenanceToken?: string;
 }
+
+export class PartitionMaintenanceUnavailableError extends Error {
+  constructor(message = "Partition maintenance is unavailable") {
+    super(message);
+    this.name = "PartitionMaintenanceUnavailableError";
+  }
+}
+
+export class PartitionConflictError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly current: unknown,
+  ) {
+    super(message);
+    this.name = "PartitionConflictError";
+  }
+}
+
+/** Raised when a pre-feed Memory server cannot serve the additive endpoint. */
+export class ChangeFeedUnavailableError extends Error {
+  constructor(message = "The lifecycle change feed is unavailable") {
+    super(message);
+    this.name = "ChangeFeedUnavailableError";
+  }
+}
+
+const partitionErrorResponseSchema = z.object({
+  data: z
+    .object({
+      code: z.string(),
+      current: z.unknown().optional(),
+    })
+    .optional(),
+  statusMessage: z.string().optional(),
+  message: z.string().optional(),
+});
 
 export class MemoryClient {
   private options: MemoryClientOptions;
@@ -309,13 +378,15 @@ export class MemoryClient {
     path: string,
     responseSchema: S,
     body?: unknown,
+    bearerToken: string | undefined = this.options.apiKey,
+    partitionMaintenance = false,
   ): Promise<z.output<S>> {
     const headers: HeadersInit = {
       "Content-Type": "application/json",
     };
 
-    if (this.options.apiKey) {
-      headers["Authorization"] = `Bearer ${this.options.apiKey}`;
+    if (bearerToken) {
+      headers["Authorization"] = `Bearer ${bearerToken}`;
     }
 
     const fetchOptions: RequestInit = {
@@ -333,8 +404,30 @@ export class MemoryClient {
     );
 
     if (!response.ok) {
+      if (path === "/query/change-feed" && response.status === 404) {
+        throw new ChangeFeedUnavailableError();
+      }
       // Attempt to parse error response for more details
       const errorBody = await response.json();
+      if (partitionMaintenance) {
+        const parsed = partitionErrorResponseSchema.safeParse(errorBody);
+        if (response.status === 503) {
+          throw new PartitionMaintenanceUnavailableError(
+            parsed.success
+              ? (parsed.data.statusMessage ?? parsed.data.message)
+              : undefined,
+          );
+        }
+        if (response.status === 409 && parsed.success) {
+          throw new PartitionConflictError(
+            parsed.data.data?.code ?? "PARTITION_CONFLICT",
+            parsed.data.statusMessage ??
+              parsed.data.message ??
+              "Partition operation conflicted",
+            parsed.data.data?.current,
+          );
+        }
+      }
       throw new Error(
         `API request failed: ${response.status} ${response.statusText}${errorBody ? ` - ${JSON.stringify(errorBody)}` : ""}`,
       );
@@ -342,6 +435,103 @@ export class MemoryClient {
 
     const responseData = await response.json();
     return responseSchema.parse(responseData);
+  }
+
+  private async _fetchPartitionMaintenance<S extends z.ZodType>(
+    path: string,
+    responseSchema: S,
+    body: unknown,
+  ): Promise<z.output<S>> {
+    const token = this.options.partitionMaintenanceToken;
+    if (token === undefined) throw new PartitionMaintenanceUnavailableError();
+    return this._fetch("POST", path, responseSchema, body, token, true);
+  }
+
+  /** Compare-and-set the migration fence for one user's opaque partitions. */
+  async setPartitionMigrationState(
+    payload: SetPartitionMigrationStateRequest,
+  ): Promise<SetPartitionMigrationStateResponse> {
+    return this._fetchPartitionMaintenance(
+      "/maintenance/partition-migration",
+      setPartitionMigrationStateResponseSchema,
+      payload,
+    );
+  }
+
+  /** Idempotently reclassify one source under a caller-owned generation. */
+  async reclassifySourcePartition(
+    payload: ReclassifySourcePartitionRequest,
+  ): Promise<ReclassifySourcePartitionResponse> {
+    return this._fetchPartitionMaintenance(
+      "/maintenance/partition-reclassify",
+      reclassifySourcePartitionResponseSchema,
+      payload,
+    );
+  }
+
+  /** Reads authoritative migration and optional source version state. */
+  async getPartitionProgress(
+    payload: PartitionProgressRequest,
+  ): Promise<PartitionProgressResponse> {
+    return this._fetchPartitionMaintenance(
+      "/maintenance/partition-progress",
+      partitionProgressResponseSchema,
+      payload,
+    );
+  }
+
+  /** Paginates durable node mappings, quarantines, and artifact receipts. */
+  async getPartitionInventory(
+    payload: PartitionInventoryRequest,
+  ): Promise<PartitionInventoryResponse> {
+    return this._fetchPartitionMaintenance(
+      "/maintenance/partition-inventory",
+      partitionInventoryResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Executes the maintenance-token-only source erasure lifecycle. A restore
+   * releases the old external identity for a later fresh ingestion; it never
+   * makes erased bytes or prior source evidence readable again.
+   */
+  async sourceLifecycleCommand(
+    payload: SourceLifecycleCommandRequest,
+  ): Promise<SourceLifecycleCommandResponse> {
+    return this._fetchPartitionMaintenance(
+      "/maintenance/source-lifecycle",
+      sourceLifecycleCommandResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Retry durable opaque source-blob cleanup receipts. This maintenance-only
+   * operation returns aggregate progress and never exposes source content.
+   */
+  async sweepPendingSourceStorageCleanup(
+    payload: SourceLifecycleStorageCleanupSweepRequest = {},
+  ): Promise<SourceLifecycleStorageCleanupSweepResponse> {
+    return this._fetchPartitionMaintenance(
+      "/maintenance/source-lifecycle-cleanup-sweep",
+      sourceLifecycleStorageCleanupSweepResponseSchema,
+      payload,
+    );
+  }
+
+  /**
+   * Retracts graph and derived projections left by migrated soft deletes.
+   * This maintenance-only recovery reports aggregate progress only.
+   */
+  async sweepPendingSourceReadModelRetraction(
+    payload: SourceLifecycleReadModelRetractionSweepRequest = {},
+  ): Promise<SourceLifecycleReadModelRetractionSweepResponse> {
+    return this._fetchPartitionMaintenance(
+      "/maintenance/source-lifecycle-read-model-sweep",
+      sourceLifecycleReadModelRetractionSweepResponseSchema,
+      payload,
+    );
   }
 
   /**
@@ -383,6 +573,7 @@ export class MemoryClient {
         : new Blob([payload.file as Uint8Array], { type: payload.mimeType });
     form.append("file", blob, payload.filename);
     form.append("userId", payload.userId);
+    if (payload.partitionKey) form.append("partitionKey", payload.partitionKey);
     form.append("filename", payload.filename);
     form.append("mimeType", payload.mimeType);
     if (payload.title) form.append("title", payload.title);
@@ -591,6 +782,30 @@ export class MemoryClient {
       queryRecentChangesResponseSchema,
       payload,
     );
+  }
+
+  /**
+   * Lossless, partition-aware lifecycle feed for durable projections. The
+   * first page freezes a `throughSequence` watermark; pass `nextCursor` back
+   * unchanged until `complete` is true. A `cursorInvalid` response is typed
+   * recovery guidance rather than a partial page.
+   */
+  async queryChangeFeed(
+    payload: QueryChangeFeedRequest,
+  ): Promise<QueryChangeFeedResponse> {
+    return this._fetch(
+      "POST",
+      "/query/change-feed",
+      queryChangeFeedResponseSchema,
+      payload,
+    );
+  }
+
+  /** Common alias: lifecycle feed / replay feed. */
+  async getChangeFeed(
+    payload: QueryChangeFeedRequest,
+  ): Promise<QueryChangeFeedResponse> {
+    return this.queryChangeFeed(payload);
   }
 
   async recordMetric(

@@ -18,7 +18,10 @@ import {
 
 export default defineEventHandler(async (event) => {
   const params = rollupRequestSchema.parse(await readBody(event));
-  const jobId = `rollup:${params.userId}`;
+  const jobId =
+    params.partitionKey === undefined
+      ? `rollup:${params.userId}`
+      : `rollup:${params.userId}:${params.partitionKey}`;
 
   const existing = await batchQueue.getJob(jobId);
   if (existing) {

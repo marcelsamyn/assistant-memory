@@ -4,9 +4,11 @@
  * ingestion source). Mirrors the metric-source pattern in
  * `src/lib/metrics/sources.ts`.
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { sources } from "~/db/schema";
+import { preparePartitionWrite } from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import type { TypeId } from "~/types/typeid";
 
 const ROLLUP_EXTERNAL_ID = "rollup";
@@ -14,13 +16,19 @@ const ROLLUP_EXTERNAL_ID = "rollup";
 export async function ensureRollupSource(
   db: DrizzleDB,
   userId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<TypeId<"source">> {
+  await preparePartitionWrite(db, userId, partitionKey);
+  const externalId = partitionKey
+    ? `${ROLLUP_EXTERNAL_ID}:${partitionKey}`
+    : ROLLUP_EXTERNAL_ID;
   const [inserted] = await db
     .insert(sources)
     .values({
       userId,
+      partitionKey,
       type: "rollup",
-      externalId: ROLLUP_EXTERNAL_ID,
+      externalId,
       scope: "personal",
       status: "completed",
     })
@@ -36,8 +44,11 @@ export async function ensureRollupSource(
     .where(
       and(
         eq(sources.userId, userId),
+        partitionKey === undefined
+          ? isNull(sources.partitionKey)
+          : eq(sources.partitionKey, partitionKey),
         eq(sources.type, "rollup"),
-        eq(sources.externalId, ROLLUP_EXTERNAL_ID),
+        eq(sources.externalId, externalId),
       ),
     )
     .limit(1);

@@ -6,10 +6,12 @@
  * Common aliases: search schema, explicit search, hybrid search, SearchHit.
  */
 import { z } from "zod";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition.js";
 import { NodeTypeEnum } from "~/types/graph.js";
 
 export const searchRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   query: z.string().min(1),
   limit: z.number().int().min(1).max(50).optional().default(20),
   scope: z.enum(["personal", "reference"]).optional().default("personal"),

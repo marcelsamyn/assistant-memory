@@ -17,7 +17,7 @@
  * Common aliases: prune stale nodes, memory garbage collection, graph GC,
  * weed old nodes, staleness sweep, low-quality node cleanup.
  */
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import {
   aliases,
@@ -28,6 +28,11 @@ import {
   userProfiles,
 } from "~/db/schema";
 import { logEvent } from "~/lib/observability/log";
+import {
+  assertPartitionReadAllowed,
+  preparePartitionWrite,
+} from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import {
   pruneStaleNodesRequestSchema,
   type PruneStaleNodesRequest,
@@ -86,7 +91,11 @@ interface ScoredNodeRow {
  */
 async function scoreNodeRows(
   db: DrizzleDB,
-  params: { userId: string; nodeTypes: readonly NodeType[] },
+  params: {
+    userId: string;
+    partitionKey?: ContextPartitionKey;
+    nodeTypes: readonly NodeType[];
+  },
 ): Promise<ScoredNodeRow[]> {
   if (params.nodeTypes.length === 0) return [];
 
@@ -135,6 +144,9 @@ async function scoreNodeRows(
       claims,
       and(
         eq(claims.userId, params.userId),
+        params.partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, params.partitionKey),
         sql`(${claims.subjectNodeId} = ${nodes.id} or ${claims.objectNodeId} = ${nodes.id})`,
       ),
     )
@@ -142,6 +154,9 @@ async function scoreNodeRows(
       aliases,
       and(
         eq(aliases.userId, params.userId),
+        params.partitionKey === undefined
+          ? isNull(aliases.partitionKey)
+          : eq(aliases.partitionKey, params.partitionKey),
         eq(aliases.canonicalNodeId, nodes.id),
       ),
     )
@@ -149,6 +164,9 @@ async function scoreNodeRows(
     .where(
       and(
         eq(nodes.userId, params.userId),
+        params.partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, params.partitionKey),
         inArray(nodes.nodeType, [...params.nodeTypes]),
       ),
     )
@@ -167,6 +185,7 @@ async function scoreNodeRows(
 async function collectProtectedNodeIds(
   db: DrizzleDB,
   userId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<Set<TypeId<"node">>> {
   const protectedIds = new Set<TypeId<"node">>();
 
@@ -176,6 +195,9 @@ async function collectProtectedNodeIds(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
         eq(claims.predicate, "HAS_TASK_STATUS"),
         eq(claims.status, "active"),
         inArray(claims.objectValue, [...OPEN_TASK_STATUSES]),
@@ -205,6 +227,9 @@ async function collectProtectedNodeIds(
       .where(
         and(
           eq(aliases.userId, userId),
+          partitionKey === undefined
+            ? isNull(aliases.partitionKey)
+            : eq(aliases.partitionKey, partitionKey),
           inArray(aliases.normalizedAliasText, normalizedSelfAliases),
         ),
       );
@@ -299,12 +324,21 @@ function scoreNode(
 async function deleteNodes(
   db: DrizzleDB,
   userId: string,
+  partitionKey: ContextPartitionKey | undefined,
   nodeIds: TypeId<"node">[],
 ): Promise<number> {
   if (nodeIds.length === 0) return 0;
   const deleted = await db
     .delete(nodes)
-    .where(and(eq(nodes.userId, userId), inArray(nodes.id, nodeIds)))
+    .where(
+      and(
+        eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
+        inArray(nodes.id, nodeIds),
+      ),
+    )
     .returning({ id: nodes.id });
   return deleted.length;
 }
@@ -320,13 +354,24 @@ export async function pruneStaleNodes(
 ): Promise<PruneStaleNodesResponse> {
   const input = pruneStaleNodesRequestSchema.parse(rawInput);
   const db = dbOverride ?? (await useDatabase());
+  if (input.dryRun) {
+    await assertPartitionReadAllowed(db, input.userId, input.partitionKey);
+  } else {
+    await preparePartitionWrite(db, input.userId, input.partitionKey);
+  }
   const nodeTypes = input.nodeTypes ?? [...DEFAULT_PRUNABLE_NODE_TYPES];
   const threshold = input.minScore ?? 1 - input.aggressiveness;
   const now = Date.now();
 
   const [rows, protectedIds] = await Promise.all([
-    scoreNodeRows(db, { userId: input.userId, nodeTypes }),
-    collectProtectedNodeIds(db, input.userId),
+    scoreNodeRows(db, {
+      userId: input.userId,
+      ...(input.partitionKey !== undefined
+        ? { partitionKey: input.partitionKey }
+        : {}),
+      nodeTypes,
+    }),
+    collectProtectedNodeIds(db, input.userId, input.partitionKey),
   ]);
 
   const candidates = rows
@@ -354,6 +399,7 @@ export async function pruneStaleNodes(
     : await deleteNodes(
         db,
         input.userId,
+        input.partitionKey,
         toDelete.map((candidate) => candidate.id),
       );
 

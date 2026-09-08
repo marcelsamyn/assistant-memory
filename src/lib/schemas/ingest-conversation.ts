@@ -1,7 +1,9 @@
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 export const ingestConversationRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   conversation: z.object({
     id: z.string(),
     messages: z.array(

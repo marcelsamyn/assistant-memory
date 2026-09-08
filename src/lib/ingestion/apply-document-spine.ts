@@ -21,6 +21,7 @@
 import { useDatabase } from "../../utils/db";
 import { normalizeLabel } from "../label";
 import { nodeMetadata } from "~/db/schema";
+import { withSourceWriteFence } from "~/lib/partition-access";
 import { type DocumentSpine } from "~/lib/schemas/document-spine";
 import { type TypeId } from "~/types/typeid";
 
@@ -38,12 +39,14 @@ export function formatSpineDescription(spine: DocumentSpine): string {
  * constraint, so re-ingestion refreshes rather than duplicates.
  */
 export async function applyDocumentSpine(params: {
+  userId: string;
+  sourceId: TypeId<"source">;
   documentNodeId: TypeId<"node">;
   title: string | undefined;
   logLabel: string;
   spine: DocumentSpine;
 }): Promise<void> {
-  const { documentNodeId, title, logLabel, spine } = params;
+  const { userId, sourceId, documentNodeId, title, logLabel, spine } = params;
   const db = await useDatabase();
 
   const rawLabel = (title ?? logLabel).trim();
@@ -51,17 +54,19 @@ export async function applyDocumentSpine(params: {
   const canonicalLabel = label ? normalizeLabel(label) : null;
   const description = formatSpineDescription(spine);
 
-  await db
-    .insert(nodeMetadata)
-    .values({
-      nodeId: documentNodeId,
-      label,
-      canonicalLabel,
-      description,
-      additionalData: {},
-    })
-    .onConflictDoUpdate({
-      target: nodeMetadata.nodeId,
-      set: { label, canonicalLabel, description },
-    });
+  await withSourceWriteFence(db, { userId, sources: [{ sourceId }] }, (tx) =>
+    tx
+      .insert(nodeMetadata)
+      .values({
+        nodeId: documentNodeId,
+        label,
+        canonicalLabel,
+        description,
+        additionalData: {},
+      })
+      .onConflictDoUpdate({
+        target: nodeMetadata.nodeId,
+        set: { label, canonicalLabel, description },
+      }),
+  );
 }

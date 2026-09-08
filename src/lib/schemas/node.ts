@@ -6,6 +6,7 @@ import {
   ScopeEnum,
 } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 // --- Get Node ---
@@ -29,6 +30,7 @@ export const getNodeClaimFilterSchema = z.object({
 
 export const getNodeRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   nodeId: typeIdSchema("node"),
   claimFilter: getNodeClaimFilterSchema.optional(),
 });
@@ -79,6 +81,7 @@ export type GetNodeResponse = z.infer<typeof getNodeResponseSchema>;
 
 export const getNodeSourcesRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   nodeId: typeIdSchema("node"),
 });
 
@@ -101,6 +104,7 @@ export type GetNodeSourcesResponse = z.infer<
 
 export const updateNodeRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   nodeId: typeIdSchema("node"),
   label: z.string().optional(),
   nodeType: NodeTypeEnum.optional(),
@@ -129,6 +133,7 @@ export type UpdateNodeResponse = z.infer<typeof updateNodeResponseSchema>;
 
 export const summarizeNodeRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   nodeId: typeIdSchema("node"),
 });
 
@@ -149,6 +154,7 @@ export type SummarizeNodeResponse = z.infer<typeof summarizeNodeResponseSchema>;
 
 export const deleteNodeRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   nodeId: typeIdSchema("node"),
 });
 
@@ -206,6 +212,7 @@ export type CreateNodeInitialClaim = z.infer<
 
 export const createNodeRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   nodeType: NodeTypeEnum,
   label: z.string().min(1),
   description: z.string().optional(),

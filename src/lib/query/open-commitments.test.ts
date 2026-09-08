@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 
 async function seedTask(
@@ -193,6 +194,7 @@ describeIfServer("open commitments query", () => {
           "updated_at" timestamp with time zone DEFAULT now() NOT NULL
         );
       `);
+      await installPartitionCompatibilityFixture(client);
 
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
       await client.query(
@@ -442,6 +444,7 @@ describeIfServer("open commitments query", () => {
           "updated_at" timestamp with time zone DEFAULT now() NOT NULL
         );
       `);
+      await installPartitionCompatibilityFixture(client);
 
       await client.query(
         `INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`,
@@ -529,6 +532,7 @@ describeIfServer("open commitments query", () => {
           "updated_at" timestamp with time zone DEFAULT now() NOT NULL
         );
       `);
+      await installPartitionCompatibilityFixture(client);
 
       await client.query(
         `INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`,

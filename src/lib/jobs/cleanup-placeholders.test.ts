@@ -9,6 +9,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -68,6 +69,7 @@ async function createTables(client: Client): Promise<void> {
       UNIQUE ("node_id")
     );
   `);
+  await installPartitionCompatibilityFixture(client);
 }
 
 interface SeedNodeArgs {

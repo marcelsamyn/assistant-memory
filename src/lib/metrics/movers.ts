@@ -83,17 +83,23 @@ function moverMagnitude(mover: MetricMover): number {
 /** Rank a user's active metrics by recent movement. */
 export async function getMetricMovers({
   userId,
+  partitionKey,
   metricIds,
   limit,
 }: GetMetricMoversRequest): Promise<MetricMover[]> {
   const [{ summaries }, definitions] = await Promise.all([
     getMetricSummaries({
       userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
       ...(metricIds !== undefined
         ? { metricIds }
         : { filter: { active: true } }),
     }),
-    listMetrics({ userId, filter: { active: true } }),
+    listMetrics({
+      userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
+      filter: { active: true },
+    }),
   ]);
 
   const definitionById = new Map(

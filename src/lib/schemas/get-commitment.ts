@@ -5,6 +5,7 @@ import {
   TaskStatusEnum,
 } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 /**
@@ -15,6 +16,7 @@ import { z } from "zod";
  */
 export const getCommitmentRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   taskId: typeIdSchema("node"),
   /** Include the full lifecycle history of the three task predicates. */
   includeHistory: z.boolean().default(true),

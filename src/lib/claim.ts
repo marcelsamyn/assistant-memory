@@ -1,5 +1,5 @@
 /** Claim operations: create, retract, delete, reattribute. */
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { claims, claimEmbeddings, nodeMetadata, nodes } from "~/db/schema";
 import { applyClaimLifecycle, fetchClaimsByIds } from "~/lib/claims/lifecycle";
 import { assertRelationshipPredicateShape } from "~/lib/claims/predicate-shapes";
@@ -7,6 +7,12 @@ import { generateEmbeddings } from "~/lib/embeddings";
 import { CrossScopeMergeError } from "~/lib/node";
 import { getEffectiveNodeScopes } from "~/lib/node-scope";
 import { logEvent } from "~/lib/observability/log";
+import {
+  assertSourcePartition,
+  preparePartitionWrite,
+  withSourceWriteFence,
+} from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { ensureSystemSource } from "~/lib/sources";
 import {
   AttributePredicateEnum,
@@ -95,6 +101,7 @@ export type CreatedClaim = ClaimSelect & {
 
 export type CreateClaimInput = {
   userId: string;
+  partitionKey?: ContextPartitionKey | undefined;
   subjectNodeId: TypeId<"node">;
   predicate: Predicate;
   statement: string;
@@ -151,6 +158,7 @@ async function fetchOwnedNodes(
   db: Database,
   userId: string,
   nodeIds: TypeId<"node">[],
+  partitionKey?: ContextPartitionKey,
 ): Promise<Map<TypeId<"node">, { label: string | null; nodeType: NodeType }>> {
   const uniqueNodeIds = [...new Set(nodeIds)];
   if (uniqueNodeIds.length === 0) return new Map();
@@ -163,7 +171,15 @@ async function fetchOwnedNodes(
     })
     .from(nodes)
     .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-    .where(and(eq(nodes.userId, userId), inArray(nodes.id, uniqueNodeIds)));
+    .where(
+      and(
+        eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
+        inArray(nodes.id, uniqueNodeIds),
+      ),
+    );
 
   if (found.length !== uniqueNodeIds.length) {
     const foundIds = new Set(found.map((node) => node.id));
@@ -209,6 +225,7 @@ export async function createClaim(
   input: CreateClaimInput,
 ): Promise<CreatedClaim> {
   const db = await useDatabase();
+  await preparePartitionWrite(db, input.userId, input.partitionKey);
   const hasObjectNode = input.objectNodeId !== undefined;
   const hasObjectValue = input.objectValue !== undefined;
   if (hasObjectNode === hasObjectValue) {
@@ -244,10 +261,15 @@ export async function createClaim(
     }
   }
 
-  const ownedNodes = await fetchOwnedNodes(db, input.userId, [
-    input.subjectNodeId,
-    ...(input.objectNodeId !== undefined ? [input.objectNodeId] : []),
-  ]);
+  const ownedNodes = await fetchOwnedNodes(
+    db,
+    input.userId,
+    [
+      input.subjectNodeId,
+      ...(input.objectNodeId !== undefined ? [input.objectNodeId] : []),
+    ],
+    input.partitionKey,
+  );
 
   if (relationshipPredicate.success && input.objectNodeId !== undefined) {
     const subject = ownedNodes.get(input.subjectNodeId);
@@ -262,30 +284,43 @@ export async function createClaim(
   }
 
   const sourceId =
-    input.sourceId ?? (await ensureSystemSource(db, input.userId, "manual"));
+    input.sourceId ??
+    (await ensureSystemSource(db, input.userId, "manual", input.partitionKey));
+  await assertSourcePartition({
+    db,
+    userId: input.userId,
+    sourceId,
+    partitionKey: input.partitionKey,
+  });
 
-  const [inserted] = await db
-    .insert(claims)
-    .values({
-      userId: input.userId,
-      subjectNodeId: input.subjectNodeId,
-      objectNodeId: input.objectNodeId,
-      objectValue: input.objectValue,
-      predicate: input.predicate,
-      statement: input.statement,
-      description: input.description,
-      metadata: input.metadata,
-      objectInstant: input.objectInstant,
-      sourceId,
-      scope: input.scope ?? "personal",
-      assertedByKind: input.assertedByKind ?? "user",
-      assertedByNodeId: input.assertedByNodeId,
-      statedAt: input.statedAt ?? new Date(),
-      validFrom: input.validFrom,
-      validTo: input.validTo,
-      status: "active",
-    })
-    .returning();
+  const [inserted] = await withSourceWriteFence(
+    db,
+    { userId: input.userId, sources: [{ sourceId }] },
+    (tx) =>
+      tx
+        .insert(claims)
+        .values({
+          userId: input.userId,
+          partitionKey: input.partitionKey,
+          subjectNodeId: input.subjectNodeId,
+          objectNodeId: input.objectNodeId,
+          objectValue: input.objectValue,
+          predicate: input.predicate,
+          statement: input.statement,
+          description: input.description,
+          metadata: input.metadata,
+          objectInstant: input.objectInstant,
+          sourceId,
+          scope: input.scope ?? "personal",
+          assertedByKind: input.assertedByKind ?? "user",
+          assertedByNodeId: input.assertedByNodeId,
+          statedAt: input.statedAt ?? new Date(),
+          validFrom: input.validFrom,
+          validTo: input.validTo,
+          status: "active",
+        })
+        .returning(),
+  );
 
   if (!inserted) throw new Error("Failed to create claim");
 
@@ -322,11 +357,21 @@ export async function createClaim(
 export async function deleteClaim(
   userId: string,
   claimId: TypeId<"claim">,
+  partitionKey?: ContextPartitionKey,
 ): Promise<boolean> {
   const db = await useDatabase();
+  await preparePartitionWrite(db, userId, partitionKey);
   const [deletedClaim] = await db
     .delete(claims)
-    .where(and(eq(claims.id, claimId), eq(claims.userId, userId)))
+    .where(
+      and(
+        eq(claims.id, claimId),
+        eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
+      ),
+    )
     .returning();
 
   if (!deletedClaim) return false;
@@ -383,6 +428,7 @@ export class InactiveClaimReattributionError extends Error {
 
 export type ReattributeClaimInput = {
   userId: string;
+  partitionKey?: ContextPartitionKey | undefined;
   claimId: TypeId<"claim">;
   replace: ReattributeReplace;
   newNodeId: TypeId<"node">;
@@ -415,11 +461,20 @@ export async function reattributeClaim(
   input: ReattributeClaimInput,
 ): Promise<CreatedClaim | null> {
   const db = await useDatabase();
+  await preparePartitionWrite(db, input.userId, input.partitionKey);
 
   const [original] = await db
     .select()
     .from(claims)
-    .where(and(eq(claims.id, input.claimId), eq(claims.userId, input.userId)))
+    .where(
+      and(
+        eq(claims.id, input.claimId),
+        eq(claims.userId, input.userId),
+        input.partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, input.partitionKey),
+      ),
+    )
     .limit(1);
 
   if (!original) return null;
@@ -440,7 +495,12 @@ export async function reattributeClaim(
 
   // Validate the new endpoint node exists and is owned by the user. Reuse the
   // same ownership check createClaim uses so the error surface is identical.
-  await fetchOwnedNodes(db, input.userId, [input.newNodeId]);
+  await fetchOwnedNodes(
+    db,
+    input.userId,
+    [input.newNodeId],
+    input.partitionKey,
+  );
 
   // Compute the resulting endpoint pair and refuse a cross-scope inconsistency,
   // mirroring the guard merge enforces. For an attribute claim the object is a
@@ -463,44 +523,51 @@ export async function reattributeClaim(
   // Atomic retract-then-recreate: both the retraction and the new endpoint
   // claim land in one transaction so the graph never observes a dangling or
   // duplicated assertion.
-  const inserted = await db.transaction(async (tx) => {
-    await tx
-      .update(claims)
-      .set({ status: "retracted", updatedAt: new Date() })
-      .where(and(eq(claims.id, original.id), eq(claims.userId, input.userId)));
+  const inserted = await withSourceWriteFence(
+    db,
+    { userId: input.userId, sources: [{ sourceId: original.sourceId }] },
+    async (tx) => {
+      await tx
+        .update(claims)
+        .set({ status: "retracted", updatedAt: new Date() })
+        .where(
+          and(eq(claims.id, original.id), eq(claims.userId, input.userId)),
+        );
 
-    const [created] = await tx
-      .insert(claims)
-      .values({
-        userId: original.userId,
-        subjectNodeId: nextSubjectNodeId,
-        objectNodeId: nextObjectNodeId,
-        objectValue: original.objectValue,
-        predicate: original.predicate,
-        statement: original.statement,
-        description: original.description,
-        metadata: original.metadata,
-        objectInstant: original.objectInstant,
-        sourceId: original.sourceId,
-        scope: original.scope,
-        assertedByKind: "user_confirmed",
-        // When the subject is replaced, anchor provenance to the new subject —
-        // mirrors how merge rewires subject-side attribution. When the object
-        // is replaced the subject (and thus its provenance anchor) is unchanged.
-        assertedByNodeId:
-          input.replace === "subject"
-            ? nextSubjectNodeId
-            : original.assertedByNodeId,
-        statedAt: original.statedAt,
-        validFrom: original.validFrom,
-        validTo: original.validTo,
-        status: "active",
-      })
-      .returning();
+      const [created] = await tx
+        .insert(claims)
+        .values({
+          userId: original.userId,
+          partitionKey: original.partitionKey,
+          subjectNodeId: nextSubjectNodeId,
+          objectNodeId: nextObjectNodeId,
+          objectValue: original.objectValue,
+          predicate: original.predicate,
+          statement: original.statement,
+          description: original.description,
+          metadata: original.metadata,
+          objectInstant: original.objectInstant,
+          sourceId: original.sourceId,
+          scope: original.scope,
+          assertedByKind: "user_confirmed",
+          // When the subject is replaced, anchor provenance to the new subject —
+          // mirrors how merge rewires subject-side attribution. When the object
+          // is replaced the subject (and thus its provenance anchor) is unchanged.
+          assertedByNodeId:
+            input.replace === "subject"
+              ? nextSubjectNodeId
+              : original.assertedByNodeId,
+          statedAt: original.statedAt,
+          validFrom: original.validFrom,
+          validTo: original.validTo,
+          status: "active",
+        })
+        .returning();
 
-    if (!created) throw new Error("Failed to create reattributed claim");
-    return created;
-  });
+      if (!created) throw new Error("Failed to create reattributed claim");
+      return created;
+    },
+  );
 
   logEvent("claim.retracted", {
     claimId: original.id,
@@ -529,10 +596,15 @@ export async function reattributeClaim(
 
   await insertClaimEmbedding(db, finalized);
 
-  const nodeMap = await fetchOwnedNodes(db, input.userId, [
-    finalized.subjectNodeId,
-    ...(finalized.objectNodeId !== null ? [finalized.objectNodeId] : []),
-  ]);
+  const nodeMap = await fetchOwnedNodes(
+    db,
+    input.userId,
+    [
+      finalized.subjectNodeId,
+      ...(finalized.objectNodeId !== null ? [finalized.objectNodeId] : []),
+    ],
+    input.partitionKey,
+  );
 
   return {
     ...finalized,
@@ -549,12 +621,22 @@ export async function updateClaim(
   userId: string,
   claimId: TypeId<"claim">,
   updates: { status: Extract<ClaimStatus, "retracted"> },
+  partitionKey?: ContextPartitionKey,
 ): Promise<ClaimSelect | null> {
   const db = await useDatabase();
+  await preparePartitionWrite(db, userId, partitionKey);
   const [updated] = await db
     .update(claims)
     .set({ status: updates.status, updatedAt: new Date() })
-    .where(and(eq(claims.id, claimId), eq(claims.userId, userId)))
+    .where(
+      and(
+        eq(claims.id, claimId),
+        eq(claims.userId, userId),
+        partitionKey === undefined
+          ? isNull(claims.partitionKey)
+          : eq(claims.partitionKey, partitionKey),
+      ),
+    )
     .returning();
 
   if (updated) {

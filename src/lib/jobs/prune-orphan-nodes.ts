@@ -22,9 +22,15 @@ import {
   or,
   sql,
 } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import type { DrizzleDB } from "~/db";
 import { aliases, claims, nodeMetadata, nodes, sources } from "~/db/schema";
 import { logEvent } from "~/lib/observability/log";
+import {
+  assertPartitionReadAllowed,
+  preparePartitionWrite,
+} from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import {
   pruneOrphanNodesRequestSchema,
   type PruneMissingBlobSource,
@@ -32,6 +38,7 @@ import {
   type PruneOrphanNodesRequest,
   type PruneOrphanNodesResponse,
 } from "~/lib/schemas/prune-orphan-nodes";
+import { applySourceLifecycleCommand } from "~/lib/source-lifecycle";
 import {
   sourceMetadataSchema,
   sourceService,
@@ -66,6 +73,8 @@ interface MissingBlobSourceCandidateRow {
   id: TypeId<"source">;
   type: string;
   externalId: string;
+  partitionKey: ContextPartitionKey | null;
+  version: number;
   createdAt: Date;
   metadata: unknown;
 }
@@ -76,9 +85,15 @@ interface MissingBlobSourceScan {
   candidates: MissingBlobSourceCandidateRow[];
 }
 
-function sourceExpectsBlobCondition(userId: string): ReturnType<typeof and> {
+function sourceExpectsBlobCondition(
+  userId: string,
+  partitionKey?: ContextPartitionKey,
+): ReturnType<typeof and> {
   return and(
     eq(sources.userId, userId),
+    partitionKey === undefined
+      ? isNull(sources.partitionKey)
+      : eq(sources.partitionKey, partitionKey),
     isNull(sources.deletedAt),
     or(isNotNull(sources.contentLength), isNotNull(sources.contentType)),
   );
@@ -88,11 +103,15 @@ function sourceHasInlineRawContent(metadata: unknown): boolean {
   return sourceMetadataSchema.parse(metadata ?? {}).rawContent !== undefined;
 }
 
-function orphanEvidenceFreeCondition(userId: string): ReturnType<typeof and> {
+function orphanEvidenceFreeCondition(
+  userId: string,
+  partitionKey?: ContextPartitionKey,
+): ReturnType<typeof and> {
   return and(
     sql`NOT EXISTS (
       SELECT 1 FROM ${claims}
       WHERE ${claims.userId} = ${userId}
+        AND ${partitionKey === undefined ? isNull(claims.partitionKey) : eq(claims.partitionKey, partitionKey)}
         AND (
           ${claims.subjectNodeId} = ${nodes.id}
           OR ${claims.objectNodeId} = ${nodes.id}
@@ -102,6 +121,7 @@ function orphanEvidenceFreeCondition(userId: string): ReturnType<typeof and> {
     sql`NOT EXISTS (
       SELECT 1 FROM ${aliases}
       WHERE ${aliases.userId} = ${userId}
+        AND ${partitionKey === undefined ? isNull(aliases.partitionKey) : eq(aliases.partitionKey, partitionKey)}
         AND ${aliases.canonicalNodeId} = ${nodes.id}
     )`,
   );
@@ -114,6 +134,7 @@ async function findOrphanCandidates(
     cutoff: Date;
     limit: number;
     nodeTypes: readonly NodeType[];
+    partitionKey?: ContextPartitionKey;
   },
 ): Promise<OrphanCandidateRow[]> {
   if (params.nodeTypes.length === 0) return [];
@@ -130,9 +151,12 @@ async function findOrphanCandidates(
     .where(
       and(
         eq(nodes.userId, params.userId),
+        params.partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, params.partitionKey),
         lt(nodes.createdAt, params.cutoff),
         inArray(nodes.nodeType, [...params.nodeTypes]),
-        orphanEvidenceFreeCondition(params.userId),
+        orphanEvidenceFreeCondition(params.userId, params.partitionKey),
       ),
     )
     .orderBy(asc(nodes.createdAt), asc(nodes.id))
@@ -145,6 +169,7 @@ async function scanMissingBlobSources(
   params: {
     userId: string;
     limit: number;
+    partitionKey?: ContextPartitionKey;
   },
 ): Promise<MissingBlobSourceScan> {
   const sourceRowsPlusOne = await db
@@ -152,11 +177,13 @@ async function scanMissingBlobSources(
       id: sources.id,
       type: sources.type,
       externalId: sources.externalId,
+      partitionKey: sources.partitionKey,
+      version: sources.version,
       createdAt: sources.createdAt,
       metadata: sources.metadata,
     })
     .from(sources)
-    .where(sourceExpectsBlobCondition(params.userId))
+    .where(sourceExpectsBlobCondition(params.userId, params.partitionKey))
     .orderBy(asc(sources.createdAt), asc(sources.id))
     .limit(params.limit + 1);
   const sourceRows = sourceRowsPlusOne.slice(0, params.limit);
@@ -184,16 +211,25 @@ async function deleteStillMissingBlobSources(
   db: DrizzleDB,
   blobStore: SourceBlobStore,
   userId: string,
+  partitionKey: ContextPartitionKey | undefined,
   sourceIds: TypeId<"source">[],
 ): Promise<number> {
   if (sourceIds.length === 0) return 0;
 
   const [sourceRows, existingBlobSourceIds] = await Promise.all([
     db
-      .select({ id: sources.id, metadata: sources.metadata })
+      .select({
+        id: sources.id,
+        metadata: sources.metadata,
+        partitionKey: sources.partitionKey,
+        version: sources.version,
+      })
       .from(sources)
       .where(
-        and(sourceExpectsBlobCondition(userId), inArray(sources.id, sourceIds)),
+        and(
+          sourceExpectsBlobCondition(userId, partitionKey),
+          inArray(sources.id, sourceIds),
+        ),
       ),
     blobStore.listBlobSourceIds(userId),
   ]);
@@ -208,22 +244,29 @@ async function deleteStillMissingBlobSources(
 
   if (stillMissingIds.length === 0) return 0;
 
-  const deleted = await db
-    .delete(sources)
-    .where(
-      and(
-        sourceExpectsBlobCondition(userId),
-        inArray(sources.id, stillMissingIds),
-      ),
-    )
-    .returning({ id: sources.id });
-
-  return deleted.length;
+  const stillMissingSources = sourceRows.filter((source) =>
+    stillMissingIds.includes(source.id),
+  );
+  const results = await Promise.all(
+    stillMissingSources.map(async (source) => {
+      await applySourceLifecycleCommand(db, {
+        userId,
+        sourceId: source.id,
+        expectedPartitionKey: source.partitionKey,
+        expectedSourceVersion: source.version,
+        commandId: randomUUID(),
+        action: "tombstone",
+      });
+      return source.id;
+    }),
+  );
+  return results.length;
 }
 
 async function deleteStillOrphanNodes(
   db: DrizzleDB,
   userId: string,
+  partitionKey: ContextPartitionKey | undefined,
   nodeIds: TypeId<"node">[],
 ): Promise<number> {
   if (nodeIds.length === 0) return 0;
@@ -233,10 +276,13 @@ async function deleteStillOrphanNodes(
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionKey === undefined
+          ? isNull(nodes.partitionKey)
+          : eq(nodes.partitionKey, partitionKey),
         inArray(nodes.id, nodeIds),
         // Re-check evidence at the destructive boundary in case another
         // ingestion linked a candidate between selection and deletion.
-        orphanEvidenceFreeCondition(userId),
+        orphanEvidenceFreeCondition(userId, partitionKey),
       ),
     )
     .returning({ id: nodes.id });
@@ -255,6 +301,11 @@ export async function pruneOrphanNodes(
 ): Promise<PruneOrphanNodesResponse> {
   const input = pruneOrphanNodesRequestSchema.parse(rawInput);
   const db = dbOverride ?? (await useDatabase());
+  if (input.dryRun) {
+    await assertPartitionReadAllowed(db, input.userId, input.partitionKey);
+  } else {
+    await preparePartitionWrite(db, input.userId, input.partitionKey);
+  }
   const nodeTypes = input.nodeTypes ?? [...DEFAULT_PRUNABLE_NODE_TYPES];
   const cutoff = new Date(
     Date.now() - input.olderThanDays * 24 * 60 * 60 * 1000,
@@ -262,6 +313,9 @@ export async function pruneOrphanNodes(
 
   const missingBlobSourceScan = await scanMissingBlobSources(db, blobStore, {
     userId: input.userId,
+    ...(input.partitionKey !== undefined
+      ? { partitionKey: input.partitionKey }
+      : {}),
     limit: input.sourceScanLimit,
   });
   const deletedMissingBlobSourceCount = input.dryRun
@@ -270,6 +324,7 @@ export async function pruneOrphanNodes(
         db,
         blobStore,
         input.userId,
+        input.partitionKey,
         missingBlobSourceScan.candidates.map((source) => source.id),
       );
 
@@ -292,6 +347,9 @@ export async function pruneOrphanNodes(
     cutoff,
     limit: input.limit + 1,
     nodeTypes,
+    ...(input.partitionKey !== undefined
+      ? { partitionKey: input.partitionKey }
+      : {}),
   });
   const hasMore = candidatesPlusOne.length > input.limit;
   const candidates = candidatesPlusOne.slice(0, input.limit);
@@ -301,6 +359,7 @@ export async function pruneOrphanNodes(
     : await deleteStillOrphanNodes(
         db,
         input.userId,
+        input.partitionKey,
         candidates.map((candidate) => candidate.id),
       );
 

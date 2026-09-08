@@ -1,9 +1,11 @@
 import { z } from "zod";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition.js";
 import { ScopeEnum } from "~/types/graph.js";
 import { typeIdSchema } from "~/types/typeid.js";
 
 export const ingestDocumentRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   updateExisting: z.boolean().optional().default(false),
   document: z.object({
     id: z.string(),

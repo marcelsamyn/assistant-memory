@@ -11,12 +11,13 @@
  * Common aliases: speaker map, speaker resolution, transcript participant
  * mapping, user-self detection, placeholder Person.
  */
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { aliases, nodeMetadata, nodes, type NodeSelect } from "~/db/schema";
 import { createAlias, normalizeAliasText } from "~/lib/alias";
 import { normalizeLabel } from "~/lib/label";
 import { getEffectiveNodeScopes } from "~/lib/node-scope";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { ensureUserSelfPersonNode } from "~/lib/user-self-identity";
 import type { TypeId } from "~/types/typeid";
 
@@ -40,6 +41,7 @@ export interface KnownParticipant {
 export interface ResolveSpeakersInput {
   db: DrizzleDB;
   userId: string;
+  partitionKey?: ContextPartitionKey;
   speakerLabels: string[];
   userSelfAliases: string[];
   knownParticipants?: KnownParticipant[];
@@ -55,6 +57,7 @@ export type SpeakerMap = Map<string, ResolvedSpeaker>;
 export async function resolveSpeakers({
   db,
   userId,
+  partitionKey,
   speakerLabels,
   userSelfAliases,
   knownParticipants = [],
@@ -82,6 +85,9 @@ export async function resolveSpeakers({
       .where(
         and(
           eq(nodes.userId, userId),
+          partitionKey === undefined
+            ? isNull(nodes.partitionKey)
+            : eq(nodes.partitionKey, partitionKey),
           inArray(nodes.id, knownParticipantNodeIds),
         ),
       );
@@ -104,7 +110,7 @@ export async function resolveSpeakers({
   let userSelfNodeId: TypeId<"node"> | null = null;
   const ensureUserSelfNode = async (): Promise<TypeId<"node">> => {
     if (userSelfNodeId) return userSelfNodeId;
-    userSelfNodeId = await ensureUserSelfPersonNode(db, userId);
+    userSelfNodeId = await ensureUserSelfPersonNode(db, userId, partitionKey);
     return userSelfNodeId;
   };
 
@@ -134,6 +140,7 @@ export async function resolveSpeakers({
       // alias table without the host having to re-pass `knownParticipants`.
       await createAlias(db, {
         userId,
+        partitionKey,
         canonicalNodeId: knownNodeId,
         aliasText: label,
       });
@@ -150,6 +157,12 @@ export async function resolveSpeakers({
       .where(
         and(
           eq(aliases.userId, userId),
+          partitionKey === undefined
+            ? isNull(aliases.partitionKey)
+            : eq(aliases.partitionKey, partitionKey),
+          partitionKey === undefined
+            ? isNull(nodes.partitionKey)
+            : eq(nodes.partitionKey, partitionKey),
           eq(aliases.normalizedAliasText, normalized),
           eq(nodes.nodeType, "Person"),
         ),
@@ -180,9 +193,11 @@ export async function resolveSpeakers({
       db,
       userId,
       label,
+      partitionKey,
     );
     await createAlias(db, {
       userId,
+      partitionKey,
       canonicalNodeId: placeholderNodeId,
       aliasText: label,
     });
@@ -200,10 +215,15 @@ async function createPlaceholderPersonNode(
   db: DrizzleDB,
   userId: string,
   label: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<TypeId<"node">> {
   const [newNode]: NodeSelect[] = await db
     .insert(nodes)
-    .values({ userId, nodeType: "Person" })
+    .values({
+      userId,
+      nodeType: "Person",
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
+    })
     .returning();
   if (!newNode) {
     throw new Error(

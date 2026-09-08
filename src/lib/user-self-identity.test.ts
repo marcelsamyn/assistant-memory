@@ -7,6 +7,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 
 describe("selectPrimarySelfLabel", () => {
   it("picks the alias with the most tokens", () => {
@@ -108,6 +109,7 @@ async function createIdentityHygieneTables(client: Client): Promise<void> {
         UNIQUE ("user_id", "normalized_alias_text", "canonical_node_id")
     );
   `);
+  await installPartitionCompatibilityFixture(client);
 }
 
 describeIfServer("ensureUserSelfIdentity", () => {

@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { DrizzleDB } from "~/db";
 import { sources } from "~/db/schema";
 import { generateTitleFromContent } from "~/lib/source-title";
@@ -55,11 +55,16 @@ export async function generateSourceTitle(
   { userId, sourceId }: { userId: string; sourceId: TypeId<"source"> },
 ): Promise<{ generated: boolean }> {
   const [row] = await db
-    .select({ type: sources.type, metadata: sources.metadata })
+    .select({
+      type: sources.type,
+      metadata: sources.metadata,
+      version: sources.version,
+      deletedAt: sources.deletedAt,
+    })
     .from(sources)
     .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)))
     .limit(1);
-  if (!row) return { generated: false };
+  if (!row || row.deletedAt !== null) return { generated: false };
   if (deriveTitle(row.metadata)) return { generated: false };
 
   const preview = await gatherContentPreview(db, userId, sourceId);
@@ -72,7 +77,7 @@ export async function generateSourceTitle(
   });
   if (!title) return { generated: false };
 
-  await db
+  const [updated] = await db
     .update(sources)
     .set({
       metadata: sql`COALESCE(${sources.metadata}, '{}'::jsonb) || jsonb_build_object('title', ${title}::text)`,
@@ -81,8 +86,11 @@ export async function generateSourceTitle(
       and(
         eq(sources.id, sourceId),
         eq(sources.userId, userId),
+        eq(sources.version, row.version),
+        isNull(sources.deletedAt),
         sql`NOT (COALESCE(${sources.metadata}, '{}'::jsonb) ? 'title')`,
       ),
-    );
-  return { generated: true };
+    )
+    .returning({ id: sources.id });
+  return { generated: updated !== undefined };
 }

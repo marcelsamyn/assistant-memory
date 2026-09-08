@@ -6,11 +6,10 @@ import {
 } from "~/lib/schemas/claim";
 
 export default defineEventHandler(async (event) => {
-  const { userId, claimId, status } = updateClaimRequestSchema.parse(
-    await readBody(event),
-  );
+  const { userId, partitionKey, claimId, status } =
+    updateClaimRequestSchema.parse(await readBody(event));
   try {
-    const result = await updateClaim(userId, claimId, { status });
+    const result = await updateClaim(userId, claimId, { status }, partitionKey);
     if (!result) {
       throw createError({ statusCode: 404, statusMessage: "Claim not found" });
     }

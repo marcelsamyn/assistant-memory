@@ -8,6 +8,7 @@
  * Stored aliases are never mutated.
  */
 import { z } from "zod";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition.js";
 import { ScopeEnum } from "~/types/graph.js";
 import { typeIdSchema } from "~/types/typeid.js";
 
@@ -35,6 +36,7 @@ export const transcriptKnownParticipantSchema = z.object({
 
 export const ingestTranscriptRequestSchema = z.object({
   userId: z.string().min(1),
+  partitionKey: contextPartitionKeySchema.optional(),
   transcriptId: z.string().min(1),
   scope: ScopeEnum.optional().default("personal"),
   occurredAt: z.string().datetime(),

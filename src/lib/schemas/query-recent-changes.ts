@@ -17,6 +17,7 @@ import {
   PredicateEnum,
 } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
+import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
 /**
@@ -38,6 +39,7 @@ export type ChangeKind = z.infer<typeof changeKindEnum>;
 
 export const queryRecentChangesRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   /** Inclusive lower bound on change time (a claim/node `createdAt` or `updatedAt`). */
   since: isoDateTimeSchema,
   /** Inclusive upper bound; defaults to "now" when omitted. */

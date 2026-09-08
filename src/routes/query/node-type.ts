@@ -10,12 +10,12 @@ import { useDatabase } from "~/utils/db";
 type LabeledOneHopNode = OneHopNode & { label: string };
 
 export default defineEventHandler(async (event) => {
-  const { userId, types, date, includeFormattedResult } =
+  const { userId, partitionKey, types, date, includeFormattedResult } =
     queryNodeTypeRequestSchema.parse(await readBody(event));
   const db = await useDatabase();
 
   // Get the day node ID
-  const dayNodeId = await findDayNode(db, userId, date);
+  const dayNodeId = await findDayNode(db, userId, date, partitionKey);
   if (!dayNodeId) {
     return queryNodeTypeResponseSchema.parse({
       date,
@@ -26,7 +26,9 @@ export default defineEventHandler(async (event) => {
   }
 
   // Fetch one-hop connections (only nodes with labels)
-  const connections = await findOneHopNodes(db, userId, [dayNodeId]);
+  const connections = await findOneHopNodes(db, userId, [dayNodeId], {
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
+  });
 
   // Filter by requested types
   const filtered = connections.filter(

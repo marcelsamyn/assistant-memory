@@ -41,6 +41,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`/query/timeline` no longer leaks rollup nodes into `days`.** The day feed now matches only `YYYY-MM-DD` day nodes, so month/week/year rollup nodes (e.g. `2026-06`) never appear as spurious day entries.
 
+## [2.4.0] — 2026-07-13
+
+### Added
+
+- **Durable source erasure.** Added maintenance-only tombstone, restore, purge,
+  and cleanup-sweep APIs. Source trees now close against concurrent child
+  attachment and blob upload. Erased read models and opaque source objects use
+  durable cleanup receipts, so interrupted cleanup can resume safely.
+
+## [2.3.0] — 2026-07-13
+
+### Added
+
+- **Lossless lifecycle change feed.** Added the partition-aware
+  `POST /query/change-feed` endpoint plus `MemoryClient.queryChangeFeed` (and
+  `getChangeFeed`) for replay-safe projections. Pages use a stable,
+  transactionally allocated sequence and a frozen `throughSequence` cursor;
+  events retain feed epoch, provenance, freshness/status, and deletion or
+  reclassification tombstones. `cursorInvalid` gives typed shadow-resync
+  reasons, while `queryRecentChanges` remains the capped display API.
+
+- **Opaque memory partitions and resumable source reclassification.**
+  Ingestion, search, commitment reads, identity resolution, and temporal
+  rollups now accept a caller-owned `partitionKey`. Once migration starts,
+  omitted partition keys fail closed. Authenticated maintenance APIs provide
+  versioned migration, reclassification, progress, and recovery controls.
+
 ## [1.17.0] — 2026-06-07
 
 ### Added
@@ -69,6 +96,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`docs/sdk/`** — initial SDK reference documentation set. `docs/sdk/README.md` covers client construction; `docs/sdk/commitments.md` is the full commitments reference (all eleven methods, request/response shapes, lifecycle semantics, and end-to-end flow examples).
 
-[Unreleased]: https://github.com/your-org/assistant-memory/compare/v1.17.0...HEAD
+[Unreleased]: https://github.com/marcelsamyn/assistant-memory/compare/v2.4.0...HEAD
+[2.4.0]: https://github.com/marcelsamyn/assistant-memory/compare/v2.3.0...v2.4.0
+[2.3.0]: https://github.com/marcelsamyn/assistant-memory/compare/v2.1.0...v2.3.0
 [1.17.0]: https://github.com/your-org/assistant-memory/compare/v1.16.0...v1.17.0
 [1.16.0]: https://github.com/your-org/assistant-memory/compare/v1.15.0...v1.16.0

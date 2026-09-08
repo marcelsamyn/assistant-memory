@@ -2,6 +2,7 @@ import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
+import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId, type TypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -122,6 +123,7 @@ describeIfServer("sampleInterestingNodes", () => {
         "updated_at" timestamp with time zone DEFAULT now() NOT NULL
       );
     `);
+    await installPartitionCompatibilityFixture(client);
 
     const userId = "user_sample";
 
