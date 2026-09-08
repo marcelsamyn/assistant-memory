@@ -1,3 +1,7 @@
+ALTER TABLE "source_blob_uploads" DROP CONSTRAINT "source_blob_uploads_state_ck";
+--> statement-breakpoint
+ALTER TABLE "source_blob_uploads" ADD CONSTRAINT "source_blob_uploads_state_ck" CHECK ("state" IN ('reserved', 'uploading', 'upload_unknown', 'uploaded', 'cleanup_pending', 'cleanup_completed'));
+--> statement-breakpoint
 -- Collect row events without rewriting the feed head for every row. Statement
 -- triggers flush before control returns to the caller, including nested writes.
 CREATE FUNCTION prepare_memory_change_feed_batch() RETURNS trigger AS $$

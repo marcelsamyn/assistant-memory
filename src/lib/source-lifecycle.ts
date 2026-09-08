@@ -452,7 +452,11 @@ async function requestSourceBlobUploadCleanup(
     .orderBy(sourceBlobUploads.sourceId)
     .for("update");
   const pendingIds = uploads
-    .filter((upload) => upload.state !== "cleanup_completed")
+    .filter(
+      (upload) =>
+        upload.state !== "cleanup_completed" &&
+        upload.state !== "upload_unknown",
+    )
     .map((upload) => upload.sourceId);
   if (pendingIds.length === 0) return;
   await tx
@@ -1247,7 +1251,10 @@ export async function retryPendingLegacySourceReadModelRetraction(
   return { attempted, completed };
 }
 
-/** Records successful physical object deletion for an already-erased source. */
+/**
+ * Records physical deletion for an already-erased source. Unacknowledged
+ * uploads belong to the sweep, including the gap between observation and delete.
+ */
 export async function markSourceStorageCleanupCompleted(
   db: DrizzleDB,
   userId: string,
@@ -1261,6 +1268,7 @@ export async function markSourceStorageCleanupCompleted(
         eq(sourceTombstones.userId, userId),
         eq(sourceTombstones.sourceId, sourceId),
         eq(sourceTombstones.storageCleanupState, "pending"),
+        sql`NOT EXISTS (SELECT 1 FROM ${sourceBlobUploads} upload WHERE upload.user_id = ${sourceTombstones.userId} AND upload.source_id = ${sourceTombstones.sourceId} AND upload.uploaded_at IS NULL AND upload.state <> 'cleanup_completed')`,
       ),
     );
 }
@@ -1269,6 +1277,7 @@ type PendingSourceTombstoneStorageCleanup = {
   userId: string;
   sourceId: TypeId<"source">;
   storageObjectKey: string;
+  uploadUnknown: boolean;
 };
 
 /**
@@ -1284,8 +1293,9 @@ async function listPendingSourceTombstoneStorageCleanup(
     user_id: string;
     source_id: string;
     storage_object_key: string;
+    upload_unknown: boolean;
   }>(sql`
-    SELECT pending.user_id, pending.source_id, pending.storage_object_key
+    SELECT pending.user_id, pending.source_id, pending.storage_object_key, bool_or(pending.upload_unknown) AS upload_unknown
     FROM (
       SELECT
         tombstone.user_id,
@@ -1293,21 +1303,26 @@ async function listPendingSourceTombstoneStorageCleanup(
         COALESCE(
           tombstone.storage_object_key,
           tombstone.user_id || '/' || tombstone.source_id
-        ) AS storage_object_key
+        ) AS storage_object_key,
+        tombstone.updated_at AS retry_at,
+        false AS upload_unknown
       FROM ${sourceTombstones} AS tombstone
       WHERE tombstone.storage_cleanup_state = 'pending'
-      UNION
-      SELECT upload.user_id, upload.source_id, upload.object_key AS storage_object_key
+        AND NOT EXISTS (SELECT 1 FROM ${sourceBlobUploads} upload WHERE upload.user_id = tombstone.user_id AND upload.source_id = tombstone.source_id AND upload.state = 'upload_unknown')
+      UNION ALL
+      SELECT upload.user_id, upload.source_id, upload.object_key AS storage_object_key, upload.updated_at AS retry_at, upload.state = 'upload_unknown' AS upload_unknown
       FROM ${sourceBlobUploads} AS upload
-      WHERE upload.state = 'cleanup_pending'
+      WHERE upload.state IN ('cleanup_pending', 'upload_unknown')
     ) AS pending
-    ORDER BY pending.user_id, pending.source_id
+    GROUP BY pending.user_id, pending.source_id, pending.storage_object_key
+    ORDER BY min(pending.retry_at), pending.user_id, pending.source_id
     LIMIT ${limit}
   `);
   return rows.rows.map((row) => ({
     userId: row.user_id,
     sourceId: typeIdFromString("source", row.source_id),
     storageObjectKey: row.storage_object_key,
+    uploadUnknown: row.upload_unknown,
   }));
 }
 
@@ -1394,6 +1409,7 @@ export async function retryPendingSourceTombstoneStorageCleanup(
   db: DrizzleDB,
   deleteObjectKey: (objectKey: string) => Promise<void>,
   limit: number,
+  objectKeyExists?: (objectKey: string) => Promise<boolean>,
 ): Promise<SourceLifecycleStorageCleanupSweepResponse> {
   await recoverAbandonedSourceBlobUploadReservations(db);
   await recoverTombstonedSourceBlobUploadReservations(db);
@@ -1401,6 +1417,37 @@ export async function retryPendingSourceTombstoneStorageCleanup(
   const results = await Promise.all(
     pending.map(async (entry) => {
       try {
+        if (entry.uploadUnknown) {
+          // Rotate unresolved work to the back of the bounded queue. Absence
+          // is not proof of cancellation: the single PUT can still arrive.
+          await db
+            .update(sourceBlobUploads)
+            .set({ updatedAt: new Date() })
+            .where(
+              and(
+                eq(sourceBlobUploads.userId, entry.userId),
+                eq(sourceBlobUploads.sourceId, entry.sourceId),
+                eq(sourceBlobUploads.state, "upload_unknown"),
+              ),
+            );
+          if (
+            !objectKeyExists ||
+            !(await objectKeyExists(entry.storageObjectKey))
+          )
+            return { completed: false };
+          // Keys are unique and the native uploader never retries. Seeing the
+          // object proves this attempt committed; no later PUT can resurrect it.
+          await db
+            .update(sourceBlobUploads)
+            .set({ state: "cleanup_pending", updatedAt: new Date() })
+            .where(
+              and(
+                eq(sourceBlobUploads.userId, entry.userId),
+                eq(sourceBlobUploads.sourceId, entry.sourceId),
+                eq(sourceBlobUploads.state, "upload_unknown"),
+              ),
+            );
+        }
         await deleteObjectKey(entry.storageObjectKey);
         return {
           completed: await completePendingSourceTombstoneStorageCleanup(
@@ -1498,8 +1545,24 @@ export async function listSourceLifecycleStorageCleanupKeys(
       ),
     )
     .limit(1);
-  if (!command || command.storageCleanupState !== "pending") return [];
-  return command.storageObjectKeys;
+  if (
+    !command ||
+    command.storageCleanupState !== "pending" ||
+    command.storageObjectKeys.length === 0
+  )
+    return [];
+  const unknown = await db
+    .select({ objectKey: sourceBlobUploads.objectKey })
+    .from(sourceBlobUploads)
+    .where(
+      and(
+        eq(sourceBlobUploads.userId, userId),
+        eq(sourceBlobUploads.state, "upload_unknown"),
+        inArray(sourceBlobUploads.objectKey, command.storageObjectKeys),
+      ),
+    );
+  const unknownKeys = new Set(unknown.map((upload) => upload.objectKey));
+  return command.storageObjectKeys.filter((key) => !unknownKeys.has(key));
 }
 
 /** Lists every pending blob in a root source tree without exposing content. */
@@ -1522,12 +1585,16 @@ export async function listSourceTreeStorageCleanupIds(
     JOIN source_tree ON source_tree.source_id = tombstone.source_id
     WHERE tombstone.user_id = ${userId}
       AND tombstone.storage_cleanup_state = 'pending'
+      AND NOT EXISTS (SELECT 1 FROM ${sourceBlobUploads} upload WHERE upload.user_id = tombstone.user_id AND upload.source_id = tombstone.source_id AND upload.state = 'upload_unknown')
     ORDER BY tombstone.source_id
   `);
   return result.rows.map((row) => typeIdFromString("source", row.source_id));
 }
 
-/** Marks every blob in a root source tree as physically removed. */
+/**
+ * Records direct tree cleanup. An upload without an acknowledgement remains
+ * sweep-owned until its own physical deletion has completed.
+ */
 export async function markSourceTreeStorageCleanupCompleted(
   db: DrizzleDB,
   userId: string,
@@ -1542,6 +1609,7 @@ export async function markSourceTreeStorageCleanupCompleted(
         and(
           eq(sourceTombstones.userId, userId),
           inArray(sourceTombstones.sourceId, sourceIds),
+          sql`NOT EXISTS (SELECT 1 FROM ${sourceBlobUploads} upload WHERE upload.user_id = ${sourceTombstones.userId} AND upload.source_id = ${sourceTombstones.sourceId} AND upload.uploaded_at IS NULL AND upload.state <> 'cleanup_completed')`,
         ),
       );
   }
@@ -1552,6 +1620,7 @@ export async function markSourceTreeStorageCleanupCompleted(
     SET storage_cleanup_state = 'completed', updated_at = now()
     WHERE user_id = ${userId}
       AND storage_cleanup_state = 'pending'
+      AND NOT EXISTS (SELECT 1 FROM ${sourceBlobUploads} upload WHERE upload.user_id = ${sourceTombstones}.user_id AND upload.source_id = ${sourceTombstones}.source_id AND upload.uploaded_at IS NULL AND upload.state <> 'cleanup_completed')
       AND storage_object_key IN (
         SELECT unnest(storage_object_keys)
         FROM ${sourceLifecycleCommands}

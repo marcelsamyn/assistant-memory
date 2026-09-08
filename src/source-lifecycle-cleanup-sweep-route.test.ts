@@ -5,9 +5,11 @@ import route from "~/routes/maintenance/source-lifecycle-cleanup-sweep.post";
 const {
   retryPendingSourceTombstoneStorageCleanup,
   deleteRawBlobObjectKeyIfPresent,
+  rawBlobObjectKeyExists,
 } = vi.hoisted(() => ({
   retryPendingSourceTombstoneStorageCleanup: vi.fn(),
   deleteRawBlobObjectKeyIfPresent: vi.fn(),
+  rawBlobObjectKeyExists: vi.fn(),
 }));
 vi.mock("~/utils/env", () => ({
   env: { PARTITION_MAINTENANCE_TOKEN: "m".repeat(32) },
@@ -18,7 +20,7 @@ vi.mock("~/lib/source-lifecycle", async (importOriginal) => ({
   retryPendingSourceTombstoneStorageCleanup,
 }));
 vi.mock("~/lib/sources", () => ({
-  sourceService: { deleteRawBlobObjectKeyIfPresent },
+  sourceService: { deleteRawBlobObjectKeyIfPresent, rawBlobObjectKeyExists },
 }));
 
 function routeFetch(request: Request): Promise<Response> {
@@ -29,6 +31,7 @@ describe("source lifecycle cleanup sweep maintenance route", () => {
   beforeEach(() => {
     retryPendingSourceTombstoneStorageCleanup.mockReset();
     deleteRawBlobObjectKeyIfPresent.mockReset();
+    rawBlobObjectKeyExists.mockReset();
     retryPendingSourceTombstoneStorageCleanup.mockResolvedValue({
       attempted: 2,
       completed: 2,
@@ -72,6 +75,13 @@ describe("source lifecycle cleanup sweep maintenance route", () => {
       {},
       expect.any(Function),
       7,
+      expect.any(Function),
     );
+    const inspect = retryPendingSourceTombstoneStorageCleanup.mock
+      .calls[0]?.[3] as ((key: string) => Promise<boolean>) | undefined;
+    if (!inspect) throw new Error("Missing object inspection callback");
+    rawBlobObjectKeyExists.mockResolvedValueOnce(false);
+    await expect(inspect("user/source-key")).resolves.toBe(false);
+    expect(rawBlobObjectKeyExists).toHaveBeenCalledWith("user/source-key");
   });
 });

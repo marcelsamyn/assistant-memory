@@ -319,8 +319,8 @@ export class SourceService {
           );
           successes.push(row.id);
         } catch (err: unknown) {
-          // A cancelled request can have reached storage. Leave its reservation
-          // for stale-upload recovery instead of claiming an immediate outcome.
+          // A timed-out PUT has a durable unknown receipt. Only an observed
+          // storage commit can release that receipt for cleanup.
           if (!(err instanceof SourceBlobUploadTimeoutError)) {
             await this.scheduleFailedSourceBlobUploadCleanup(row);
           }
@@ -427,8 +427,8 @@ export class SourceService {
 
   /**
    * Holds the source and reservation locks across the object-store call. A
-   * tombstone therefore waits for this put, then switches the reservation to
-   * cleanup; if it wins first this method fails before sending bytes.
+   * tombstone therefore waits for this put's acknowledgement or durable unknown
+   * receipt; if it wins first this method fails before sending bytes.
    */
   private async putSourceBlobWithFence(
     source: SourcesInsert & { id: TypeId<"source"> },
@@ -442,7 +442,7 @@ export class SourceService {
       sourceBlobObjectKey(source.userId, source.id),
       3600,
     );
-    await this.db.transaction(async (tx) => {
+    const outcome = await this.db.transaction(async (tx) => {
       const fences = this.sourceBlobUploadFences(source, rootWriteFence);
       const sourceIds = [
         ...new Set(fences.sources.map((fence) => fence.sourceId)),
@@ -532,7 +532,29 @@ export class SourceService {
         sourceId: source.id,
         objectKey: sourceBlobObjectKey(source.userId, source.id),
       });
-      await putSourceBlob(signedUrl, fileBuffer, this.blobUploadTimeoutMs);
+      try {
+        await putSourceBlob(signedUrl, fileBuffer, this.blobUploadTimeoutMs);
+      } catch (error: unknown) {
+        if (!(error instanceof SourceBlobUploadTimeoutError)) throw error;
+        // Socket cancellation cannot revoke a PUT already accepted remotely.
+        // Commit this fence before releasing the source lock to deletion.
+        await tx
+          .update(sourceBlobUploads)
+          .set({ state: "upload_unknown", updatedAt: new Date() })
+          .where(
+            and(
+              eq(sourceBlobUploads.userId, source.userId),
+              eq(sourceBlobUploads.sourceId, source.id),
+            ),
+          );
+        await tx
+          .update(sources)
+          .set({ status: "failed" })
+          .where(
+            and(eq(sources.userId, source.userId), eq(sources.id, source.id)),
+          );
+        return error;
+      }
       const [updatedSource] = await tx
         .update(sources)
         .set({
@@ -564,7 +586,9 @@ export class SourceService {
             eq(sourceBlobUploads.state, "uploading"),
           ),
         );
+      return undefined;
     });
+    if (outcome) throw outcome;
   }
 
   /** Marks a failed or cancelled upload for durable physical cleanup. */
@@ -591,7 +615,11 @@ export class SourceService {
         )
         .for("update")
         .limit(1);
-      if (upload && upload.state !== "cleanup_completed") {
+      if (
+        upload &&
+        upload.state !== "cleanup_completed" &&
+        upload.state !== "upload_unknown"
+      ) {
         await tx
           .update(sourceBlobUploads)
           .set({ state: "cleanup_pending", updatedAt: new Date() })
@@ -634,6 +662,17 @@ export class SourceService {
     return this.deleteRawBlobObjectKeyIfPresent(
       sourceBlobObjectKey(userId, sourceId),
     );
+  }
+
+  /** Observes a completed object write without treating absence as terminal. */
+  async rawBlobObjectKeyExists(objectKey: string): Promise<boolean> {
+    try {
+      await this.minioClient.statObject(this.bucket, objectKey);
+      return true;
+    } catch (error: unknown) {
+      if (isMissingSourceBlobError(error)) return false;
+      throw error;
+    }
   }
 
   /** Deletes an opaque object key captured in a lifecycle receipt. */

@@ -577,6 +577,7 @@ export const sourceBlobUploads = pgTable(
       .$type<
         | "reserved"
         | "uploading"
+        | "upload_unknown"
         | "uploaded"
         | "cleanup_pending"
         | "cleanup_completed"
@@ -598,7 +599,7 @@ export const sourceBlobUploads = pgTable(
     index("source_blob_uploads_cleanup_idx").on(table.state, table.updatedAt),
     check(
       "source_blob_uploads_state_ck",
-      sql`"state" IN ('reserved', 'uploading', 'uploaded', 'cleanup_pending', 'cleanup_completed')`,
+      sql`"state" IN ('reserved', 'uploading', 'upload_unknown', 'uploaded', 'cleanup_pending', 'cleanup_completed')`,
     ),
   ],
 );
