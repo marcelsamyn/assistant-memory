@@ -456,6 +456,62 @@ describeIfServer("lossless lifecycle change feed", () => {
     expect(JSON.stringify(after.events)).not.toContain(partitionB);
   });
 
+  it("locks a large source tree in one ordered query before tombstoning it", async () => {
+    const userId = "feed-bulk-tree-lock";
+    const rootId = newTypeId("source");
+    await database.insert(users).values({ id: userId });
+    await database.insert(sources).values({
+      id: rootId,
+      userId,
+      type: "conversation",
+      externalId: "bulk-root",
+      status: "completed",
+    });
+    const children = Array.from({ length: 100 }, (_, index) => ({
+      id: newTypeId("source"),
+      userId,
+      parentSource: rootId,
+      type: "conversation_message" as const,
+      externalId: `bulk-child-${index}`,
+      status: "completed" as const,
+    }));
+    await database.insert(sources).values(children);
+    const queries: string[] = [];
+    const observedDatabase = drizzle(client, {
+      schema,
+      casing: "snake_case",
+      logger: {
+        logQuery(query) {
+          queries.push(query);
+        },
+      },
+    });
+    await applySourceLifecycleCommand(
+      observedDatabase,
+      sourceLifecycleCommandRequestSchema.parse({
+        userId,
+        sourceId: rootId,
+        commandId: "00000000-0000-4000-8000-000000000099",
+        action: "tombstone",
+        expectedPartitionKey: null,
+        expectedSourceVersion: 0,
+      }),
+    );
+    const treeLocks = queries.filter(
+      (query) =>
+        query.includes('from "sources"') && query.endsWith("for update"),
+    );
+    expect(treeLocks).toHaveLength(1);
+    expect(treeLocks[0]).toContain('order by "sources"."id" asc');
+    const remaining = await database
+      .select({ deletedAt: sources.deletedAt })
+      .from(sources)
+      .where(eq(sources.userId, userId));
+    expect(remaining).toHaveLength(101);
+    expect(remaining.every((source) => source.deletedAt !== null)).toBe(true);
+    await markSourceTreeStorageCleanupCompleted(database, userId, rootId);
+  });
+
   it("tombstones a parent source and every descendant without touching an unrelated sibling", async () => {
     const userId = "feed-source-tree-lifecycle";
     const parentSourceId = newTypeId("source");
