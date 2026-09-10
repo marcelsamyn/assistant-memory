@@ -10,6 +10,11 @@ import {
   RelationshipPredicateEnum,
 } from "~/types/graph";
 
+const llmEmailRequestEvidenceSchema = z.object({
+  kind: z.enum(["direct_request", "user_promise"]),
+  supportingSourceRefs: z.array(z.string().min(1)).min(1).max(100),
+});
+
 const llmNodeSchema = z.object({
   id: z.string().describe("id to reference in claims"),
   type: ExtractionNodeTypeEnum.describe("one of the allowed node types"),
@@ -53,6 +58,8 @@ const llmAttributeClaimSchema = z.object({
   statedAt: z.string().datetime().nullish(),
   validFrom: z.string().datetime().nullish(),
   validTo: z.string().datetime().nullish(),
+  /** Present only on HAS_TASK_STATUS for an actionable email request. */
+  emailRequestEvidence: llmEmailRequestEvidenceSchema.nullish(),
 });
 
 const llmAliasSchema = z.object({

@@ -5,6 +5,7 @@ import { claims, sources } from "~/db/schema";
 import { coerceTaskStatus } from "~/lib/claims/task-status";
 import { TaskNotFoundError } from "~/lib/commitments";
 import { getNodeById } from "~/lib/node";
+import { commitmentRequestEvidenceSchema } from "~/lib/schemas/commitment-request-evidence";
 import type {
   CommitmentSource,
   GetCommitmentRequest,
@@ -133,23 +134,35 @@ export async function getCommitment(
     : [];
 
   let due: DueQualifierFields = { dueTime: null, timeZone: null, dueAt: null };
-  if (activeDue) {
-    const [dueRow] = await db
+  let requestEvidence = null;
+  const metadataClaimIds = [activeStatus?.id, activeDue?.id].filter(
+    (id): id is TypeId<"claim"> => id !== undefined,
+  );
+  if (metadataClaimIds.length > 0) {
+    const metadataRows = await db
       .select({
+        id: claims.id,
         metadata: claims.metadata,
         objectInstant: claims.objectInstant,
       })
       .from(claims)
       .where(
         and(
-          eq(claims.id, activeDue.id),
+          inArray(claims.id, metadataClaimIds),
           eq(claims.userId, userId),
           partitionKey === undefined
             ? isNull(claims.partitionKey)
             : eq(claims.partitionKey, partitionKey),
         ),
-      )
-      .limit(1);
+      );
+    const statusRow = metadataRows.find((row) => row.id === activeStatus?.id);
+    requestEvidence =
+      commitmentRequestEvidenceSchema.safeParse(
+        statusRow?.metadata && typeof statusRow.metadata === "object"
+          ? (statusRow.metadata as Record<string, unknown>)["requestEvidence"]
+          : undefined,
+      ).data ?? null;
+    const dueRow = metadataRows.find((row) => row.id === activeDue?.id);
     if (dueRow) due = readDueQualifier(dueRow.metadata, dueRow.objectInstant);
   }
 
@@ -162,6 +175,7 @@ export async function getCommitment(
     statusClaimId: activeStatus ? activeStatus.id : null,
     statusStatedAt: activeStatus ? activeStatus.statedAt : null,
     statusAssertedByKind: activeStatus ? activeStatus.assertedByKind : null,
+    requestEvidence,
     owner,
     dueOn: activeDue ? activeDue.objectLabel : null,
     dueTime: due.dueTime,

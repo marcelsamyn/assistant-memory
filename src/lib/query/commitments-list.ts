@@ -29,6 +29,7 @@ import {
 } from "~/db/schema";
 import { coerceTaskStatus } from "~/lib/claims/task-status";
 import { assertPartitionReadAllowed } from "~/lib/partition-access";
+import { commitmentRequestEvidenceSchema } from "~/lib/schemas/commitment-request-evidence";
 import type {
   CommitmentListItem,
   CommitmentPresentation,
@@ -38,6 +39,7 @@ import type {
   ListCommitmentsResponse,
 } from "~/lib/schemas/list-commitments";
 import { deriveTitle } from "~/lib/sources-read";
+import type { AssertedByKind } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -51,6 +53,8 @@ interface ListRow {
   dueMetadata: unknown;
   dueInstant: Date | null;
   statusChangedAt: Date;
+  statusAssertedByKind: AssertedByKind;
+  statusMetadata: unknown;
   createdAt: Date;
   sourceId: TypeId<"source">;
   sourceMetadata: unknown;
@@ -256,6 +260,8 @@ export async function listCommitments(
       dueMetadata: dueClaim.metadata,
       dueInstant: dueClaim.objectInstant,
       statusChangedAt: claims.statedAt,
+      statusAssertedByKind: claims.assertedByKind,
+      statusMetadata: claims.metadata,
       createdAt: nodes.createdAt,
       sourceId: claims.sourceId,
       sourceMetadata: sources.metadata,
@@ -347,6 +353,13 @@ export async function listCommitments(
       statusChangedAt: row.statusChangedAt,
       createdAt: row.createdAt,
       sourceId: row.sourceId,
+      statusAssertedByKind: row.statusAssertedByKind,
+      requestEvidence:
+        commitmentRequestEvidenceSchema.safeParse(
+          row.statusMetadata && typeof row.statusMetadata === "object"
+            ? (row.statusMetadata as Record<string, unknown>)["requestEvidence"]
+            : undefined,
+        ).data ?? null,
       presentation: buildPresentation(row),
     });
   }

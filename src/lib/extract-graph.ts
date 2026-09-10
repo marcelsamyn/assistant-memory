@@ -17,6 +17,16 @@ import {
 } from "./commitment-presentation";
 import { debugGraph } from "./debug-utils";
 import {
+  buildCommitmentRequestEvidence,
+  EMAIL_EXTRACTION_RULES,
+  formatTrustedSourceContext,
+  isActionableEmailStatusClaim,
+  isAllowedEmailExtractionNode,
+  isEmailContext,
+  readSourceContext,
+  resolveTaskStatusProvenance,
+} from "./email-request-extraction";
+import {
   generateAndInsertNodeEmbeddings,
   generateAndInsertClaimEmbeddings,
 } from "./embeddings-util";
@@ -44,6 +54,7 @@ import {
 } from "./schemas/llm-extraction";
 import { type OpenCommitment } from "./schemas/open-commitments";
 import type { ContextPartitionKey } from "./schemas/partition";
+import type { SourceContext } from "./schemas/source-context";
 import { TemporaryIdMapper } from "./temporary-id-mapper";
 import { and, eq, inArray } from "drizzle-orm";
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
@@ -167,6 +178,8 @@ export async function extractGraph({
 }: ExtractGraphParams) {
   const db = await useDatabase();
   const parentSource = await _fetchSourceContext(db, userId, sourceId);
+  const sourceContext = readSourceContext(parentSource.metadata);
+  const emailContext = isEmailContext(sourceContext) ? sourceContext : null;
   const partitionKey = parentSource.partitionKey ?? undefined;
   await assertSourcePartition({
     db,
@@ -284,16 +297,21 @@ export async function extractGraph({
 
   const openCommitmentsPromptSection = _formatOpenCommitmentsSection(
     cappedOpenCommitments,
+    emailContext === null,
   );
 
   const candidateCommitmentsPromptSection = _formatCandidateCommitmentsSection(
     cappedCandidateCommitments,
+    emailContext === null,
   );
 
   const speakerMapPromptSection = _formatSpeakerMapSection(speakerMap);
 
   const userIdentityPromptSection = userIdentityNote
     ? `${userIdentityNote}\n\n`
+    : "";
+  const trustedSourceContextPromptSection = sourceContext
+    ? `${formatTrustedSourceContext(sourceContext)}\n\n`
     : "";
 
   const { createCompletionClient } = await import("./ai");
@@ -316,14 +334,16 @@ IMPORTANT:
 CRITICAL EXTRACTION RULES - READ CAREFULLY:
 
 ${
-  sourceType === "document"
-    ? `When extracting from documents:
+  emailContext !== null
+    ? EMAIL_EXTRACTION_RULES
+    : sourceType === "document"
+      ? `When extracting from documents:
 - The DOCUMENT (and its author) is the asserter, NOT the user reading it. Treat the user as an outside reader.
 - Phrases like "I tried X" or "we recommend Y" inside the document refer to the AUTHOR, not the user. Do not attribute the author's experiences, preferences, decisions, or recommendations to the user.
 - Phrase every claim's statement neutrally as the document or author asserting (e.g., "The book recommends KDP Select for Amazon distribution"; "The author considers Kindle Unlimited royalties dependent on pages read"). Avoid first-person framing about the user.
 - Do NOT emit MADE_DECISION, HAS_PREFERENCE, HAS_GOAL, HAS_PLAN, or similar self-attribution claims with the user as subject — those would assert facts about the user that this document does not establish.
 - Extract every meaningful fact, claim, recommendation, decision, person, organization, place, and concept the text asserts. Do NOT manufacture a separate fact or node for every incidental number or statistic — capture a figure only as a HAS_ATTRIBUTE claim when it is a meaningful property of an entity.`
-    : `When extracting from conversations:
+      : `When extracting from conversations:
 - ONLY extract facts that the USER explicitly stated, confirmed, or provided
 - DO NOT extract speculative statements, suggestions, or assumptions made by the assistant
 - DO NOT treat assistant's questions as facts (e.g., "Are you working on X?" is NOT a fact that the user is working on X)
@@ -335,15 +355,18 @@ ${
 
 EVERY claim (relationship and attribute) MUST include an "assertionKind" field. Use:
 ${
-  sourceType === "document"
-    ? `- "document_author" — for ALL claims extracted from this document. The document text is the asserter.`
-    : speakerMap && speakerMap.size > 0
-      ? `- "user" — the user-self speaker (see "Speakers in this transcript") asserted this fact.
+  emailContext !== null
+    ? `- Use "assistant_inferred" for every HAS_TASK_STATUS and DUE_ON claim from email. Passive email evidence cannot confirm that the user accepted a task.
+- Never use "user" or "user_confirmed" for an email-derived claim.`
+    : sourceType === "document"
+      ? `- "document_author" — for ALL claims extracted from this document. The document text is the asserter.`
+      : speakerMap && speakerMap.size > 0
+        ? `- "user" — the user-self speaker (see "Speakers in this transcript") asserted this fact.
 - "user_confirmed" — the user-self speaker explicitly agreed with another speaker's statement.
 - "participant" — another (non-user-self) speaker asserted this fact. Set "assertedBySpeakerLabel" to the EXACT label from the speaker list.
 - "assistant_inferred" — only if you must extract something that no speaker actually said.
 - For EVERY claim, also set "assertedBySpeakerLabel" to the speaker who said it, using the labels exactly as listed in "Speakers in this transcript". Unrecognized labels will cause the claim to be dropped.`
-      : `- "user" — the user explicitly stated this fact themselves (default for user-stated content).
+        : `- "user" — the user explicitly stated this fact themselves (default for user-stated content).
 - "user_confirmed" — the assistant said something and the user explicitly agreed (e.g., user replied "yes", "right", "exactly", "correct").
 - "assistant_inferred" — used ONLY if you decide to extract something that the assistant said and the user did NOT confirm. Prefer to NOT extract these at all; if you must, mark them with this kind so they are demoted later.
 - NEVER use "user" for an assistant-only statement.
@@ -353,23 +376,30 @@ ${
 
 Few-shot examples:
 ${
-  sourceType === "document"
-    ? `- "The Eiffel Tower is located in Paris." → (Eiffel Tower, LOCATED_IN, Paris), assertionKind "document_author".
+  emailContext !== null
+    ? `- Incoming current message to the authenticated user's To address: "Kun je het herziene document bekijken en antwoorden?" → create Task "Review and reply to the revised document", HAS_TASK_STATUS "pending", assertionKind "assistant_inferred", emailRequestEvidence.kind "direct_request".
+- Outgoing current message written by the authenticated user: "Ik stuur de cijfers morgen." → create Task "Send the figures", HAS_TASK_STATUS "pending", assertionKind "assistant_inferred", emailRequestEvidence.kind "user_promise".
+- A message where the authenticated user appears only in CC and the current text assigns work to another named recipient → do not create a Task for the authenticated user.
+- Newsletter advice, an auto-reply, or a completed request present only in quoted history → do not create a Task.`
+    : sourceType === "document"
+      ? `- "The Eiffel Tower is located in Paris." → (Eiffel Tower, LOCATED_IN, Paris), assertionKind "document_author".
 - "Maya is VP of Product at Orchard Labs, which she co-founded in 2019." → (Maya Lindqvist, WORKS_AT, Orchard Labs) and (Maya Lindqvist, FOUNDED, Orchard Labs). Do NOT create a node for "2019"; put the year in the claim statement.
 - "Orchard is based in Stockholm and uses a billing system built on the Stripe API." → (Orchard Labs, LOCATED_IN, Stockholm) and (Orchard Labs, USES, Stripe API).
 - "The Starter tier costs €49/month." → do NOT create a "€49" node; if the figure matters use (Starter tier, HAS_ATTRIBUTE, "€49/month"). Use RELATED_TO only when no specific predicate fits.`
-    : speakerMap && speakerMap.size > 0
-      ? `- Speaker "Alice" (user-self) says "I live in Lisbon." → create the (Alice, LOCATED_IN, Lisbon) claim with subjectId set to Alice's nodeId from "Speakers in this transcript" (do NOT mint a new "Alice" node), assertionKind: "user", assertedBySpeakerLabel: "Alice".
+      : speakerMap && speakerMap.size > 0
+        ? `- Speaker "Alice" (user-self) says "I live in Lisbon." → create the (Alice, LOCATED_IN, Lisbon) claim with subjectId set to Alice's nodeId from "Speakers in this transcript" (do NOT mint a new "Alice" node), assertionKind: "user", assertedBySpeakerLabel: "Alice".
 - Speaker "Bob" (non user-self) says "I'll send the PR tomorrow." → assertionKind: "participant", assertedBySpeakerLabel: "Bob".
 - Speaker "Bob" says "You're moving to Paris next month." Speaker "Alice" (user-self) replies "Yeah." → for the (Alice, LOCATED_IN, Paris) claim use assertionKind: "user_confirmed", assertedBySpeakerLabel: "Alice".`
-      : `- User says "I started working at Acme last week." → assertionKind: "user".
+        : `- User says "I started working at Acme last week." → assertionKind: "user".
 - Assistant: "So you live in Paris now?" User: "Yes." → assertionKind: "user_confirmed" for the (user, LOCATED_IN, Paris) claim (if extracted).
 - Assistant: "It sounds like you might be a software engineer." User does not respond. → do NOT extract. If you must, assertionKind: "assistant_inferred".`
 }
 
 ${
-  sourceType === "document"
-    ? `Extract, for example, the following elements:
+  emailContext !== null
+    ? `Extract the people and organizations needed to identify an actionable email request. Extract a Task only under the email rules above.`
+    : sourceType === "document"
+      ? `Extract, for example, the following elements:
 1. People mentioned in the text (real or fictional)
 2. Locations the text discusses or references
 3. Organizations the text mentions, including companies, institutions, clients, schools, nonprofits, teams, clubs, communities, and named informal groups
@@ -380,7 +410,7 @@ ${
 8. Temporal references the text provides (dates, periods, deadlines)
 9. Recommendations, decisions, best practices, and warnings the text states
 10. Facts the text states about people, organizations, or other entities`
-    : `Extract, for example, the following elements:
+      : `Extract, for example, the following elements:
 1. People mentioned by the user (real or fictional)
 2. Organizations the user mentioned, including companies, institutions, clients, schools, nonprofits, teams, clubs, communities, and named informal groups
 3. Locations the user discussed or mentioned
@@ -442,9 +472,11 @@ Rules of the graph:
 ${relationshipPredicateGuide}
 
 ${
-  sourceType === "document"
-    ? `For documents, exhaustively extract every concrete fact, claim, person, organization, place, concept, decision, and recommendation the text asserts. Do not summarize. Accuracy still matters — only extract what the text actually says — but completeness is the goal.`
-    : `Focus on extracting the most significant and meaningful information that the USER provided. Quality and accuracy are more important than quantity.`
+  emailContext !== null
+    ? `For email, extract only facts needed to represent an actionable direct request or explicit user promise. Keep the task tentative and cite the exact supporting source.`
+    : sourceType === "document"
+      ? `For documents, exhaustively extract every concrete fact, claim, person, organization, place, concept, decision, and recommendation the text asserts. Do not summarize. Accuracy still matters — only extract what the text actually says — but completeness is the goal.`
+      : `Focus on extracting the most significant and meaningful information that the USER provided. Quality and accuracy are more important than quantity.`
 }`;
 
   // Dynamic payload: existing-node context, commitments, speaker map, source
@@ -467,7 +499,7 @@ ${candidateCommitmentsPromptSection}
 
 ${speakerMapPromptSection}
 
-${userIdentityPromptSection}Extract the graph from the following ${sourceType}:
+${userIdentityPromptSection}${trustedSourceContextPromptSection}Extract the graph from the following ${sourceType}:
 
 Allowed source refs:
 ${sourceRefsForPrompt}
@@ -509,14 +541,46 @@ ${content}
   // `?? []`: the extraction provider isn't strict structured output, so any of
   // these collections may be omitted/null when the model has nothing to emit
   // (see llmExtractionSchema). Treat a missing collection as empty.
-  const uniqueParsedLlmNodes = _deduplicateLlmNodes(
-    parsedLlmOutput.nodes ?? [],
+  const parsedAttributeClaims = _deduplicateLlmAttributeClaims(
+    parsedLlmOutput.attributeClaims ?? [],
   );
-  const uniqueParsedLlmClaims = _deduplicateLlmClaims(
+  const actionableEmailTaskIds = new Set(
+    emailContext === null
+      ? []
+      : parsedAttributeClaims
+          .filter((claim) => isActionableEmailStatusClaim(emailContext, claim))
+          .filter((claim) => claim.predicate === "HAS_TASK_STATUS")
+          .map((claim) => claim.subjectId),
+  );
+  const parsedRelationshipClaims = _deduplicateLlmClaims(
     parsedLlmOutput.relationshipClaims ?? [],
   );
-  const uniqueParsedLlmAttributeClaims = _deduplicateLlmAttributeClaims(
-    parsedLlmOutput.attributeClaims ?? [],
+  const uniqueParsedLlmClaims =
+    emailContext === null
+      ? parsedRelationshipClaims
+      : parsedRelationshipClaims.filter(
+          (claim) =>
+            claim.predicate === "DUE_ON" &&
+            actionableEmailTaskIds.has(claim.subjectId),
+        );
+  const emailReferencedNodeIds = new Set(
+    uniqueParsedLlmClaims.flatMap((claim) => [claim.subjectId, claim.objectId]),
+  );
+  const uniqueParsedLlmNodes = _deduplicateLlmNodes(
+    parsedLlmOutput.nodes ?? [],
+  ).filter(
+    (node) =>
+      emailContext === null ||
+      isAllowedEmailExtractionNode({
+        node,
+        actionableTaskIds: actionableEmailTaskIds,
+        referencedNodeIds: emailReferencedNodeIds,
+      }),
+  );
+  const uniqueParsedLlmAttributeClaims = parsedAttributeClaims.filter(
+    (claim) =>
+      emailContext === null ||
+      isActionableEmailStatusClaim(emailContext, claim),
   );
   const uniqueParsedLlmAliases = _deduplicateLlmAliases(
     parsedLlmOutput.aliases ?? [],
@@ -579,6 +643,7 @@ ${content}
         speakerMap,
         newTaskNodeIds,
         partitionKey,
+        emailContext,
       );
       const synthesized = await _synthesizeMissingTaskStatuses(
         tx,
@@ -889,6 +954,7 @@ function _deduplicateLlmAliases(
 
 function _formatOpenCommitmentsSection(
   openCommitments: OpenCommitment[],
+  allowTrustedStatusChanges: boolean,
 ): string {
   const header = `CURRENT OPEN TASKS:
 These are the user's currently open Task nodes. Each line lists the task's existing nodeId, label, current status, owner, and due date. RULES:
@@ -903,8 +969,13 @@ These are the user's currently open Task nodes. Each line lists the task's exist
 - A Task node's label must be a short imperative action (e.g. "Book Zouk social tickets"), NOT a topic, a date, or a description of the conversation. NEVER put a multi-point summary, recap, or transcript of the conversation into a Task node's label or description.
 - For a genuine brand-new task not in this list, create a new Task node with a temporary id (e.g. "temp_task_1") and emit \`HAS_TASK_STATUS=pending\` (and \`ASSIGNED_TO\` / \`DUE_ON\` as applicable). Every newly created task is recorded as TENTATIVE (unconfirmed) and surfaced to the user to confirm — ingestion never creates a firm commitment, and the \`assertionKind\` you put on a new task's status claim does not change that. Do NOT lower the bar above just because the task will be tentative: still only create one when the source establishes a real action item.`;
 
+  const emailRule = allowTrustedStatusChanges
+    ? ""
+    : `
+- For email evidence, reuse an existing task only to avoid a duplicate. Any emitted HAS_TASK_STATUS remains assistant_inferred and cannot confirm, complete, or abandon the task.`;
+
   if (openCommitments.length === 0) {
-    return `${header}
+    return `${header}${emailRule}
 - (no open tasks)`;
   }
 
@@ -919,7 +990,7 @@ These are the user's currently open Task nodes. Each line lists the task's exist
     return `- existingNodeId: ${commitment.taskId}; label: ${label}; status: ${commitment.status}${ownerPart}${duePart}`;
   });
 
-  return `${header}
+  return `${header}${emailRule}
 ${lines.join("\n")}`;
 }
 
@@ -931,6 +1002,7 @@ ${lines.join("\n")}`;
  */
 function _formatCandidateCommitmentsSection(
   candidateCommitments: OpenCommitment[],
+  allowConfirmation: boolean,
 ): string {
   if (candidateCommitments.length === 0) return "";
 
@@ -940,6 +1012,11 @@ These are tasks the assistant previously *inferred* but the user has not confirm
 - If the source completes or abandons one, emit the matching \`HAS_TASK_STATUS\` (assertionKind "user") against its existingNodeId.
 - If the source neither corroborates nor changes a candidate, do NOT re-emit it.
 - NEVER create a new Task node for something already listed here.`;
+
+  const emailRule = allowConfirmation
+    ? ""
+    : `
+- Email evidence may match this candidate to avoid a duplicate, but it cannot confirm, complete, or abandon it. Any HAS_TASK_STATUS must use assertionKind "assistant_inferred".`;
 
   const lines = candidateCommitments.map((commitment) => {
     const label = commitment.label ?? "(unlabeled task)";
@@ -952,7 +1029,7 @@ These are tasks the assistant previously *inferred* but the user has not confirm
     return `- existingNodeId: ${commitment.taskId}; label: ${label}; status: ${commitment.status}${ownerPart}${duePart}`;
   });
 
-  return `${header}
+  return `${header}${emailRule}
 ${lines.join("\n")}`;
 }
 
@@ -996,9 +1073,14 @@ async function _fetchSourceContext(
 ): Promise<{
   scope: Scope;
   partitionKey: ContextPartitionKey | null;
+  metadata: unknown;
 }> {
   const [row] = await db
-    .select({ scope: sources.scope, partitionKey: sources.partitionKey })
+    .select({
+      scope: sources.scope,
+      partitionKey: sources.partitionKey,
+      metadata: sources.metadata,
+    })
     .from(sources)
     .where(and(eq(sources.userId, userId), eq(sources.id, sourceId)))
     .limit(1);
@@ -1157,6 +1239,7 @@ async function _processAndInsertLlmClaims(
   speakerMap: ExtractGraphSpeakerMap | undefined,
   newTaskNodeIds: Set<TypeId<"node">>,
   partitionKey: ContextPartitionKey | undefined,
+  emailContext: SourceContext | null,
 ): Promise<Array<typeof claims.$inferSelect>> {
   const claimInserts: Array<typeof claims.$inferInsert> = [];
   const sourceScopeMap = await _fetchSourceScopeMap(
@@ -1164,12 +1247,23 @@ async function _processAndInsertLlmClaims(
     userId,
     [...sourceRefMap.values()].map((sourceRef) => sourceRef.sourceId),
   );
+  const sourceIdsByRef = new Map(
+    [...sourceRefMap.entries()].map(([sourceRef, value]) => [
+      sourceRef,
+      value.sourceId,
+    ]),
+  );
   const relationshipNodeIds = new Set<TypeId<"node">>();
   for (const llmClaim of uniqueParsedLlmClaims) {
     const subjectNodeId = idMap.get(llmClaim.subjectId);
     const objectNodeId = idMap.get(llmClaim.objectId);
     if (subjectNodeId) relationshipNodeIds.add(subjectNodeId);
     if (objectNodeId) relationshipNodeIds.add(objectNodeId);
+  }
+  for (const llmClaim of uniqueParsedLlmAttributeClaims) {
+    if (llmClaim.predicate !== "HAS_TASK_STATUS") continue;
+    const subjectNodeId = idMap.get(llmClaim.subjectId);
+    if (subjectNodeId) relationshipNodeIds.add(subjectNodeId);
   }
   const nodeTypes = await _fetchNodeTypeMap(db, userId, [
     ...relationshipNodeIds,
@@ -1241,7 +1335,8 @@ async function _processAndInsertLlmClaims(
       sourceId: claimSource.sourceId,
       ...(partitionKey !== undefined ? { partitionKey } : {}),
       scope,
-      assertedByKind: provenance.kind,
+      assertedByKind:
+        emailContext === null ? provenance.kind : "assistant_inferred",
       assertedByNodeId: provenance.nodeId,
       statedAt: claimSource.statedAt,
       validFrom: _parseOptionalDate(llmClaim.validFrom),
@@ -1262,6 +1357,16 @@ async function _processAndInsertLlmClaims(
     if (!subjectNodeId) {
       console.warn(
         `Skipping attribute claim with invalid node reference: ${llmClaim.subjectId}`,
+      );
+      continue;
+    }
+
+    if (
+      llmClaim.predicate === "HAS_TASK_STATUS" &&
+      nodeTypes.get(subjectNodeId) !== "Task"
+    ) {
+      console.warn(
+        `Skipping HAS_TASK_STATUS claim whose subject is not a Task: ${llmClaim.subjectId}`,
       );
       continue;
     }
@@ -1310,15 +1415,26 @@ async function _processAndInsertLlmClaims(
     // obligation. Firm commitments arise only from explicit user action: the
     // candidate-confirmation flow (a later HAS_TASK_STATUS against the
     // *existing* task node, which is not in `newTaskNodeIds`) or the commitment
-    // write APIs. So we force the provenance here for brand-new tasks only and
-    // leave status updates to existing tasks (including promotions) untouched.
-    let assertedByKind = provenance.kind;
-    if (
-      llmClaim.predicate === "HAS_TASK_STATUS" &&
-      newTaskNodeIds.has(subjectNodeId)
-    ) {
-      assertedByKind = "assistant_inferred";
-    }
+    // write APIs. Email is also passive evidence, so even a status update to
+    // an existing email-matched task remains in the candidate band.
+    const assertedByKind =
+      llmClaim.predicate === "HAS_TASK_STATUS"
+        ? resolveTaskStatusProvenance({
+            extractedKind: provenance.kind,
+            isNewTask: newTaskNodeIds.has(subjectNodeId),
+            context: emailContext,
+          })
+        : provenance.kind;
+
+    const requestEvidence =
+      emailContext === null
+        ? null
+        : buildCommitmentRequestEvidence({
+            context: emailContext,
+            claim: llmClaim,
+            claimSourceId: claimSource.sourceId,
+            sourceIdsByRef,
+          });
 
     claimInserts.push({
       userId,
@@ -1335,6 +1451,7 @@ async function _processAndInsertLlmClaims(
       statedAt: claimSource.statedAt,
       validFrom: _parseOptionalDate(llmClaim.validFrom),
       validTo: _parseOptionalDate(llmClaim.validTo),
+      ...(requestEvidence !== null ? { metadata: { requestEvidence } } : {}),
       status: "active",
     });
   }
