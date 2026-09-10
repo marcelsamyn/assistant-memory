@@ -115,6 +115,26 @@ describeIfServer("partition integrity and recovery", () => {
     );
   }
 
+  it("creates a new Memory user with its first migration transition", async () => {
+    const userId = "partition-new-user";
+
+    await expect(
+      setPartitionMigrationState(
+        database,
+        setPartitionMigrationStateRequestSchema.parse({
+          userId,
+          expectedState: "unmigrated",
+          expectedVersion: 0,
+          nextState: "migrating",
+        }),
+      ),
+    ).resolves.toEqual({ state: "migrating", version: 1 });
+
+    await expect(
+      database.select({ id: users.id }).from(users).where(eq(users.id, userId)),
+    ).resolves.toEqual([{ id: userId }]);
+  });
+
   it("returns authoritative state when initial migration CAS calls race", async () => {
     const userId = "partition-cas-race";
     await database.insert(users).values({ id: userId });

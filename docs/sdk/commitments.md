@@ -10,6 +10,10 @@ The **lifecycle engine** (`single_current_value + supersede_previous` predicate 
 
 **Candidate tasks** are tasks whose `HAS_TASK_STATUS` was asserted as `assistant_inferred`. They appear in `getCandidateCommitments` but not in `getOpenCommitments` until confirmed. Trust rule: a `user`/`user_confirmed` claim is never silently overwritten by a later `assistant_inferred` one.
 
+Email-derived requests and promises stay tentative. Their `requestEvidence` describes the request kind, participants, supporting sources, and email-thread lifecycle evidence. Read the cited source for the full text. A client can show candidates or prepare private work without confirming them; confirmation and permission to act are separate decisions. Use `listCommitments` / MCP `list_commitments` with `provenance: "candidate"` or `"all"` for this use case. The confirmed-only open view is not a complete inventory of possible work.
+
+This is a derived view of stored sources, not the purpose of every source. See [Ingestion](./ingestion.md) for the source-context contract and current email extraction limits.
+
 ---
 
 ## Creating and editing

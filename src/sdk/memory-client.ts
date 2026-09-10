@@ -301,6 +301,9 @@ import {
   GetSourceProcessingRequest,
   GetSourceProcessingResponse,
   getSourceProcessingResponseSchema,
+  RetrySourceProcessingRequest,
+  RetrySourceProcessingResponse,
+  retrySourceProcessingResponseSchema,
 } from "../lib/schemas/source-processing.js";
 import {
   GetSourceRequest,
@@ -309,6 +312,9 @@ import {
   ListSourcesResponse,
   getSourceResponseSchema,
   listSourcesResponseSchema,
+  SourceIdentityLifecycleRequest,
+  SourceIdentityLifecycleResponse,
+  sourceIdentityLifecycleResponseSchema,
 } from "../lib/schemas/sources.js";
 import {
   SummarizeRequest,
@@ -566,8 +572,9 @@ export class MemoryClient {
    * and surfaced both to the LLM (as a document preamble) and through
    * `NodeCard.reference` for reference-scope sources. The returned
    * `sourceId` is generated synchronously, so the caller can immediately
-   * render a "processing" placeholder; subscribe to the SSE stream (or
-   * poll `getSource`) to know when status flips to `completed`.
+   * render a "processing" placeholder. Poll `getSourceProcessing` with the
+   * returned `ingestionOperationId` for exact revision completion; use
+   * `getSource` as the fallback for a legacy response without a receipt.
    */
   async ingestFile(payload: IngestFileRequest): Promise<IngestFileResponse> {
     const form = new FormData();
@@ -1481,6 +1488,18 @@ export class MemoryClient {
     );
   }
 
+  /** Closes or reopens a caller-stable source identity ingestion gate. */
+  async sourceIdentityLifecycle(
+    payload: SourceIdentityLifecycleRequest,
+  ): Promise<SourceIdentityLifecycleResponse> {
+    return this._fetch(
+      "POST",
+      "/sources/identity/lifecycle",
+      sourceIdentityLifecycleResponseSchema,
+      payload,
+    );
+  }
+
   /** Returns an ingestion receipt, including retained receipts after purge. */
   async getSourceProcessing(
     payload: GetSourceProcessingRequest,
@@ -1489,6 +1508,18 @@ export class MemoryClient {
       "POST",
       "/sources/processing",
       getSourceProcessingResponseSchema,
+      payload,
+    );
+  }
+
+  /** Restarts the current failed operation for the same canonical source. */
+  async retrySourceProcessing(
+    payload: RetrySourceProcessingRequest,
+  ): Promise<RetrySourceProcessingResponse> {
+    return this._fetch(
+      "POST",
+      "/sources/processing/retry",
+      retrySourceProcessingResponseSchema,
       payload,
     );
   }

@@ -33,6 +33,7 @@
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { stripQuotedEmailHistory } from "~/lib/email-request-matching";
 import { extractGraph } from "~/lib/extract-graph";
 import { applyDocumentSpine } from "~/lib/ingestion/apply-document-spine";
 import { chunkMarkdown } from "~/lib/ingestion/chunk-markdown";
@@ -56,6 +57,8 @@ export interface ChunkedExtractionParams {
     statedAt?: Date;
   }>;
   content: string;
+  /** Remove reply/forward history before splitting an email into chunks. */
+  emailContent?: boolean;
   /** Identifier shown in log lines (e.g., the upload filename). */
   logLabel: string;
   /**
@@ -90,9 +93,13 @@ export async function runChunkedExtraction(
     logLabel,
     documentMetadata,
     userIdentityNote,
+    emailContent = false,
   } = params;
 
-  const chunks = chunkMarkdown(content, env.INGEST_CHUNK_MAX_CHARS);
+  const extractionContent = emailContent
+    ? stripQuotedEmailHistory(content)
+    : content;
+  const chunks = chunkMarkdown(extractionContent, env.INGEST_CHUNK_MAX_CHARS);
   const debugDir = env.INGEST_DEBUG_DIR;
 
   console.log(

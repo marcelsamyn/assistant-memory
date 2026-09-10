@@ -22,13 +22,14 @@ import {
   failSourceIngestionOperation,
   markSourceIngestionExtractionStarted,
   markSourceIngestionProcessing,
+  getSourceIngestionJobContext,
 } from "~/lib/ingestion/source-processing";
 import {
   assertSourcePartition,
   withSourceWriteFence,
 } from "~/lib/partition-access";
 import { contextPartitionKeySchema } from "~/lib/schemas/partition";
-import { sourceService } from "~/lib/sources";
+import { sourceMetadataSchema, sourceService } from "~/lib/sources";
 import { typeIdSchema, type TypeId } from "~/types/typeid";
 
 export const IngestDocumentJobInputSchema = z.object({
@@ -73,6 +74,16 @@ export async function ingestDocument({
   author,
   title,
 }: IngestDocumentParams): Promise<void> {
+  if (operationId !== undefined) {
+    const context = await getSourceIngestionJobContext({
+      db,
+      userId,
+      sourceId,
+      operationId,
+    });
+    partitionKey = context.partitionKey;
+    externalId = context.externalId;
+  }
   await assertSourcePartition({
     db,
     userId,
@@ -96,12 +107,21 @@ export async function ingestDocument({
 
   let extractionStarted = false;
   try {
-    const text = await sourceService.fetchText(userId, sourceId);
+    const [stored] = await db
+      .select({ metadata: sources.metadata })
+      .from(sources)
+      .where(and(eq(sources.userId, userId), eq(sources.id, sourceId)))
+      .limit(1);
+    const metadata = sourceMetadataSchema.parse(stored?.metadata ?? {});
+    const convertedContent =
+      metadata.convertedToMarkdown === true ? metadata.rawContent : undefined;
+    const text =
+      convertedContent ?? (await sourceService.fetchText(userId, sourceId));
 
     let content = text;
-    let resolvedTitle = title;
+    let resolvedTitle = metadata.title ?? title;
 
-    if (contentType === "html") {
+    if (contentType === "html" && convertedContent === undefined) {
       const converted = await convertToMarkdown({
         buffer: Buffer.from(text, "utf-8"),
         filename: `${documentId}.html`,
@@ -130,7 +150,7 @@ export async function ingestDocument({
           const [updated] = await tx
             .update(sources)
             .set({
-              metadata: sql`COALESCE(${sources.metadata}, '{}'::jsonb) || jsonb_build_object('rawContent', ${content}::text) || ${titleClause}`,
+              metadata: sql`COALESCE(${sources.metadata}, '{}'::jsonb) || jsonb_build_object('rawContent', ${content}::text, 'convertedToMarkdown', true) || ${titleClause}`,
             })
             .where(
               and(
@@ -141,18 +161,18 @@ export async function ingestDocument({
             .returning({ version: sources.version });
           if (!updated)
             throw new Error(`Source ${sourceId} disappeared during conversion`);
+          if (operationId !== undefined) {
+            await advanceSourceIngestionOperationVersion({
+              db: tx,
+              userId,
+              sourceId,
+              operationId,
+              sourceVersion: updated.version,
+            });
+          }
           return updated.version;
         },
       );
-      if (operationId !== undefined) {
-        await advanceSourceIngestionOperationVersion({
-          db,
-          userId,
-          sourceId: sourceId as TypeId<"source">,
-          operationId,
-          sourceVersion,
-        });
-      }
     }
 
     if (operationId !== undefined) {
@@ -178,6 +198,7 @@ export async function ingestDocument({
       logLabel: resolvedTitle ?? documentId,
       ...(resolvedTitle !== undefined && { title: resolvedTitle }),
       ...(author !== undefined && { author }),
+      emailContent: metadata.sourceContext?.sourceKind === "email",
     });
 
     if (operationId !== undefined) {

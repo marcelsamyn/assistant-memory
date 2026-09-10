@@ -4,6 +4,7 @@ import type { DrizzleDB } from "~/db";
 import {
   memoryPartitions,
   partitionMigrationState,
+  sourceIdentityTombstones,
   sourceTombstones,
   sources,
 } from "~/db/schema";
@@ -15,6 +16,7 @@ export type PartitionAccessErrorCode =
   | "PARTITION_MIGRATION_REQUIRED"
   | "PARTITION_UNAUTHORIZED"
   | "SOURCE_VERSION_CONFLICT"
+  | "SOURCE_IDENTITY_RETIRED"
   | "SOURCE_TOMBSTONED";
 
 export class PartitionAccessError extends Error {
@@ -157,6 +159,68 @@ export async function assertSourcePartition({
 type Transaction = Parameters<Parameters<DrizzleDB["transaction"]>[0]>[0];
 type SourceParentGateDatabase = Pick<DrizzleDB, "execute" | "select">;
 
+export interface SourceIdentity {
+  userId: string;
+  sourceType: typeof sources.$inferSelect.type;
+  externalId: string;
+}
+
+function sourceIdentityKey(identity: SourceIdentity): string {
+  return JSON.stringify([
+    "source_identity",
+    identity.userId,
+    identity.sourceType,
+    identity.externalId,
+  ]);
+}
+
+/** Serialize source creation, revision writes, and caller-owned retirement. */
+export async function lockSourceIdentityGates(
+  db: Pick<DrizzleDB, "execute">,
+  identities: readonly SourceIdentity[],
+): Promise<void> {
+  const keys = [...new Set(identities.map(sourceIdentityKey))].sort();
+  for (const key of keys) {
+    await db.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`,
+    );
+  }
+}
+
+/** Fail a write after its caller-owned identity has been retired. */
+export async function assertSourceIdentitiesActive(
+  db: Pick<DrizzleDB, "select">,
+  identities: readonly SourceIdentity[],
+): Promise<void> {
+  if (identities.length === 0) return;
+  const users = [...new Set(identities.map(({ userId }) => userId))];
+  const types = [...new Set(identities.map(({ sourceType }) => sourceType))];
+  const externalIds = [
+    ...new Set(identities.map(({ externalId }) => externalId)),
+  ];
+  const retired = await db
+    .select({
+      userId: sourceIdentityTombstones.userId,
+      sourceType: sourceIdentityTombstones.type,
+      externalId: sourceIdentityTombstones.externalId,
+    })
+    .from(sourceIdentityTombstones)
+    .where(
+      and(
+        inArray(sourceIdentityTombstones.userId, users),
+        inArray(sourceIdentityTombstones.type, types),
+        inArray(sourceIdentityTombstones.externalId, externalIds),
+      ),
+    );
+  const activeKeys = new Set(identities.map(sourceIdentityKey));
+  if (retired.some((identity) => activeKeys.has(sourceIdentityKey(identity)))) {
+    throw new PartitionAccessError(
+      "SOURCE_IDENTITY_RETIRED",
+      "Source identity was retired before ingestion completed",
+    );
+  }
+}
+
 /** A parent edge must serialize with lifecycle tree discovery. */
 export interface SourceParentAttachment {
   userId: string;
@@ -276,6 +340,8 @@ export async function withSourceWriteFence<T>(
     sources: readonly SourceWriteFence[];
     /** When present, every locked source must still belong to this partition. */
     partitionKey?: ContextPartitionKey | undefined;
+    /** New identities not yet discoverable from the locked source rows. */
+    sourceIdentities?: readonly SourceIdentity[];
     /**
      * Acquires cross-boundary transaction gates before source-row locks.
      *
@@ -308,10 +374,35 @@ export async function withSourceWriteFence<T>(
     }
   }
   const sourceIds = [...expectedBySource.keys()].sort();
+  const discoveredIdentities =
+    sourceIds.length === 0
+      ? []
+      : await db
+          .select({
+            userId: sources.userId,
+            sourceType: sources.type,
+            externalId: sources.externalId,
+          })
+          .from(sources)
+          .where(
+            and(
+              eq(sources.userId, input.userId),
+              inArray(sources.id, sourceIds),
+            ),
+          );
+  const sourceIdentities = [
+    ...discoveredIdentities,
+    ...(input.sourceIdentities ?? []),
+  ];
   if (sourceIds.length === 0)
-    return db.transaction((tx) => write(tx, new Map()));
+    return db.transaction(async (tx) => {
+      await lockSourceIdentityGates(tx, sourceIdentities);
+      await assertSourceIdentitiesActive(tx, sourceIdentities);
+      return write(tx, new Map());
+    });
 
   return db.transaction(async (tx) => {
+    await lockSourceIdentityGates(tx, sourceIdentities);
     await input.beforeSourceLocks?.(tx);
     // Stable ordering prevents two multi-source extractors from deadlocking.
     const lockedSources = await tx
@@ -320,6 +411,8 @@ export async function withSourceWriteFence<T>(
         version: sources.version,
         deletedAt: sources.deletedAt,
         partitionKey: sources.partitionKey,
+        sourceType: sources.type,
+        externalId: sources.externalId,
       })
       .from(sources)
       .where(
@@ -333,6 +426,25 @@ export async function withSourceWriteFence<T>(
         "A source was removed before its derived write could be committed",
       );
     }
+    const discoveredKeys = new Set(discoveredIdentities.map(sourceIdentityKey));
+    if (
+      lockedSources.some(
+        (source) =>
+          !discoveredKeys.has(
+            sourceIdentityKey({
+              userId: input.userId,
+              sourceType: source.sourceType,
+              externalId: source.externalId,
+            }),
+          ),
+      )
+    ) {
+      throw new PartitionAccessError(
+        "SOURCE_VERSION_CONFLICT",
+        "A source identity changed before its write fence was acquired",
+      );
+    }
+    await assertSourceIdentitiesActive(tx, sourceIdentities);
 
     const tombstones = await tx
       .select({ sourceId: sourceTombstones.sourceId })

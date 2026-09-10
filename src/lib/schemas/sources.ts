@@ -114,3 +114,37 @@ export const getSourceResponseSchema = z.object({
   }),
 });
 export type GetSourceResponse = z.infer<typeof getSourceResponseSchema>;
+
+export const sourceIdentityLifecycleRequestSchema = z.object({
+  userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
+  identities: z
+    .array(
+      z.object({
+        type: sourceListableTypeEnum,
+        /** Use contextualSourceExternalId for sources ingested with sourceContext. */
+        externalId: z.string().min(1),
+      }),
+    )
+    .min(1)
+    .max(500),
+  action: z.enum(["retire", "restore"]),
+});
+export type SourceIdentityLifecycleRequest = z.infer<
+  typeof sourceIdentityLifecycleRequestSchema
+>;
+
+export const sourceIdentityLifecycleResponseSchema = z.object({
+  sources: z.array(
+    z.object({
+      sourceId: typeIdSchema("source"),
+      partitionKey: contextPartitionKeySchema.nullable(),
+      sourceVersion: z.number().int().nonnegative(),
+      type: sourceListableTypeEnum,
+      externalId: z.string().min(1),
+    }),
+  ),
+});
+export type SourceIdentityLifecycleResponse = z.infer<
+  typeof sourceIdentityLifecycleResponseSchema
+>;

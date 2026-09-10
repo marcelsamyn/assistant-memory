@@ -47,3 +47,16 @@ export const getSourceProcessingResponseSchema = z.object({
 export type GetSourceProcessingResponse = z.infer<
   typeof getSourceProcessingResponseSchema
 >;
+
+export const retrySourceProcessingRequestSchema =
+  getSourceProcessingRequestSchema;
+export type RetrySourceProcessingRequest = z.infer<
+  typeof retrySourceProcessingRequestSchema
+>;
+
+export const retrySourceProcessingResponseSchema = z.object({
+  processing: sourceProcessingSchema,
+});
+export type RetrySourceProcessingResponse = z.infer<
+  typeof retrySourceProcessingResponseSchema
+>;

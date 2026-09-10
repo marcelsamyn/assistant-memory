@@ -288,7 +288,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         const { runDedupSweep: runDocDedupSweep } = await import(
           "./jobs/dedup-sweep"
         );
-        await runDocDedupSweep(data.userId);
+        await runDocDedupSweep(data.userId, undefined, data.partitionKey);
       } else if (job.name === "ingest-file") {
         const data = IngestFileJobInputSchema.parse(job.data);
         console.log(
@@ -308,7 +308,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         const { runDedupSweep: runFileDedupSweep } = await import(
           "./jobs/dedup-sweep"
         );
-        await runFileDedupSweep(data.userId);
+        await runFileDedupSweep(data.userId, undefined, data.partitionKey);
       } else if (job.name === "ingest-transcript") {
         const data = IngestTranscriptJobInputSchema.parse(job.data);
         console.log(

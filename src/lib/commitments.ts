@@ -411,7 +411,8 @@ export async function confirmCommitment(
  * Dismiss a commitment: retract every active `HAS_TASK_STATUS` claim on the
  * task. With no active status it disappears from both the open and candidate
  * views (both require one). Per the "retract only" policy this records no
- * sticky rejection — a much-later re-inference may resurface it.
+ * sticky rejection for general ingestion. Email reconciliation reads this
+ * retracted evidence and requires a later material revision before reopening.
  *
  * Idempotent: a task with nothing active retracts nothing and returns an empty
  * list. Throws {@link TaskNotFoundError} only when the subject isn't a Task

@@ -491,6 +491,16 @@ export const sources = pgTable(
     index("sources_user_id_idx").on(table.userId),
     index("sources_user_partition_idx").on(table.userId, table.partitionKey),
     index("sources_status_idx").on(table.status),
+    index("sources_email_thread_lookup_idx")
+      .on(
+        table.userId,
+        table.partitionKey,
+        sql`(${table.metadata}->'sourceContext'->>'accountId')`,
+        sql`(${table.metadata}->'sourceContext'->>'threadId')`,
+      )
+      .where(
+        sql`${table.deletedAt} IS NULL AND ${table.metadata}->'sourceContext'->>'sourceKind' = 'email'`,
+      ),
     check("sources_scope_ck", sql`"scope" IN ('personal', 'reference')`),
     check("sources_version_ck", sql`"version" >= 0`),
   ],
@@ -498,6 +508,35 @@ export const sources = pgTable(
 
 export type SourcesInsert = typeof sources.$inferInsert;
 export type SourcesSelect = typeof sources.$inferSelect;
+
+/**
+ * Durable gate for caller-owned source identities. A caller can close this
+ * gate before disconnecting an external account so an ambiguous or delayed
+ * ingest cannot recreate content after the account has been removed.
+ */
+export const sourceIdentityTombstones = pgTable(
+  "source_identity_tombstones",
+  {
+    userId: text("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    type: varchar("type", { length: 50 }).notNull().$type<SourceType>(),
+    externalId: text("external_id").notNull(),
+    partitionKey: varchar("partition_key", {
+      length: 200,
+    }).$type<ContextPartitionKey>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.type, table.externalId] }),
+    index("source_identity_tombstones_user_partition_idx").on(
+      table.userId,
+      table.partitionKey,
+    ),
+  ],
+);
 
 /**
  * Non-content terminal record used to redact historical feed events after a

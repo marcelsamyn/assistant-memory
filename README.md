@@ -4,6 +4,16 @@ _Give all your AI assistants **combined, long-term** memory while keeping full c
 
 Assistant Memory is a lightweight memory service built around the **Model Context Protocol (MCP)**. It speaks MCP over HTTP today (stdio support is on the way) and also exposes classic REST endpoints. Store conversations and documents and let any MCP-enabled assistant recall them when needed.
 
+## What ingestion means
+
+Memory is a shared store for clients such as Petals, Claude Code, Codex, and other HTTP or MCP tools. It owns source storage, file conversion, derived claims, provenance, and recall. A client owns access to its external accounts, the choice of material to submit, and any actions taken from remembered information.
+
+A stored source and the facts extracted from it are separate. Memory retains source content even when extraction finds no task. Summaries, claims, and possible commitments are derived views; processing completion does not mean every fact has become a graph claim. Read the source text when those views are insufficient.
+
+Documents and files can carry optional `sourceContext`: facts supplied by the host about origin, authorship, relationships, chronology, and completeness. Existing notes, conversations, and transcript integrations keep their input formats. No client needs to turn its content into email or identify tasks before storing it.
+
+See [the ingestion contract](docs/sdk/ingestion.md) for generic and email examples, processing receipts, source reads, and HTTP/SDK/MCP support. [Consumer migration notes](docs/sdk-consumer-migration.md) list the changes needed for existing integrations.
+
 ## Database migration logs
 
 With `RUN_MIGRATIONS=true`, the first database request applies pending migrations.
@@ -230,27 +240,28 @@ This is the integration that works with the current code.
 
 ### Current MCP loop
 
-MCP connects over `GET /sse` and `POST /messages`. Most current tool names are human-readable strings; the first claims-first read-model tool is already snake_case:
+MCP connects over `GET /sse` and `POST /messages`. Tools use snake_case names:
 
-- `save_memory`: document ingestion using the `POST /ingest/document` schema.
-- `search memory`: calls the same search path as `POST /query/search`.
+- `save_memory`: document ingestion using the `POST /ingest/document` schema. Honors `updateExisting` and returns the JSON acceptance receipt in a text content block.
+- `get_source_processing`: read one ingestion operation by `userId`, `partitionKey`, and `operationId`.
+- `retry_source_processing`: retry a failed operation through the same recovery service as HTTP.
+- `get_source`: read source metadata and, with `includeContent: true`, its stored text or converted Markdown.
+- `bootstrap_memory`: fetch startup context before the first answer that depends on prior memory.
+- `search_memory` and `search_reference`: retrieve personal or reference material with source evidence.
+- `list_commitments`: inspect trusted tasks, candidates, or both through its provenance filter.
 - `query_day_memories`: calls the same path as `POST /query/day`.
 - `list_open_commitments`: calls `POST /commitments/open` semantics and returns currently open tasks only. The model should call it before answering about outstanding, next, pending, follow-up, completed, or abandoned work unless an `open_commitments` section was rendered for this same model call.
 - `get_node` and `get_node_sources`: raw graph and linked-source metadata inspection tools.
 - `read_scratchpad`, `write_scratchpad`, `edit_scratchpad`: scratchpad operations.
 - `update_node`, `delete_node`: raw edit tools; these should be gated by the host.
 
-For a tool-using assistant, make `search memory` available on demand for personal lookup and `list_open_commitments` available with the instruction above. The host should still proactively inject bootstrap context at session start because the current MCP server does not yet expose a true bootstrap tool.
+### Read and recall through MCP
 
-### Target read-model loop
-
-The claims-first refactor is moving toward this assistant-facing MCP/SDK surface. These names describe the intended contract; some are not implemented yet.
-
-1. **Session start**: the chat host calls `bootstrap_memory({ userId, asOf? })` before the first LLM call. The result is a `ContextBundle` with sections such as `pinned`, `atlas`, `preferences`, `open_commitments`, and `recent_supersessions`. Each section includes a usage hint and optional evidence refs.
-2. **Personal lookup**: the assistant or host calls `search_memory({ userId, query, limit?, asOf? })` only when the current turn needs specific user memory. It returns personal node cards plus evidence, not raw graph rows.
-3. **Reference lookup**: the assistant or host calls `search_reference({ userId, query, limit?, asOf? })` only for books, articles, documents, frameworks, and ideas from the user's reference corpus. Its results must not be treated as personal facts about the user.
-4. **Planning and follow-up**: the host either renders an `open_commitments` section before the model call or the assistant calls `list_open_commitments({ userId, ownedBy?, dueBefore? })` inside the normal tool loop before answering about outstanding, next, pending, follow-up, completed, or abandoned work. This read model is implemented; later phases wire it into bootstrap bundles.
-5. **Known entity lookup**: the assistant or host calls `get_entity({ userId, nodeId })` after search returns an entity or the assistant already has a node ID. This returns a compact card with summary, current facts, commitments, aliases, and evidence.
+1. Call `bootstrap_memory` once at session start when the answer depends on prior memory. Pass the same user and partition used for subsequent reads.
+2. Use `search_memory` for personal memory and `search_reference` for saved reference material when startup context does not answer the question.
+3. Use `get_entity` for a known node. Use `get_node_sources` to inspect citations and `get_source` with `includeContent: true` to read the stored text behind a source.
+4. Use `list_open_commitments` for confirmed open work. Use `list_commitments` with `provenance: "candidate"` or `"all"` when looking for possible follow-ups, including tentative email requests. Confirmation is a separate user decision; a client can surface or prepare work while keeping it tentative.
+5. Save new material with `save_memory` and follow its receipt when completion matters. Storage and recall do not require a task to exist.
 
 ### Prompt contract
 

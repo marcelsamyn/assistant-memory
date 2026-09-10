@@ -1331,6 +1331,7 @@ async function listPendingSourceTombstoneStorageCleanup(
 async function completePendingSourceTombstoneStorageCleanup(
   db: DrizzleDB,
   entry: PendingSourceTombstoneStorageCleanup,
+  deleteObjectKey: (objectKey: string) => Promise<void>,
 ): Promise<boolean> {
   return db.transaction(async (tx) => {
     const [tombstone] = await tx
@@ -1365,6 +1366,15 @@ async function completePendingSourceTombstoneStorageCleanup(
     ) {
       return false;
     }
+    if (
+      upload?.state !== "cleanup_pending" &&
+      tombstone?.storageCleanupState !== "pending"
+    ) {
+      return false;
+    }
+    // A failed upload can restart at the same key. Hold its reservation lock
+    // through deletion so a stale cleanup snapshot cannot erase retry bytes.
+    await deleteObjectKey(entry.storageObjectKey);
     let completed = false;
     if (upload?.state === "cleanup_pending") {
       const updated = await tx
@@ -1411,8 +1421,10 @@ export async function retryPendingSourceTombstoneStorageCleanup(
   db: DrizzleDB,
   deleteObjectKey: (objectKey: string) => Promise<void>,
   limit: number,
-  objectKeyExists?: (objectKey: string) => Promise<boolean>,
+  _objectKeyExists?: (objectKey: string) => Promise<boolean>,
 ): Promise<SourceLifecycleStorageCleanupSweepResponse> {
+  // Preserve the caller signature without using existence as settlement proof.
+  void _objectKeyExists;
   await recoverAbandonedSourceBlobUploadReservations(db);
   await recoverTombstonedSourceBlobUploadReservations(db);
   const pending = await listPendingSourceTombstoneStorageCleanup(db, limit);
@@ -1432,29 +1444,16 @@ export async function retryPendingSourceTombstoneStorageCleanup(
                 eq(sourceBlobUploads.state, "upload_unknown"),
               ),
             );
-          if (
-            !objectKeyExists ||
-            !(await objectKeyExists(entry.storageObjectKey))
-          )
-            return { completed: false };
-          // Keys are unique and the native uploader never retries. Seeing the
-          // object proves this attempt committed; no later PUT can resurrect it.
-          await db
-            .update(sourceBlobUploads)
-            .set({ state: "cleanup_pending", updatedAt: new Date() })
-            .where(
-              and(
-                eq(sourceBlobUploads.userId, entry.userId),
-                eq(sourceBlobUploads.sourceId, entry.sourceId),
-                eq(sourceBlobUploads.state, "upload_unknown"),
-              ),
-            );
+          // The key can contain an earlier attempt's bytes. Neither HEAD nor
+          // deletion proves this timed-out PUT has settled; a delayed PUT
+          // could overwrite the next retry. Keep its durable fence in place.
+          return { completed: false };
         }
-        await deleteObjectKey(entry.storageObjectKey);
         return {
           completed: await completePendingSourceTombstoneStorageCleanup(
             db,
             entry,
+            deleteObjectKey,
           ),
         };
       } catch (error: unknown) {

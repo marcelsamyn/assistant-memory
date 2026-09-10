@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, inArray, isNull, or } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, ne, or } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
 import type { DrizzleDB } from "~/db";
 import { sourceIngestionOperations, sources } from "~/db/schema";
@@ -51,7 +51,7 @@ function assertSourcePartitionMatches(
   }
 }
 
-/** Creates or reuses the receipt for one exact content revision. */
+/** Creates or reuses the receipt for the current bytes and extraction context. */
 export async function createSourceIngestionOperation(input: {
   db: DrizzleDB;
   userId: string;
@@ -59,6 +59,7 @@ export async function createSourceIngestionOperation(input: {
   sourceId: TypeId<"source">;
   externalId: string;
   contentHash: string;
+  expectedSourceVersion?: number;
 }): Promise<SourceProcessing> {
   await assertPartitionReadAllowed(input.db, input.userId, input.partitionKey);
   return input.db.transaction(async (tx) => {
@@ -67,6 +68,7 @@ export async function createSourceIngestionOperation(input: {
         partitionKey: sources.partitionKey,
         version: sources.version,
         deletedAt: sources.deletedAt,
+        metadata: sources.metadata,
       })
       .from(sources)
       .where(
@@ -81,6 +83,19 @@ export async function createSourceIngestionOperation(input: {
       );
     }
     assertSourcePartitionMatches(source.partitionKey, input.partitionKey);
+    const revisionHash =
+      typeof source.metadata === "object" &&
+      source.metadata !== null &&
+      "ingestionRevisionHash" in source.metadata
+        ? source.metadata.ingestionRevisionHash
+        : undefined;
+    if (revisionHash !== undefined && revisionHash !== input.contentHash) {
+      throw new PartitionAccessError(
+        "SOURCE_VERSION_CONFLICT",
+        "Source revision changed before its processing receipt was accepted",
+        source.version,
+      );
+    }
 
     const [existing] = await tx
       .select()
@@ -94,6 +109,17 @@ export async function createSourceIngestionOperation(input: {
       )
       .limit(1);
     if (existing) return toSourceProcessing(existing);
+
+    if (
+      input.expectedSourceVersion !== undefined &&
+      source.version !== input.expectedSourceVersion
+    ) {
+      throw new PartitionAccessError(
+        "SOURCE_VERSION_CONFLICT",
+        "Source content changed before its processing receipt was accepted",
+        source.version,
+      );
+    }
 
     const [updatedSource] = await tx
       .update(sources)
@@ -125,6 +151,37 @@ export async function createSourceIngestionOperation(input: {
       throw new Error("Failed to create source ingestion operation");
     return toSourceProcessing(operation);
   });
+}
+
+/** Retained jobs follow their receipt when a source moves between partitions. */
+export async function getSourceIngestionJobContext(input: {
+  db: DrizzleDB;
+  userId: string;
+  sourceId: TypeId<"source">;
+  operationId: string;
+}): Promise<{
+  partitionKey: ContextPartitionKey | undefined;
+  externalId: string;
+}> {
+  const [operation] = await input.db
+    .select({
+      partitionKey: sourceIngestionOperations.partitionKey,
+      externalId: sourceIngestionOperations.externalId,
+    })
+    .from(sourceIngestionOperations)
+    .where(
+      and(
+        eq(sourceIngestionOperations.userId, input.userId),
+        eq(sourceIngestionOperations.sourceId, input.sourceId),
+        eq(sourceIngestionOperations.operationId, input.operationId),
+      ),
+    )
+    .limit(1);
+  if (!operation) throw new Error("Source ingestion operation was not found");
+  return {
+    partitionKey: operation.partitionKey ?? undefined,
+    externalId: operation.externalId,
+  };
 }
 
 /** Finds an exact revision without exposing content or cross-user rows. */
@@ -210,6 +267,99 @@ export async function getSourceIngestionOperationById(input: {
     )
     .limit(1);
   return operation ? toSourceProcessing(operation) : null;
+}
+
+/** Reopens one failed operation without changing its canonical source identity. */
+export async function retrySourceIngestionOperation(input: {
+  db: DrizzleDB;
+  userId: string;
+  partitionKey?: ContextPartitionKey;
+  operationId: string;
+}): Promise<SourceProcessing> {
+  await assertPartitionReadAllowed(input.db, input.userId, input.partitionKey);
+  return input.db.transaction(async (tx) => {
+    const [operation] = await tx
+      .select()
+      .from(sourceIngestionOperations)
+      .where(
+        and(
+          eq(sourceIngestionOperations.userId, input.userId),
+          eq(sourceIngestionOperations.operationId, input.operationId),
+          input.partitionKey === undefined
+            ? isNull(sourceIngestionOperations.partitionKey)
+            : eq(sourceIngestionOperations.partitionKey, input.partitionKey),
+        ),
+      )
+      .for("update")
+      .limit(1);
+    if (!operation) {
+      throw new PartitionAccessError(
+        "PARTITION_UNAUTHORIZED",
+        "Source ingestion operation was not found",
+      );
+    }
+    if (operation.status === "queued" || operation.status === "processing") {
+      return toSourceProcessing(operation);
+    }
+    if (
+      operation.status !== "failed" ||
+      operation.errorCode === "SUPERSEDED_OPERATION" ||
+      (await isSuperseded(tx, operation))
+    ) {
+      throw new PartitionAccessError(
+        "SOURCE_VERSION_CONFLICT",
+        "Only the current failed source operation can be retried",
+      );
+    }
+    const [source] = await tx
+      .select({
+        partitionKey: sources.partitionKey,
+        deletedAt: sources.deletedAt,
+      })
+      .from(sources)
+      .where(
+        and(
+          eq(sources.userId, input.userId),
+          eq(sources.id, operation.sourceId),
+        ),
+      )
+      .for("update")
+      .limit(1);
+    if (!source || source.deletedAt !== null) {
+      throw new PartitionAccessError(
+        "SOURCE_TOMBSTONED",
+        "Cannot retry processing for a removed source",
+      );
+    }
+    assertSourcePartitionMatches(source.partitionKey, input.partitionKey);
+    const [updatedSource] = await tx
+      .update(sources)
+      .set({ status: "pending" })
+      .where(
+        and(
+          eq(sources.userId, input.userId),
+          eq(sources.id, operation.sourceId),
+        ),
+      )
+      .returning({ version: sources.version });
+    if (!updatedSource) throw new Error("Source disappeared before retry");
+    const now = new Date();
+    const [retried] = await tx
+      .update(sourceIngestionOperations)
+      .set({
+        status: "queued",
+        stage: "content",
+        sourceVersion: updatedSource.version,
+        attempt: operation.attempt + 1,
+        errorCode: null,
+        completedAt: null,
+        updatedAt: now,
+      })
+      .where(eq(sourceIngestionOperations.operationId, operation.operationId))
+      .returning();
+    if (!retried) throw new Error("Source operation disappeared before retry");
+    return toSourceProcessing(retried);
+  });
 }
 
 /** Marks extraction as running and advances only the mutable source fence. */
@@ -425,6 +575,7 @@ async function isSuperseded(
       and(
         eq(sourceIngestionOperations.userId, operation.userId),
         eq(sourceIngestionOperations.sourceId, operation.sourceId),
+        ne(sourceIngestionOperations.operationId, operation.operationId),
         or(
           gt(sourceIngestionOperations.createdAt, operation.createdAt),
           and(
@@ -452,16 +603,9 @@ async function finishSourceIngestionOperation(input: {
     input.db,
     {
       userId: input.userId,
-      sources: [
-        {
-          sourceId: input.sourceId,
-          ...(input.expectedSourceVersion !== undefined
-            ? { expectedSourceVersion: input.expectedSourceVersion }
-            : {}),
-        },
-      ],
+      sources: [{ sourceId: input.sourceId }],
     },
-    async (tx) => {
+    async (tx, sourceVersions) => {
       const [operation] = await tx
         .select()
         .from(sourceIngestionOperations)
@@ -479,7 +623,11 @@ async function finishSourceIngestionOperation(input: {
       if (["completed", "failed", "purged"].includes(operation.status)) {
         return toSourceProcessing(operation);
       }
-      if (await isSuperseded(tx, operation)) {
+      const currentSourceVersion = sourceVersions.get(input.sourceId);
+      if (
+        currentSourceVersion !== operation.sourceVersion ||
+        (await isSuperseded(tx, operation))
+      ) {
         const [superseded] = await tx
           .update(sourceIngestionOperations)
           .set({
@@ -493,6 +641,20 @@ async function finishSourceIngestionOperation(input: {
         if (!superseded)
           throw new Error("Source ingestion operation disappeared");
         return toSourceProcessing(superseded);
+      }
+      // Metadata updates advance this same receipt. A failed final attempt
+      // can close it at that authoritative version, while a successful result
+      // still has to prove it used the current source snapshot.
+      if (
+        input.status === "completed" &&
+        input.expectedSourceVersion !== undefined &&
+        input.expectedSourceVersion !== currentSourceVersion
+      ) {
+        throw new PartitionAccessError(
+          "SOURCE_VERSION_CONFLICT",
+          "Source changed before processing completed",
+          currentSourceVersion,
+        );
       }
       const [updatedSource] = await tx
         .update(sources)

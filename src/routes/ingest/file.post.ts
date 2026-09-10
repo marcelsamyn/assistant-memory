@@ -9,6 +9,7 @@ import {
   findSourceIngestionOperation,
   hashSourceContent,
 } from "~/lib/ingestion/source-processing";
+import { hashSourceExtractionRevision } from "~/lib/ingestion/source-revision";
 import { batchQueue } from "~/lib/queues";
 import {
   ingestFileFieldsSchema,
@@ -16,7 +17,7 @@ import {
   supportedFileMimeTypes,
 } from "~/lib/schemas/ingest-file";
 import type { SourceProcessing } from "~/lib/schemas/source-processing";
-import { sourceService } from "~/lib/sources";
+import { sourceMetadataSchema, sourceService } from "~/lib/sources";
 import { env } from "~/utils/env";
 
 const SUPPORTED_MIME_SET = new Set<string>(supportedFileMimeTypes);
@@ -116,7 +117,31 @@ export default defineEventHandler(async (event) => {
       statusMessage: "source parent does not belong to the requested partition",
     });
   }
-  const timestamp = parsed.timestamp ?? new Date();
+  const [previous] = await db
+    .select({ metadata: sources.metadata, timestamp: sources.lastIngestedAt })
+    .from(sources)
+    .where(
+      and(
+        eq(sources.userId, parsed.userId),
+        eq(sources.type, "document"),
+        eq(sources.externalId, externalId),
+        isNull(sources.deletedAt),
+      ),
+    )
+    .limit(1);
+  const previousMetadata = sourceMetadataSchema.parse(previous?.metadata ?? {});
+  const timestamp = parsed.timestamp ?? previous?.timestamp ?? new Date();
+  const author = parsed.author ?? previousMetadata.author;
+  const revisionHash = hashSourceExtractionRevision(
+    contentHash,
+    parsed.sourceContext,
+    {
+      scope: parsed.scope,
+      contentType: parsed.mimeType,
+      author,
+      timestamp,
+    },
+  );
 
   // Only set `metadata.title` when the user explicitly supplied one.
   // The filename is stored separately under `metadata.filename` so the
@@ -125,11 +150,12 @@ export default defineEventHandler(async (event) => {
   // either path having to second-guess whether the existing title was
   // explicit or a filename fallback.
   const metadata: Record<string, unknown> = {
+    ingestionRevisionHash: revisionHash,
     filename: parsed.filename,
     mimeType: parsed.mimeType,
   };
   if (parsed.title !== undefined) metadata["title"] = parsed.title;
-  if (parsed.author !== undefined) metadata["author"] = parsed.author;
+  if (author !== undefined) metadata["author"] = author;
   if (parsed.sourceContext !== undefined)
     metadata["sourceContext"] = parsed.sourceContext;
 
@@ -198,7 +224,7 @@ export default defineEventHandler(async (event) => {
         ? { partitionKey: parsed.partitionKey }
         : {}),
       sourceId,
-      contentHash,
+      contentHash: revisionHash,
     });
     if (!existingProcessing) {
       await sourceService.replaceFileContent({
@@ -208,7 +234,7 @@ export default defineEventHandler(async (event) => {
         buffer: filePart.data,
         contentType: parsed.mimeType,
         externalId,
-        contentHash,
+        contentHash: revisionHash,
         metadata,
         ...(parsed.sourceContext?.parentSourceId !== undefined
           ? { parentId: parsed.sourceContext.parentSourceId }
@@ -254,7 +280,8 @@ export default defineEventHandler(async (event) => {
       : {}),
     sourceId,
     externalId,
-    contentHash,
+    contentHash: revisionHash,
+    expectedSourceVersion: source.version,
   });
 
   if (

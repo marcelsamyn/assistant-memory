@@ -1,0 +1,21 @@
+import { defineEventHandler } from "h3";
+import { ensureUser } from "~/lib/ingestion/ensure-user";
+import { assertPartitionReadAllowed } from "~/lib/partition-access";
+import {
+  sourceIdentityLifecycleRequestSchema,
+  sourceIdentityLifecycleResponseSchema,
+} from "~/lib/schemas/sources";
+import { applySourceIdentityLifecycle } from "~/lib/source-identity-lifecycle";
+import { useDatabase } from "~/utils/db";
+
+export default defineEventHandler(async (event) => {
+  const input = sourceIdentityLifecycleRequestSchema.parse(
+    await readBody(event),
+  );
+  const db = await useDatabase();
+  await ensureUser(db, input.userId);
+  await assertPartitionReadAllowed(db, input.userId, input.partitionKey);
+  return sourceIdentityLifecycleResponseSchema.parse(
+    await applySourceIdentityLifecycle(db, input),
+  );
+});

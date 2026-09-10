@@ -16,6 +16,7 @@ import {
   upsertCommitmentPresentation,
 } from "./commitment-presentation";
 import { debugGraph } from "./debug-utils";
+import { hasEmailDeadlineEvidence } from "./email-deadline-evidence";
 import {
   buildCommitmentRequestEvidence,
   EMAIL_EXTRACTION_RULES,
@@ -27,12 +28,19 @@ import {
   resolveTaskStatusProvenance,
 } from "./email-request-extraction";
 import {
+  formatEmailRequestCandidates,
+  loadEmailRequestCandidates,
+  resolveEmailRequest,
+  type EmailRequestResolution,
+} from "./email-request-matching";
+import {
   generateAndInsertNodeEmbeddings,
   generateAndInsertClaimEmbeddings,
 } from "./embeddings-util";
 import { formatNodesForPrompt } from "./formatting";
 import { findSimilarNodes, findOneHopNodes, findNodesByType } from "./graph";
 import { resolveIdentity } from "./identity-resolution";
+import { getSourceIngestionOperation } from "./ingestion/source-processing";
 import { normalizeLabel } from "./label";
 import { recordMetricObservations } from "./metrics/observations";
 import {
@@ -56,7 +64,7 @@ import { type OpenCommitment } from "./schemas/open-commitments";
 import type { ContextPartitionKey } from "./schemas/partition";
 import type { SourceContext } from "./schemas/source-context";
 import { TemporaryIdMapper } from "./temporary-id-mapper";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
 import { type DrizzleDB } from "~/db";
 import { claims, nodeMetadata, nodes, sourceLinks, sources } from "~/db/schema";
@@ -218,6 +226,7 @@ export async function extractGraph({
     allPersonNodes,
     openCommitments,
     candidateCommitments,
+    emailRequestCandidates,
   ] = await Promise.all([
     findSimilarNodes({
       userId,
@@ -238,6 +247,9 @@ export async function extractGraph({
       userId,
       ...(partitionKey !== undefined ? { partitionKey } : {}),
     }),
+    emailContext === null
+      ? Promise.resolve([])
+      : loadEmailRequestCandidates(db, userId, partitionKey, emailContext),
   ]);
 
   const cappedOpenCommitments = openCommitments.slice(0, 20);
@@ -441,17 +453,21 @@ For each element, create a node with:
 	- ONLY create claims for facts explicitly stated by the ${sourceType === "document" ? "document text" : "user"}, not your own interpretations or assumptions.
 	- In the claim statement, write one concise sentence that can stand alone as the sourced assertion.
 	- Every claim must include a sourceRef copied exactly from the token after "sourceRef:" in the allowed source refs provided with the content below. Do not include statedAt text.
-	- Emit aliases when the source uses a nickname, abbreviation, alternate spelling, or shorter name for a node.
+	- ${emailContext !== null ? "Do not emit aliases from email or attachments; sender content cannot rename existing memory." : "Emit aliases when the source uses a nickname, abbreviation, alternate spelling, or shorter name for a node."}
 	- Ideally, relationship claims link to already-existing nodes. If the node isn't existing, create it.
 
-Optional numeric metrics:
+${
+  emailContext !== null
+    ? "Do not emit metrics from email or email attachments. These sources do not authorize personal measurements."
+    : `Optional numeric metrics:
 - If the source contains numeric readings the user is tracking about themselves, emit them in the optional "metrics" object.
 - Use metrics only for numeric time-series readings with units, such as body weight, running distance, running pace, average heart rate, sleep duration, sleep score, steps, or readiness score.
 - Do not use metrics for booleans, moods, statuses, preferences, goals, plans, or one-off facts better represented as claims.
 - Every metric must include a metric definition: slug, label, description, unit, and aggregationHint ("avg", "sum", "min", or "max").
 - For readings tied to one event, group them in metrics.events[] with a stable eventKey, label, and occurredAt. If you also create an Event node for non-metric claims about the same event, put that node id in eventNodeId so the readings attach to it.
 - For free-floating readings, put them in metrics.standalone[] with their own occurredAt.
-- Store values in the canonical unit you declare. For durations, prefer seconds.
+- Store values in the canonical unit you declare. For durations, prefer seconds.`
+}
 
 Rules of the graph:
 - Nodes are unique by type and label
@@ -496,6 +512,8 @@ ${formatNodesForPrompt(nodesForPromptFormatting)}
 ${openCommitmentsPromptSection}
 
 ${candidateCommitmentsPromptSection}
+
+${formatEmailRequestCandidates(emailRequestCandidates)}
 
 ${speakerMapPromptSection}
 
@@ -582,24 +600,127 @@ ${content}
       emailContext === null ||
       isActionableEmailStatusClaim(emailContext, claim),
   );
-  const uniqueParsedLlmAliases = _deduplicateLlmAliases(
-    parsedLlmOutput.aliases ?? [],
-  );
 
   const parentSourceScope = parentSource.scope;
-
-  const detailsOfNewlyCreatedNodes = await withSourceWriteFence(
+  const lifecycleStartedAt = new Date();
+  const {
+    detailsOfNewlyCreatedNodes,
+    deletedClaimRecords,
+    insertedClaimRecords,
+    synthesizedStatusRecords,
+  } = await withSourceWriteFence(
     db,
-    { userId, sources: sourceWriteFences },
+    {
+      userId,
+      sources: sourceWriteFences,
+      ...(emailContext === null
+        ? {}
+        : {
+            beforeSourceLocks: async (tx) => {
+              const threadKey = JSON.stringify([
+                "email-requests",
+                userId,
+                partitionKey ?? null,
+                emailContext.accountId,
+                emailContext.threadId ?? sourceId,
+              ]);
+              await tx.execute(
+                sql`SELECT pg_advisory_xact_lock(hashtext(${threadKey}))`,
+              );
+            },
+          }),
+    },
     async (tx) => {
+      const emailResolutions = new Map<
+        LlmOutputAttributeClaim,
+        EmailRequestResolution
+      >();
+      if (emailContext !== null) {
+        const [candidates, operation] = await Promise.all([
+          loadEmailRequestCandidates(tx, userId, partitionKey, emailContext),
+          getSourceIngestionOperation({
+            db: tx,
+            userId,
+            sourceId,
+            ...(partitionKey === undefined ? {} : { partitionKey }),
+          }),
+        ]);
+        const requestIds = new Set<string>();
+        for (const claim of uniqueParsedLlmAttributeClaims) {
+          if (sourceRefMap.get(claim.sourceRef)?.sourceId !== sourceId)
+            continue;
+          const resolution = resolveEmailRequest({
+            context: emailContext,
+            claim,
+            content,
+            sourceId,
+            candidates,
+            ...(operation ? { sourceOperationId: operation.operationId } : {}),
+          });
+          if (
+            resolution === null ||
+            requestIds.has(resolution.evidence.requestId)
+          )
+            continue;
+          requestIds.add(resolution.evidence.requestId);
+          emailResolutions.set(claim, resolution);
+          if (resolution.taskId) idMap.set(claim.subjectId, resolution.taskId);
+          else idMap.delete(claim.subjectId);
+        }
+      }
+      const acceptedAttributes =
+        emailContext === null
+          ? uniqueParsedLlmAttributeClaims
+          : uniqueParsedLlmAttributeClaims.filter((claim) =>
+              emailResolutions.has(claim),
+            );
+      const hasGroundedDeadline = (
+        claim: LlmOutputRelationshipClaim,
+      ): boolean => {
+        if (sourceRefMap.get(claim.sourceRef)?.sourceId !== sourceId)
+          return false;
+        const target = uniqueParsedLlmNodes.find(
+          (node) => node.id === claim.objectId,
+        );
+        const existingTargetId = idMap.get(claim.objectId);
+        const dateLabel =
+          existingTargetId !== undefined
+            ? nodeLabels.get(existingTargetId)
+            : target?.type === "Temporal"
+              ? target.label
+              : undefined;
+        return [...emailResolutions].some(
+          ([status, resolution]) =>
+            status.subjectId === claim.subjectId &&
+            hasEmailDeadlineEvidence({
+              dateLabel,
+              statement: claim.statement,
+              requestExcerpt: resolution.evidence.emailThread?.excerpt,
+            }),
+        );
+      };
+      const acceptedRelationships =
+        emailContext === null
+          ? uniqueParsedLlmClaims
+          : uniqueParsedLlmClaims.filter(hasGroundedDeadline);
+      const acceptedNodeIds = new Set([
+        ...acceptedAttributes.map((claim) => claim.subjectId),
+        ...acceptedRelationships.flatMap((claim) => [
+          claim.subjectId,
+          claim.objectId,
+        ]),
+      ]);
       const details = await _processAndInsertNewNodes(
         tx,
         userId,
         parentSourceScope,
         partitionKey,
-        uniqueParsedLlmNodes,
+        emailContext === null
+          ? uniqueParsedLlmNodes
+          : uniqueParsedLlmNodes.filter((node) => acceptedNodeIds.has(node.id)),
         idMap,
         nodeLabels,
+        emailContext !== null,
       );
       if (details.length > 0) {
         await tx
@@ -607,27 +728,18 @@ ${content}
           .values(details.map((newNode) => ({ sourceId, nodeId: newNode.id })))
           .onConflictDoNothing();
       }
-      return details;
-    },
-  );
-
-  const {
-    deletedClaimRecords,
-    insertedClaimRecords,
-    synthesizedStatusRecords,
-  } = await withSourceWriteFence(
-    db,
-    { userId, sources: sourceWriteFences },
-    async (tx) => {
-      const deleted = replaceClaimsForSources
-        ? await _deleteExistingClaimsForSources(
-            tx,
-            userId,
-            resolvedSourceRefs.map((sourceRef) => sourceRef.sourceId),
-          )
-        : [];
+      // Email evidence is an append-only lifecycle history. Source replacement
+      // would erase prior completion or a dismissal during a duplicate retry.
+      const deleted =
+        replaceClaimsForSources && emailContext === null
+          ? await _deleteExistingClaimsForSources(
+              tx,
+              userId,
+              resolvedSourceRefs.map((sourceRef) => sourceRef.sourceId),
+            )
+          : [];
       const newTaskNodeIds = new Set(
-        detailsOfNewlyCreatedNodes
+        details
           .filter((node) => node.nodeType === "Task")
           .map((node) => node.id),
       );
@@ -635,8 +747,10 @@ ${content}
         tx,
         userId,
         statedAt,
-        uniqueParsedLlmClaims,
-        uniqueParsedLlmAttributeClaims,
+        emailContext === null
+          ? acceptedRelationships
+          : acceptedRelationships.filter(hasGroundedDeadline),
+        acceptedAttributes,
         idMap,
         sourceRefMap,
         sourceType,
@@ -644,18 +758,21 @@ ${content}
         newTaskNodeIds,
         partitionKey,
         emailContext,
+        emailResolutions,
       );
       const synthesized = await _synthesizeMissingTaskStatuses(
         tx,
         userId,
-        detailsOfNewlyCreatedNodes,
+        details,
         inserted,
         sourceId,
         parentSourceScope,
         statedAt,
         partitionKey,
       );
+      if (emailContext !== null) await applyClaimLifecycle(tx, inserted);
       return {
+        detailsOfNewlyCreatedNodes: details,
         deletedClaimRecords: deleted,
         insertedClaimRecords: inserted,
         synthesizedStatusRecords: synthesized,
@@ -674,27 +791,42 @@ ${content}
       ? [...insertedClaimRecords, ...synthesizedStatusRecords]
       : insertedClaimRecords;
 
-  await withSourceWriteFence(db, { userId, sources: sourceWriteFences }, (tx) =>
-    _processAndInsertLlmAliases(tx, userId, uniqueParsedLlmAliases, idMap),
-  );
-  await withSourceWriteFence(db, { userId, sources: sourceWriteFences }, (tx) =>
-    _processAndRecordLlmMetrics({
-      db: tx,
-      userId,
-      ...(partitionKey !== undefined ? { partitionKey } : {}),
-      sourceId,
-      metrics: parsedLlmOutput.metrics,
-      idMap,
-    }),
-  );
+  // Email evidence authorizes only the filtered request graph above.
+  // Neither aliases nor measurements may change existing personal memory.
+  if (emailContext === null) {
+    await withSourceWriteFence(
+      db,
+      { userId, sources: sourceWriteFences },
+      (tx) =>
+        _processAndInsertLlmAliases(
+          tx,
+          userId,
+          _deduplicateLlmAliases(parsedLlmOutput.aliases ?? []),
+          idMap,
+        ),
+    );
+    await withSourceWriteFence(
+      db,
+      { userId, sources: sourceWriteFences },
+      (tx) =>
+        _processAndRecordLlmMetrics({
+          db: tx,
+          userId,
+          ...(partitionKey !== undefined ? { partitionKey } : {}),
+          sourceId,
+          metrics: parsedLlmOutput.metrics,
+          idMap,
+        }),
+    );
+  }
 
   // Capture timestamp BEFORE lifecycle so the invalidation hook can detect
   // any claim that transitioned out of `active` during this run.
-  const lifecycleStartedAt = new Date();
-  await applyClaimLifecycle(db, [
-    ...deletedClaimRecords,
-    ...allInsertedClaimRecords,
-  ]);
+  if (emailContext === null)
+    await applyClaimLifecycle(db, [
+      ...deletedClaimRecords,
+      ...allInsertedClaimRecords,
+    ]);
   // Guarded so a standalone extraction probe never loads `./queues` (which
   // starts a BullMQ worker on import); the regression harness and production
   // leave the seam off, preserving the enqueue.
@@ -972,7 +1104,7 @@ These are the user's currently open Task nodes. Each line lists the task's exist
   const emailRule = allowTrustedStatusChanges
     ? ""
     : `
-- For email evidence, reuse an existing task only to avoid a duplicate. Any emitted HAS_TASK_STATUS remains assistant_inferred and cannot confirm, complete, or abandon the task.`;
+- For email evidence, every emitted HAS_TASK_STATUS remains assistant_inferred and cannot confirm acceptance or abandon a task. A current message may mark the exact cited request done only with lifecycle "completion", or return it to pending only with a material lifecycle "revision", under the EMAIL EXTRACTION RULES and EMAIL REQUEST HISTORY below.`;
 
   if (openCommitments.length === 0) {
     return `${header}${emailRule}
@@ -1016,7 +1148,7 @@ These are tasks the assistant previously *inferred* but the user has not confirm
   const emailRule = allowConfirmation
     ? ""
     : `
-- Email evidence may match this candidate to avoid a duplicate, but it cannot confirm, complete, or abandon it. Any HAS_TASK_STATUS must use assertionKind "assistant_inferred".`;
+- Email evidence cannot confirm acceptance or abandon this candidate. Any HAS_TASK_STATUS remains assistant_inferred. A current message may mark the exact cited request done only with lifecycle "completion", or revise it under the EMAIL EXTRACTION RULES and EMAIL REQUEST HISTORY below.`;
 
   const lines = candidateCommitments.map((commitment) => {
     const label = commitment.label ?? "(unlabeled task)";
@@ -1136,6 +1268,7 @@ async function _processAndInsertNewNodes(
   uniqueParsedLlmNodes: LlmOutputNode[],
   idMap: Map<string, TypeId<"node">>,
   nodeLabels: Map<TypeId<"node">, string>,
+  preserveEmailTaskIdentity = false,
 ): Promise<ProcessedNode[]> {
   const detailsOfNewlyCreatedNodes: ProcessedNode[] = [];
 
@@ -1150,7 +1283,10 @@ async function _processAndInsertNewNodes(
     }
 
     const canonical = normalizeLabel(llmNode.label);
-    const localKey = `${llmNode.type}|${canonical}`;
+    const localKey =
+      preserveEmailTaskIdentity && llmNode.type === "Task"
+        ? llmNode.id
+        : `${llmNode.type}|${canonical}`;
     const localHit = localByKey.get(localKey);
     if (localHit) {
       idMap.set(llmNode.id, localHit);
@@ -1166,16 +1302,19 @@ async function _processAndInsertNewNodes(
     // (claim profile compat) require artifacts that don't exist yet for a
     // not-yet-inserted node, so they're left to the background re-evaluation
     // pass (Phase 3.3).
-    const resolution = await resolveIdentity({
-      userId,
-      candidate: {
-        proposedLabel: llmNode.label,
-        normalizedLabel: canonical,
-        nodeType: llmNode.type,
-        scope,
-        ...(partitionKey !== undefined ? { partitionKey } : {}),
-      },
-    });
+    const resolution =
+      preserveEmailTaskIdentity && llmNode.type === "Task"
+        ? { resolvedNodeId: undefined }
+        : await resolveIdentity({
+            userId,
+            candidate: {
+              proposedLabel: llmNode.label,
+              normalizedLabel: canonical,
+              nodeType: llmNode.type,
+              scope,
+              ...(partitionKey !== undefined ? { partitionKey } : {}),
+            },
+          });
 
     if (resolution.resolvedNodeId) {
       idMap.set(llmNode.id, resolution.resolvedNodeId);
@@ -1240,6 +1379,10 @@ async function _processAndInsertLlmClaims(
   newTaskNodeIds: Set<TypeId<"node">>,
   partitionKey: ContextPartitionKey | undefined,
   emailContext: SourceContext | null,
+  emailResolutions: ReadonlyMap<
+    LlmOutputAttributeClaim,
+    EmailRequestResolution
+  >,
 ): Promise<Array<typeof claims.$inferSelect>> {
   const claimInserts: Array<typeof claims.$inferInsert> = [];
   const sourceScopeMap = await _fetchSourceScopeMap(
@@ -1339,8 +1482,14 @@ async function _processAndInsertLlmClaims(
         emailContext === null ? provenance.kind : "assistant_inferred",
       assertedByNodeId: provenance.nodeId,
       statedAt: claimSource.statedAt,
-      validFrom: _parseOptionalDate(llmClaim.validFrom),
-      validTo: _parseOptionalDate(llmClaim.validTo),
+      validFrom:
+        emailContext === null
+          ? _parseOptionalDate(llmClaim.validFrom)
+          : undefined,
+      validTo:
+        emailContext === null
+          ? _parseOptionalDate(llmClaim.validTo)
+          : undefined,
       status: "active",
     });
   }
@@ -1426,20 +1575,22 @@ async function _processAndInsertLlmClaims(
           })
         : provenance.kind;
 
+    const emailResolution = emailResolutions.get(llmClaim);
     const requestEvidence =
-      emailContext === null
+      emailResolution?.evidence ??
+      (emailContext === null
         ? null
         : buildCommitmentRequestEvidence({
             context: emailContext,
             claim: llmClaim,
             claimSourceId: claimSource.sourceId,
             sourceIdsByRef,
-          });
+          }));
 
     claimInserts.push({
       userId,
       subjectNodeId,
-      objectValue,
+      objectValue: emailResolution?.status ?? objectValue,
       predicate: llmClaim.predicate,
       statement: llmClaim.statement,
       description: llmClaim.statement,
@@ -1448,9 +1599,15 @@ async function _processAndInsertLlmClaims(
       scope,
       assertedByKind,
       assertedByNodeId: provenance.nodeId,
-      statedAt: claimSource.statedAt,
-      validFrom: _parseOptionalDate(llmClaim.validFrom),
-      validTo: _parseOptionalDate(llmClaim.validTo),
+      statedAt: emailResolution?.statedAt ?? claimSource.statedAt,
+      validFrom:
+        emailContext === null
+          ? _parseOptionalDate(llmClaim.validFrom)
+          : undefined,
+      validTo:
+        emailContext === null
+          ? _parseOptionalDate(llmClaim.validTo)
+          : undefined,
       ...(requestEvidence !== null ? { metadata: { requestEvidence } } : {}),
       status: "active",
     });

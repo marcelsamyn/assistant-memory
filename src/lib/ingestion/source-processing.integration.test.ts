@@ -15,10 +15,18 @@ import {
 import {
   completeSourceIngestionOperation,
   createSourceIngestionOperation,
+  failSourceIngestionOperation,
   getSourceIngestionOperationById,
   markSourceIngestionProcessing,
   purgeSourceIngestionOperations,
+  retrySourceIngestionOperation,
+  getSourceIngestionJobContext,
 } from "~/lib/ingestion/source-processing";
+import {
+  reclassifySourcePartition,
+  setPartitionMigrationState,
+} from "~/lib/partition-reclassification";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import { SourceService } from "~/lib/sources";
 import { newTypeId } from "~/types/typeid";
 
@@ -121,6 +129,188 @@ describeIfServer("source ingestion operation integration", () => {
     expect(completed.completedAt).toBeInstanceOf(Date);
   });
 
+  it("moves source-tree receipts and resumes retained work after partition cutover", async () => {
+    const userId = "processing-partition-move";
+    const root = await createSource(userId, "parent");
+    const [child] = await database
+      .insert(sources)
+      .values({
+        userId,
+        type: "document",
+        externalId: "child",
+        parentSource: root.id,
+        status: "pending",
+      })
+      .returning();
+    if (!child) throw new Error("Child source was not created");
+    const rootInput = {
+      db: database,
+      userId,
+      sourceId: root.id,
+      externalId: root.externalId,
+    };
+    const historical = await createSourceIngestionOperation({
+      ...rootInput,
+      contentHash: "old",
+    });
+    await markSourceIngestionProcessing({
+      ...rootInput,
+      operationId: historical.operationId,
+    });
+    const completed = await completeSourceIngestionOperation({
+      ...rootInput,
+      operationId: historical.operationId,
+    });
+    const queued = await createSourceIngestionOperation({
+      ...rootInput,
+      contentHash: "new",
+    });
+    const childOperation = await createSourceIngestionOperation({
+      db: database,
+      userId,
+      sourceId: child.id,
+      externalId: child.externalId,
+      contentHash: "attachment",
+    });
+    await markSourceIngestionProcessing({
+      db: database,
+      userId,
+      sourceId: child.id,
+      operationId: childOperation.operationId,
+    });
+    const orphanId = "purged-legacy-receipt";
+    await database.insert(sourceIngestionOperations).values({
+      operationId: orphanId,
+      userId,
+      sourceId: newTypeId("source"),
+      externalId: "erased",
+      sourceVersion: 5,
+      status: "purged",
+      stage: "extraction",
+    });
+    await setPartitionMigrationState(database, {
+      userId,
+      expectedState: "unmigrated",
+      expectedVersion: 0,
+      nextState: "migrating",
+    });
+    const partitionA = contextPartitionKeySchema.parse(
+      "processing:partition-a",
+    );
+    const partitionB = contextPartitionKeySchema.parse(
+      "processing:partition-b",
+    );
+    const unassigned = contextPartitionKeySchema.parse("processing:unassigned");
+    const firstMove = await reclassifySourcePartition(database, {
+      userId,
+      sourceId: root.id,
+      expectedPartitionKey: null,
+      expectedSourceVersion: queued.sourceVersion,
+      targetPartitionKey: partitionA,
+      bindingGeneration: "move-a",
+    });
+    await reclassifySourcePartition(database, {
+      userId,
+      sourceId: root.id,
+      expectedPartitionKey: partitionA,
+      expectedSourceVersion: firstMove.sourceVersion,
+      targetPartitionKey: partitionB,
+      bindingGeneration: "move-b",
+    });
+    // Cutover also assigns a retained legacy receipt whose partition is null.
+    await database
+      .update(sourceIngestionOperations)
+      .set({ partitionKey: null })
+      .where(eq(sourceIngestionOperations.operationId, queued.operationId));
+    const staleId = "stale-legacy-receipt";
+    await database.insert(sourceIngestionOperations).values({
+      operationId: staleId,
+      userId,
+      sourceId: root.id,
+      externalId: root.externalId,
+      contentHash: "stale",
+      sourceVersion: 0,
+      status: "queued",
+      stage: "content",
+      createdAt: new Date("2020-01-01T00:00:00Z"),
+    });
+    await setPartitionMigrationState(database, {
+      userId,
+      expectedState: "migrating",
+      expectedVersion: 1,
+      nextState: "migrated",
+      unassignedPartitionKey: unassigned,
+    });
+    expect(
+      await getSourceIngestionOperationById({
+        db: database,
+        userId,
+        operationId: historical.operationId,
+        partitionKey: partitionB,
+      }),
+    ).toMatchObject({
+      status: "completed",
+      sourceVersion: completed.sourceVersion,
+    });
+    expect(
+      await getSourceIngestionOperationById({
+        db: database,
+        userId,
+        operationId: orphanId,
+        partitionKey: unassigned,
+      }),
+    ).toMatchObject({ status: "purged", sourceVersion: 5 });
+    expect(
+      await getSourceIngestionOperationById({
+        db: database,
+        userId,
+        operationId: staleId,
+        partitionKey: partitionB,
+      }),
+    ).toMatchObject({ sourceVersion: 0 });
+    expect(
+      await markSourceIngestionProcessing({
+        db: database,
+        userId,
+        sourceId: root.id,
+        operationId: staleId,
+        partitionKey: partitionB,
+      }),
+    ).toMatchObject({ status: "failed", errorCode: "SUPERSEDED_OPERATION" });
+    expect(
+      await getSourceIngestionOperationById({
+        db: database,
+        userId,
+        operationId: queued.operationId,
+        partitionKey: partitionA,
+      }),
+    ).toBeNull();
+    for (const operation of [queued, childOperation]) {
+      const input = {
+        db: database,
+        userId,
+        sourceId: operation.sourceId,
+        operationId: operation.operationId,
+      };
+      const { partitionKey } = await getSourceIngestionJobContext(input);
+      expect(partitionKey).toBe(partitionB);
+      if (partitionKey === undefined)
+        throw new Error("Receipt partition was not migrated");
+      const resumed = await markSourceIngestionProcessing({
+        ...input,
+        partitionKey,
+        expectedSourceVersion: operation.sourceVersion,
+      });
+      expect(resumed).toMatchObject({ status: "processing", errorCode: null });
+      expect(
+        await completeSourceIngestionOperation({
+          ...input,
+          expectedSourceVersion: resumed.sourceVersion,
+        }),
+      ).toMatchObject({ status: "completed" });
+    }
+  });
+
   it("fails a stale processing retry without changing a newer completed source", async () => {
     const userId = "processing-stale-retry-user";
     const source = await createSource(userId, "processing-stale-retry");
@@ -174,6 +364,53 @@ describeIfServer("source ingestion operation integration", () => {
         .from(sources)
         .where(eq(sources.id, source.id)),
     ).resolves.toEqual([{ status: "completed" }]);
+  });
+
+  it("reopens the current failed operation for the retained queue job", async () => {
+    const userId = "processing-explicit-retry-user";
+    const source = await createSource(userId, "processing-explicit-retry");
+    const queued = await createSourceIngestionOperation({
+      db: database,
+      userId,
+      sourceId: source.id,
+      externalId: source.externalId,
+      contentHash: "retry-hash",
+    });
+    const processing = await markSourceIngestionProcessing({
+      db: database,
+      userId,
+      sourceId: source.id,
+      operationId: queued.operationId,
+    });
+    await failSourceIngestionOperation({
+      db: database,
+      userId,
+      sourceId: source.id,
+      operationId: queued.operationId,
+      expectedSourceVersion: processing.sourceVersion,
+      errorCode: "CONVERSION_FAILED",
+    });
+
+    const retried = await retrySourceIngestionOperation({
+      db: database,
+      userId,
+      operationId: queued.operationId,
+    });
+
+    expect(retried).toMatchObject({
+      operationId: queued.operationId,
+      status: "queued",
+      stage: "content",
+      attempt: 2,
+      errorCode: null,
+      completedAt: null,
+    });
+    await expect(
+      database
+        .select({ status: sources.status, version: sources.version })
+        .from(sources)
+        .where(eq(sources.id, source.id)),
+    ).resolves.toEqual([{ status: "pending", version: retried.sourceVersion }]);
   });
 
   it("finds a retained operation by id after newer revisions and purge", async () => {

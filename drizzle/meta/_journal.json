@@ -274,6 +274,20 @@
       "when": 1789028061159,
       "tag": "0038_cold_prodigy",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1789039283423,
+      "tag": "0039_email_thread_lookup",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1789045578796,
+      "tag": "0040_source_identity_tombstones",
+      "breakpoints": true
     }
   ]
 }

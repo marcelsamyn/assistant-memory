@@ -9,11 +9,17 @@ import {
   nodeRedirects,
   partitionMigrationState,
   sourceLinks,
+  sourceIngestionOperations,
+  sourceIdentityTombstones,
   sourcePartitionCommands,
   sourceTombstones,
   sources,
 } from "~/db/schema";
-import { lockSourceParentAttachmentGates } from "~/lib/partition-access";
+import { reclassifyContextualSourceExternalId } from "~/lib/ingestion/source-identity";
+import {
+  lockSourceParentAttachmentGates,
+  lockSourceIdentityGates,
+} from "~/lib/partition-access";
 import {
   recoverPartitionNode,
   reusePartitionNodeMapping,
@@ -38,6 +44,9 @@ interface LockedSource {
   partitionKey: ReclassifySourcePartitionRequest["expectedPartitionKey"];
   version: number;
   deletedAt: Date | null;
+  type: typeof sources.$inferSelect.type;
+  externalId: string;
+  metadata: unknown;
 }
 
 export async function reclassifySourcePartition(
@@ -287,39 +296,45 @@ async function loadAndLockSourceTree(
   tx: Transaction,
   request: ReclassifySourcePartitionRequest,
 ): Promise<LockedSource[]> {
-  // Reclassification changes the partition authority of containment edges.
-  // Share the same parent attachment gates as ingestion and lifecycle before
-  // row locks, then rediscover until no child can have appeared in between.
-  // This mirrors source deletion so a direct SQL reparent (the DB trigger also
-  // takes this gate) cannot leave a child on the old partition.
-  const initialSourceIds = await loadSourceTreeIds(tx, request);
-  if (!initialSourceIds) return [];
-  let sourceIds = initialSourceIds;
-  while (true) {
-    await lockSourceParentAttachmentGates(
-      tx,
-      sourceIds.map((sourceId) => ({
-        userId: request.userId,
-        sourceId,
+  const sourceIds = await loadSourceTreeIds(tx, request);
+  if (!sourceIds) return [];
+  const discovered = await tx
+    .select()
+    .from(sources)
+    .where(inArray(sources.id, sourceIds));
+  // Identity gates precede containment and row locks, as they do in ingestion.
+  // Lock both names so neither an ingest nor retirement can claim the new one.
+  await lockSourceIdentityGates(
+    tx,
+    discovered.flatMap((source) =>
+      [
+        source.externalId,
+        reclassifyContextualSourceExternalId({
+          ...source,
+          expectedPartitionKey: source.partitionKey,
+          targetPartitionKey: request.targetPartitionKey,
+        }),
+      ].map((externalId) => ({
+        userId: source.userId,
+        sourceType: source.type,
+        externalId,
       })),
+    ),
+  );
+  await lockSourceParentAttachmentGates(
+    tx,
+    sourceIds.map((sourceId) => ({ userId: request.userId, sourceId })),
+  );
+  const rediscovered = await loadSourceTreeIds(tx, request);
+  if (
+    !rediscovered ||
+    rediscovered.length !== sourceIds.length ||
+    rediscovered.some((id, index) => id !== sourceIds[index])
+  ) {
+    throw new PartitionReclassificationError(
+      "SOURCE_VERSION_CONFLICT",
+      "Source tree changed while acquiring identity and containment gates; retry the move",
     );
-    const rediscoveredSourceIds = await loadSourceTreeIds(tx, request);
-    if (!rediscoveredSourceIds) {
-      throw new PartitionReclassificationError(
-        "SOURCE_NOT_FOUND",
-        "A source disappeared while acquiring containment attachment gates",
-      );
-    }
-    if (
-      rediscoveredSourceIds.length === sourceIds.length &&
-      rediscoveredSourceIds.every(
-        (sourceId, index) => sourceId === sourceIds[index],
-      )
-    ) {
-      sourceIds = rediscoveredSourceIds;
-      break;
-    }
-    sourceIds = rediscoveredSourceIds;
   }
   const rows: LockedSource[] = [];
   for (const sourceId of [...sourceIds].sort()) {
@@ -330,6 +345,9 @@ async function loadAndLockSourceTree(
         partitionKey: sources.partitionKey,
         version: sources.version,
         deletedAt: sources.deletedAt,
+        type: sources.type,
+        externalId: sources.externalId,
+        metadata: sources.metadata,
       })
       .from(sources)
       .where(eq(sources.id, sourceId))
@@ -339,6 +357,35 @@ async function loadAndLockSourceTree(
       throw new PartitionReclassificationError(
         "SOURCE_NOT_FOUND",
         `A parent or child source disappeared while locking the source tree`,
+      );
+    }
+    const observed = discovered.find((source) => source.id === row.id);
+    const gatedExternalIds = observed
+      ? [
+          observed.externalId,
+          reclassifyContextualSourceExternalId({
+            ...observed,
+            expectedPartitionKey: observed.partitionKey,
+            targetPartitionKey: request.targetPartitionKey,
+          }),
+        ]
+      : [];
+    if (
+      !observed ||
+      observed.userId !== row.userId ||
+      observed.type !== row.type ||
+      !gatedExternalIds.includes(row.externalId) ||
+      !gatedExternalIds.includes(
+        reclassifyContextualSourceExternalId({
+          ...row,
+          expectedPartitionKey: row.partitionKey,
+          targetPartitionKey: request.targetPartitionKey,
+        }),
+      )
+    ) {
+      throw new PartitionReclassificationError(
+        "SOURCE_VERSION_CONFLICT",
+        "Source identity changed while acquiring its gates; retry the move",
       );
     }
     rows.push(row);
@@ -353,9 +400,47 @@ async function updateSourceTreePartitions(
 ): Promise<Array<{ id: TypeId<"source">; version: number }>> {
   const updated: Array<{ id: TypeId<"source">; version: number }> = [];
   for (const source of sourceTree) {
+    const externalId = reclassifyContextualSourceExternalId({
+      ...source,
+      expectedPartitionKey: source.partitionKey,
+      targetPartitionKey: request.targetPartitionKey,
+    });
+    if (externalId !== source.externalId) {
+      const [existingSource] = await tx
+        .select({ id: sources.id })
+        .from(sources)
+        .where(
+          and(
+            eq(sources.userId, source.userId),
+            eq(sources.type, source.type),
+            eq(sources.externalId, externalId),
+          ),
+        )
+        .limit(1);
+      const [existingRetirement] = await tx
+        .select({ externalId: sourceIdentityTombstones.externalId })
+        .from(sourceIdentityTombstones)
+        .where(
+          and(
+            eq(sourceIdentityTombstones.userId, source.userId),
+            eq(sourceIdentityTombstones.type, source.type),
+            eq(sourceIdentityTombstones.externalId, externalId),
+          ),
+        )
+        .limit(1);
+      if (existingSource || existingRetirement)
+        throw new PartitionReclassificationError(
+          "SOURCE_PARTITION_CONFLICT",
+          "The destination source identity is already present or retired",
+        );
+    }
     const [row] = await tx
       .update(sources)
-      .set({ partitionKey: request.targetPartitionKey })
+      .set({
+        partitionKey: request.targetPartitionKey,
+        externalId,
+        metadata: sql`CASE WHEN ${sources.metadata}->'sourceContext' ? 'parentPartitionKey' THEN jsonb_set(${sources.metadata}, '{sourceContext,parentPartitionKey}', to_jsonb(${request.targetPartitionKey}::text)) ELSE ${sources.metadata} END`,
+      })
       .where(
         and(
           eq(sources.userId, request.userId),
@@ -376,6 +461,46 @@ async function updateSourceTreePartitions(
           sourceVersion: source.version,
         },
       );
+    }
+    await tx
+      .update(sourceIngestionOperations)
+      .set({
+        partitionKey: request.targetPartitionKey,
+        externalId,
+        sourceVersion: sql`CASE WHEN ${sourceIngestionOperations.status} IN ('queued', 'processing') AND ${sourceIngestionOperations.sourceVersion} = ${source.version} THEN ${row.version} ELSE ${sourceIngestionOperations.sourceVersion} END`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(sourceIngestionOperations.userId, request.userId),
+          eq(sourceIngestionOperations.sourceId, source.id),
+        ),
+      );
+    const retirementIdentity = and(
+      eq(sourceIdentityTombstones.userId, source.userId),
+      eq(sourceIdentityTombstones.type, source.type),
+      eq(sourceIdentityTombstones.externalId, source.externalId),
+    );
+    if (externalId !== source.externalId) {
+      const [retirement] = await tx
+        .select()
+        .from(sourceIdentityTombstones)
+        .where(retirementIdentity)
+        .limit(1);
+      if (retirement) {
+        // Late requests still use the old canonical identity. Keep its gate
+        // closed even if the destination identity is explicitly restored.
+        await tx.insert(sourceIdentityTombstones).values({
+          ...retirement,
+          externalId,
+          partitionKey: request.targetPartitionKey,
+        });
+      }
+    } else {
+      await tx
+        .update(sourceIdentityTombstones)
+        .set({ partitionKey: request.targetPartitionKey })
+        .where(retirementIdentity);
     }
     updated.push(row);
   }

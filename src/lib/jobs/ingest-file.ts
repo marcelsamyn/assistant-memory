@@ -25,6 +25,7 @@ import {
   failSourceIngestionOperation,
   markSourceIngestionExtractionStarted,
   markSourceIngestionProcessing,
+  getSourceIngestionJobContext,
 } from "~/lib/ingestion/source-processing";
 import {
   assertSourcePartition,
@@ -67,6 +68,16 @@ export async function ingestFile({
   finalAttempt,
 }: IngestFileParams): Promise<void> {
   await ensureUser(db, userId);
+  if (operationId !== undefined) {
+    const context = await getSourceIngestionJobContext({
+      db,
+      userId,
+      sourceId,
+      operationId,
+    });
+    partitionKey = context.partitionKey;
+    externalId = context.externalId;
+  }
   await assertSourcePartition({
     db,
     userId,
@@ -82,6 +93,7 @@ export async function ingestFile({
       externalId: sources.externalId,
       scope: sources.scope,
       metadata: sources.metadata,
+      contentType: sources.contentType,
     })
     .from(sources)
     .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)))
@@ -125,21 +137,58 @@ export async function ingestFile({
 
   let extractionStarted = false;
   try {
-    const [raw] = await sourceService.fetchRaw(userId, [
-      sourceId as TypeId<"source">,
-    ]);
-    if (!raw) {
-      throw new Error(
-        `ingest-file: source ${sourceId} has no payload to convert`,
-      );
+    // Original non-text bytes live only in blob storage. A binary contentType
+    // plus rawContent therefore identifies a converted file from before the
+    // explicit marker existed; original inline text has no contentType.
+    const hasConvertedContent =
+      existingMeta.rawContent !== undefined &&
+      (existingMeta.convertedToMarkdown === true ||
+        (row.contentType !== null && !row.contentType.startsWith("text/")));
+    let converted: { markdown: string; title: string | null };
+    if (hasConvertedContent && existingMeta.rawContent !== undefined) {
+      converted = {
+        markdown: existingMeta.rawContent,
+        title: explicitTitle ?? null,
+      };
+    } else {
+      const [raw] = await sourceService.fetchRaw(userId, [
+        sourceId as TypeId<"source">,
+      ]);
+      if (!raw) {
+        throw new Error(
+          `ingest-file: source ${sourceId} has no payload to convert`,
+        );
+      }
+
+      // Tiny payloads (<= inline threshold) are persisted as utf-8 strings
+      // directly on the source row, so reconstruct a Buffer for the converter.
+      const buffer =
+        raw.kind === "blob" ? raw.buffer : Buffer.from(raw.content, "utf-8");
+
+      converted = await convertToMarkdown({ buffer, filename, mimeType });
     }
-
-    // Tiny payloads (<= inline threshold) are persisted as utf-8 strings
-    // directly on the source row, so reconstruct a Buffer for the converter.
-    const buffer =
-      raw.kind === "blob" ? raw.buffer : Buffer.from(raw.content, "utf-8");
-
-    const converted = await convertToMarkdown({ buffer, filename, mimeType });
+    if (converted.markdown.trim().length === 0) {
+      if (operationId !== undefined) {
+        await failSourceIngestionOperation({
+          db,
+          userId,
+          sourceId,
+          operationId,
+          expectedSourceVersion: sourceVersion,
+          errorCode: "UNREADABLE_CONTENT",
+          stage: "content",
+        });
+      } else {
+        await updateSourceWhileLive({
+          db,
+          userId,
+          sourceId,
+          expectedSourceVersion: sourceVersion,
+          set: { status: "failed" },
+        });
+      }
+      return;
+    }
 
     // Persist the converted markdown (and a converter-derived title when
     // the route didn't already set one) alongside the original blob so
@@ -147,35 +196,40 @@ export async function ingestFile({
     // The merge is computed entirely in SQL so it is atomic w.r.t. any
     // concurrent metadata write on the same row, and the conditional CASE
     // ensures a user-supplied title is never overwritten by the converter.
-    const titleClause =
-      converted.title !== null
-        ? sql`(CASE WHEN COALESCE(${sources.metadata}, '{}'::jsonb) ? 'title' THEN '{}'::jsonb ELSE jsonb_build_object('title', ${converted.title}::text) END)`
-        : sql`'{}'::jsonb`;
+    if (!hasConvertedContent) {
+      const titleClause =
+        converted.title !== null
+          ? sql`(CASE WHEN COALESCE(${sources.metadata}, '{}'::jsonb) ? 'title' THEN '{}'::jsonb ELSE jsonb_build_object('title', ${converted.title}::text) END)`
+          : sql`'{}'::jsonb`;
 
-    sourceVersion = await withSourceWriteFence(
-      db,
-      { userId, sources: [{ sourceId, expectedSourceVersion: sourceVersion }] },
-      async (tx) => {
-        const [updated] = await tx
-          .update(sources)
-          .set({
-            metadata: sql`COALESCE(${sources.metadata}, '{}'::jsonb) || jsonb_build_object('rawContent', ${converted.markdown}::text) || ${titleClause}`,
-          })
-          .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)))
-          .returning({ version: sources.version });
-        if (!updated)
-          throw new Error(`Source ${sourceId} disappeared during conversion`);
-        return updated.version;
-      },
-    );
-    if (operationId !== undefined) {
-      await advanceSourceIngestionOperationVersion({
+      sourceVersion = await withSourceWriteFence(
         db,
-        userId,
-        sourceId,
-        operationId,
-        sourceVersion,
-      });
+        {
+          userId,
+          sources: [{ sourceId, expectedSourceVersion: sourceVersion }],
+        },
+        async (tx) => {
+          const [updated] = await tx
+            .update(sources)
+            .set({
+              metadata: sql`COALESCE(${sources.metadata}, '{}'::jsonb) || jsonb_build_object('rawContent', ${converted.markdown}::text, 'convertedToMarkdown', true) || ${titleClause}`,
+            })
+            .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)))
+            .returning({ version: sources.version });
+          if (!updated)
+            throw new Error(`Source ${sourceId} disappeared during conversion`);
+          if (operationId !== undefined) {
+            await advanceSourceIngestionOperationVersion({
+              db: tx,
+              userId,
+              sourceId,
+              operationId,
+              sourceVersion: updated.version,
+            });
+          }
+          return updated.version;
+        },
+      );
     }
 
     // Surface the converter-derived title (or filename as fallback) so the LLM
