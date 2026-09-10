@@ -14,6 +14,7 @@ import {
   sources,
   users,
 } from "~/db/schema";
+import { contextualSourceExternalId } from "~/lib/ingestion/source-identity";
 import { queryChangeFeed } from "~/lib/query/change-feed";
 import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import { newTypeId } from "~/types/typeid";
@@ -85,6 +86,40 @@ describeIfServer("document replacement source lifecycle", () => {
         `${userId}/${sourceId}`,
       sourceService: {
         deleteRawBlobIfPresent,
+        replaceInlineContent: async (input: {
+          userId: string;
+          sourceId: schema.SourcesSelect["id"];
+          content: string;
+          metadata: Record<string, unknown>;
+          parentId?: schema.SourcesSelect["id"];
+          scope: schema.SourcesSelect["scope"];
+          timestamp: Date;
+          replaceDerivedLinks?: boolean;
+          status?: schema.SourcesSelect["status"];
+        }) => {
+          const [updated] = await database
+            .update(sources)
+            .set({
+              metadata: { ...input.metadata, rawContent: input.content },
+              parentSource: input.parentId ?? null,
+              scope: input.scope,
+              lastIngestedAt: input.timestamp,
+              ...(input.status !== undefined ? { status: input.status } : {}),
+            })
+            .where(
+              and(
+                eq(sources.userId, input.userId),
+                eq(sources.id, input.sourceId),
+              ),
+            )
+            .returning({ version: sources.version });
+          if (input.replaceDerivedLinks) {
+            await database
+              .delete(sourceLinks)
+              .where(eq(sourceLinks.sourceId, input.sourceId));
+          }
+          return updated?.version ?? 0;
+        },
         insertMany: async (
           inputs: Array<{
             userId: string;
@@ -255,5 +290,119 @@ describeIfServer("document replacement source lifecycle", () => {
         "document source already belongs to a different memory partition",
     });
     expect(addIngestionJob).not.toHaveBeenCalled();
+  });
+
+  it("keeps contextual source identity and persists revised ingestion metadata", async () => {
+    addIngestionJob.mockClear();
+    const userId = "document-contextual-revision";
+    const sourceId = newTypeId("source");
+    const parentId = newTypeId("source");
+    const sourceContext = {
+      version: 1 as const,
+      sourceKind: "email_attachment" as const,
+      purpose: "Attachment to the current email",
+      accountId: "mail-account",
+      relationship: "recipient",
+      currentMessageRole: "attachment" as const,
+      completeness: "complete" as const,
+      parentSourceId: parentId,
+    };
+    const externalId = contextualSourceExternalId({
+      externalId: "attachment-1",
+      accountId: sourceContext.accountId,
+    });
+    await database.insert(users).values({ id: userId });
+    await database.insert(sources).values([
+      {
+        id: parentId,
+        userId,
+        type: "document",
+        externalId: "parent",
+        status: "completed",
+      },
+      {
+        id: sourceId,
+        userId,
+        type: "document",
+        externalId,
+        metadata: { rawContent: "old", title: "Old" },
+        status: "completed",
+      },
+    ]);
+    const timestamp = new Date("2026-09-10T09:00:00.000Z");
+
+    const revision = await saveMemory({
+      userId,
+      updateExisting: true,
+      document: {
+        id: "attachment-1",
+        content: "revised attachment",
+        contentType: "text",
+        scope: "reference",
+        timestamp,
+        title: "Current title",
+        author: "Current author",
+        sourceContext,
+      },
+    });
+
+    expect(revision.sourceId).toBe(sourceId);
+    expect(deleteRawBlobIfPresent).not.toHaveBeenCalledWith(userId, sourceId);
+    expect(addIngestionJob).toHaveBeenCalledOnce();
+    await expect(
+      database
+        .select({
+          id: sources.id,
+          parentSource: sources.parentSource,
+          scope: sources.scope,
+          metadata: sources.metadata,
+          lastIngestedAt: sources.lastIngestedAt,
+        })
+        .from(sources)
+        .where(eq(sources.id, sourceId)),
+    ).resolves.toEqual([
+      {
+        id: sourceId,
+        parentSource: parentId,
+        scope: "reference",
+        metadata: {
+          rawContent: "revised attachment",
+          title: "Current title",
+          author: "Current author",
+          sourceContext,
+        },
+        lastIngestedAt: timestamp,
+      },
+    ]);
+
+    const metadataOnlyRevision = await saveMemory({
+      userId,
+      updateExisting: true,
+      document: {
+        id: "attachment-1",
+        content: "revised attachment",
+        contentType: "text",
+        scope: "reference",
+        timestamp,
+        title: "Metadata-only title",
+        author: "Current author",
+        sourceContext,
+      },
+    });
+    expect(metadataOnlyRevision).toMatchObject({
+      sourceId,
+      ingestionOperationId: revision.ingestionOperationId,
+    });
+    expect(addIngestionJob).toHaveBeenCalledTimes(2);
+    await expect(
+      database
+        .select({ metadata: sources.metadata })
+        .from(sources)
+        .where(eq(sources.id, sourceId)),
+    ).resolves.toEqual([
+      {
+        metadata: expect.objectContaining({ title: "Metadata-only title" }),
+      },
+    ]);
   });
 });

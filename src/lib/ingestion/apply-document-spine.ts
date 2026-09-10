@@ -41,12 +41,21 @@ export function formatSpineDescription(spine: DocumentSpine): string {
 export async function applyDocumentSpine(params: {
   userId: string;
   sourceId: TypeId<"source">;
+  expectedSourceVersion?: number;
   documentNodeId: TypeId<"node">;
   title: string | undefined;
   logLabel: string;
   spine: DocumentSpine;
 }): Promise<void> {
-  const { userId, sourceId, documentNodeId, title, logLabel, spine } = params;
+  const {
+    userId,
+    sourceId,
+    expectedSourceVersion,
+    documentNodeId,
+    title,
+    logLabel,
+    spine,
+  } = params;
   const db = await useDatabase();
 
   const rawLabel = (title ?? logLabel).trim();
@@ -54,19 +63,32 @@ export async function applyDocumentSpine(params: {
   const canonicalLabel = label ? normalizeLabel(label) : null;
   const description = formatSpineDescription(spine);
 
-  await withSourceWriteFence(db, { userId, sources: [{ sourceId }] }, (tx) =>
-    tx
-      .insert(nodeMetadata)
-      .values({
-        nodeId: documentNodeId,
-        label,
-        canonicalLabel,
-        description,
-        additionalData: {},
-      })
-      .onConflictDoUpdate({
-        target: nodeMetadata.nodeId,
-        set: { label, canonicalLabel, description },
-      }),
+  await withSourceWriteFence(
+    db,
+    {
+      userId,
+      sources: [
+        {
+          sourceId,
+          ...(expectedSourceVersion !== undefined
+            ? { expectedSourceVersion }
+            : {}),
+        },
+      ],
+    },
+    (tx) =>
+      tx
+        .insert(nodeMetadata)
+        .values({
+          nodeId: documentNodeId,
+          label,
+          canonicalLabel,
+          description,
+          additionalData: {},
+        })
+        .onConflictDoUpdate({
+          target: nodeMetadata.nodeId,
+          set: { label, canonicalLabel, description },
+        }),
   );
 }

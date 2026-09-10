@@ -1,10 +1,13 @@
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { Client as MinioClient } from "minio";
+import { randomUUID } from "node:crypto";
 import { Readable } from "stream";
 import { z } from "zod";
 import db, { type DrizzleDB } from "~/db";
 import {
   sourceBlobUploads,
+  sourceIngestionOperations,
+  sourceLinks,
   sourceTombstones,
   sources,
   SourcesInsert,
@@ -19,6 +22,7 @@ import {
   withSourceWriteFence,
 } from "~/lib/partition-access";
 import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import { sourceContextSchema } from "~/lib/schemas/source-context";
 import {
   putSourceBlob,
   SourceBlobUploadTimeoutError,
@@ -41,9 +45,14 @@ export const sourceMetadataSchema = z
      */
     speakerLabel: z.string().min(1).optional(),
     speakerNodeId: z.string().min(1).optional(),
+    sourceContext: sourceContextSchema.optional(),
   })
   .catchall(z.unknown());
 type Metadata = z.infer<typeof sourceMetadataSchema>;
+
+function isTextContentType(contentType: string | undefined): boolean {
+  return contentType?.startsWith("text/") ?? false;
+}
 
 const storageErrorSchema = z
   .object({
@@ -125,6 +134,7 @@ export interface SourceCreateInput {
   sourceType: SourceType;
   externalId: string;
   parentId?: TypeId<"source">;
+  parentPartitionKey?: ContextPartitionKey;
   scope?: Scope;
   timestamp: Date;
   metadata?: Metadata;
@@ -233,7 +243,16 @@ export class SourceService {
         .returning();
     const parentAttachments = inputs.flatMap((input) =>
       input.parentId
-        ? [{ userId: input.userId, sourceId: input.parentId }]
+        ? (() => {
+            const partitionKey = input.parentPartitionKey ?? input.partitionKey;
+            return [
+              {
+                userId: input.userId,
+                sourceId: input.parentId,
+                ...(partitionKey !== undefined ? { partitionKey } : {}),
+              },
+            ];
+          })()
         : [],
     );
     const insertWithParentAttachmentFence = async (
@@ -284,10 +303,14 @@ export class SourceService {
         );
         continue;
       }
-      // Inline payload if small enough or content provided
+      // Inline text when small enough. Binary bytes always use the blob path,
+      // even when they fit the inline threshold; UTF-8 decoding a PDF here
+      // would permanently corrupt the payload before conversion can run.
       if (
         input.content !== undefined ||
-        (input.fileBuffer && input.fileBuffer.length <= this.inlineThreshold)
+        (input.fileBuffer &&
+          input.fileBuffer.length <= this.inlineThreshold &&
+          isTextContentType(input.contentType))
       ) {
         const existingMeta = sourceMetadataSchema.parse(row.metadata);
         const updatedMeta: Metadata = {
@@ -346,6 +369,225 @@ export class SourceService {
     return { successes, failures };
   }
 
+  /** Updates one inline revision while retaining the stable source identity. */
+  async replaceInlineContent(input: {
+    userId: string;
+    sourceId: TypeId<"source">;
+    partitionKey: ContextPartitionKey | undefined;
+    content: string;
+    metadata: Metadata;
+    parentId?: TypeId<"source">;
+    scope: Scope;
+    timestamp: Date;
+    replaceDerivedLinks?: boolean;
+    status?: SourcesInsert["status"];
+  }): Promise<number> {
+    const parentAttachments = input.parentId
+      ? [
+          {
+            userId: input.userId,
+            sourceId: input.parentId,
+            ...(input.partitionKey !== undefined
+              ? { partitionKey: input.partitionKey }
+              : {}),
+          },
+        ]
+      : [];
+    return withSourceWriteFence(
+      this.db,
+      {
+        userId: input.userId,
+        partitionKey: input.partitionKey,
+        sources: [{ sourceId: input.sourceId }],
+        beforeSourceLocks: (tx) =>
+          lockSourceParentAttachmentGates(tx, parentAttachments),
+      },
+      async (tx) => {
+        await assertLiveSourceParents(tx, parentAttachments);
+        const [updated] = await tx
+          .update(sources)
+          .set({
+            metadata: { ...input.metadata, rawContent: input.content },
+            parentSource: input.parentId ?? null,
+            scope: input.scope,
+            lastIngestedAt: input.timestamp,
+            ...(input.status !== undefined ? { status: input.status } : {}),
+            contentType: null,
+            contentLength: null,
+          })
+          .where(
+            and(
+              eq(sources.userId, input.userId),
+              eq(sources.id, input.sourceId),
+            ),
+          )
+          .returning({ version: sources.version });
+        if (!updated)
+          throw new Error(
+            `Source ${input.sourceId} disappeared while updating content`,
+          );
+        if (input.replaceDerivedLinks) {
+          await tx
+            .delete(sourceLinks)
+            .where(eq(sourceLinks.sourceId, input.sourceId));
+        }
+        return updated.version;
+      },
+    );
+  }
+
+  /** Revises caller-owned metadata without changing bytes or processing state. */
+  async updateIngestionMetadata(input: {
+    userId: string;
+    sourceId: TypeId<"source">;
+    partitionKey: ContextPartitionKey | undefined;
+    metadata: Metadata;
+    parentId?: TypeId<"source">;
+    scope: Scope;
+    timestamp: Date;
+  }): Promise<number> {
+    const parentAttachments = input.parentId
+      ? [
+          {
+            userId: input.userId,
+            sourceId: input.parentId,
+            ...(input.partitionKey !== undefined
+              ? { partitionKey: input.partitionKey }
+              : {}),
+          },
+        ]
+      : [];
+    return withSourceWriteFence(
+      this.db,
+      {
+        userId: input.userId,
+        partitionKey: input.partitionKey,
+        sources: [{ sourceId: input.sourceId }],
+        beforeSourceLocks: (tx) =>
+          lockSourceParentAttachmentGates(tx, parentAttachments),
+      },
+      async (tx) => {
+        await assertLiveSourceParents(tx, parentAttachments);
+        const [current] = await tx
+          .select({ metadata: sources.metadata })
+          .from(sources)
+          .where(
+            and(
+              eq(sources.userId, input.userId),
+              eq(sources.id, input.sourceId),
+            ),
+          )
+          .limit(1);
+        if (!current) {
+          throw new Error(
+            `Source ${input.sourceId} disappeared while updating metadata`,
+          );
+        }
+        const currentMetadata = sourceMetadataSchema.parse(
+          current.metadata ?? {},
+        );
+        const [updated] = await tx
+          .update(sources)
+          .set({
+            metadata: {
+              ...(currentMetadata.rawContent !== undefined
+                ? { rawContent: currentMetadata.rawContent }
+                : {}),
+              ...input.metadata,
+            },
+            parentSource: input.parentId ?? null,
+            scope: input.scope,
+            lastIngestedAt: input.timestamp,
+          })
+          .where(
+            and(
+              eq(sources.userId, input.userId),
+              eq(sources.id, input.sourceId),
+            ),
+          )
+          .returning({ version: sources.version });
+        if (!updated) {
+          throw new Error(
+            `Source ${input.sourceId} disappeared while updating metadata`,
+          );
+        }
+        return updated.version;
+      },
+    );
+  }
+
+  /**
+   * Replaces bytes under the source lifecycle fence. The object key is stable,
+   * so revisions preserve source links while an ingestion receipt identifies
+   * the exact bytes being extracted.
+   */
+  async replaceFileContent(input: {
+    userId: string;
+    sourceId: TypeId<"source">;
+    partitionKey: ContextPartitionKey | undefined;
+    buffer: Buffer;
+    contentType: string;
+    externalId: string;
+    contentHash: string;
+    metadata: Metadata;
+    parentId?: TypeId<"source">;
+    scope: Scope;
+    timestamp: Date;
+  }): Promise<number> {
+    await this.ensureBucket();
+    const [source] = await this.db
+      .select()
+      .from(sources)
+      .where(
+        and(eq(sources.userId, input.userId), eq(sources.id, input.sourceId)),
+      )
+      .limit(1);
+    if (!source) {
+      throw new Error(
+        `Source ${input.sourceId} disappeared while updating content`,
+      );
+    }
+    let uploadReserved = false;
+    try {
+      await this.reserveSourceBlobUpload(source, undefined, true);
+      uploadReserved = true;
+      await this.beginSourceBlobUpload(source);
+      await this.putSourceBlobWithFence(
+        source,
+        input.buffer,
+        input.contentType,
+        undefined,
+        {
+          metadata: input.metadata,
+          parentSource: input.parentId ?? null,
+          scope: input.scope,
+          lastIngestedAt: input.timestamp,
+          status: "pending",
+          replaceDerivedLinks: true,
+          operation: {
+            externalId: input.externalId,
+            contentHash: input.contentHash,
+          },
+        },
+      );
+    } catch (error: unknown) {
+      if (uploadReserved && !(error instanceof SourceBlobUploadTimeoutError)) {
+        await this.scheduleFailedSourceBlobUploadCleanup(source);
+      }
+      throw error;
+    }
+    const [updated] = await this.db
+      .select({ version: sources.version })
+      .from(sources)
+      .where(
+        and(eq(sources.userId, input.userId), eq(sources.id, input.sourceId)),
+      )
+      .limit(1);
+    if (!updated)
+      throw new Error(`Source ${input.sourceId} disappeared after upload`);
+    return updated.version;
+  }
+
   /**
    * Source erasure and object storage cannot share a transaction. Reserve the
    * deterministic object key before any put so tombstone owns a durable
@@ -354,6 +596,7 @@ export class SourceService {
   private async reserveSourceBlobUpload(
     source: SourcesInsert & { id: TypeId<"source"> },
     rootWriteFence?: { userId: string; source: SourceWriteFence },
+    allowReplacement = false,
   ): Promise<void> {
     await withSourceWriteFence(
       this.db,
@@ -370,17 +613,30 @@ export class SourceService {
           )
           .for("update")
           .limit(1);
-        if (existing) {
+        if (existing && !(allowReplacement && existing.state === "uploaded")) {
           throw new Error(
             `A blob upload reservation already exists for source ${source.id}`,
           );
         }
-        await tx.insert(sourceBlobUploads).values({
-          userId: source.userId,
-          sourceId: source.id,
-          objectKey: sourceBlobObjectKey(source.userId, source.id),
-          state: "reserved",
-        });
+        if (existing) {
+          await tx
+            .update(sourceBlobUploads)
+            .set({ state: "reserved", updatedAt: new Date(), uploadedAt: null })
+            .where(
+              and(
+                eq(sourceBlobUploads.userId, source.userId),
+                eq(sourceBlobUploads.sourceId, source.id),
+                eq(sourceBlobUploads.state, "uploaded"),
+              ),
+            );
+        } else {
+          await tx.insert(sourceBlobUploads).values({
+            userId: source.userId,
+            sourceId: source.id,
+            objectKey: sourceBlobObjectKey(source.userId, source.id),
+            state: "reserved",
+          });
+        }
       },
     );
   }
@@ -435,6 +691,15 @@ export class SourceService {
     fileBuffer: Buffer,
     contentType: string | undefined,
     rootWriteFence?: { userId: string; source: SourceWriteFence },
+    revision?: {
+      metadata: Metadata;
+      parentSource: TypeId<"source"> | null;
+      scope: Scope;
+      lastIngestedAt: Date;
+      status: SourcesInsert["status"];
+      replaceDerivedLinks: boolean;
+      operation?: { externalId: string; contentHash: string };
+    },
   ): Promise<void> {
     // Resolve the bucket region and sign before taking database row locks.
     const signedUrl = await this.minioClient.presignedPutObject(
@@ -444,6 +709,19 @@ export class SourceService {
     );
     const outcome = await this.db.transaction(async (tx) => {
       const fences = this.sourceBlobUploadFences(source, rootWriteFence);
+      const parentAttachments = revision?.parentSource
+        ? [
+            {
+              userId: source.userId,
+              sourceId: revision.parentSource,
+              ...(source.partitionKey !== null &&
+              source.partitionKey !== undefined
+                ? { partitionKey: source.partitionKey }
+                : {}),
+            },
+          ]
+        : [];
+      await lockSourceParentAttachmentGates(tx, parentAttachments);
       const sourceIds = [
         ...new Set(fences.sources.map((fence) => fence.sourceId)),
       ].sort();
@@ -471,6 +749,7 @@ export class SourceService {
           "Source blob upload was cancelled before bytes were sent",
         );
       }
+      await assertLiveSourceParents(tx, parentAttachments);
       const tombstones = await tx
         .select({ sourceId: sourceTombstones.sourceId })
         .from(sourceTombstones)
@@ -558,19 +837,44 @@ export class SourceService {
       const [updatedSource] = await tx
         .update(sources)
         .set({
-          status: "completed",
+          status: revision?.status ?? "completed",
+          ...(revision
+            ? {
+                metadata: revision.metadata,
+                parentSource: revision.parentSource,
+                scope: revision.scope,
+                lastIngestedAt: revision.lastIngestedAt,
+              }
+            : {}),
           contentType,
           contentLength: fileBuffer.length,
         })
         .where(
           and(eq(sources.userId, source.userId), eq(sources.id, source.id)),
         )
-        .returning({ id: sources.id });
+        .returning({ id: sources.id, version: sources.version });
       if (!updatedSource) {
         throw new PartitionAccessError(
           "SOURCE_TOMBSTONED",
           "Source disappeared while its blob upload was completing",
         );
+      }
+      if (revision?.replaceDerivedLinks) {
+        await tx.delete(sourceLinks).where(eq(sourceLinks.sourceId, source.id));
+      }
+      if (revision?.operation) {
+        await tx.insert(sourceIngestionOperations).values({
+          operationId: randomUUID(),
+          userId: source.userId,
+          sourceId: source.id,
+          partitionKey: source.partitionKey ?? null,
+          externalId: revision.operation.externalId,
+          contentHash: revision.operation.contentHash,
+          sourceVersion: updatedSource.version,
+          status: "queued",
+          stage: "content",
+          attempt: 0,
+        });
       }
       await tx
         .update(sourceBlobUploads)

@@ -670,6 +670,73 @@ export const sourcesRelations = relations(sources, ({ one }) => ({
   }),
 }));
 
+/**
+ * Durable receipt for one accepted source content revision. It has no foreign
+ * key to `sources`: purge keeps this privacy-safe terminal receipt while the
+ * source row and its content are removed.
+ */
+export const sourceIngestionOperations = pgTable(
+  "source_ingestion_operations",
+  {
+    operationId: varchar("operation_id", { length: 200 }).primaryKey(),
+    userId: text("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    sourceId: typeIdNoDefault("source", { name: "source_id" }).notNull(),
+    partitionKey: varchar("partition_key", {
+      length: 200,
+    }).$type<ContextPartitionKey>(),
+    externalId: text("external_id").notNull(),
+    contentHash: varchar("content_hash", { length: 128 }),
+    sourceVersion: integer("source_version").notNull(),
+    status: varchar("status", { length: 20 })
+      .$type<"queued" | "processing" | "completed" | "failed" | "purged">()
+      .notNull(),
+    stage: varchar("stage", { length: 20 })
+      .$type<"content" | "extraction">()
+      .notNull(),
+    attempt: integer("attempt").notNull().default(0),
+    errorCode: varchar("error_code", { length: 100 }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("source_ingestion_operations_source_idx").on(
+      table.userId,
+      table.sourceId,
+      table.createdAt,
+    ),
+    index("source_ingestion_operations_status_idx").on(
+      table.userId,
+      table.partitionKey,
+      table.status,
+    ),
+    unique("source_ingestion_operations_content_unique").on(
+      table.userId,
+      table.sourceId,
+      table.contentHash,
+    ),
+    check(
+      "source_ingestion_operations_status_ck",
+      sql`"status" IN ('queued', 'processing', 'completed', 'failed', 'purged')`,
+    ),
+    check(
+      "source_ingestion_operations_stage_ck",
+      sql`"stage" IN ('content', 'extraction')`,
+    ),
+    check("source_ingestion_operations_attempt_ck", sql`"attempt" >= 0`),
+    check(
+      "source_ingestion_operations_source_version_ck",
+      sql`"source_version" >= 0`,
+    ),
+  ],
+);
+
 export const sourceLinks = pgTable(
   "source_links",
   {

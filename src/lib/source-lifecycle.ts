@@ -24,6 +24,7 @@ import {
   sources,
   userProfiles,
 } from "~/db/schema";
+import { purgeSourceIngestionOperations } from "~/lib/ingestion/source-processing";
 import { lockSourceParentAttachmentGates } from "~/lib/partition-access";
 import {
   partitionNodeMappingSchema,
@@ -396,6 +397,7 @@ async function applyAction(
     throw stateConflict(tombstone, "Source has already been purged");
   }
   const sourceIds = sourceTree.map((treeSource) => treeSource.id);
+  await purgeSourceIngestionOperations(tx, request.userId, sourceIds);
   await tx
     .delete(sources)
     .where(

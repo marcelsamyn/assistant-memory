@@ -55,6 +55,8 @@ export * from "../lib/schemas/sources.js";
 export * from "../lib/schemas/source-lifecycle.js";
 export * from "../lib/schemas/nodes-by-source.js";
 export * from "../lib/schemas/ingest-file.js";
+export * from "../lib/schemas/source-context.js";
+export * from "../lib/schemas/source-processing.js";
 export * from "../lib/schemas/set-commitment-status.js";
 export * from "../lib/schemas/set-commitment-owner.js";
 export * from "../lib/schemas/update-commitment.js";

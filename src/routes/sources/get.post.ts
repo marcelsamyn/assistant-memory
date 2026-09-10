@@ -1,4 +1,5 @@
 import { createError, defineEventHandler } from "h3";
+import { getSourceIngestionOperation } from "~/lib/ingestion/source-processing";
 import {
   getSourceRequestSchema,
   getSourceResponseSchema,
@@ -20,14 +21,21 @@ export default defineEventHandler(async (event) => {
     });
   }
 
+  const processing = await getSourceIngestionOperation({
+    db,
+    userId,
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
+    sourceId,
+  });
+
   if (!includeContent) {
-    return getSourceResponseSchema.parse({ source });
+    return getSourceResponseSchema.parse({ source: { ...source, processing } });
   }
 
   const [raw] = await sourceService.fetchRaw(userId, [sourceId]);
   const content = sourceContentFromRaw(raw, source.type);
 
   return getSourceResponseSchema.parse({
-    source: { ...source, content },
+    source: { ...source, content, processing },
   });
 });

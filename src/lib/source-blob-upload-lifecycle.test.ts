@@ -474,7 +474,7 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
     },
   );
 
-  it("cancels a stalled response after a real MinIO commit and requires observation before cleanup", async () => {
+  it("keeps a durable unknown receipt when a file revision commits but acknowledgement is lost", async () => {
     const committed = deferred();
     const proxy = createServer((request, response) => {
       const upstream = httpRequest(
@@ -515,6 +515,19 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
     const userId = "source-upload-timeout-user";
     try {
       await database.insert(users).values({ id: userId });
+      const initialService = new SourceService(database, minio, bucket, 1);
+      const initial = await initialService.insertMany([
+        {
+          userId,
+          sourceType: "document",
+          externalId: "timeout-after-storage-commit",
+          timestamp: new Date("2026-09-09T08:00:00.000Z"),
+          fileBuffer: Buffer.from("initial durable bytes"),
+          contentType: "application/pdf",
+        },
+      ]);
+      const sourceId = initial.successes[0];
+      if (!sourceId) throw new Error("Initial file source was not created");
       const service = new SourceService(
         database,
         proxyMinio,
@@ -523,28 +536,26 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
         {},
         250,
       );
-      const result = await service.insertMany([
-        {
-          userId,
-          sourceType: "document",
-          externalId: "timeout-after-storage-commit",
-          timestamp: new Date(),
-          fileBuffer: Buffer.from("committed but acknowledgement was lost"),
-        },
-      ]);
+      const result = service.replaceFileContent({
+        userId,
+        sourceId,
+        partitionKey: undefined,
+        buffer: Buffer.from("revised bytes whose acknowledgement was lost"),
+        contentType: "application/pdf",
+        externalId: "timeout-after-storage-commit",
+        contentHash: "revision-timeout-hash",
+        metadata: { filename: "revised.pdf", mimeType: "application/pdf" },
+        scope: "reference",
+        timestamp: new Date("2026-09-10T08:00:00.000Z"),
+      });
       await committed.promise;
-      expect(result.successes).toEqual([]);
-      expect(result.failures).toEqual([
-        {
-          sourceId: expect.any(String),
-          reason: expect.stringContaining("storage outcome is unknown"),
-        },
-      ]);
+      await expect(result).rejects.toThrow("storage outcome is unknown");
       const [upload] = await lifecycleDatabase
         .select()
         .from(sourceBlobUploads)
         .where(eq(sourceBlobUploads.userId, userId));
       if (!upload) throw new Error("Timeout upload reservation is missing");
+      expect(upload.sourceId).toBe(sourceId);
       expect(upload.state).toBe("upload_unknown");
       await expect(
         minio.statObject(bucket, upload.objectKey),

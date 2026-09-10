@@ -12,6 +12,8 @@
 import { ScopeEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
 import { contextPartitionKeySchema } from "./partition.js";
+import { sourceContextSchema } from "./source-context.js";
+import { sourceProcessingSchema } from "./source-processing.js";
 import { z } from "zod";
 
 export const sourceListableTypeEnum = z.enum([
@@ -66,6 +68,7 @@ export const sourceSummarySchema = z.object({
   receivedAt: z.coerce.date(),
   /** Count of nodes this source contributed to (via `source_links`). */
   nodeCount: z.number().int().nonnegative(),
+  sourceContext: sourceContextSchema.nullable().optional(),
 });
 export type SourceSummary = z.infer<typeof sourceSummarySchema>;
 
@@ -107,6 +110,7 @@ export const getSourceResponseSchema = z.object({
      * decoded or returned by this endpoint.
      */
     content: sourceContentSchema.nullable().optional(),
+    processing: sourceProcessingSchema.nullable().optional(),
   }),
 });
 export type GetSourceResponse = z.infer<typeof getSourceResponseSchema>;

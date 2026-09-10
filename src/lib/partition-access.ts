@@ -161,6 +161,7 @@ type SourceParentGateDatabase = Pick<DrizzleDB, "execute" | "select">;
 export interface SourceParentAttachment {
   userId: string;
   sourceId: TypeId<"source">;
+  partitionKey?: ContextPartitionKey;
 }
 
 /**
@@ -205,7 +206,7 @@ export async function assertLiveSourceParents(
   for (const [userId, sourceIds] of parentsByUser) {
     const [liveParents, tombstones] = await Promise.all([
       tx
-        .select({ id: sources.id })
+        .select({ id: sources.id, partitionKey: sources.partitionKey })
         .from(sources)
         .where(
           and(
@@ -226,7 +227,23 @@ export async function assertLiveSourceParents(
           ),
         ),
     ]);
-    if (liveParents.length !== sourceIds.length || tombstones.length > 0) {
+    const expectedPartitionById = new Map<
+      TypeId<"source">,
+      ContextPartitionKey | null
+    >();
+    for (const parent of parents.filter(
+      (candidate) => candidate.userId === userId,
+    )) {
+      expectedPartitionById.set(parent.sourceId, parent.partitionKey ?? null);
+    }
+    if (
+      liveParents.length !== sourceIds.length ||
+      tombstones.length > 0 ||
+      liveParents.some(
+        (parent) =>
+          parent.partitionKey !== expectedPartitionById.get(parent.id),
+      )
+    ) {
       throw new PartitionAccessError(
         "SOURCE_TOMBSTONED",
         "A child source cannot attach to a removed or tombstoned parent",
