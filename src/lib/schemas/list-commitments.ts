@@ -1,5 +1,7 @@
 import { TaskStatusEnum } from "../../types/graph.js";
+import { AssertedByKindEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
+import { commitmentRequestEvidenceSchema } from "./commitment-request-evidence.js";
 import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
@@ -100,6 +102,11 @@ export const commitmentListItemSchema = z.object({
   statusChangedAt: z.coerce.date(),
   createdAt: z.coerce.date(),
   sourceId: typeIdSchema("source"),
+  statusAssertedByKind: AssertedByKindEnum.nullable().optional().default(null),
+  requestEvidence: commitmentRequestEvidenceSchema
+    .nullable()
+    .optional()
+    .default(null),
   /** Inline evidence for the inbox card. Null when no source resolves. */
   presentation: commitmentPresentationSchema.nullable(),
 });

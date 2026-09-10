@@ -7,6 +7,8 @@ export const sourceParticipantSchema = z
   .object({
     email: z.string().email().max(320),
     name: z.string().min(1).max(200).optional(),
+    /** Recipient list supplied by the application, when this is a recipient. */
+    recipientRole: z.enum(["to", "cc", "bcc"]).optional(),
   })
   .strict();
 
@@ -30,11 +32,17 @@ export const sourceContextSchema = z
     /** Why the caller supplied this source, in application-owned wording. */
     purpose: z.string().min(1).max(500),
     accountId: z.string().min(1).max(200),
+    /** Authenticated mailbox owner. This identity comes from the application. */
+    authenticatedUser: sourceParticipantSchema.optional(),
     /** Relationship of the authenticated account to the source participants. */
     relationship: z.string().min(1).max(80),
     sender: sourceParticipantSchema.optional(),
     recipients: z.array(sourceParticipantSchema).max(100).optional(),
     direction: z.enum(["incoming", "outgoing"]).optional(),
+    /** Header/provider classification supplied by the application. */
+    deliveryKind: z
+      .enum(["person_message", "auto_reply", "newsletter", "unknown"])
+      .optional(),
     messageId: z.string().min(1).max(500).optional(),
     threadId: z.string().min(1).max(500).optional(),
     /** Canonical provider or application URL, never fetched by Memory. */

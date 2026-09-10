@@ -5,6 +5,7 @@ import {
   TaskStatusEnum,
 } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
+import { commitmentRequestEvidenceSchema } from "./commitment-request-evidence.js";
 import { contextPartitionKeySchema } from "./partition.js";
 import { z } from "zod";
 
@@ -60,6 +61,10 @@ export const getCommitmentResponseSchema = z.object({
   statusClaimId: typeIdSchema("claim").nullable(),
   statusStatedAt: z.coerce.date().nullable(),
   statusAssertedByKind: AssertedByKindEnum.nullable(),
+  requestEvidence: commitmentRequestEvidenceSchema
+    .nullable()
+    .optional()
+    .default(null),
   owner: z
     .object({
       nodeId: typeIdSchema("node"),
