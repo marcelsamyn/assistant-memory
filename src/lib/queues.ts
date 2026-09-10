@@ -275,7 +275,11 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         );
 
         const { ingestDocument } = await import("./jobs/ingest-document");
-        await ingestDocument({ db, ...data });
+        await ingestDocument({
+          db,
+          ...data,
+          finalAttempt: isFinalBullMQAttempt(job),
+        });
         console.log(
           `Ingested document ${data.documentId} for user ${data.userId}.`,
         );
@@ -292,7 +296,11 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         );
 
         const { ingestFile } = await import("./jobs/ingest-file");
-        await ingestFile({ db, ...data });
+        await ingestFile({
+          db,
+          ...data,
+          finalAttempt: isFinalBullMQAttempt(job),
+        });
         console.log(
           `Ingested file ${data.filename} (${data.sourceId}) for user ${data.userId}.`,
         );

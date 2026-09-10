@@ -7,6 +7,11 @@ import { newTypeId } from "~/types/typeid";
 const mocks = vi.hoisted(() => ({
   fetchRaw: vi.fn(),
   getSourceSummary: vi.fn(),
+  getSourceIngestionOperation: vi.fn(),
+}));
+
+vi.mock("~/lib/ingestion/source-processing", () => ({
+  getSourceIngestionOperation: mocks.getSourceIngestionOperation,
 }));
 
 vi.mock("~/lib/sources", () => ({
@@ -25,6 +30,7 @@ describe("POST /sources/get", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+    mocks.getSourceIngestionOperation.mockResolvedValue(null);
   });
 
   it("does not fetch or return content by default", async () => {

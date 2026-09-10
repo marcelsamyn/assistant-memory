@@ -66,6 +66,7 @@ export async function extractDocumentGraph(
     statedAt: timestamp,
     linkedNodeId,
     sourceRefs: [{ externalId, sourceId, statedAt: timestamp }],
+    ...(expectedSourceVersion !== undefined ? { expectedSourceVersion } : {}),
     content,
     logLabel,
     documentMetadata: {

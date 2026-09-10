@@ -109,6 +109,7 @@ interface ExtractGraphParams {
   userId: string;
   sourceType: SourceType;
   sourceId: TypeId<"source">;
+  expectedSourceVersion?: number;
   statedAt: Date;
   linkedNodeId: TypeId<"node">;
   sourceRefs?: SourceRef[];
@@ -153,6 +154,7 @@ export async function extractGraph({
   userId,
   sourceType,
   sourceId,
+  expectedSourceVersion,
   statedAt,
   linkedNodeId,
   sourceRefs = [],
@@ -166,7 +168,13 @@ export async function extractGraph({
   const db = await useDatabase();
   const parentSource = await _fetchSourceContext(db, userId, sourceId);
   const partitionKey = parentSource.partitionKey ?? undefined;
-  await assertSourcePartition({ db, userId, sourceId, partitionKey });
+  await assertSourcePartition({
+    db,
+    userId,
+    sourceId,
+    partitionKey,
+    ...(expectedSourceVersion !== undefined ? { expectedSourceVersion } : {}),
+  });
   const resolvedSourceRefs =
     sourceRefs.length > 0
       ? sourceRefs
@@ -178,6 +186,12 @@ export async function extractGraph({
     sourceId,
     ...resolvedSourceRefs.map((sourceRef) => sourceRef.sourceId),
   ]);
+  if (expectedSourceVersion !== undefined) {
+    const rootFence = sourceWriteFences.find(
+      (fence) => fence.sourceId === sourceId,
+    );
+    if (rootFence) rootFence.expectedSourceVersion = expectedSourceVersion;
+  }
   const sourceRefsForPrompt = resolvedSourceRefs
     .map(
       (sourceRef) =>

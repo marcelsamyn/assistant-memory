@@ -13,6 +13,7 @@
 import { ScopeEnum } from "../../types/graph.js";
 import { typeIdSchema } from "../../types/typeid.js";
 import { contextPartitionKeySchema } from "./partition.js";
+import { sourceContextSchema } from "./source-context.js";
 import { z } from "zod";
 
 /**
@@ -41,6 +42,8 @@ export const ingestFileFieldsSchema = z.object({
   partitionKey: contextPartitionKeySchema.optional(),
   filename: z.string().min(1),
   mimeType: z.string().min(1),
+  /** Stable provider/application identity for retry-safe file ingestion. */
+  externalId: z.string().min(1).optional(),
   title: z.string().min(1).optional(),
   /**
    * Optional bibliographic author (parity with `/ingest/document`). Stored
@@ -57,6 +60,8 @@ export const ingestFileFieldsSchema = z.object({
    */
   timestamp: z.string().datetime().pipe(z.coerce.date()).optional(),
   scope: ScopeEnum.optional().default("personal"),
+  /** Optional application-supplied provenance for contextual ingestion. */
+  sourceContext: sourceContextSchema.optional(),
 });
 export type IngestFileFields = z.infer<typeof ingestFileFieldsSchema>;
 
@@ -64,6 +69,7 @@ export const ingestFileResponseSchema = z.object({
   message: z.string(),
   jobId: z.string(),
   sourceId: typeIdSchema("source"),
+  ingestionOperationId: z.string().min(1).optional(),
 });
 export type IngestFileResponse = z.infer<typeof ingestFileResponseSchema>;
 
@@ -79,9 +85,12 @@ export interface IngestFileRequest {
   file: Buffer | Blob | Uint8Array;
   filename: string;
   mimeType: string;
+  /** Stable provider/application identity. A missing value keeps legacy UUID behavior. */
+  externalId?: string;
   title?: string;
   author?: string;
   /** ISO-8601 string or `Date`; falls back to upload time when omitted. */
   timestamp?: string | Date;
   scope?: "personal" | "reference";
+  sourceContext?: import("./source-context.js").SourceContext;
 }

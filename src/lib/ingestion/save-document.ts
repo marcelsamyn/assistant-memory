@@ -6,9 +6,8 @@
  * project auto-attach flows. Heavy work — HTML→markdown conversion and graph
  * extraction — runs in the queued `ingest-document` worker.
  *
- * On `updateExisting`, the prior source is retired through the durable source
- * lifecycle. The replacement deliberately receives a new source identity;
- * no prior content, evidence, or feed payload is revived.
+ * Contextual revisions retain their source identity. Legacy `updateExisting`
+ * requests retain the historical erase-and-recreate behavior.
  */
 import { batchQueue } from "../queues";
 import {
@@ -17,6 +16,12 @@ import {
 } from "../schemas/ingest-document-request";
 import { sourceService } from "../sources";
 import { ensureUser } from "./ensure-user";
+import { contextualSourceExternalId } from "./source-identity";
+import {
+  createSourceIngestionOperation,
+  findSourceIngestionOperation,
+  hashSourceContent,
+} from "./source-processing";
 import { and, eq, isNull } from "drizzle-orm";
 import { createError } from "h3";
 import { randomUUID } from "node:crypto";
@@ -38,11 +43,33 @@ export async function saveMemory(
   req: IngestDocumentRequest,
 ): Promise<IngestDocumentResponse> {
   const { userId, document, updateExisting = false } = req;
+  const externalId = contextualSourceExternalId({
+    externalId: document.id,
+    ...(document.sourceContext !== undefined
+      ? {
+          accountId: document.sourceContext.accountId,
+          ...(req.partitionKey !== undefined
+            ? { partitionKey: req.partitionKey }
+            : {}),
+        }
+      : {}),
+  });
+  const contentHash = hashSourceContent(document.content);
+
+  if (
+    document.sourceContext?.parentPartitionKey !== undefined &&
+    document.sourceContext.parentPartitionKey !== req.partitionKey
+  ) {
+    throw createError({
+      statusCode: 403,
+      statusMessage: "source parent does not belong to the requested partition",
+    });
+  }
 
   await ensureUser(db, userId);
   await preparePartitionWrite(db, userId, req.partitionKey);
 
-  if (updateExisting) {
+  if (updateExisting && document.sourceContext === undefined) {
     const existingDocuments = await db
       .select({
         id: sources.id,
@@ -57,7 +84,7 @@ export async function saveMemory(
             ? isNull(sources.partitionKey)
             : eq(sources.partitionKey, req.partitionKey),
           eq(sources.type, "document"),
-          eq(sources.externalId, document.id),
+          eq(sources.externalId, externalId),
         ),
       )
       .orderBy(sources.id);
@@ -73,6 +100,13 @@ export async function saveMemory(
   }
 
   const timestamp = document.timestamp ?? new Date();
+  const metadata = {
+    ...(document.author !== undefined && { author: document.author }),
+    ...(document.title !== undefined && { title: document.title }),
+    ...(document.sourceContext !== undefined && {
+      sourceContext: document.sourceContext,
+    }),
+  };
 
   const { successes, failures } = await sourceService.insertMany([
     {
@@ -81,21 +115,25 @@ export async function saveMemory(
         ? { partitionKey: req.partitionKey }
         : {}),
       sourceType: "document",
-      externalId: document.id,
+      externalId,
+      ...(document.sourceContext?.parentSourceId !== undefined
+        ? {
+            parentId: document.sourceContext.parentSourceId,
+            ...(req.partitionKey !== undefined
+              ? { parentPartitionKey: req.partitionKey }
+              : {}),
+          }
+        : {}),
       scope: document.scope,
       timestamp,
       // Stored as-is; the worker re-writes `metadata.rawContent` with the
       // converted markdown when `contentType === "html"`.
       content: document.content,
-      metadata: {
-        ...(document.author !== undefined && { author: document.author }),
-        ...(document.title !== undefined && { title: document.title }),
-      },
+      metadata,
     },
   ]);
 
   let sourceId: TypeId<"source">;
-  let expectedSourceVersion: number;
   if (successes.length > 0) {
     sourceId = successes[0]!;
     const [created] = await db
@@ -104,7 +142,6 @@ export async function saveMemory(
       .where(eq(sources.id, sourceId))
       .limit(1);
     if (!created) throw new Error(`Created source ${sourceId} was not found`);
-    expectedSourceVersion = created.version;
   } else {
     // Conflict path: the row already existed and updateExisting was false.
     // Look up the existing sourceId so the caller can still auto-attach,
@@ -116,7 +153,7 @@ export async function saveMemory(
         and(
           eq(sources.userId, userId),
           eq(sources.type, "document"),
-          eq(sources.externalId, document.id),
+          eq(sources.externalId, externalId),
         ),
       )
       .limit(1);
@@ -137,29 +174,132 @@ export async function saveMemory(
       });
     }
 
+    const existingProcessing = await findSourceIngestionOperation({
+      db,
+      userId,
+      ...(req.partitionKey !== undefined
+        ? { partitionKey: req.partitionKey }
+        : {}),
+      sourceId: existing.id,
+      contentHash,
+    });
+    if (document.sourceContext === undefined) {
+      return {
+        message: "Document already ingested; reusing existing source",
+        jobId: existingProcessing?.operationId ?? document.id,
+        sourceId: existing.id,
+        ...(existingProcessing !== null
+          ? { ingestionOperationId: existingProcessing.operationId }
+          : {}),
+      };
+    }
+    await sourceService.replaceInlineContent({
+      userId,
+      sourceId: existing.id,
+      partitionKey: req.partitionKey,
+      content: document.content,
+      metadata,
+      ...(document.sourceContext?.parentSourceId !== undefined
+        ? { parentId: document.sourceContext.parentSourceId }
+        : {}),
+      scope: document.scope,
+      timestamp,
+      replaceDerivedLinks: existingProcessing === null,
+      ...(existingProcessing === null ? { status: "pending" as const } : {}),
+    });
+
+    // Identical content reuses its immutable processing receipt. Metadata is
+    // still revised in place, but no extraction job is repeated.
+    if (existingProcessing && existingProcessing.status !== "queued") {
+      return {
+        message: "Document already ingested; metadata updated",
+        jobId: existingProcessing.operationId,
+        sourceId: existing.id,
+        ingestionOperationId: existingProcessing.operationId,
+      };
+    }
+
+    const processing =
+      existingProcessing ??
+      (await createSourceIngestionOperation({
+        db,
+        userId,
+        ...(req.partitionKey !== undefined
+          ? { partitionKey: req.partitionKey }
+          : {}),
+        sourceId: existing.id,
+        externalId,
+        contentHash,
+      }));
+    await batchQueue.add(
+      "ingest-document",
+      {
+        userId,
+        ...(req.partitionKey !== undefined
+          ? { partitionKey: req.partitionKey }
+          : {}),
+        sourceId: existing.id,
+        expectedSourceVersion: processing.sourceVersion,
+        documentId: document.id,
+        externalId,
+        contentType: document.contentType,
+        timestamp: timestamp.toISOString(),
+        author: document.author,
+        title: document.title,
+        operationId: processing.operationId,
+      },
+      {
+        jobId: processing.operationId,
+        attempts: 3,
+        backoff: { type: "exponential", delay: 1_000 },
+      },
+    );
     return {
       message: "Document already ingested; reusing existing source",
-      jobId: document.id,
+      jobId: processing.operationId,
       sourceId: existing.id,
+      ingestionOperationId: processing.operationId,
     };
   }
 
-  await batchQueue.add("ingest-document", {
+  const processing = await createSourceIngestionOperation({
+    db,
     userId,
-    partitionKey: req.partitionKey,
+    ...(req.partitionKey !== undefined
+      ? { partitionKey: req.partitionKey }
+      : {}),
     sourceId,
-    expectedSourceVersion,
-    documentId: document.id,
-    contentType: document.contentType,
-    timestamp: timestamp.toISOString(),
-    author: document.author,
-    title: document.title,
+    externalId,
+    contentHash,
   });
+
+  await batchQueue.add(
+    "ingest-document",
+    {
+      userId,
+      partitionKey: req.partitionKey,
+      sourceId,
+      expectedSourceVersion: processing.sourceVersion,
+      documentId: document.id,
+      externalId,
+      contentType: document.contentType,
+      timestamp: timestamp.toISOString(),
+      author: document.author,
+      title: document.title,
+      operationId: processing.operationId,
+    },
+    {
+      jobId: processing.operationId,
+      attempts: 3,
+      backoff: { type: "exponential", delay: 1_000 },
+    },
+  );
 
   return {
     message: "Document ingestion job accepted",
-    jobId: document.id,
+    jobId: processing.operationId,
     sourceId,
+    ingestionOperationId: processing.operationId,
   };
 }
 

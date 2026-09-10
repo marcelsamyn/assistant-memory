@@ -298,6 +298,11 @@ import {
   sourceLifecycleStorageCleanupSweepResponseSchema,
 } from "../lib/schemas/source-lifecycle.js";
 import {
+  GetSourceProcessingRequest,
+  GetSourceProcessingResponse,
+  getSourceProcessingResponseSchema,
+} from "../lib/schemas/source-processing.js";
+import {
   GetSourceRequest,
   GetSourceResponse,
   ListSourcesRequest,
@@ -576,6 +581,7 @@ export class MemoryClient {
     if (payload.partitionKey) form.append("partitionKey", payload.partitionKey);
     form.append("filename", payload.filename);
     form.append("mimeType", payload.mimeType);
+    if (payload.externalId) form.append("externalId", payload.externalId);
     if (payload.title) form.append("title", payload.title);
     if (payload.author) form.append("author", payload.author);
     if (payload.timestamp) {
@@ -586,6 +592,9 @@ export class MemoryClient {
       form.append("timestamp", iso);
     }
     if (payload.scope) form.append("scope", payload.scope);
+    if (payload.sourceContext) {
+      form.append("sourceContext", JSON.stringify(payload.sourceContext));
+    }
 
     const headers: HeadersInit = {};
     if (this.options.apiKey) {
@@ -1468,6 +1477,18 @@ export class MemoryClient {
       "POST",
       "/sources/get",
       getSourceResponseSchema,
+      payload,
+    );
+  }
+
+  /** Returns an ingestion receipt, including retained receipts after purge. */
+  async getSourceProcessing(
+    payload: GetSourceProcessingRequest,
+  ): Promise<GetSourceProcessingResponse> {
+    return this._fetch(
+      "POST",
+      "/sources/processing",
+      getSourceProcessingResponseSchema,
       payload,
     );
   }

@@ -18,6 +18,7 @@ import type { DrizzleDB } from "~/db";
 import { sourceLinks, sources } from "~/db/schema";
 import { assertPartitionReadAllowed } from "~/lib/partition-access";
 import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import { sourceContextSchema } from "~/lib/schemas/source-context";
 import {
   type SourceListableType,
   sourceListableTypeEnum,
@@ -70,6 +71,15 @@ export function deriveTitle(metadata: unknown): string | null {
 function deriveAuthor(metadata: unknown): string | null {
   const parsed = sourceMetadataSchema.safeParse(metadata ?? {});
   return parsed.success ? (parsed.data.author ?? null) : null;
+}
+
+function deriveSourceContext(
+  metadata: unknown,
+): SourceSummary["sourceContext"] {
+  const parsed = sourceMetadataSchema.safeParse(metadata ?? {});
+  if (!parsed.success || parsed.data.sourceContext === undefined) return null;
+  const context = sourceContextSchema.safeParse(parsed.data.sourceContext);
+  return context.success ? context.data : null;
 }
 
 interface ListParams {
@@ -155,6 +165,7 @@ export async function listSourcesPage(params: ListParams): Promise<{
     ingestedAt: row.lastIngestedAt ?? row.createdAt,
     receivedAt: row.createdAt,
     nodeCount: Number(row.nodeCount),
+    sourceContext: deriveSourceContext(row.metadata),
   }));
 
   let nextCursor: string | null = null;
@@ -217,5 +228,6 @@ export async function getSourceSummary(
     ingestedAt: row.lastIngestedAt ?? row.createdAt,
     receivedAt: row.createdAt,
     nodeCount: Number(row.nodeCount),
+    sourceContext: deriveSourceContext(row.metadata),
   };
 }

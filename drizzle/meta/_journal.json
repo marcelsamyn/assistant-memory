@@ -267,6 +267,13 @@
       "when": 1788865799729,
       "tag": "0037_batch_runtime_change_feed",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1789028061159,
+      "tag": "0038_cold_prodigy",
+      "breakpoints": true
     }
   ]
 }

@@ -47,6 +47,7 @@ export interface ChunkedExtractionParams {
   userId: string;
   sourceType: SourceType;
   sourceId: TypeId<"source">;
+  expectedSourceVersion?: number;
   statedAt: Date;
   linkedNodeId: TypeId<"node">;
   sourceRefs: Array<{
@@ -81,6 +82,7 @@ export async function runChunkedExtraction(
     userId,
     sourceType,
     sourceId,
+    expectedSourceVersion,
     statedAt,
     linkedNodeId,
     sourceRefs,
@@ -104,6 +106,7 @@ export async function runChunkedExtraction(
     userId,
     sourceType,
     sourceId,
+    ...(expectedSourceVersion !== undefined ? { expectedSourceVersion } : {}),
     content,
     documentNodeId: linkedNodeId,
     title: documentMetadata?.title,
@@ -150,6 +153,9 @@ export async function runChunkedExtraction(
     try {
       const result = await extractGraph({
         ...baseExtractParams,
+        ...(expectedSourceVersion !== undefined
+          ? { expectedSourceVersion }
+          : {}),
         content: chunk,
         replaceClaimsForSources: !didReplaceClaims,
         ...(contentNote && { contentNote }),
@@ -234,6 +240,7 @@ async function runSpinePrepass(params: {
   userId: string;
   sourceType: SourceType;
   sourceId: TypeId<"source">;
+  expectedSourceVersion?: number;
   content: string;
   documentNodeId: TypeId<"node">;
   title: string | undefined;
@@ -260,6 +267,9 @@ async function runSpinePrepass(params: {
       await applyDocumentSpine({
         userId,
         sourceId,
+        ...(params.expectedSourceVersion !== undefined
+          ? { expectedSourceVersion: params.expectedSourceVersion }
+          : {}),
         documentNodeId,
         title,
         logLabel,

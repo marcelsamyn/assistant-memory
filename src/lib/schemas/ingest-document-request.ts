@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { contextPartitionKeySchema } from "~/lib/schemas/partition.js";
+import { sourceContextSchema } from "~/lib/schemas/source-context.js";
 import { ScopeEnum } from "~/types/graph.js";
 import { typeIdSchema } from "~/types/typeid.js";
 
@@ -31,6 +32,8 @@ export const ingestDocumentRequestSchema = z.object({
      */
     author: z.string().min(1).optional(),
     title: z.string().min(1).optional(),
+    /** Optional application-supplied provenance for contextual ingestion. */
+    sourceContext: sourceContextSchema.optional(),
   }),
 });
 
@@ -45,6 +48,8 @@ export const ingestDocumentResponseSchema = z.object({
    * `completed`.
    */
   sourceId: typeIdSchema("source"),
+  /** Stable identity of the accepted content revision. */
+  ingestionOperationId: z.string().min(1).optional(),
 });
 
 export type IngestDocumentRequest = z.infer<typeof ingestDocumentRequestSchema>;
