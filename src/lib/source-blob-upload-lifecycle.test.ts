@@ -12,6 +12,13 @@ import {
   sources,
   users,
 } from "~/db/schema";
+import { contextualSourceExternalId } from "~/lib/ingestion/source-identity";
+import { createSourceIngestionOperation } from "~/lib/ingestion/source-processing";
+import {
+  reclassifySourcePartition,
+  setPartitionMigrationState,
+} from "~/lib/partition-reclassification";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import {
   applySourceLifecycleCommand,
   markSourceStorageCleanupCompleted,
@@ -135,6 +142,350 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
     await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
     await admin.end();
   });
+
+  it("rejects a root file replacement moved after loading without changing its blob, claims or receipts", async () => {
+    const userId = "file-move-before-put";
+    await database.insert(users).values({ id: userId });
+    const context = {
+      version: 1 as const,
+      sourceKind: "file" as const,
+      accountId: "account",
+      purpose: "File evidence",
+      relationship: "owner",
+      currentMessageRole: "current" as const,
+      completeness: "complete" as const,
+    };
+    const externalId = contextualSourceExternalId({
+      externalId: "file",
+      accountId: context.accountId,
+    });
+    const service = new SourceService(database, minio, bucket, 1);
+    const initial = await service.insertMany([
+      {
+        userId,
+        sourceType: "document",
+        externalId,
+        timestamp: new Date(),
+        fileBuffer: Buffer.from("original bytes"),
+        contentType: "application/pdf",
+        metadata: { sourceContext: context },
+      },
+    ]);
+    const sourceId = initial.successes[0];
+    if (!sourceId) throw new Error("Expected original root file");
+    const nodeId = newTypeId("node");
+    await database
+      .insert(schema.nodes)
+      .values({ userId, id: nodeId, nodeType: "Task" });
+    await database.insert(schema.sourceLinks).values({ sourceId, nodeId });
+    await database.insert(schema.claims).values({
+      userId,
+      sourceId,
+      subjectNodeId: nodeId,
+      predicate: "HAS_TASK_STATUS",
+      statement: "Original request",
+      objectValue: "pending",
+      assertedByKind: "assistant_inferred",
+      statedAt: new Date(),
+    });
+    await createSourceIngestionOperation({
+      db: database,
+      userId,
+      sourceId,
+      externalId,
+      contentHash: "original",
+    });
+    const targetPartitionKey = contextPartitionKeySchema.parse("file:moved");
+    const snapshot = async () => ({
+      source: await lifecycleDatabase
+        .select()
+        .from(sources)
+        .where(eq(sources.id, sourceId)),
+      claims: await lifecycleDatabase
+        .select()
+        .from(schema.claims)
+        .where(eq(schema.claims.sourceId, sourceId)),
+      links: await lifecycleDatabase
+        .select()
+        .from(schema.sourceLinks)
+        .where(eq(schema.sourceLinks.sourceId, sourceId)),
+      operations: await lifecycleDatabase
+        .select()
+        .from(schema.sourceIngestionOperations)
+        .where(eq(schema.sourceIngestionOperations.sourceId, sourceId)),
+    });
+    let moved: Awaited<ReturnType<typeof snapshot>> | undefined;
+    const sign = minio.presignedPutObject.bind(minio);
+    const interleave = vi
+      .spyOn(minio, "presignedPutObject")
+      .mockImplementationOnce(async (bucketName, objectKey, expires) => {
+        await setPartitionMigrationState(lifecycleDatabase, {
+          userId,
+          expectedState: "unmigrated",
+          expectedVersion: 0,
+          nextState: "migrating",
+        });
+        const [current] = await lifecycleDatabase
+          .select()
+          .from(sources)
+          .where(eq(sources.id, sourceId));
+        if (!current) throw new Error("Missing root file");
+        await reclassifySourcePartition(lifecycleDatabase, {
+          userId,
+          sourceId,
+          expectedPartitionKey: null,
+          expectedSourceVersion: current.version,
+          targetPartitionKey,
+          bindingGeneration: "move-before-put",
+        });
+        moved = await snapshot();
+        return sign(bucketName, objectKey, expires);
+      });
+    const replacement = {
+      userId,
+      sourceId,
+      partitionKey: undefined,
+      externalId,
+      buffer: Buffer.from("stale replacement"),
+      contentType: "application/pdf",
+      contentHash: "replacement",
+      metadata: { sourceContext: context },
+      scope: "personal" as const,
+      timestamp: new Date(),
+    };
+    try {
+      await expect(
+        service.replaceFileContent(replacement),
+      ).rejects.toMatchObject({ code: "SOURCE_VERSION_CONFLICT" });
+    } finally {
+      interleave.mockRestore();
+    }
+    expect(moved).toBeDefined();
+    expect(await snapshot()).toEqual(moved);
+    expect(
+      (
+        await database
+          .select()
+          .from(sourceBlobUploads)
+          .where(eq(sourceBlobUploads.sourceId, sourceId))
+      )[0]?.state,
+    ).toBe("uploaded");
+    expect(
+      await retryPendingSourceTombstoneStorageCleanup(
+        lifecycleDatabase,
+        (key) => service.deleteRawBlobObjectKeyIfPresent(key),
+        100,
+      ),
+    ).toEqual({ attempted: 0, completed: 0 });
+    expect((await service.fetchRaw(userId, [sourceId]))[0]).toMatchObject({
+      kind: "blob",
+      buffer: Buffer.from("original bytes"),
+    });
+    await expect(service.replaceFileContent(replacement)).rejects.toMatchObject(
+      { code: "PARTITION_UNAUTHORIZED" },
+    );
+    const movedSource = moved?.source[0];
+    if (!movedSource) throw new Error("Missing moved source");
+    await service.replaceFileContent({
+      ...replacement,
+      partitionKey: targetPartitionKey,
+      externalId: movedSource.externalId,
+      buffer: Buffer.from("authorized replacement"),
+    });
+    expect((await service.fetchRaw(userId, [sourceId]))[0]).toMatchObject({
+      kind: "blob",
+      buffer: Buffer.from("authorized replacement"),
+    });
+    await service.deleteRawBlobIfPresent(userId, sourceId);
+  }, 30_000);
+
+  it("preserves the committed blob when a replacement PUT is rejected", async () => {
+    const userId = "replacement-put-rejected";
+    await database.insert(users).values({ id: userId });
+    const service = new SourceService(database, minio, bucket, 1);
+    const initial = await service.insertMany([
+      {
+        userId,
+        sourceType: "document",
+        externalId: "rejected-replacement",
+        timestamp: new Date(),
+        fileBuffer: Buffer.from("committed bytes"),
+        contentType: "application/pdf",
+      },
+    ]);
+    const sourceId = initial.successes[0];
+    if (!sourceId) throw new Error("Expected source");
+    const rejection = createServer((_request, response) => {
+      response.statusCode = 503;
+      response.end();
+    });
+    await new Promise<void>((resolve) =>
+      rejection.listen(0, "127.0.0.1", resolve),
+    );
+    const address = rejection.address();
+    if (!address || typeof address === "string")
+      throw new Error("Missing rejection address");
+    const signed = vi
+      .spyOn(minio, "presignedPutObject")
+      .mockResolvedValue(`http://127.0.0.1:${address.port}/rejected`);
+    try {
+      await expect(
+        service.replaceFileContent({
+          userId,
+          sourceId,
+          partitionKey: undefined,
+          externalId: "rejected-replacement",
+          buffer: Buffer.from("replacement bytes"),
+          contentType: "application/pdf",
+          contentHash: "rejected-replacement-hash",
+          metadata: {},
+          scope: "personal",
+          timestamp: new Date(),
+        }),
+      ).rejects.toThrow("HTTP 503");
+    } finally {
+      signed.mockRestore();
+      await new Promise<void>((resolve, reject) =>
+        rejection.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+    const [upload] = await database
+      .select({ state: sourceBlobUploads.state })
+      .from(sourceBlobUploads)
+      .where(eq(sourceBlobUploads.sourceId, sourceId));
+    expect(upload?.state).toBe("uploaded");
+    expect((await service.fetchRaw(userId, [sourceId]))[0]).toMatchObject({
+      kind: "blob",
+      buffer: Buffer.from("committed bytes"),
+    });
+    await service.deleteRawBlobIfPresent(userId, sourceId);
+  }, 30_000);
+
+  it.each([
+    "cleanup_pending",
+    "cleanup_completed",
+    "cleanup_running",
+    "stale_cleanup",
+  ] as const)(
+    "retries a failed initial upload with the same source while %s",
+    async (state) => {
+      const userId = `failed-initial-${state}`;
+      await database.insert(users).values({ id: userId });
+      let failPut = true;
+      const service = new SourceService(database, minio, bucket, 1, {
+        beforePut: async () => {
+          if (failPut) throw new Error("Known upload failure");
+        },
+      });
+      const inserted = await service.insertMany([
+        {
+          userId,
+          sourceType: "document",
+          externalId: "stable-file",
+          timestamp: new Date(),
+          fileBuffer: Buffer.from("initial bytes"),
+          contentType: "application/pdf",
+        },
+      ]);
+      expect(inserted.successes).toHaveLength(0);
+      const sourceId = inserted.failures[0]?.sourceId;
+      if (!sourceId) throw new Error("Expected durable failed upload source");
+      const key = sourceBlobObjectKey(userId, sourceId);
+      await minio.putObject(bucket, key, Buffer.from("failed attempt bytes"));
+      const enteredCleanup = deferred();
+      const releaseCleanup = deferred();
+      const deleteObject = vi.fn(async (objectKey: string) => {
+        if (state === "cleanup_running") {
+          enteredCleanup.resolve();
+          await releaseCleanup.promise;
+        }
+        await service.deleteRawBlobObjectKeyIfPresent(objectKey);
+      });
+      const transaction = lifecycleDatabase.transaction.bind(lifecycleDatabase);
+      const intercept =
+        state === "stale_cleanup"
+          ? vi
+              .spyOn(lifecycleDatabase, "transaction")
+              .mockImplementationOnce(async (callback, config) => {
+                enteredCleanup.resolve();
+                await releaseCleanup.promise;
+                return transaction(callback, config);
+              })
+          : undefined;
+      let cleanup: Promise<unknown> | undefined;
+      if (state !== "cleanup_pending") {
+        cleanup = retryPendingSourceTombstoneStorageCleanup(
+          lifecycleDatabase,
+          deleteObject,
+          100,
+        );
+        if (state === "cleanup_completed") await cleanup;
+        else await enteredCleanup.promise;
+      }
+      failPut = false;
+      let retried = false;
+      const retry = service
+        .replaceFileContent({
+          userId,
+          sourceId,
+          partitionKey: undefined,
+          externalId: "stable-file",
+          buffer: Buffer.from("retry bytes survive"),
+          contentType: "application/pdf",
+          contentHash: `retry-${state}`,
+          metadata: {},
+          scope: "personal",
+          timestamp: new Date(),
+        })
+        .then(() => {
+          retried = true;
+        });
+      try {
+        if (state === "cleanup_running") {
+          await waitForOneTurn();
+          expect(retried).toBe(false);
+          releaseCleanup.resolve();
+        }
+        await retry;
+        releaseCleanup.resolve();
+        await cleanup;
+      } finally {
+        releaseCleanup.resolve();
+        intercept?.mockRestore();
+      }
+      const [source] = await database
+        .select()
+        .from(sources)
+        .where(eq(sources.id, sourceId));
+      const [upload] = await database
+        .select()
+        .from(sourceBlobUploads)
+        .where(eq(sourceBlobUploads.sourceId, sourceId));
+      expect(source).toMatchObject({
+        id: sourceId,
+        externalId: "stable-file",
+        status: "pending",
+      });
+      expect(upload).toMatchObject({
+        state: "uploaded",
+        cleanupCompletedAt: null,
+      });
+      if (state === "stale_cleanup")
+        expect(deleteObject).not.toHaveBeenCalled();
+      await retryPendingSourceTombstoneStorageCleanup(
+        lifecycleDatabase,
+        deleteObject,
+        100,
+      );
+      const [raw] = await service.fetchRaw(userId, [sourceId]);
+      expect(raw).toMatchObject({
+        kind: "blob",
+        buffer: Buffer.from("retry bytes survive"),
+      });
+      await service.deleteRawBlobIfPresent(userId, sourceId);
+    },
+    30_000,
+  );
 
   it("serializes a real object put with tombstone and cleans the object only after upload terminality", async () => {
     const userId = "source-upload-race-user";
@@ -407,34 +758,8 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
           await expect(
             minio.statObject(bucket, upload.objectKey),
           ).resolves.toBeDefined();
-          await expect(
-            retryPendingSourceTombstoneStorageCleanup(
-              lifecycleDatabase,
-              async () => {
-                // A direct route may have listed its keys before this upload was
-                // observed. It cannot complete that omitted key during the sweep.
-                await markSourceStorageCleanupCompleted(
-                  lifecycleDatabase,
-                  userId,
-                  source.id,
-                );
-                await markSourceTreeStorageCleanupCompleted(
-                  lifecycleDatabase,
-                  userId,
-                  source.id,
-                );
-                const [stillPending] = await lifecycleDatabase
-                  .select()
-                  .from(sourceTombstones)
-                  .where(eq(sourceTombstones.sourceId, source.id));
-                expect(stillPending?.storageCleanupState).toBe("pending");
-                throw new Error("retry physical deletion");
-              },
-              1,
-              (key) => cleanup.rawBlobObjectKeyExists(key),
-            ),
-          ).rejects.toThrow("retry physical deletion");
-          expect(await sweep()).toEqual({ attempted: 1, completed: 1 });
+          expect(await sweep()).toEqual({ attempted: 1, completed: 0 });
+          await cleanup.deleteRawBlobObjectKeyIfPresent(upload.objectKey);
         } else {
           expect(await sweep()).toEqual({ attempted: 1, completed: 0 });
           const laterId = newTypeId("source");
@@ -455,9 +780,7 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
           .select()
           .from(sourceBlobUploads)
           .where(eq(sourceBlobUploads.sourceId, source.id));
-        expect(finalUpload?.state).toBe(
-          arrives ? "cleanup_completed" : "upload_unknown",
-        );
+        expect(finalUpload?.state).toBe("upload_unknown");
         await expect(
           minio.statObject(bucket, upload.objectKey),
         ).rejects.toMatchObject({
@@ -474,128 +797,175 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
     },
   );
 
-  it("keeps a durable unknown receipt when a file revision commits but acknowledgement is lost", async () => {
-    const committed = deferred();
-    const proxy = createServer((request, response) => {
-      const upstream = httpRequest(
-        {
-          hostname: MINIO_ENDPOINT,
-          port: MINIO_PORT,
-          method: request.method,
-          path: request.url,
-          headers: request.headers,
-        },
-        (storageResponse) => {
-          if (request.method === "PUT" && storageResponse.statusCode === 200) {
-            storageResponse.resume();
-            storageResponse.on("end", () => committed.resolve());
-          } else {
-            response.writeHead(
-              storageResponse.statusCode ?? 502,
-              storageResponse.headers,
-            );
-            storageResponse.pipe(response);
-          }
-        },
+  it.each([false, true])(
+    "fences an unknown replacement when old bytes exist and the new PUT is buffered: %s",
+    async (buffered) => {
+      const committed = deferred();
+      const release = deferred();
+      const proxy = createServer((request, response) => {
+        const forward = (body?: Buffer): void => {
+          const upstream = httpRequest(
+            {
+              hostname: MINIO_ENDPOINT,
+              port: MINIO_PORT,
+              method: request.method,
+              path: request.url,
+              headers: request.headers,
+            },
+            (storageResponse) => {
+              if (
+                request.method === "PUT" &&
+                storageResponse.statusCode === 200
+              ) {
+                storageResponse.resume();
+                storageResponse.on("end", () => committed.resolve());
+              } else {
+                response.writeHead(
+                  storageResponse.statusCode ?? 502,
+                  storageResponse.headers,
+                );
+                storageResponse.pipe(response);
+              }
+            },
+          );
+          upstream.on("error", () => response.destroy());
+          if (body) upstream.end(body);
+          else request.pipe(upstream);
+        };
+        if (buffered && request.method === "PUT") {
+          const chunks: Buffer[] = [];
+          request.on("data", (chunk: Buffer) => chunks.push(chunk));
+          request.on("end", () => {
+            void release.promise.then(() => forward(Buffer.concat(chunks)));
+          });
+        } else forward();
+      });
+      await new Promise<void>((resolve) =>
+        proxy.listen(0, "127.0.0.1", resolve),
       );
-      upstream.on("error", () => response.destroy());
-      request.pipe(upstream);
-    });
-    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
-    const address = proxy.address();
-    if (!address || typeof address === "string")
-      throw new Error("Missing proxy address");
-    const proxyMinio = new MinioClient({
-      endPoint: "127.0.0.1",
-      port: address.port,
-      useSSL: false,
-      accessKey: MINIO_ACCESS_KEY,
-      secretKey: MINIO_SECRET_KEY,
-    });
-    const userId = "source-upload-timeout-user";
-    try {
-      await database.insert(users).values({ id: userId });
-      const initialService = new SourceService(database, minio, bucket, 1);
-      const initial = await initialService.insertMany([
-        {
+      const address = proxy.address();
+      if (!address || typeof address === "string")
+        throw new Error("Missing proxy address");
+      const proxyMinio = new MinioClient({
+        endPoint: "127.0.0.1",
+        port: address.port,
+        useSSL: false,
+        accessKey: MINIO_ACCESS_KEY,
+        secretKey: MINIO_SECRET_KEY,
+      });
+      const userId = `source-upload-timeout-user-${buffered}`;
+      try {
+        await database.insert(users).values({ id: userId });
+        const initialService = new SourceService(database, minio, bucket, 1);
+        const initial = await initialService.insertMany([
+          {
+            userId,
+            sourceType: "document",
+            externalId: "timeout-after-storage-commit",
+            timestamp: new Date("2026-09-09T08:00:00.000Z"),
+            fileBuffer: Buffer.from("initial durable bytes"),
+            contentType: "application/pdf",
+          },
+        ]);
+        const sourceId = initial.successes[0];
+        if (!sourceId) throw new Error("Initial file source was not created");
+        const service = new SourceService(
+          database,
+          proxyMinio,
+          bucket,
+          1,
+          {},
+          250,
+        );
+        const result = service.replaceFileContent({
           userId,
-          sourceType: "document",
-          externalId: "timeout-after-storage-commit",
-          timestamp: new Date("2026-09-09T08:00:00.000Z"),
-          fileBuffer: Buffer.from("initial durable bytes"),
+          sourceId,
+          partitionKey: undefined,
+          buffer: Buffer.from("revised bytes whose acknowledgement was lost"),
           contentType: "application/pdf",
-        },
-      ]);
-      const sourceId = initial.successes[0];
-      if (!sourceId) throw new Error("Initial file source was not created");
-      const service = new SourceService(
-        database,
-        proxyMinio,
-        bucket,
-        1,
-        {},
-        250,
-      );
-      const result = service.replaceFileContent({
-        userId,
-        sourceId,
-        partitionKey: undefined,
-        buffer: Buffer.from("revised bytes whose acknowledgement was lost"),
-        contentType: "application/pdf",
-        externalId: "timeout-after-storage-commit",
-        contentHash: "revision-timeout-hash",
-        metadata: { filename: "revised.pdf", mimeType: "application/pdf" },
-        scope: "reference",
-        timestamp: new Date("2026-09-10T08:00:00.000Z"),
-      });
-      await committed.promise;
-      await expect(result).rejects.toThrow("storage outcome is unknown");
-      const [upload] = await lifecycleDatabase
-        .select()
-        .from(sourceBlobUploads)
-        .where(eq(sourceBlobUploads.userId, userId));
-      if (!upload) throw new Error("Timeout upload reservation is missing");
-      expect(upload.sourceId).toBe(sourceId);
-      expect(upload.state).toBe("upload_unknown");
-      await expect(
-        minio.statObject(bucket, upload.objectKey),
-      ).resolves.toBeDefined();
-      const cleanupService = new SourceService(
-        lifecycleDatabase,
-        minio,
-        bucket,
-      );
-      await expect(
-        retryPendingSourceTombstoneStorageCleanup(
+          externalId: "timeout-after-storage-commit",
+          contentHash: "revision-timeout-hash",
+          metadata: { filename: "revised.pdf", mimeType: "application/pdf" },
+          scope: "reference",
+          timestamp: new Date("2026-09-10T08:00:00.000Z"),
+        });
+        if (!buffered) await committed.promise;
+        await expect(result).rejects.toThrow("storage outcome is unknown");
+        const [upload] = await lifecycleDatabase
+          .select()
+          .from(sourceBlobUploads)
+          .where(eq(sourceBlobUploads.userId, userId));
+        if (!upload) throw new Error("Timeout upload reservation is missing");
+        expect(upload.sourceId).toBe(sourceId);
+        expect(upload.state).toBe("upload_unknown");
+        await expect(
+          minio.statObject(bucket, upload.objectKey),
+        ).resolves.toBeDefined();
+        const cleanupService = new SourceService(
           lifecycleDatabase,
-          (key) => cleanupService.deleteRawBlobObjectKeyIfPresent(key),
-          10,
-        ),
-      ).resolves.toEqual({ attempted: 1, completed: 0 });
-      await lifecycleDatabase
-        .update(sourceBlobUploads)
-        .set({ updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000) })
-        .where(eq(sourceBlobUploads.sourceId, upload.sourceId));
-      await expect(
-        retryPendingSourceTombstoneStorageCleanup(
-          lifecycleDatabase,
-          (key) => cleanupService.deleteRawBlobObjectKeyIfPresent(key),
-          10,
-          (key) => cleanupService.rawBlobObjectKeyExists(key),
-        ),
-      ).resolves.toEqual({ attempted: 1, completed: 1 });
-      await expect(
-        minio.statObject(bucket, upload.objectKey),
-      ).rejects.toMatchObject({
-        code: expect.stringMatching(/NoSuchKey|NotFound/),
-      });
-    } finally {
-      proxy.closeAllConnections();
-      await new Promise<void>((resolve, reject) =>
-        proxy.close((error) => (error ? reject(error) : resolve())),
-      );
-    }
-  });
+          minio,
+          bucket,
+        );
+        await expect(
+          retryPendingSourceTombstoneStorageCleanup(
+            lifecycleDatabase,
+            (key) => cleanupService.deleteRawBlobObjectKeyIfPresent(key),
+            10,
+          ),
+        ).resolves.toEqual({ attempted: 1, completed: 0 });
+        await lifecycleDatabase
+          .update(sourceBlobUploads)
+          .set({ updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000) })
+          .where(eq(sourceBlobUploads.sourceId, upload.sourceId));
+        await expect(
+          retryPendingSourceTombstoneStorageCleanup(
+            lifecycleDatabase,
+            (key) => cleanupService.deleteRawBlobObjectKeyIfPresent(key),
+            10,
+            (key) => cleanupService.rawBlobObjectKeyExists(key),
+          ),
+        ).resolves.toEqual({ attempted: 1, completed: 0 });
+        if (buffered) {
+          const [raw] = await initialService.fetchRaw(userId, [sourceId]);
+          expect(raw).toMatchObject({
+            kind: "blob",
+            buffer: Buffer.from("initial durable bytes"),
+          });
+        }
+        await expect(
+          initialService.replaceFileContent({
+            userId,
+            sourceId,
+            partitionKey: undefined,
+            buffer: Buffer.from("retry C"),
+            contentType: "application/pdf",
+            externalId: "timeout-after-storage-commit",
+            contentHash: "retry-c",
+            metadata: {},
+            scope: "personal",
+            timestamp: new Date(),
+          }),
+        ).rejects.toThrow("reservation already exists");
+        release.resolve();
+        await committed.promise;
+        const [stillUnknown] = await lifecycleDatabase
+          .select()
+          .from(sourceBlobUploads)
+          .where(eq(sourceBlobUploads.sourceId, sourceId));
+        expect(stillUnknown?.state).toBe("upload_unknown");
+        await cleanupService.deleteRawBlobObjectKeyIfPresent(upload.objectKey);
+      } finally {
+        release.resolve();
+        await lifecycleDatabase
+          .delete(sourceBlobUploads)
+          .where(eq(sourceBlobUploads.userId, userId));
+        proxy.closeAllConnections();
+        await new Promise<void>((resolve, reject) =>
+          proxy.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    },
+  );
 
   it("recovers a crash after the real object write but before descriptor commit", async () => {
     const userId = "source-upload-crash-user";

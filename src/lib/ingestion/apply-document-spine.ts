@@ -20,7 +20,9 @@
  */
 import { useDatabase } from "../../utils/db";
 import { normalizeLabel } from "../label";
-import { nodeMetadata } from "~/db/schema";
+import { and, eq } from "drizzle-orm";
+import type { DrizzleDB } from "~/db";
+import { nodeMetadata, nodes, sourceLinks } from "~/db/schema";
 import { withSourceWriteFence } from "~/lib/partition-access";
 import { type DocumentSpine } from "~/lib/schemas/document-spine";
 import { type TypeId } from "~/types/typeid";
@@ -31,6 +33,51 @@ export function formatSpineDescription(spine: DocumentSpine): string {
   return themes.length > 0
     ? `${spine.thesis}\n\nKey themes: ${themes}`
     : spine.thesis;
+}
+
+/** Update a linked Document node when only caller-supplied title metadata changed. */
+export async function updateDocumentTitle(params: {
+  db: DrizzleDB;
+  userId: string;
+  sourceId: TypeId<"source">;
+  expectedSourceVersion: number;
+  title: string;
+}): Promise<void> {
+  const label = params.title.trim();
+  if (label.length === 0) return;
+  const canonicalLabel = normalizeLabel(label);
+  await withSourceWriteFence(
+    params.db,
+    {
+      userId: params.userId,
+      sources: [
+        {
+          sourceId: params.sourceId,
+          expectedSourceVersion: params.expectedSourceVersion,
+        },
+      ],
+    },
+    async (tx) => {
+      const linked = await tx
+        .select({ nodeId: sourceLinks.nodeId })
+        .from(sourceLinks)
+        .innerJoin(nodes, eq(nodes.id, sourceLinks.nodeId))
+        .where(
+          and(
+            eq(sourceLinks.sourceId, params.sourceId),
+            eq(nodes.userId, params.userId),
+            eq(nodes.nodeType, "Document"),
+          ),
+        )
+        .limit(1);
+      const nodeId = linked[0]?.nodeId;
+      if (!nodeId) return;
+      await tx
+        .update(nodeMetadata)
+        .set({ label, canonicalLabel })
+        .where(eq(nodeMetadata.nodeId, nodeId));
+    },
+  );
 }
 
 /**

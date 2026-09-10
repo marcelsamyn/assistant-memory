@@ -1,5 +1,9 @@
 /** Claim lifecycle transitions for sourced claims. Common aliases: supersession, claim lifecycle, single-valued claim policy. */
 import {
+  readCommitmentRequestEvidence,
+  type CommitmentRequestEvidence,
+} from "../schemas/commitment-request-evidence";
+import {
   PREDICATE_POLICIES,
   resolvePredicatePolicy,
 } from "./predicate-policies";
@@ -114,6 +118,15 @@ function compareLifecycleOrder(a: ClaimRow, b: ClaimRow): number {
   const statedAtOrder = a.statedAt.getTime() - b.statedAt.getTime();
   if (statedAtOrder !== 0) return statedAtOrder;
 
+  const aEmail = emailLifecycleEvidence(a)?.emailThread;
+  const bEmail = emailLifecycleEvidence(b)?.emailThread;
+  if (aEmail && bEmail) {
+    const evidenceOrder =
+      aEmail.messageId.localeCompare(bEmail.messageId) ||
+      aEmail.evidenceFingerprint.localeCompare(bEmail.evidenceFingerprint);
+    if (evidenceOrder !== 0) return evidenceOrder;
+  }
+
   const createdAtOrder = a.createdAt.getTime() - b.createdAt.getTime();
   if (createdAtOrder !== 0) return createdAtOrder;
 
@@ -129,22 +142,36 @@ function compareLifecycleOrder(a: ClaimRow, b: ClaimRow): number {
 }
 
 /**
- * Trust rule: if the latest claim by statedAt is `assistant_inferred` AND any
- * prior claim (any earlier statedAt) for the same (user, subject, predicate)
- * triple is asserted by `user`/`user_confirmed`, the new claim is forced to
- * `superseded` immediately and the prior remains active.
- *
- * Returns the demoted claim id if the rule fires, or null otherwise.
+ * Trust rule: inferred claims cannot override an earlier user claim. Explicit
+ * email completion and material-revision evidence may update task progress;
+ * it does not assert that the user accepted the original request.
  */
-function trustRuleDemotedClaimId(sortedClaims: ClaimRow[]): string | null {
-  if (sortedClaims.length < 2) return null;
-  const latest = sortedClaims[sortedClaims.length - 1]!;
-  if (latest.assertedByKind !== "assistant_inferred") return null;
+function trustRuleDemotedClaimIds(sortedClaims: ClaimRow[]): Set<string> {
+  let hasTrustedUserClaim = false;
+  const demoted = new Set<string>();
+  for (const claim of sortedClaims) {
+    if (TRUSTED_USER_KINDS.has(claim.assertedByKind)) {
+      hasTrustedUserClaim = true;
+      continue;
+    }
+    if (!hasTrustedUserClaim || claim.assertedByKind !== "assistant_inferred")
+      continue;
+    const evidence = emailLifecycleEvidence(claim);
+    const explicitEmailProgress =
+      claim.predicate === "HAS_TASK_STATUS" &&
+      evidence?.emailThread !== undefined &&
+      (evidence.lifecycleEvidence === "current_message_completion" ||
+        evidence.lifecycleEvidence === "current_message_revision");
+    if (!explicitEmailProgress) demoted.add(claim.id);
+  }
+  return demoted;
+}
 
-  const hasPriorTrustedUserClaim = sortedClaims
-    .slice(0, -1)
-    .some((claim) => TRUSTED_USER_KINDS.has(claim.assertedByKind));
-  return hasPriorTrustedUserClaim ? latest.id : null;
+function emailLifecycleEvidence(
+  claim: ClaimRow,
+): CommitmentRequestEvidence | undefined {
+  if (claim.predicate !== "HAS_TASK_STATUS") return undefined;
+  return readCommitmentRequestEvidence(claim.metadata) ?? undefined;
 }
 
 async function recomputeSingleValuedLifecycleForSubject(
@@ -177,17 +204,52 @@ async function recomputeSingleValuedLifecycleForSubject(
 
   if (subjectClaims.length === 0) return;
 
-  const demotedClaimId = trustRuleDemotedClaimId(subjectClaims);
+  // A clarification carries the prior progress forward, including when an
+  // earlier completion arrives after it. Recompute from authored chronology
+  // so delivery order cannot make a later question reopen completed work.
+  for (let index = 1; index < subjectClaims.length; index++) {
+    const claim = subjectClaims[index];
+    const previous = subjectClaims[index - 1];
+    if (!claim || !previous) continue;
+    const evidence = emailLifecycleEvidence(claim);
+    if (evidence?.emailThread) {
+      const previousEvidence = emailLifecycleEvidence(previous);
+      claim.metadata = {
+        ...(claim.metadata !== null && typeof claim.metadata === "object"
+          ? claim.metadata
+          : {}),
+        requestEvidence: {
+          ...evidence,
+          supportingSourceIds: [
+            ...new Set([
+              claim.sourceId,
+              previous.sourceId,
+              ...(previousEvidence?.supportingSourceIds ?? []),
+              ...evidence.supportingSourceIds,
+            ]),
+          ].slice(0, 100),
+        },
+      };
+    }
+    if (
+      evidence?.emailThread &&
+      evidence.lifecycleEvidence !== "current_message_completion" &&
+      evidence.lifecycleEvidence !== "current_message_revision"
+    ) {
+      claim.objectValue = previous.objectValue;
+    }
+  }
 
-  // Partition into the chain that participates in normal supersession ordering
-  // vs. the trust-demoted claim (if any), which is forced into the superseded
-  // slot regardless of timestamp.
-  const orderedChain = demotedClaimId
-    ? subjectClaims.filter((claim) => claim.id !== demotedClaimId)
-    : subjectClaims;
-  const demotedClaim = demotedClaimId
-    ? subjectClaims.find((claim) => claim.id === demotedClaimId)
-    : undefined;
+  const demotedClaimIds = trustRuleDemotedClaimIds(subjectClaims);
+
+  // Partition the normal supersession chain from inferred claims that the
+  // trust rule keeps superseded regardless of timestamp.
+  const orderedChain = subjectClaims.filter(
+    (claim) => !demotedClaimIds.has(claim.id),
+  );
+  const demotedClaims = subjectClaims.filter((claim) =>
+    demotedClaimIds.has(claim.id),
+  );
 
   const updatedAt = new Date();
   const updates: Array<Promise<unknown>> = [];
@@ -196,8 +258,7 @@ async function recomputeSingleValuedLifecycleForSubject(
     supersededByClaimId: TypeId<"claim"> | null;
   }> = [];
 
-  // Latest active claim (top of orderedChain) — used as the supersedor for the
-  // trust-demoted claim if any.
+  // Latest active claim, used as the supersedor for every trust-demoted claim.
   const latestActive = orderedChain[orderedChain.length - 1];
 
   for (let index = 0; index < orderedChain.length; index++) {
@@ -215,6 +276,8 @@ async function recomputeSingleValuedLifecycleForSubject(
       database
         .update(claims)
         .set({
+          objectValue: claim.objectValue,
+          metadata: claim.metadata,
           status: isLatestActive ? "active" : "superseded",
           validFrom,
           validTo,
@@ -231,7 +294,7 @@ async function recomputeSingleValuedLifecycleForSubject(
     }
   }
 
-  if (demotedClaim) {
+  for (const demotedClaim of demotedClaims) {
     const validFrom = demotedClaim.validFrom ?? demotedClaim.statedAt;
     updates.push(
       database

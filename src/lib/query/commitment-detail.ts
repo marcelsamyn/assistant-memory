@@ -125,14 +125,6 @@ export async function getCommitment(
         .sort((a, b) => b.statedAt.getTime() - a.statedAt.getTime())
     : [];
 
-  const sourcesList = includeSources
-    ? await loadSources(
-        userId,
-        taskClaims.map((claim) => claim.sourceId),
-        partitionKey,
-      )
-    : [];
-
   let due: DueQualifierFields = { dueTime: null, timeZone: null, dueAt: null };
   let requestEvidence = null;
   const metadataClaimIds = [activeStatus?.id, activeDue?.id].filter(
@@ -165,6 +157,17 @@ export async function getCommitment(
     const dueRow = metadataRows.find((row) => row.id === activeDue?.id);
     if (dueRow) due = readDueQualifier(dueRow.metadata, dueRow.objectInstant);
   }
+
+  const sourcesList = includeSources
+    ? await loadSources(
+        userId,
+        [
+          ...taskClaims.map((claim) => claim.sourceId),
+          ...(requestEvidence?.supportingSourceIds ?? []),
+        ],
+        partitionKey,
+      )
+    : [];
 
   return {
     taskId,

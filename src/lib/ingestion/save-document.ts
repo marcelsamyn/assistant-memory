@@ -14,7 +14,8 @@ import {
   IngestDocumentRequest,
   IngestDocumentResponse,
 } from "../schemas/ingest-document-request";
-import { sourceService } from "../sources";
+import { sourceMetadataSchema, sourceService } from "../sources";
+import { updateDocumentTitle } from "./apply-document-spine";
 import { ensureUser } from "./ensure-user";
 import { contextualSourceExternalId } from "./source-identity";
 import {
@@ -22,12 +23,16 @@ import {
   findSourceIngestionOperation,
   hashSourceContent,
 } from "./source-processing";
+import { hashSourceExtractionRevision } from "./source-revision";
 import { and, eq, isNull } from "drizzle-orm";
 import { createError } from "h3";
 import { randomUUID } from "node:crypto";
 import db from "~/db";
 import { sourceTombstones, sources } from "~/db/schema";
-import { preparePartitionWrite } from "~/lib/partition-access";
+import {
+  PartitionAccessError,
+  preparePartitionWrite,
+} from "~/lib/partition-access";
 import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import {
   applySourceLifecycleCommand,
@@ -54,7 +59,6 @@ export async function saveMemory(
         }
       : {}),
   });
-  const contentHash = hashSourceContent(document.content);
 
   if (
     document.sourceContext?.parentPartitionKey !== undefined &&
@@ -99,9 +103,34 @@ export async function saveMemory(
     }
   }
 
-  const timestamp = document.timestamp ?? new Date();
+  const [previous] = await db
+    .select({ metadata: sources.metadata, timestamp: sources.lastIngestedAt })
+    .from(sources)
+    .where(
+      and(
+        eq(sources.userId, userId),
+        eq(sources.type, "document"),
+        eq(sources.externalId, externalId),
+        isNull(sources.deletedAt),
+      ),
+    )
+    .limit(1);
+  const previousMetadata = sourceMetadataSchema.parse(previous?.metadata ?? {});
+  const timestamp = document.timestamp ?? previous?.timestamp ?? new Date();
+  const author = document.author ?? previousMetadata.author;
+  const contentHash = hashSourceExtractionRevision(
+    hashSourceContent(document.content),
+    document.sourceContext,
+    {
+      scope: document.scope,
+      contentType: document.contentType,
+      author,
+      timestamp,
+    },
+  );
   const metadata = {
-    ...(document.author !== undefined && { author: document.author }),
+    ingestionRevisionHash: contentHash,
+    ...(author !== undefined && { author }),
     ...(document.title !== undefined && { title: document.title }),
     ...(document.sourceContext !== undefined && {
       sourceContext: document.sourceContext,
@@ -134,14 +163,28 @@ export async function saveMemory(
   ]);
 
   let sourceId: TypeId<"source">;
+  let sourceVersion: number | undefined;
   if (successes.length > 0) {
     sourceId = successes[0]!;
     const [created] = await db
-      .select({ version: sources.version })
+      .select({ version: sources.version, metadata: sources.metadata })
       .from(sources)
       .where(eq(sources.id, sourceId))
       .limit(1);
     if (!created) throw new Error(`Created source ${sourceId} was not found`);
+    if (
+      sourceMetadataSchema.parse(created.metadata).rawContent !==
+        document.content ||
+      sourceMetadataSchema.parse(created.metadata).ingestionRevisionHash !==
+        contentHash
+    ) {
+      throw new PartitionAccessError(
+        "SOURCE_VERSION_CONFLICT",
+        "Source content changed before its processing receipt was accepted",
+        created.version,
+      );
+    }
+    sourceVersion = created.version;
   } else {
     // Conflict path: the row already existed and updateExisting was false.
     // Look up the existing sourceId so the caller can still auto-attach,
@@ -174,7 +217,7 @@ export async function saveMemory(
       });
     }
 
-    const existingProcessing = await findSourceIngestionOperation({
+    let existingProcessing = await findSourceIngestionOperation({
       db,
       userId,
       ...(req.partitionKey !== undefined
@@ -193,20 +236,51 @@ export async function saveMemory(
           : {}),
       };
     }
-    await sourceService.replaceInlineContent({
+    const revision = {
       userId,
       sourceId: existing.id,
       partitionKey: req.partitionKey,
-      content: document.content,
       metadata,
       ...(document.sourceContext?.parentSourceId !== undefined
         ? { parentId: document.sourceContext.parentSourceId }
         : {}),
       scope: document.scope,
-      timestamp,
-      replaceDerivedLinks: existingProcessing === null,
-      ...(existingProcessing === null ? { status: "pending" as const } : {}),
-    });
+    };
+    if (existingProcessing) {
+      const updatedVersion = await sourceService.updateIngestionMetadata({
+        ...revision,
+        ...(document.timestamp !== undefined
+          ? { timestamp: document.timestamp }
+          : {}),
+      });
+      existingProcessing = await findSourceIngestionOperation({
+        db,
+        userId,
+        ...(req.partitionKey !== undefined
+          ? { partitionKey: req.partitionKey }
+          : {}),
+        sourceId: existing.id,
+        contentHash,
+      });
+      if (document.title !== undefined) {
+        await updateDocumentTitle({
+          db,
+          userId,
+          sourceId: existing.id,
+          expectedSourceVersion: updatedVersion,
+          title: document.title,
+        });
+      }
+    } else {
+      sourceVersion = await sourceService.replaceInlineContent({
+        ...revision,
+        content: document.content,
+        contentHash,
+        timestamp,
+        replaceDerivedLinks: true,
+        status: "pending",
+      });
+    }
 
     // Identical content reuses its immutable processing receipt. Metadata is
     // still revised in place, but no extraction job is repeated.
@@ -230,6 +304,9 @@ export async function saveMemory(
         sourceId: existing.id,
         externalId,
         contentHash,
+        ...(sourceVersion !== undefined
+          ? { expectedSourceVersion: sourceVersion }
+          : {}),
       }));
     await batchQueue.add(
       "ingest-document",
@@ -244,7 +321,7 @@ export async function saveMemory(
         externalId,
         contentType: document.contentType,
         timestamp: timestamp.toISOString(),
-        author: document.author,
+        author,
         title: document.title,
         operationId: processing.operationId,
       },
@@ -271,6 +348,7 @@ export async function saveMemory(
     sourceId,
     externalId,
     contentHash,
+    expectedSourceVersion: sourceVersion,
   });
 
   await batchQueue.add(
@@ -284,7 +362,7 @@ export async function saveMemory(
       externalId,
       contentType: document.contentType,
       timestamp: timestamp.toISOString(),
-      author: document.author,
+      author,
       title: document.title,
       operationId: processing.operationId,
     },

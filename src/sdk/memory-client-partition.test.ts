@@ -210,4 +210,73 @@ describe("MemoryClient partition migration", () => {
       }),
     );
   });
+
+  it("retries a failed ingestion operation by its stable id", async () => {
+    const processing = {
+      operationId: "operation-1",
+      sourceId: "src_01jz0000000000000000000000",
+      partitionKey: null,
+      status: "queued",
+      stage: "content",
+      sourceVersion: 5,
+      attempt: 2,
+      errorCode: null,
+      createdAt: "2026-09-10T08:00:00.000Z",
+      updatedAt: "2026-09-10T09:00:00.000Z",
+      completedAt: null,
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ processing }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new MemoryClient({ baseUrl: "http://memory.test" });
+
+    await expect(
+      client.retrySourceProcessing({
+        userId: "user",
+        operationId: processing.operationId,
+      }),
+    ).resolves.toMatchObject({ processing: { status: "queued" } });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://memory.test/sources/processing/retry",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          userId: "user",
+          operationId: processing.operationId,
+        }),
+      }),
+    );
+  });
+
+  it("retires a canonical source identity before disconnecting its owner", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ sources: [] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new MemoryClient({ baseUrl: "http://memory.test" });
+
+    await expect(
+      client.sourceIdentityLifecycle({
+        userId: "user",
+        partitionKey: contextPartitionKeySchema.parse("radar:mail"),
+        identities: [{ type: "document", externalId: "radar-gmail:opaque" }],
+        action: "retire",
+      }),
+    ).resolves.toEqual({ sources: [] });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://memory.test/sources/identity/lifecycle",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          userId: "user",
+          partitionKey: "radar:mail",
+          identities: [{ type: "document", externalId: "radar-gmail:opaque" }],
+          action: "retire",
+        }),
+      }),
+    );
+  });
 });

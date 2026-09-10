@@ -5,7 +5,7 @@
 ## Installation and setup
 
 ```ts
-import { MemoryClient } from "./src/sdk/memory-client.js";
+import { MemoryClient } from "@marcelsamyn/memory/sdk";
 
 const client = new MemoryClient({
   baseUrl: "https://memory.example.com",
@@ -15,10 +15,13 @@ const client = new MemoryClient({
 
 `baseUrl` is required. `apiKey` is optional — when present it is sent as `Authorization: Bearer <key>`.
 
+The SDK, HTTP API, and MCP tools are clients of the same Memory service. Source context and processing receipts are general ingestion capabilities; they do not require Radar or Petals. See [consumer migration notes](../sdk-consumer-migration.md) before upgrading an existing client.
+
 ## Reference domains
 
 | Domain                          | Description                                                                 |
 | ------------------------------- | --------------------------------------------------------------------------- |
+| [Ingestion](./ingestion.md)     | Add contextual documents and files, then follow exact revision processing.  |
 | [Commitments](./commitments.md) | Create, update, status-advance, assign, list, and inspect Task commitments. |
 
-More domains (ingestion, query, metrics, nodes/claims, scratchpad) will be documented here as the reference set grows.
+More domains (query, metrics, nodes/claims, scratchpad) will be documented here as the reference set grows.

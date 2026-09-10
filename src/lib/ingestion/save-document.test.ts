@@ -1,6 +1,7 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
+import { Client as MinioClient } from "minio";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
@@ -10,13 +11,30 @@ import {
   memoryPartitions,
   nodes,
   sourceLinks,
+  sourceIngestionOperations,
+  sourceIdentityTombstones,
   sourceTombstones,
   sources,
   users,
 } from "~/db/schema";
 import { contextualSourceExternalId } from "~/lib/ingestion/source-identity";
+import {
+  advanceSourceIngestionOperationVersion,
+  completeSourceIngestionOperation,
+  getSourceIngestionOperationById,
+  markSourceIngestionProcessing,
+  hashSourceContent,
+} from "~/lib/ingestion/source-processing";
+import { hashSourceExtractionRevision } from "~/lib/ingestion/source-revision";
+import {
+  reclassifySourcePartition,
+  setPartitionMigrationState,
+} from "~/lib/partition-reclassification";
 import { queryChangeFeed } from "~/lib/query/change-feed";
 import { contextPartitionKeySchema } from "~/lib/schemas/partition";
+import { applySourceIdentityLifecycle } from "~/lib/source-identity-lifecycle";
+import { SourceService } from "~/lib/sources";
+import { contextualSourceExternalId as sdkContextualSourceExternalId } from "~/sdk/index";
 import { newTypeId } from "~/types/typeid";
 import { setTestDatabase } from "~/utils/db";
 
@@ -63,6 +81,7 @@ describeIfServer("document replacement source lifecycle", () => {
   let client: Client;
   let database: NodePgDatabase<typeof schema>;
   let saveMemory: (typeof import("./save-document"))["saveMemory"];
+  let service: SourceService;
   const deleteRawBlobIfPresent = vi.fn(async () => undefined);
   const addIngestionJob = vi.fn(async () => undefined);
 
@@ -81,86 +100,26 @@ describeIfServer("document replacement source lifecycle", () => {
     vi.doMock("~/lib/queues", () => ({
       batchQueue: { add: addIngestionJob },
     }));
-    vi.doMock("~/lib/sources", () => ({
-      sourceBlobObjectKey: (userId: string, sourceId: string) =>
-        `${userId}/${sourceId}`,
-      sourceService: {
-        deleteRawBlobIfPresent,
-        replaceInlineContent: async (input: {
-          userId: string;
-          sourceId: schema.SourcesSelect["id"];
-          content: string;
-          metadata: Record<string, unknown>;
-          parentId?: schema.SourcesSelect["id"];
-          scope: schema.SourcesSelect["scope"];
-          timestamp: Date;
-          replaceDerivedLinks?: boolean;
-          status?: schema.SourcesSelect["status"];
-        }) => {
-          const [updated] = await database
-            .update(sources)
-            .set({
-              metadata: { ...input.metadata, rawContent: input.content },
-              parentSource: input.parentId ?? null,
-              scope: input.scope,
-              lastIngestedAt: input.timestamp,
-              ...(input.status !== undefined ? { status: input.status } : {}),
-            })
-            .where(
-              and(
-                eq(sources.userId, input.userId),
-                eq(sources.id, input.sourceId),
-              ),
-            )
-            .returning({ version: sources.version });
-          if (input.replaceDerivedLinks) {
-            await database
-              .delete(sourceLinks)
-              .where(eq(sourceLinks.sourceId, input.sourceId));
-          }
-          return updated?.version ?? 0;
-        },
-        insertMany: async (
-          inputs: Array<{
-            userId: string;
-            sourceType: schema.SourcesInsert["type"];
-            externalId: string;
-            partitionKey?: schema.SourcesInsert["partitionKey"];
-            scope?: schema.SourcesInsert["scope"];
-            timestamp: Date;
-            content?: string;
-            metadata?: Record<string, unknown>;
-          }>,
-        ) => {
-          const successes = [] as Array<schema.SourcesSelect["id"]>;
-          for (const input of inputs) {
-            const [source] = await database
-              .insert(sources)
-              .values({
-                id: newTypeId("source"),
-                userId: input.userId,
-                type: input.sourceType,
-                externalId: input.externalId,
-                partitionKey: input.partitionKey ?? null,
-                scope: input.scope ?? "personal",
-                metadata: {
-                  ...input.metadata,
-                  ...(input.content === undefined
-                    ? {}
-                    : { rawContent: input.content }),
-                },
-                lastIngestedAt: input.timestamp,
-                status: "completed",
-              })
-              .onConflictDoNothing({
-                target: [sources.userId, sources.type, sources.externalId],
-              })
-              .returning({ id: sources.id });
-            if (source) successes.push(source.id);
-          }
-          return { successes, failures: [] };
-        },
-      },
+    service = new SourceService(
+      database,
+      new MinioClient({
+        endPoint: "localhost",
+        port: 9000,
+        useSSL: false,
+        accessKey: "unused",
+        secretKey: "unused",
+      }),
+      "save-document-test",
+    );
+    vi.spyOn(MinioClient.prototype, "bucketExists").mockResolvedValue(true);
+    vi.spyOn(service, "deleteRawBlobIfPresent").mockImplementation(
+      deleteRawBlobIfPresent,
+    );
+    vi.doMock("~/lib/sources", async () => ({
+      ...(await vi.importActual<typeof import("~/lib/sources")>(
+        "~/lib/sources",
+      )),
+      sourceService: service,
     }));
     ({ saveMemory } = await import("./save-document"));
   }, 120_000);
@@ -366,6 +325,16 @@ describeIfServer("document replacement source lifecycle", () => {
         parentSource: parentId,
         scope: "reference",
         metadata: {
+          ingestionRevisionHash: hashSourceExtractionRevision(
+            hashSourceContent("revised attachment"),
+            sourceContext,
+            {
+              scope: "reference",
+              contentType: "text",
+              author: "Current author",
+              timestamp,
+            },
+          ),
           rawContent: "revised attachment",
           title: "Current title",
           author: "Current author",
@@ -404,5 +373,707 @@ describeIfServer("document replacement source lifecycle", () => {
         metadata: expect.objectContaining({ title: "Metadata-only title" }),
       },
     ]);
+  });
+
+  it("updates the linked Document node on a completed title-only replay", async () => {
+    addIngestionJob.mockClear();
+    const userId = "document-title-only-replay";
+    const sourceContext = {
+      version: 1 as const,
+      sourceKind: "email" as const,
+      purpose: "Keep the source title current",
+      accountId: "title-account",
+      relationship: "recipient" as const,
+      currentMessageRole: "current" as const,
+      completeness: "complete" as const,
+    };
+    const request = {
+      userId,
+      updateExisting: true,
+      document: {
+        id: "title-message",
+        content: "same source content",
+        contentType: "text" as const,
+        scope: "personal" as const,
+        title: "Original title",
+        sourceContext,
+      },
+    };
+    const accepted = await saveMemory(request);
+    const processingInput = {
+      db: database,
+      userId,
+      sourceId: accepted.sourceId,
+      operationId: accepted.ingestionOperationId!,
+    };
+    const processing = await markSourceIngestionProcessing(processingInput);
+    await completeSourceIngestionOperation({
+      ...processingInput,
+      expectedSourceVersion: processing.sourceVersion,
+    });
+    const documentNodeId = newTypeId("node");
+    await database.insert(nodes).values({
+      id: documentNodeId,
+      userId,
+      nodeType: "Document",
+    });
+    await database.insert(sourceLinks).values({
+      sourceId: accepted.sourceId,
+      nodeId: documentNodeId,
+    });
+    await database.insert(schema.nodeMetadata).values({
+      nodeId: documentNodeId,
+      label: "Original title",
+      canonicalLabel: "original title",
+    });
+
+    await saveMemory({
+      ...request,
+      document: { ...request.document, title: "Corrected title" },
+    });
+    const [metadata] = await database
+      .select({ label: schema.nodeMetadata.label })
+      .from(schema.nodeMetadata)
+      .where(eq(schema.nodeMetadata.nodeId, documentNodeId));
+    expect(metadata?.label).toBe("Corrected title");
+    expect(addIngestionJob).toHaveBeenCalledOnce();
+  });
+
+  it.each(["queued", "processing", "completed"] as const)(
+    "keeps an identical contextual HTML replay unchanged while %s",
+    async (status) => {
+      addIngestionJob.mockClear();
+      const request = {
+        userId: `document-html-replay-${status}`,
+        updateExisting: true,
+        document: {
+          id: "html-message",
+          content: "<p>Keep the converted text.</p>",
+          contentType: "html" as const,
+          scope: "personal" as const,
+          sourceContext: {
+            version: 1 as const,
+            sourceKind: "email" as const,
+            purpose: "Find relevant requests",
+            accountId: "mail-account",
+            relationship: "recipient",
+            currentMessageRole: "current" as const,
+            completeness: "complete" as const,
+          },
+        },
+      };
+      const accepted = await saveMemory(request);
+      const operationId = accepted.ingestionOperationId!;
+      const operationInput = {
+        db: database,
+        userId: request.userId,
+        sourceId: accepted.sourceId,
+        operationId,
+      };
+      if (status !== "queued") {
+        await markSourceIngestionProcessing(operationInput);
+        const [converted] = await database
+          .update(sources)
+          .set({
+            metadata: sql`${sources.metadata} || ${JSON.stringify({ rawContent: "Keep the converted text.", title: "Converter title" })}::jsonb`,
+          })
+          .where(eq(sources.id, accepted.sourceId))
+          .returning({ version: sources.version });
+        await advanceSourceIngestionOperationVersion({
+          ...operationInput,
+          sourceVersion: converted!.version,
+        });
+        if (status === "completed") {
+          await completeSourceIngestionOperation(operationInput);
+        }
+      }
+      const before = await database
+        .select()
+        .from(sources)
+        .where(eq(sources.id, accepted.sourceId));
+      const processingBefore =
+        await getSourceIngestionOperationById(operationInput);
+      const replay = await saveMemory(request);
+      expect(replay.ingestionOperationId).toBe(operationId);
+      expect(
+        await database
+          .select()
+          .from(sources)
+          .where(eq(sources.id, accepted.sourceId)),
+      ).toEqual(before);
+      expect(await getSourceIngestionOperationById(operationInput)).toEqual(
+        processingBefore,
+      );
+      if (status !== "completed") {
+        expect(
+          await markSourceIngestionProcessing(operationInput),
+        ).toMatchObject({ status: "processing", errorCode: null });
+      }
+      expect(addIngestionJob).toHaveBeenCalledTimes(
+        status === "queued" ? 2 : 1,
+      );
+    },
+  );
+
+  it("uses the SDK canonical identity to retire and restore a contextual document", async () => {
+    const request = {
+      userId: "document-sdk-identity",
+      updateExisting: true,
+      partitionKey: contextPartitionKeySchema.parse("radar:identity"),
+      document: {
+        id: "gmail:message-42",
+        content: "A contextual message",
+        contentType: "text" as const,
+        scope: "personal" as const,
+        sourceContext: {
+          version: 1 as const,
+          sourceKind: "email" as const,
+          purpose: "Find relevant requests",
+          accountId: "account-1",
+          relationship: "recipient",
+          currentMessageRole: "current" as const,
+          completeness: "complete" as const,
+        },
+      },
+    };
+    await database.insert(users).values({ id: request.userId });
+    await database
+      .insert(partitionMigrationState)
+      .values({ userId: request.userId, state: "migrated" });
+    const accepted = await saveMemory(request);
+    const externalId = sdkContextualSourceExternalId({
+      externalId: request.document.id,
+      accountId: request.document.sourceContext.accountId,
+      partitionKey: request.partitionKey,
+    });
+    const identity = {
+      userId: request.userId,
+      partitionKey: request.partitionKey,
+      identities: [{ type: "document" as const, externalId }],
+    };
+    const retired = await applySourceIdentityLifecycle(database, {
+      ...identity,
+      action: "retire",
+    });
+    expect(retired.sources).toEqual([
+      expect.objectContaining({ sourceId: accepted.sourceId, externalId }),
+    ]);
+    await expect(saveMemory(request)).rejects.toMatchObject({
+      code: "SOURCE_IDENTITY_RETIRED",
+    });
+    await applySourceIdentityLifecycle(database, {
+      ...identity,
+      action: "restore",
+    });
+    expect((await saveMemory(request)).sourceId).toBe(accepted.sourceId);
+  });
+
+  it("rejects a receipt if another document revision commits before acceptance", async () => {
+    const request = {
+      userId: "document-revision-race",
+      updateExisting: true,
+      document: {
+        id: "same-message",
+        content: "initial",
+        contentType: "text" as const,
+        scope: "personal" as const,
+        sourceContext: {
+          version: 1 as const,
+          sourceKind: "email" as const,
+          purpose: "Find requests",
+          accountId: "account",
+          relationship: "recipient",
+          currentMessageRole: "current" as const,
+          completeness: "complete" as const,
+        },
+      },
+    };
+    const initial = await saveMemory(request);
+    const replace = service.replaceInlineContent.bind(service);
+    const interleave = vi
+      .spyOn(service, "replaceInlineContent")
+      .mockImplementation(async (input) => {
+        const version = await replace(input);
+        if (input.content === "revision A") {
+          await saveMemory({
+            ...request,
+            document: { ...request.document, content: "revision B" },
+          });
+        }
+        return version;
+      });
+    try {
+      await expect(
+        saveMemory({
+          ...request,
+          document: { ...request.document, content: "revision A" },
+        }),
+      ).rejects.toMatchObject({ code: "SOURCE_VERSION_CONFLICT" });
+    } finally {
+      interleave.mockRestore();
+    }
+    const receipts = await database
+      .select()
+      .from(sourceIngestionOperations)
+      .where(eq(sourceIngestionOperations.sourceId, initial.sourceId));
+    expect(receipts.map((receipt) => receipt.contentHash)).toEqual(
+      expect.arrayContaining([null, expect.any(String)]),
+    );
+    expect(receipts).toHaveLength(2);
+    expect(await service.fetchText(request.userId, initial.sourceId)).toBe(
+      "revision B",
+    );
+  });
+
+  it.each(["queued", "processing"] as const)(
+    "keeps changed metadata recoverable during %s processing",
+    async (status) => {
+      const request = {
+        userId: `document-metadata-recovery-${status}`,
+        updateExisting: true,
+        document: {
+          id: "message",
+          content: "unchanged bytes",
+          contentType: "text" as const,
+          scope: "personal" as const,
+          sourceContext: {
+            version: 1 as const,
+            sourceKind: "email" as const,
+            purpose: "Find requests",
+            accountId: "account",
+            relationship: "recipient",
+            currentMessageRole: "current" as const,
+            completeness: "complete" as const,
+          },
+        },
+      };
+      const accepted = await saveMemory(request);
+      const input = {
+        db: database,
+        userId: request.userId,
+        sourceId: accepted.sourceId,
+        operationId: accepted.ingestionOperationId!,
+      };
+      if (status === "processing") await markSourceIngestionProcessing(input);
+      const replay = await saveMemory({
+        ...request,
+        document: {
+          ...request.document,
+          title: "Corrected title",
+        },
+      });
+      expect(replay.ingestionOperationId).toBe(input.operationId);
+      const receipt = await getSourceIngestionOperationById(input);
+      const [source] = await database
+        .select()
+        .from(sources)
+        .where(eq(sources.id, accepted.sourceId));
+      expect(receipt?.sourceVersion).toBe(source?.version);
+      const resumed = await markSourceIngestionProcessing(input);
+      expect(resumed).toMatchObject({ status: "processing", errorCode: null });
+      expect(
+        await completeSourceIngestionOperation({
+          ...input,
+          expectedSourceVersion: resumed.sourceVersion,
+        }),
+      ).toMatchObject({ status: "completed" });
+    },
+  );
+
+  it("rejects a stale identical-content replacement after its receipt was accepted", async () => {
+    const request = {
+      userId: "document-identical-revision-race",
+      updateExisting: true,
+      document: {
+        id: "message",
+        content: "initial",
+        contentType: "text" as const,
+        scope: "personal" as const,
+        sourceContext: {
+          version: 1 as const,
+          sourceKind: "email" as const,
+          purpose: "Find requests",
+          accountId: "account",
+          relationship: "recipient",
+          currentMessageRole: "current" as const,
+          completeness: "complete" as const,
+        },
+      },
+    };
+    const initial = await saveMemory(request);
+    const replace = service.replaceInlineContent.bind(service);
+    let interleaved = false;
+    const interleave = vi
+      .spyOn(service, "replaceInlineContent")
+      .mockImplementation(async (input) => {
+        if (!interleaved) {
+          interleaved = true;
+          await saveMemory({
+            ...request,
+            document: {
+              ...request.document,
+              content: "revision",
+              title: "Accepted title",
+            },
+          });
+        }
+        return replace(input);
+      });
+    try {
+      await expect(
+        saveMemory({
+          ...request,
+          document: {
+            ...request.document,
+            content: "revision",
+            title: "Stale title",
+          },
+        }),
+      ).rejects.toMatchObject({ code: "SOURCE_VERSION_CONFLICT" });
+    } finally {
+      interleave.mockRestore();
+    }
+    const replay = await saveMemory({
+      ...request,
+      document: {
+        ...request.document,
+        content: "revision",
+        title: "Retried title",
+      },
+    });
+    expect(replay.sourceId).toBe(initial.sourceId);
+    const input = {
+      db: database,
+      userId: request.userId,
+      sourceId: replay.sourceId,
+      operationId: replay.ingestionOperationId!,
+    };
+    const resumed = await markSourceIngestionProcessing(input);
+    expect(resumed).toMatchObject({ status: "processing", errorCode: null });
+    expect(
+      await completeSourceIngestionOperation({
+        ...input,
+        expectedSourceVersion: resumed.sourceVersion,
+      }),
+    ).toMatchObject({ status: "completed" });
+  });
+  it("keeps contextual source, child, receipt, and retirement identities through partition moves", async () => {
+    const userId = "contextual-partition-rekey";
+    const partitionA = contextPartitionKeySchema.parse("context:partition-a");
+    const partitionB = contextPartitionKeySchema.parse("context:partition-b");
+    const partitionC = contextPartitionKeySchema.parse("context:partition-c");
+    const sourceContext = {
+      version: 1 as const,
+      sourceKind: "email" as const,
+      purpose: "Read requests",
+      accountId: "account",
+      relationship: "recipient",
+      currentMessageRole: "current" as const,
+      completeness: "complete" as const,
+    };
+    const request = {
+      userId,
+      partitionKey: partitionA,
+      updateExisting: true,
+      document: {
+        id: "message",
+        content: "body",
+        contentType: "text" as const,
+        scope: "personal" as const,
+        sourceContext,
+      },
+    };
+    await setPartitionMigrationState(database, {
+      userId,
+      expectedState: "unmigrated",
+      expectedVersion: 0,
+      nextState: "migrating",
+    });
+    const accepted = await saveMemory(request);
+    const childRequest = {
+      ...request,
+      document: {
+        ...request.document,
+        id: "attachment",
+        sourceContext: {
+          ...sourceContext,
+          sourceKind: "email_attachment" as const,
+          parentSourceId: accepted.sourceId,
+          parentPartitionKey: partitionA,
+          currentMessageRole: "attachment" as const,
+        },
+      },
+    };
+    const child = await saveMemory(childRequest);
+    const [source] = await database
+      .select()
+      .from(sources)
+      .where(eq(sources.id, accepted.sourceId));
+    if (!source) throw new Error("Source missing");
+    const move = await reclassifySourcePartition(database, {
+      userId,
+      sourceId: source.id,
+      expectedPartitionKey: partitionA,
+      expectedSourceVersion: source.version,
+      targetPartitionKey: partitionB,
+      bindingGeneration: "context-move-b",
+    });
+    const replay = await saveMemory({ ...request, partitionKey: partitionB });
+    expect(replay).toMatchObject({
+      sourceId: accepted.sourceId,
+      ingestionOperationId: accepted.ingestionOperationId,
+    });
+    const childReplay = await saveMemory({
+      ...childRequest,
+      partitionKey: partitionB,
+      document: {
+        ...childRequest.document,
+        sourceContext: {
+          ...childRequest.document.sourceContext,
+          parentPartitionKey: partitionB,
+        },
+      },
+    });
+    expect(childReplay).toMatchObject({
+      sourceId: child.sourceId,
+      ingestionOperationId: child.ingestionOperationId,
+    });
+    const canonicalB = contextualSourceExternalId({
+      externalId: "message",
+      accountId: "account",
+      partitionKey: partitionB,
+    });
+    expect(
+      await database
+        .select({ externalId: sourceIngestionOperations.externalId })
+        .from(sourceIngestionOperations)
+        .where(eq(sourceIngestionOperations.sourceId, source.id)),
+    ).toEqual([{ externalId: canonicalB }]);
+    await applySourceIdentityLifecycle(database, {
+      userId,
+      partitionKey: partitionB,
+      identities: [{ type: "document", externalId: canonicalB }],
+      action: "retire",
+    });
+    await reclassifySourcePartition(database, {
+      userId,
+      sourceId: source.id,
+      expectedPartitionKey: partitionB,
+      expectedSourceVersion: move.sourceVersion,
+      targetPartitionKey: partitionC,
+      bindingGeneration: "context-move-c",
+    });
+    const canonicalC = contextualSourceExternalId({
+      externalId: "message",
+      accountId: "account",
+      partitionKey: partitionC,
+    });
+    expect(
+      await database
+        .select({
+          externalId: sourceIdentityTombstones.externalId,
+          partitionKey: sourceIdentityTombstones.partitionKey,
+        })
+        .from(sourceIdentityTombstones)
+        .where(eq(sourceIdentityTombstones.userId, userId)),
+    ).toEqual(
+      expect.arrayContaining([
+        { externalId: canonicalB, partitionKey: partitionB },
+        { externalId: canonicalC, partitionKey: partitionC },
+      ]),
+    );
+    await applySourceIdentityLifecycle(database, {
+      userId,
+      partitionKey: partitionC,
+      identities: [{ type: "document", externalId: canonicalC }],
+      action: "restore",
+    });
+    expect(
+      (await saveMemory({ ...request, partitionKey: partitionC })).sourceId,
+    ).toBe(source.id);
+    expect(
+      await database
+        .select({ id: sources.id })
+        .from(sources)
+        .where(eq(sources.userId, userId)),
+    ).toHaveLength(2);
+  });
+
+  it.each(["source", "retirement"] as const)(
+    "rolls back a contextual move into an occupied %s identity",
+    async (occupied) => {
+      const userId = `context-collision-${occupied}`;
+      const partitionA = contextPartitionKeySchema.parse("collision:a");
+      const partitionB = contextPartitionKeySchema.parse("collision:b");
+      const sourceContext = {
+        version: 1 as const,
+        sourceKind: "email" as const,
+        purpose: "Read requests",
+        accountId: "account",
+        relationship: "recipient",
+        currentMessageRole: "current" as const,
+        completeness: "complete" as const,
+      };
+      await setPartitionMigrationState(database, {
+        userId,
+        expectedState: "unmigrated",
+        expectedVersion: 0,
+        nextState: "migrating",
+      });
+      const request = {
+        userId,
+        partitionKey: partitionA,
+        updateExisting: true,
+        document: {
+          id: "message",
+          content: "body",
+          contentType: "text" as const,
+          scope: "personal" as const,
+          sourceContext,
+        },
+      };
+      const accepted = await saveMemory(request);
+      if (occupied === "source")
+        await saveMemory({ ...request, partitionKey: partitionB });
+      else
+        await applySourceIdentityLifecycle(database, {
+          userId,
+          partitionKey: partitionB,
+          identities: [
+            {
+              type: "document",
+              externalId: contextualSourceExternalId({
+                externalId: "message",
+                accountId: "account",
+                partitionKey: partitionB,
+              }),
+            },
+          ],
+          action: "retire",
+        });
+      const [source] = await database
+        .select()
+        .from(sources)
+        .where(eq(sources.id, accepted.sourceId));
+      if (!source) throw new Error("Source missing");
+      await expect(
+        reclassifySourcePartition(database, {
+          userId,
+          sourceId: source.id,
+          expectedPartitionKey: partitionA,
+          expectedSourceVersion: source.version,
+          targetPartitionKey: partitionB,
+          bindingGeneration: "conflict",
+        }),
+      ).rejects.toMatchObject({ code: "SOURCE_PARTITION_CONFLICT" });
+      expect(
+        await database.select().from(sources).where(eq(sources.id, source.id)),
+      ).toEqual([source]);
+      expect(
+        await getSourceIngestionOperationById({
+          db: database,
+          userId,
+          operationId: accepted.ingestionOperationId!,
+          partitionKey: partitionA,
+        }),
+      ).toMatchObject({ partitionKey: partitionA });
+    },
+  );
+  it("keeps the old retirement closed after moving and restoring the destination", async () => {
+    const userId = "retired-contextual-move";
+    const partitionA = contextPartitionKeySchema.parse("retired:a");
+    const partitionB = contextPartitionKeySchema.parse("retired:b");
+    const sourceContext = {
+      version: 1 as const,
+      sourceKind: "email" as const,
+      purpose: "Read requests",
+      accountId: "account",
+      relationship: "recipient",
+      currentMessageRole: "current" as const,
+      completeness: "complete" as const,
+    };
+    const request = {
+      userId,
+      partitionKey: partitionA,
+      updateExisting: true,
+      document: {
+        id: "message",
+        content: "retained content",
+        contentType: "text" as const,
+        scope: "personal" as const,
+        sourceContext,
+      },
+    };
+    await setPartitionMigrationState(database, {
+      userId,
+      expectedState: "unmigrated",
+      expectedVersion: 0,
+      nextState: "migrating",
+    });
+    const accepted = await saveMemory(request);
+    const canonicalA = contextualSourceExternalId({
+      externalId: "message",
+      accountId: "account",
+      partitionKey: partitionA,
+    });
+    const canonicalB = contextualSourceExternalId({
+      externalId: "message",
+      accountId: "account",
+      partitionKey: partitionB,
+    });
+    await applySourceIdentityLifecycle(database, {
+      userId,
+      partitionKey: partitionA,
+      identities: [{ type: "document", externalId: canonicalA }],
+      action: "retire",
+    });
+    const [source] = await database
+      .select()
+      .from(sources)
+      .where(eq(sources.id, accepted.sourceId));
+    if (!source) throw new Error("Source missing");
+    await reclassifySourcePartition(database, {
+      userId,
+      sourceId: source.id,
+      expectedPartitionKey: partitionA,
+      expectedSourceVersion: source.version,
+      targetPartitionKey: partitionB,
+      bindingGeneration: "retired-move",
+    });
+    await expect(saveMemory(request)).rejects.toMatchObject({
+      code: "SOURCE_IDENTITY_RETIRED",
+    });
+    const destinationRequest = { ...request, partitionKey: partitionB };
+    await expect(saveMemory(destinationRequest)).rejects.toMatchObject({
+      code: "SOURCE_IDENTITY_RETIRED",
+    });
+    await applySourceIdentityLifecycle(database, {
+      userId,
+      partitionKey: partitionB,
+      identities: [{ type: "document", externalId: canonicalB }],
+      action: "restore",
+    });
+    expect(await saveMemory(destinationRequest)).toMatchObject({
+      sourceId: accepted.sourceId,
+      ingestionOperationId: accepted.ingestionOperationId,
+    });
+    await expect(saveMemory(request)).rejects.toMatchObject({
+      code: "SOURCE_IDENTITY_RETIRED",
+    });
+    expect(
+      await database
+        .select({
+          externalId: sourceIdentityTombstones.externalId,
+          partitionKey: sourceIdentityTombstones.partitionKey,
+        })
+        .from(sourceIdentityTombstones)
+        .where(eq(sourceIdentityTombstones.userId, userId)),
+    ).toEqual([{ externalId: canonicalA, partitionKey: partitionA }]);
+    expect(
+      await database
+        .select({ id: sources.id })
+        .from(sources)
+        .where(eq(sources.userId, userId)),
+    ).toEqual([{ id: accepted.sourceId }]);
   });
 });

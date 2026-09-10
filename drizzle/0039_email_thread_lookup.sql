@@ -1,0 +1,1 @@
+CREATE INDEX "sources_email_thread_lookup_idx" ON "sources" USING btree ("user_id","partition_key",("metadata"->'sourceContext'->>'accountId'),("metadata"->'sourceContext'->>'threadId')) WHERE "sources"."deleted_at" IS NULL AND "sources"."metadata"->'sourceContext'->>'sourceKind' = 'email';

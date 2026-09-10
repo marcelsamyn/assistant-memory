@@ -74,5 +74,15 @@ export async function installPartitionCompatibilityFixture(
       CONSTRAINT "source_tombstones_read_model_cleanup_state_ck"
         CHECK ("read_model_cleanup_state" IN ('not_required', 'pending', 'completed'))
     );
+
+    CREATE TABLE IF NOT EXISTS "source_identity_tombstones" (
+      "user_id" text NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
+      "type" varchar(50) NOT NULL,
+      "external_id" text NOT NULL,
+      "partition_key" varchar(200),
+      "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+      CONSTRAINT "source_identity_tombstones_user_id_type_external_id_pk"
+        PRIMARY KEY ("user_id", "type", "external_id")
+    );
   `);
 }

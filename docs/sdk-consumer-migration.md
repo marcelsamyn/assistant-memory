@@ -10,6 +10,22 @@ has the _what to change_.
 
 ---
 
+## 2.5.0 — contextual ingestion and exact processing receipts
+
+This is a general Memory contract, available to HTTP, SDK, and MCP clients. Existing document/file calls can omit `sourceContext`; conversation and transcript input formats are unchanged. There is no mandatory ingestion rewrite.
+
+- Optionally supply known source provenance on documents and files: origin namespace, source kind, authorship/recipient relationship, chronology, linked sources, and completeness. Keep content in the document/file payload. Context cannot grant permissions or prove acceptance of a task.
+- Retain `sourceId` and `ingestionOperationId` from acceptance. Use `getSourceProcessing` for exact revision completion, and `retrySourceProcessing` for a failed retained operation. Source metadata versions are not processing identities.
+- A revision includes content and meaningful extraction inputs. Corrected context can re-extract unchanged bytes and remove stale inferred requests while preserving explicit confirmations/dismissals. Display-only updates reuse processing. Retrying a known failed initial upload keeps the same file ID; an unknown upload outcome stays blocked for investigation.
+- Use a stable raw document/file ID for revisions. Contextual ingestion namespaces it on the server; identity retirement uses the exported `contextualSourceExternalId` helper. Partition reclassification preserves the logical source and updates its canonical identity. After a move, use the destination partition for receipt reads and ingestion.
+- MCP `save_memory` now honors `updateExisting`. Its text content block contains the JSON acceptance response, replacing the literal `Memory saved`; update clients that parse that old string. New MCP tools are `get_source_processing`, `retry_source_processing`, and `get_source`.
+- Preserve complete source material. Do not pre-extract tasks in client code or label ordinary notes as email. Email extraction currently creates tentative follow-ups and supported lifecycle evidence; it does not convert arbitrary correspondence into personal facts, aliases, or measurements. Read source content when extracted views are insufficient.
+- Deploy the server and additive migrations before relying on the new methods. SDK publication alone does not add backend or MCP capabilities.
+
+See [Ingestion](sdk/ingestion.md) for examples, transport support, and failure handling.
+
+---
+
 ## SDK addition — lossless lifecycle change feed
 
 - **NEW REST:** `POST /query/change-feed` and **NEW SDK methods**

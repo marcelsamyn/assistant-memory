@@ -1,3 +1,4 @@
+import { registerMemoryIngestionTools } from "./ingestion-tools";
 import { SSEServerTransport } from "./sse";
 import {
   BOOTSTRAP_MEMORY_DESCRIPTION,
@@ -39,7 +40,6 @@ import { getNodeCard } from "~/lib/context/node-card";
 import { nodeCardSchema } from "~/lib/context/node-card-types";
 import { searchMemory, searchReference } from "~/lib/context/search-cards";
 import { contextBundleSchema } from "~/lib/context/types";
-import { saveMemory } from "~/lib/ingestion/save-document";
 import { listMetrics } from "~/lib/metrics/list";
 import { recordMetricObservations } from "~/lib/metrics/observations";
 import { getMetricSeries } from "~/lib/metrics/series";
@@ -80,7 +80,6 @@ import {
   getCommitmentRequestSchema,
   getCommitmentResponseSchema,
 } from "~/lib/schemas/get-commitment";
-import { ingestDocumentRequestSchema } from "~/lib/schemas/ingest-document-request";
 import {
   listCommitmentsRequestSchema,
   listCommitmentsResponseSchema,
@@ -158,22 +157,7 @@ server.resource(
   }),
 );
 
-// Expose ingest document functionality as "save_memory"
-server.tool(
-  "save_memory",
-  ingestDocumentRequestSchema.shape,
-  async ({ userId, partitionKey, document }) => {
-    await saveMemory({
-      userId,
-      ...(partitionKey !== undefined ? { partitionKey } : {}),
-      document,
-      updateExisting: false,
-    });
-    return {
-      content: [{ type: "text", text: "Memory saved" }],
-    };
-  },
-);
+registerMemoryIngestionTools(server);
 
 // Card-shaped startup bundle. Emits the design's `ContextBundle`.
 server.tool(

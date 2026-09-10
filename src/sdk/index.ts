@@ -1,4 +1,5 @@
 export * from "./memory-client.js";
+export { contextualSourceExternalId } from "../lib/ingestion/source-identity.js";
 export * from "../lib/schemas/context.js";
 export * from "../lib/schemas/context-search.js";
 export * from "../lib/schemas/digest.js";

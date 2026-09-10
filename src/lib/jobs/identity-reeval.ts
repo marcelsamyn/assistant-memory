@@ -122,12 +122,12 @@ export async function runIdentityReeval(
 
   const resolution = await resolveIdentity({
     userId,
-    ...(partitionKey !== undefined ? { partitionKey } : {}),
     candidate: {
       proposedLabel: nodeRow.label ?? nodeRow.normalizedLabel,
       normalizedLabel: nodeRow.normalizedLabel,
       nodeType: nodeRow.nodeType,
       scope: nodeRow.scope,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
       embedding,
       supportingClaimsForCompat,
       // The candidate node already lives in the graph, so every signal would

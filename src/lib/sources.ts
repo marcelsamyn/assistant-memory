@@ -7,18 +7,21 @@ import db, { type DrizzleDB } from "~/db";
 import {
   sourceBlobUploads,
   sourceIngestionOperations,
-  sourceLinks,
   sourceTombstones,
   sources,
   SourcesInsert,
 } from "~/db/schema";
+import { invalidateSourceExtractionRevision } from "~/lib/ingestion/source-revision";
 import { logEvent } from "~/lib/observability/log";
 import {
   PartitionAccessError,
+  assertSourceIdentitiesActive,
   assertLiveSourceParents,
+  lockSourceIdentityGates,
   lockSourceParentAttachmentGates,
   preparePartitionWrite,
   type SourceWriteFence,
+  type SourceIdentity,
   withSourceWriteFence,
 } from "~/lib/partition-access";
 import type { ContextPartitionKey } from "~/lib/schemas/partition";
@@ -34,6 +37,9 @@ import { env } from "~/utils/env";
 export const sourceMetadataSchema = z
   .object({
     rawContent: z.string().optional(),
+    convertedToMarkdown: z.literal(true).optional(),
+    /** Internal identity of the bytes and context accepted for extraction. */
+    ingestionRevisionHash: z.string().optional(),
     /** Reference attribution surfaced via NodeCard.reference for reference-scope sources. */
     author: z.string().min(1).optional(),
     title: z.string().min(1).optional(),
@@ -49,6 +55,10 @@ export const sourceMetadataSchema = z
   })
   .catchall(z.unknown());
 type Metadata = z.infer<typeof sourceMetadataSchema>;
+type BlobUploadReservation = {
+  previous: typeof sourceBlobUploads.$inferSelect | undefined;
+  updatedAt: Date;
+};
 
 function isTextContentType(contentType: string | undefined): boolean {
   return contentType?.startsWith("text/") ?? false;
@@ -232,6 +242,13 @@ export class SourceService {
         input,
       );
     });
+    const sourceIdentities = inputs.map(
+      (input): SourceIdentity => ({
+        userId: input.userId,
+        sourceType: input.sourceType,
+        externalId: input.externalId,
+      }),
+    );
 
     const insertSourceRows = (database: DrizzleDB) =>
       database
@@ -260,6 +277,10 @@ export class SourceService {
       gatesAlreadyHeld = false,
     ) => {
       if (!gatesAlreadyHeld) {
+        await lockSourceIdentityGates(database, sourceIdentities);
+      }
+      await assertSourceIdentitiesActive(database, sourceIdentities);
+      if (!gatesAlreadyHeld) {
         await lockSourceParentAttachmentGates(database, parentAttachments);
       }
       await assertLiveSourceParents(database, parentAttachments);
@@ -271,26 +292,29 @@ export class SourceService {
           {
             userId: rootWriteFence.userId,
             sources: [rootWriteFence.source],
+            sourceIdentities,
             beforeSourceLocks: (tx) =>
               lockSourceParentAttachmentGates(tx, parentAttachments),
           },
           (tx) => insertWithParentAttachmentFence(tx, true),
         )
-      : parentAttachments.length > 0
-        ? await this.db.transaction((tx) => insertWithParentAttachmentFence(tx))
-        : await insertSourceRows(this.db);
+      : await this.db.transaction((tx) => insertWithParentAttachmentFence(tx));
 
-    const writePayload = <T>(write: (database: DrizzleDB) => Promise<T>) =>
-      rootWriteFence
-        ? withSourceWriteFence(
-            this.db,
-            {
-              userId: rootWriteFence.userId,
-              sources: [rootWriteFence.source],
-            },
-            (tx) => write(tx),
-          )
-        : write(this.db);
+    const writePayload = <T>(
+      row: (typeof inserted)[number],
+      write: (database: DrizzleDB) => Promise<T>,
+    ) =>
+      withSourceWriteFence(
+        this.db,
+        {
+          userId: row.userId,
+          sources: [
+            { sourceId: row.id },
+            ...(rootWriteFence ? [rootWriteFence.source] : []),
+          ],
+        },
+        (tx) => write(tx),
+      );
 
     // 2. Handle payloads
     await this.ensureBucket();
@@ -318,7 +342,7 @@ export class SourceService {
           rawContent: input.content ?? input.fileBuffer!.toString("utf-8"),
         };
         try {
-          await writePayload((database) =>
+          await writePayload(row, (database) =>
             database
               .update(sources)
               .set({ metadata: updatedMeta, status: "completed" })
@@ -353,7 +377,7 @@ export class SourceService {
       // no payload
       else {
         try {
-          await writePayload((database) =>
+          await writePayload(row, (database) =>
             database
               .update(sources)
               .set({ status: "completed" as const })
@@ -375,6 +399,7 @@ export class SourceService {
     sourceId: TypeId<"source">;
     partitionKey: ContextPartitionKey | undefined;
     content: string;
+    contentHash?: string;
     metadata: Metadata;
     parentId?: TypeId<"source">;
     scope: Scope;
@@ -404,6 +429,25 @@ export class SourceService {
       },
       async (tx) => {
         await assertLiveSourceParents(tx, parentAttachments);
+        if (input.contentHash !== undefined) {
+          const [accepted] = await tx
+            .select({ operationId: sourceIngestionOperations.operationId })
+            .from(sourceIngestionOperations)
+            .where(
+              and(
+                eq(sourceIngestionOperations.userId, input.userId),
+                eq(sourceIngestionOperations.sourceId, input.sourceId),
+                eq(sourceIngestionOperations.contentHash, input.contentHash),
+              ),
+            )
+            .limit(1);
+          if (accepted) {
+            throw new PartitionAccessError(
+              "SOURCE_VERSION_CONFLICT",
+              "Source revision was accepted concurrently; retry to reuse its receipt",
+            );
+          }
+        }
         const [updated] = await tx
           .update(sources)
           .set({
@@ -427,9 +471,11 @@ export class SourceService {
             `Source ${input.sourceId} disappeared while updating content`,
           );
         if (input.replaceDerivedLinks) {
-          await tx
-            .delete(sourceLinks)
-            .where(eq(sourceLinks.sourceId, input.sourceId));
+          await invalidateSourceExtractionRevision(
+            tx,
+            input.userId,
+            input.sourceId,
+          );
         }
         return updated.version;
       },
@@ -444,7 +490,7 @@ export class SourceService {
     metadata: Metadata;
     parentId?: TypeId<"source">;
     scope: Scope;
-    timestamp: Date;
+    timestamp?: Date;
   }): Promise<number> {
     const parentAttachments = input.parentId
       ? [
@@ -469,7 +515,7 @@ export class SourceService {
       async (tx) => {
         await assertLiveSourceParents(tx, parentAttachments);
         const [current] = await tx
-          .select({ metadata: sources.metadata })
+          .select({ metadata: sources.metadata, version: sources.version })
           .from(sources)
           .where(
             and(
@@ -486,18 +532,29 @@ export class SourceService {
         const currentMetadata = sourceMetadataSchema.parse(
           current.metadata ?? {},
         );
+        if (
+          input.metadata.ingestionRevisionHash !== undefined &&
+          input.metadata.ingestionRevisionHash !==
+            currentMetadata.ingestionRevisionHash
+        ) {
+          throw new PartitionAccessError(
+            "SOURCE_VERSION_CONFLICT",
+            "Source revision changed before its metadata was updated",
+            current.version,
+          );
+        }
         const [updated] = await tx
           .update(sources)
           .set({
             metadata: {
-              ...(currentMetadata.rawContent !== undefined
-                ? { rawContent: currentMetadata.rawContent }
-                : {}),
+              ...currentMetadata,
               ...input.metadata,
             },
             parentSource: input.parentId ?? null,
             scope: input.scope,
-            lastIngestedAt: input.timestamp,
+            ...(input.timestamp !== undefined
+              ? { lastIngestedAt: input.timestamp }
+              : {}),
           })
           .where(
             and(
@@ -510,6 +567,22 @@ export class SourceService {
           throw new Error(
             `Source ${input.sourceId} disappeared while updating metadata`,
           );
+        }
+        if (updated.version !== current.version) {
+          await tx
+            .update(sourceIngestionOperations)
+            .set({ sourceVersion: updated.version, updatedAt: new Date() })
+            .where(
+              and(
+                eq(sourceIngestionOperations.userId, input.userId),
+                eq(sourceIngestionOperations.sourceId, input.sourceId),
+                eq(sourceIngestionOperations.sourceVersion, current.version),
+                inArray(sourceIngestionOperations.status, [
+                  "queued",
+                  "processing",
+                ]),
+              ),
+            );
         }
         return updated.version;
       },
@@ -547,16 +620,40 @@ export class SourceService {
         `Source ${input.sourceId} disappeared while updating content`,
       );
     }
-    let uploadReserved = false;
+    if (
+      source.partitionKey !== (input.partitionKey ?? null) ||
+      source.externalId !== input.externalId
+    ) {
+      throw new PartitionAccessError(
+        "PARTITION_UNAUTHORIZED",
+        "Source no longer matches the requested file identity and partition",
+      );
+    }
+    const writeFence = {
+      userId: input.userId,
+      source: {
+        sourceId: input.sourceId,
+        expectedSourceVersion: source.version,
+      },
+    };
+    let reservation: BlobUploadReservation | undefined;
+    let putStarted = false;
     try {
-      await this.reserveSourceBlobUpload(source, undefined, true);
-      uploadReserved = true;
-      await this.beginSourceBlobUpload(source);
+      reservation = await this.reserveSourceBlobUpload(
+        source,
+        writeFence,
+        true,
+        input.contentHash,
+      );
+      reservation.updatedAt = await this.beginSourceBlobUpload(
+        source,
+        writeFence,
+      );
       await this.putSourceBlobWithFence(
         source,
         input.buffer,
         input.contentType,
-        undefined,
+        writeFence,
         {
           metadata: input.metadata,
           parentSource: input.parentId ?? null,
@@ -569,9 +666,27 @@ export class SourceService {
             contentHash: input.contentHash,
           },
         },
+        {
+          updatedAt: reservation.updatedAt,
+          onPutStarted: () => {
+            putStarted = true;
+          },
+        },
       );
     } catch (error: unknown) {
-      if (uploadReserved && !(error instanceof SourceBlobUploadTimeoutError)) {
+      if (
+        reservation?.previous?.state === "uploaded" &&
+        !(error instanceof SourceBlobUploadTimeoutError)
+      ) {
+        // A failed replacement must not schedule deletion of the stable key:
+        // it still contains the last committed source revision.
+        await this.cancelSourceBlobUploadBeforePut(source, reservation);
+      } else if (reservation && !putStarted) {
+        await this.cancelSourceBlobUploadBeforePut(source, reservation);
+      } else if (
+        putStarted &&
+        !(error instanceof SourceBlobUploadTimeoutError)
+      ) {
         await this.scheduleFailedSourceBlobUploadCleanup(source);
       }
       throw error;
@@ -597,13 +712,14 @@ export class SourceService {
     source: SourcesInsert & { id: TypeId<"source"> },
     rootWriteFence?: { userId: string; source: SourceWriteFence },
     allowReplacement = false,
-  ): Promise<void> {
-    await withSourceWriteFence(
+    contentHash?: string,
+  ): Promise<BlobUploadReservation> {
+    return withSourceWriteFence(
       this.db,
       this.sourceBlobUploadFences(source, rootWriteFence),
       async (tx) => {
         const [existing] = await tx
-          .select({ state: sourceBlobUploads.state })
+          .select()
           .from(sourceBlobUploads)
           .where(
             and(
@@ -613,20 +729,54 @@ export class SourceService {
           )
           .for("update")
           .limit(1);
-        if (existing && !(allowReplacement && existing.state === "uploaded")) {
+        if (
+          existing &&
+          !(
+            allowReplacement &&
+            ["uploaded", "cleanup_pending", "cleanup_completed"].includes(
+              existing.state,
+            )
+          )
+        ) {
           throw new Error(
             `A blob upload reservation already exists for source ${source.id}`,
           );
         }
+        if (contentHash !== undefined) {
+          const [accepted] = await tx
+            .select({ operationId: sourceIngestionOperations.operationId })
+            .from(sourceIngestionOperations)
+            .where(
+              and(
+                eq(sourceIngestionOperations.userId, source.userId),
+                eq(sourceIngestionOperations.sourceId, source.id),
+                eq(sourceIngestionOperations.contentHash, contentHash),
+              ),
+            )
+            .limit(1);
+          if (accepted) {
+            throw new PartitionAccessError(
+              "SOURCE_VERSION_CONFLICT",
+              "Source revision was accepted concurrently; retry to reuse its receipt",
+            );
+          }
+        }
+
+        const updatedAt = new Date();
         if (existing) {
           await tx
             .update(sourceBlobUploads)
-            .set({ state: "reserved", updatedAt: new Date(), uploadedAt: null })
+            .set({
+              state: "reserved",
+              updatedAt,
+              uploadedAt: null,
+              cleanupCompletedAt: null,
+            })
             .where(
               and(
                 eq(sourceBlobUploads.userId, source.userId),
                 eq(sourceBlobUploads.sourceId, source.id),
-                eq(sourceBlobUploads.state, "uploaded"),
+                eq(sourceBlobUploads.state, existing.state),
               ),
             );
         } else {
@@ -635,8 +785,10 @@ export class SourceService {
             sourceId: source.id,
             objectKey: sourceBlobObjectKey(source.userId, source.id),
             state: "reserved",
+            updatedAt,
           });
         }
+        return { previous: existing, updatedAt };
       },
     );
   }
@@ -645,8 +797,8 @@ export class SourceService {
   private async beginSourceBlobUpload(
     source: SourcesInsert & { id: TypeId<"source"> },
     rootWriteFence?: { userId: string; source: SourceWriteFence },
-  ): Promise<void> {
-    await withSourceWriteFence(
+  ): Promise<Date> {
+    return withSourceWriteFence(
       this.db,
       this.sourceBlobUploadFences(source, rootWriteFence),
       async (tx) => {
@@ -667,9 +819,10 @@ export class SourceService {
             "Source blob upload was cancelled before bytes were sent",
           );
         }
+        const updatedAt = new Date();
         await tx
           .update(sourceBlobUploads)
-          .set({ state: "uploading", updatedAt: new Date() })
+          .set({ state: "uploading", updatedAt })
           .where(
             and(
               eq(sourceBlobUploads.userId, source.userId),
@@ -677,6 +830,7 @@ export class SourceService {
               eq(sourceBlobUploads.state, "reserved"),
             ),
           );
+        return updatedAt;
       },
     );
   }
@@ -700,6 +854,7 @@ export class SourceService {
       replaceDerivedLinks: boolean;
       operation?: { externalId: string; contentHash: string };
     },
+    reservation?: { updatedAt: Date; onPutStarted: () => void },
   ): Promise<void> {
     // Resolve the bucket region and sign before taking database row locks.
     const signedUrl = await this.minioClient.presignedPutObject(
@@ -709,6 +864,12 @@ export class SourceService {
     );
     const outcome = await this.db.transaction(async (tx) => {
       const fences = this.sourceBlobUploadFences(source, rootWriteFence);
+      const sourceIdentity = {
+        userId: source.userId,
+        sourceType: source.type,
+        externalId: source.externalId,
+      } satisfies SourceIdentity;
+      await lockSourceIdentityGates(tx, [sourceIdentity]);
       const parentAttachments = revision?.parentSource
         ? [
             {
@@ -730,6 +891,9 @@ export class SourceService {
           id: sources.id,
           version: sources.version,
           deletedAt: sources.deletedAt,
+          partitionKey: sources.partitionKey,
+          type: sources.type,
+          externalId: sources.externalId,
         })
         .from(sources)
         .where(
@@ -749,6 +913,22 @@ export class SourceService {
           "Source blob upload was cancelled before bytes were sent",
         );
       }
+      const lockedSource = lockedSources.find(
+        (locked) => locked.id === source.id,
+      );
+      if (
+        !lockedSource ||
+        lockedSource.partitionKey !== (source.partitionKey ?? null) ||
+        lockedSource.type !== source.type ||
+        lockedSource.externalId !== source.externalId
+      ) {
+        throw new PartitionAccessError(
+          "SOURCE_VERSION_CONFLICT",
+          "Source identity or partition changed before bytes were sent",
+          lockedSource?.version,
+        );
+      }
+      await assertSourceIdentitiesActive(tx, [sourceIdentity]);
       await assertLiveSourceParents(tx, parentAttachments);
       const tombstones = await tx
         .select({ sourceId: sourceTombstones.sourceId })
@@ -790,7 +970,10 @@ export class SourceService {
         }
       }
       const [upload] = await tx
-        .select({ state: sourceBlobUploads.state })
+        .select({
+          state: sourceBlobUploads.state,
+          updatedAt: sourceBlobUploads.updatedAt,
+        })
         .from(sourceBlobUploads)
         .where(
           and(
@@ -800,7 +983,12 @@ export class SourceService {
         )
         .for("update")
         .limit(1);
-      if (!upload || upload.state !== "uploading") {
+      if (
+        !upload ||
+        upload.state !== "uploading" ||
+        (reservation &&
+          upload.updatedAt.getTime() !== reservation.updatedAt.getTime())
+      ) {
         throw new PartitionAccessError(
           "SOURCE_TOMBSTONED",
           "Source blob upload was cancelled before bytes were sent",
@@ -812,6 +1000,7 @@ export class SourceService {
         objectKey: sourceBlobObjectKey(source.userId, source.id),
       });
       try {
+        reservation?.onPutStarted();
         await putSourceBlob(signedUrl, fileBuffer, this.blobUploadTimeoutMs);
       } catch (error: unknown) {
         if (!(error instanceof SourceBlobUploadTimeoutError)) throw error;
@@ -860,7 +1049,7 @@ export class SourceService {
         );
       }
       if (revision?.replaceDerivedLinks) {
-        await tx.delete(sourceLinks).where(eq(sourceLinks.sourceId, source.id));
+        await invalidateSourceExtractionRevision(tx, source.userId, source.id);
       }
       if (revision?.operation) {
         await tx.insert(sourceIngestionOperations).values({
@@ -893,6 +1082,43 @@ export class SourceService {
       return undefined;
     });
     if (outcome) throw outcome;
+  }
+
+  /** No PUT started: restore only this reservation without deleting prior bytes. */
+  private async cancelSourceBlobUploadBeforePut(
+    source: SourcesInsert & { id: TypeId<"source"> },
+    reservation: BlobUploadReservation,
+  ): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const [current] = await tx
+        .select({ deletedAt: sources.deletedAt })
+        .from(sources)
+        .where(
+          and(eq(sources.userId, source.userId), eq(sources.id, source.id)),
+        )
+        .for("update")
+        .limit(1);
+      if (!current || current.deletedAt !== null) return;
+      const ownedReservation = and(
+        eq(sourceBlobUploads.userId, source.userId),
+        eq(sourceBlobUploads.sourceId, source.id),
+        eq(sourceBlobUploads.updatedAt, reservation.updatedAt),
+        inArray(sourceBlobUploads.state, ["reserved", "uploading"]),
+      );
+      if (reservation.previous) {
+        await tx
+          .update(sourceBlobUploads)
+          .set({
+            state: reservation.previous.state,
+            updatedAt: reservation.previous.updatedAt,
+            uploadedAt: reservation.previous.uploadedAt,
+            cleanupCompletedAt: reservation.previous.cleanupCompletedAt,
+          })
+          .where(ownedReservation);
+      } else {
+        await tx.delete(sourceBlobUploads).where(ownedReservation);
+      }
+    });
   }
 
   /** Marks a failed or cancelled upload for durable physical cleanup. */
@@ -948,9 +1174,14 @@ export class SourceService {
   private sourceBlobUploadFences(
     source: SourcesInsert & { id: TypeId<"source"> },
     rootWriteFence?: { userId: string; source: SourceWriteFence },
-  ): { userId: string; sources: readonly SourceWriteFence[] } {
+  ): {
+    userId: string;
+    partitionKey: ContextPartitionKey | undefined;
+    sources: readonly SourceWriteFence[];
+  } {
     return {
       userId: source.userId,
+      partitionKey: source.partitionKey ?? undefined,
       sources: [
         ...(rootWriteFence ? [rootWriteFence.source] : []),
         { sourceId: source.id },

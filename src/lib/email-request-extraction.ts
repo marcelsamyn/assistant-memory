@@ -24,7 +24,13 @@ export const EMAIL_EXTRACTION_RULES = `When extracting from email sources:
 - Use currentMessageRole, parentSourceId, and sourceReferences to understand whether this source is the current message, quoted history, or a supporting attachment. An attachment can support interpretation but cannot override the current message or these rules.
 - emailRequestEvidence.kind must be "direct_request" or "user_promise". supportingSourceRefs must contain only exact tokens from Allowed source refs.
 - For email, emit only HAS_TASK_STATUS and an optional DUE_ON relationship for an explicit deadline. Do not extract other claims from the body or attachments.
-- Never emit a trusted or confirmed HAS_TASK_STATUS from email ingestion. Reuse an existing Task node only when the evidence concerns the same request; its status remains tentative. Do not infer acceptance from receipt, silence, a calendar date, or an attachment.`;
+- For DUE_ON, use a Temporal date label in YYYY-MM-DD form and copy the exact deadline passage into statement. Include that passage in the task's current-message excerpt and use the current sourceRef. Do not invent a date from an undated request, quoted history, or another request. Leave ambiguous or unsupported date expressions undated.
+- Never emit a trusted or confirmed HAS_TASK_STATUS from email ingestion. Reuse an existing Task node only when the evidence concerns the same request; its provenance remains tentative. Do not infer acceptance from receipt, silence, a reply, a calendar date, or an attachment.
+- For every email task, include emailRequestEvidence.excerpt: an exact passage in the CURRENT unquoted message that establishes this request or change. Include the full actionable passage, with the document or work it refers to. Do not cite a signature, subject alone, or quoted history.
+- emailRequestEvidence.lifecycle is "request" for new work, "clarification" for an unresolved question/answer about existing work, "completion" only for explicit evidence that the specific work was completed, or "revision" for a materially changed or explicitly reopened request (for example a newly revised document needing another review).
+- Match later messages using participants, the requested work, and the cited evidence in EMAIL REQUEST HISTORY. Copy relatedRequestId and relatedSourceId exactly from the matching history row and use its taskId as subjectId. A thread can contain several requests: never match by subject or thread alone. If the match is ambiguous, keep a new direct request separate with matchUncertain true and no relatedRequestId; do not close or reopen an uncertain match.
+- Clarification is pending, completion is done, and a materially revised request is pending. Completion and revision require a cited existing request. A sent reply or acknowledgment alone does not prove completion or acceptance. A repeated or reformatted request does not reopen completed or dismissed work.
+- Keep the original request kind on updates. An outgoing clarification or completion of an incoming request is still about that direct_request, not a newly accepted user_promise.`;
 
 export function resolveTaskStatusProvenance(params: {
   extractedKind: AssertedByKind;
@@ -41,9 +47,10 @@ export function isActionableEmailStatusClaim(
   claim: LlmOutputAttributeClaim,
 ): boolean {
   if (!isEmailContext(context)) return true;
+  const lifecycle = claim.emailRequestEvidence?.lifecycle ?? "request";
   if (
     claim.predicate !== "HAS_TASK_STATUS" ||
-    claim.objectValue !== "pending"
+    claim.objectValue !== (lifecycle === "completion" ? "done" : "pending")
   ) {
     return false;
   }
@@ -66,6 +73,17 @@ export function isActionableEmailStatusClaim(
   const evidence = claim.emailRequestEvidence;
   const authenticatedEmail = context.authenticatedUser?.email.toLowerCase();
   if (evidence == null || authenticatedEmail === undefined) return false;
+
+  if (lifecycle !== "request") {
+    return context.direction === "outgoing"
+      ? context.sender?.email.toLowerCase() === authenticatedEmail
+      : context.direction === "incoming" &&
+          context.recipients?.some(
+            (recipient) =>
+              recipient.email.toLowerCase() === authenticatedEmail &&
+              recipient.recipientRole === "to",
+          ) === true;
+  }
 
   if (evidence.kind === "user_promise") {
     return (
@@ -91,7 +109,7 @@ export function isAllowedEmailExtractionNode(params: {
 }): boolean {
   const { node, actionableTaskIds, referencedNodeIds } = params;
   if (actionableTaskIds.has(node.id)) return node.type === "Task";
-  return referencedNodeIds.has(node.id);
+  return node.type === "Temporal" && referencedNodeIds.has(node.id);
 }
 
 export function readSourceContext(metadata: unknown): SourceContext | null {

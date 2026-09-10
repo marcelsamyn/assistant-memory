@@ -10,8 +10,12 @@ import {
   partitionMigrationState,
   rollupState,
   sourceLinks,
+  sourceIngestionOperations,
+  sourceIdentityTombstones,
   sources,
+  users,
 } from "~/db/schema";
+import { lockSourceIdentityGates } from "~/lib/partition-access";
 import { PartitionReclassificationError } from "~/lib/partition-errors";
 import type {
   PartitionMigrationState,
@@ -55,6 +59,10 @@ export async function setPartitionMigrationState(
   request: SetPartitionMigrationStateRequest,
 ): Promise<SetPartitionMigrationStateResponse> {
   return db.transaction(async (tx) => {
+    await tx
+      .insert(users)
+      .values({ id: request.userId })
+      .onConflictDoNothing({ target: users.id });
     const current = await loadMigrationState(tx, request.userId);
     if (
       current.state !== request.expectedState ||
@@ -134,6 +142,20 @@ async function finishLegacyMigration(
       "An unassigned partition is required to finish migration",
     );
   }
+  const legacyRetirements = await tx
+    .select({
+      userId: sourceIdentityTombstones.userId,
+      sourceType: sourceIdentityTombstones.type,
+      externalId: sourceIdentityTombstones.externalId,
+    })
+    .from(sourceIdentityTombstones)
+    .where(
+      and(
+        eq(sourceIdentityTombstones.userId, request.userId),
+        isNull(sourceIdentityTombstones.partitionKey),
+      ),
+    );
+  await lockSourceIdentityGates(tx, legacyRetirements);
   await tx
     .insert(memoryPartitions)
     .values({
@@ -233,4 +255,30 @@ async function finishLegacyMigration(
       "Partition migration cannot finish while legacy evidence remains unclassified",
     );
   }
+
+  // Receipts survive source erasure. Assign retained receipts with no source
+  // to the explicit unassigned partition so they remain readable after cutover.
+  await tx
+    .update(sourceIngestionOperations)
+    .set({
+      partitionKey: sql`COALESCE((SELECT s.partition_key FROM ${sources} s WHERE s.user_id = ${sourceIngestionOperations.userId} AND s.id = ${sourceIngestionOperations.sourceId}), ${unassignedPartitionKey})`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(sourceIngestionOperations.userId, request.userId),
+        isNull(sourceIngestionOperations.partitionKey),
+      ),
+    );
+  await tx
+    .update(sourceIdentityTombstones)
+    .set({
+      partitionKey: sql`COALESCE((SELECT s.partition_key FROM ${sources} s WHERE s.user_id = ${sourceIdentityTombstones.userId} AND s.type = ${sourceIdentityTombstones.type} AND s.external_id = ${sourceIdentityTombstones.externalId}), ${unassignedPartitionKey})`,
+    })
+    .where(
+      and(
+        eq(sourceIdentityTombstones.userId, request.userId),
+        isNull(sourceIdentityTombstones.partitionKey),
+      ),
+    );
 }

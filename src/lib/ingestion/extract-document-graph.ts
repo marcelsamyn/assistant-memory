@@ -28,6 +28,7 @@ interface ExtractDocumentGraphParams {
   /** Optional bibliographic metadata surfaced to the LLM as a preamble. */
   title?: string;
   author?: string;
+  emailContent?: boolean;
 }
 
 export async function extractDocumentGraph(
@@ -44,6 +45,7 @@ export async function extractDocumentGraph(
     logLabel,
     title,
     author,
+    emailContent,
   } = params;
 
   const linkedNodeId = await ensureSourceNode({
@@ -74,5 +76,6 @@ export async function extractDocumentGraph(
       ...(author !== undefined && { author }),
     },
     ...(userIdentityNote ? { userIdentityNote } : {}),
+    ...(emailContent ? { emailContent } : {}),
   });
 }

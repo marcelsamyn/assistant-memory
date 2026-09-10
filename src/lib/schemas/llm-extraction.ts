@@ -13,6 +13,13 @@ import {
 const llmEmailRequestEvidenceSchema = z.object({
   kind: z.enum(["direct_request", "user_promise"]),
   supportingSourceRefs: z.array(z.string().min(1)).min(1).max(100),
+  lifecycle: z
+    .enum(["request", "clarification", "completion", "revision"])
+    .nullish(),
+  excerpt: z.string().min(1).max(4_000).nullish(),
+  relatedRequestId: z.string().min(1).max(200).nullish(),
+  relatedSourceId: z.string().min(1).max(200).nullish(),
+  matchUncertain: z.boolean().nullish(),
 });
 
 const llmNodeSchema = z.object({

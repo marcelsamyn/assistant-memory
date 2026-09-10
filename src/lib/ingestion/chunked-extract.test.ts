@@ -107,6 +107,29 @@ describe("runChunkedExtraction", () => {
     expect(calls[2]?.replaceFlag).toBe(false);
   });
 
+  it("removes forwarded history before email content is chunked", async () => {
+    vi.doMock("~/utils/env", () => ({
+      env: { INGEST_CHUNK_MAX_CHARS: 10_000, INGEST_DEBUG_DIR: undefined },
+    }));
+    const calls: string[] = [];
+    vi.doMock("~/lib/extract-graph", () => ({
+      extractGraph: vi.fn(async (params: { content: string }) => {
+        calls.push(params.content);
+        return { newNodesCreated: 0, claimsCreated: 0 };
+      }),
+    }));
+    const { runChunkedExtraction } = await import(
+      "~/lib/ingestion/chunked-extract"
+    );
+    await runChunkedExtraction({
+      ...makeBaseParams(),
+      emailContent: true,
+      content:
+        "Please review the new contract.\n---------- Forwarded message ---------\nFrom: old@example.com\nPlease review the old contract.",
+    });
+    expect(calls).toEqual(["Please review the new contract."]);
+  });
+
   it("transfers source-scoped replacement to the first chunk that actually succeeds", async () => {
     vi.doMock("~/utils/env", () => ({
       env: { INGEST_CHUNK_MAX_CHARS: 80, INGEST_DEBUG_DIR: undefined },

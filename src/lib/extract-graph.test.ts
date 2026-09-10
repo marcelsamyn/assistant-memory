@@ -101,6 +101,7 @@ describeIfServer("extractGraph claim-native insertion", () => {
         "type" varchar(50) NOT NULL,
         "external_id" text NOT NULL,
         "scope" varchar(16) DEFAULT 'personal' NOT NULL,
+        "metadata" jsonb,
         "status" varchar(20) DEFAULT 'completed',
         "created_at" timestamp with time zone DEFAULT now() NOT NULL,
         CONSTRAINT "sources_user_type_external_unique"
