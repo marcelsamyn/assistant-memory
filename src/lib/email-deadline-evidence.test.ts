@@ -1,4 +1,7 @@
-import { hasEmailDeadlineEvidence } from "./email-deadline-evidence";
+import {
+  hasEmailDeadlineEvidence,
+  hasEmailDeadlineRemovalEvidence,
+} from "./email-deadline-evidence";
 import { describe, expect, it } from "vitest";
 
 describe("grounded email deadlines", () => {
@@ -48,5 +51,33 @@ describe("grounded email deadlines", () => {
         requestExcerpt: "Please reply when you can.",
       }),
     ).toBe(false);
+  });
+});
+
+describe("explicit email deadline removal", () => {
+  it.each([
+    "Please review the revised contract. There is no deadline now.",
+    "The deadline has been removed.",
+    "The due date is cancelled.",
+    "There is no longer a deadline.",
+    "This task no longer has a deadline.",
+    "Bekijk de nieuwe voorwaarden. Er is geen deadline meer.",
+    "De deadline is vervallen.",
+  ])("accepts unconditional removal: %s", (excerpt) => {
+    expect(hasEmailDeadlineRemovalEvidence(excerpt)).toBe(true);
+  });
+
+  it.each([
+    "Please review the revised contract.",
+    "It is not due by 2026-09-15.",
+    "The deadline has not been removed.",
+    "There is no deadline now?",
+    "If there is no deadline now, please tell me.",
+    "The deadline has been removed from the calendar.",
+    "There is no deadline now. Please finish by tomorrow.",
+    "There is no deadline now. The new due date is Friday.",
+    "Er is geen deadline meer. Antwoord uiterlijk morgen.",
+  ])("preserves existing dates for ambiguous evidence: %s", (excerpt) => {
+    expect(hasEmailDeadlineRemovalEvidence(excerpt)).toBe(false);
   });
 });

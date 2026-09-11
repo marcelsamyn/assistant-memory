@@ -219,6 +219,103 @@ describe("email request matching and evolution", () => {
     }
   });
 
+  it.each(["clarification", "completion", "revision"] as const)(
+    "allows only the authenticated author to apply a promise %s",
+    (lifecycle) => {
+      const text = "I will review the contract and send my comments.";
+      const outgoing = {
+        direction: "outgoing",
+        sender: { email: "owner@example.com" },
+        recipients: [{ email: "lena@example.com", recipientRole: "to" }],
+      } satisfies Partial<SourceContext>;
+      const initialClaim = claim(text);
+      const resolution = resolveEmailRequest({
+        context: { ...context, ...outgoing },
+        claim: {
+          ...initialClaim,
+          emailRequestEvidence: {
+            ...initialClaim.emailRequestEvidence!,
+            kind: "user_promise",
+          },
+        },
+        sourceId,
+        content: text,
+        candidates: [],
+      });
+      if (!resolution) throw new Error("Expected promise");
+      const promise = {
+        ...candidate(resolution),
+        assertedByKind: "user_confirmed" as const,
+      };
+      const laterHistory = {
+        ...promise,
+        sourceId: newTypeId("source"),
+        statedAt: new Date("2026-09-10T09:00:00.000Z"),
+        evidence: { ...promise.evidence!, kind: "direct_request" as const },
+      };
+      const update = "The revised contract review is complete.";
+      for (const sender of ["lena@example.com", "stranger@example.com"]) {
+        expect(
+          resolveUpdate(update, lifecycle, [promise], {
+            sender: { email: sender },
+          }),
+        ).toBeNull();
+      }
+      expect(
+        resolveUpdate(update, lifecycle, [laterHistory, promise]),
+      ).toBeNull();
+      expect(
+        resolveUpdate(update, lifecycle, [promise], {
+          ...outgoing,
+          sender: { email: "stranger@example.com" },
+        }),
+      ).toBeNull();
+      expect(
+        resolveUpdate(update, lifecycle, [promise], outgoing),
+      ).toMatchObject({
+        taskId,
+        status: lifecycle === "completion" ? "done" : "pending",
+        evidence: { kind: "user_promise" },
+      });
+    },
+  );
+
+  it.each(["clarification", "completion", "revision"] as const)(
+    "rejects incoming %s when the original requester is unknown",
+    (lifecycle) => {
+      const initial = initialRequest();
+      const unknownRequester = {
+        ...initial,
+        evidence: { ...initial.evidence!, requester: null },
+      };
+      const text = "The revised contract review is complete.";
+      for (const sender of ["lena@example.com", "stranger@example.com"]) {
+        expect(
+          resolveUpdate(text, lifecycle, [unknownRequester], {
+            sender: { email: sender },
+          }),
+        ).toBeNull();
+      }
+      expect(
+        resolveUpdate(text, lifecycle, [unknownRequester], {
+          direction: "outgoing",
+          sender: { email: "stranger@example.com" },
+        }),
+      ).toBeNull();
+      expect(
+        resolveUpdate(text, lifecycle, [unknownRequester], {
+          direction: "outgoing",
+          sender: { email: "owner@example.com" },
+          recipients: [{ email: "lena@example.com", recipientRole: "to" }],
+        }),
+      ).toMatchObject({
+        taskId,
+        status: lifecycle === "completion" ? "done" : "pending",
+        evidence: { requester: null, kind: "direct_request" },
+      });
+    },
+  );
+
   it("rejects unsupported and quoted-only passages", () => {
     const initial = initialRequest();
     const completion = "I reviewed the contract and sent all comments.";

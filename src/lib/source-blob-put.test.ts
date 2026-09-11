@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   putSourceBlob,
   SourceBlobUploadTimeoutError,
+  SourceBlobUploadRejectedError,
 } from "~/lib/source-blob-put";
 
 describe("source blob PUT deadline", () => {
@@ -72,12 +73,22 @@ describe("source blob PUT deadline", () => {
     ).rejects.toBeInstanceOf(SourceBlobUploadTimeoutError);
   });
 
+  it("preserves an ambiguous connection reset as a transport error", async () => {
+    const server = createServer((request, response) => {
+      request.resume();
+      request.on("end", () => response.destroy());
+    });
+    await expect(
+      putSourceBlob(await listen(server), Buffer.from("bytes"), 1000),
+    ).rejects.toMatchObject({ code: "ECONNRESET" });
+  });
+
   it("rejects a storage error response", async () => {
     const server = createServer((_request, response) => {
       response.writeHead(503).end();
     });
     await expect(
       putSourceBlob(await listen(server), Buffer.from("bytes"), 1000),
-    ).rejects.toThrow("HTTP 503");
+    ).rejects.toBeInstanceOf(SourceBlobUploadRejectedError);
   });
 });

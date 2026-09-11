@@ -23,7 +23,6 @@ import {
   findSourceIngestionOperation,
   hashSourceContent,
 } from "./source-processing";
-import { hashSourceExtractionRevision } from "./source-revision";
 import { and, eq, isNull } from "drizzle-orm";
 import { createError } from "h3";
 import { randomUUID } from "node:crypto";
@@ -34,6 +33,7 @@ import {
   preparePartitionWrite,
 } from "~/lib/partition-access";
 import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import type { SourceProcessing } from "~/lib/schemas/source-processing";
 import {
   applySourceLifecycleCommand,
   listSourceTreeStorageCleanupIds,
@@ -103,67 +103,52 @@ export async function saveMemory(
     }
   }
 
-  const [previous] = await db
-    .select({ metadata: sources.metadata, timestamp: sources.lastIngestedAt })
-    .from(sources)
-    .where(
-      and(
-        eq(sources.userId, userId),
-        eq(sources.type, "document"),
-        eq(sources.externalId, externalId),
-        isNull(sources.deletedAt),
-      ),
-    )
-    .limit(1);
-  const previousMetadata = sourceMetadataSchema.parse(previous?.metadata ?? {});
-  const timestamp = document.timestamp ?? previous?.timestamp ?? new Date();
-  const author = document.author ?? previousMetadata.author;
-  const contentHash = hashSourceExtractionRevision(
-    hashSourceContent(document.content),
-    document.sourceContext,
-    {
-      scope: document.scope,
+  const inputMetadata = {
+    documentIngestion: {
+      documentId: document.id,
       contentType: document.contentType,
-      author,
-      timestamp,
     },
-  );
-  const metadata = {
-    ingestionRevisionHash: contentHash,
-    ...(author !== undefined && { author }),
+    ...(document.author !== undefined && { author: document.author }),
     ...(document.title !== undefined && { title: document.title }),
     ...(document.sourceContext !== undefined && {
       sourceContext: document.sourceContext,
     }),
   };
 
-  const { successes, failures } = await sourceService.insertMany([
-    {
-      userId,
-      ...(req.partitionKey !== undefined
-        ? { partitionKey: req.partitionKey }
-        : {}),
-      sourceType: "document",
-      externalId,
-      ...(document.sourceContext?.parentSourceId !== undefined
-        ? {
-            parentId: document.sourceContext.parentSourceId,
-            ...(req.partitionKey !== undefined
-              ? { parentPartitionKey: req.partitionKey }
-              : {}),
-          }
-        : {}),
-      scope: document.scope,
-      timestamp,
-      // Stored as-is; the worker re-writes `metadata.rawContent` with the
-      // converted markdown when `contentType === "html"`.
-      content: document.content,
-      metadata,
-    },
-  ]);
+  const {
+    successes,
+    failures,
+    timestamp,
+    metadata,
+    revisionHash: contentHash,
+  } = await sourceService.insertIngestionSource({
+    userId,
+    ...(req.partitionKey !== undefined
+      ? { partitionKey: req.partitionKey }
+      : {}),
+    sourceType: "document",
+    externalId,
+    ...(document.sourceContext?.parentSourceId !== undefined
+      ? {
+          parentId: document.sourceContext.parentSourceId,
+          ...(req.partitionKey !== undefined
+            ? { parentPartitionKey: req.partitionKey }
+            : {}),
+        }
+      : {}),
+    scope: document.scope,
+    timestamp: document.timestamp,
+    extractionContentHash: hashSourceContent(document.content),
+    extractionContentType: document.contentType,
+    // Retain the original content; HTML conversion is stored separately.
+    content: document.content,
+    metadata: inputMetadata,
+  });
+  const author = metadata.author;
 
   let sourceId: TypeId<"source">;
   let sourceVersion: number | undefined;
+  let existingProcessing: SourceProcessing | null = null;
   if (successes.length > 0) {
     sourceId = successes[0]!;
     const [created] = await db
@@ -186,11 +171,13 @@ export async function saveMemory(
     }
     sourceVersion = created.version;
   } else {
-    // Conflict path: the row already existed and updateExisting was false.
-    // Look up the existing sourceId so the caller can still auto-attach,
-    // and skip the worker (no extraction work to do).
+    // Reuse the source identity; a queued receipt may still need its job.
     const [existing] = await db
-      .select({ id: sources.id, partitionKey: sources.partitionKey })
+      .select({
+        id: sources.id,
+        partitionKey: sources.partitionKey,
+        metadata: sources.metadata,
+      })
       .from(sources)
       .where(
         and(
@@ -217,7 +204,7 @@ export async function saveMemory(
       });
     }
 
-    let existingProcessing = await findSourceIngestionOperation({
+    existingProcessing = await findSourceIngestionOperation({
       db,
       userId,
       ...(req.partitionKey !== undefined
@@ -226,7 +213,10 @@ export async function saveMemory(
       sourceId: existing.id,
       contentHash,
     });
-    if (document.sourceContext === undefined) {
+    if (
+      document.sourceContext === undefined &&
+      existingProcessing?.status !== "queued"
+    ) {
       return {
         message: "Document already ingested; reusing existing source",
         jobId: existingProcessing?.operationId ?? document.id,
@@ -236,50 +226,57 @@ export async function saveMemory(
           : {}),
       };
     }
-    const revision = {
-      userId,
-      sourceId: existing.id,
-      partitionKey: req.partitionKey,
-      metadata,
-      ...(document.sourceContext?.parentSourceId !== undefined
-        ? { parentId: document.sourceContext.parentSourceId }
-        : {}),
-      scope: document.scope,
-    };
-    if (existingProcessing) {
-      const updatedVersion = await sourceService.updateIngestionMetadata({
-        ...revision,
-        ...(document.timestamp !== undefined
-          ? { timestamp: document.timestamp }
-          : {}),
-      });
-      existingProcessing = await findSourceIngestionOperation({
-        db,
+    if (document.sourceContext !== undefined) {
+      const revision = {
         userId,
-        ...(req.partitionKey !== undefined
-          ? { partitionKey: req.partitionKey }
-          : {}),
         sourceId: existing.id,
-        contentHash,
-      });
-      if (document.title !== undefined) {
-        await updateDocumentTitle({
+        partitionKey: req.partitionKey,
+        metadata,
+        ...(document.sourceContext?.parentSourceId !== undefined
+          ? { parentId: document.sourceContext.parentSourceId }
+          : {}),
+        scope: document.scope,
+      };
+      if (existingProcessing) {
+        const updatedVersion = await sourceService.updateIngestionMetadata({
+          ...revision,
+          ...(document.timestamp !== undefined
+            ? { timestamp: document.timestamp }
+            : {}),
+        });
+        existingProcessing = await findSourceIngestionOperation({
           db,
           userId,
+          ...(req.partitionKey !== undefined
+            ? { partitionKey: req.partitionKey }
+            : {}),
           sourceId: existing.id,
-          expectedSourceVersion: updatedVersion,
-          title: document.title,
+          contentHash,
+        });
+        if (document.title !== undefined) {
+          await updateDocumentTitle({
+            db,
+            userId,
+            sourceId: existing.id,
+            expectedSourceVersion: updatedVersion,
+            title: document.title,
+          });
+        }
+      } else if (
+        sourceMetadataSchema.parse(existing.metadata).ingestionRevisionHash !==
+          contentHash ||
+        sourceMetadataSchema.parse(existing.metadata).rawContent !==
+          document.content
+      ) {
+        sourceVersion = await sourceService.replaceInlineContent({
+          ...revision,
+          content: document.content,
+          contentHash,
+          timestamp,
+          replaceDerivedLinks: true,
+          status: "pending",
         });
       }
-    } else {
-      sourceVersion = await sourceService.replaceInlineContent({
-        ...revision,
-        content: document.content,
-        contentHash,
-        timestamp,
-        replaceDerivedLinks: true,
-        status: "pending",
-      });
     }
 
     // Identical content reuses its immutable processing receipt. Metadata is
@@ -293,63 +290,24 @@ export async function saveMemory(
       };
     }
 
-    const processing =
-      existingProcessing ??
-      (await createSourceIngestionOperation({
-        db,
-        userId,
-        ...(req.partitionKey !== undefined
-          ? { partitionKey: req.partitionKey }
-          : {}),
-        sourceId: existing.id,
-        externalId,
-        contentHash,
-        ...(sourceVersion !== undefined
-          ? { expectedSourceVersion: sourceVersion }
-          : {}),
-      }));
-    await batchQueue.add(
-      "ingest-document",
-      {
-        userId,
-        ...(req.partitionKey !== undefined
-          ? { partitionKey: req.partitionKey }
-          : {}),
-        sourceId: existing.id,
-        expectedSourceVersion: processing.sourceVersion,
-        documentId: document.id,
-        externalId,
-        contentType: document.contentType,
-        timestamp: timestamp.toISOString(),
-        author,
-        title: document.title,
-        operationId: processing.operationId,
-      },
-      {
-        jobId: processing.operationId,
-        attempts: 3,
-        backoff: { type: "exponential", delay: 1_000 },
-      },
-    );
-    return {
-      message: "Document already ingested; reusing existing source",
-      jobId: processing.operationId,
-      sourceId: existing.id,
-      ingestionOperationId: processing.operationId,
-    };
+    sourceId = existing.id;
   }
 
-  const processing = await createSourceIngestionOperation({
-    db,
-    userId,
-    ...(req.partitionKey !== undefined
-      ? { partitionKey: req.partitionKey }
-      : {}),
-    sourceId,
-    externalId,
-    contentHash,
-    expectedSourceVersion: sourceVersion,
-  });
+  const processing =
+    existingProcessing ??
+    (await createSourceIngestionOperation({
+      db,
+      userId,
+      ...(req.partitionKey !== undefined
+        ? { partitionKey: req.partitionKey }
+        : {}),
+      sourceId,
+      externalId,
+      contentHash,
+      ...(sourceVersion !== undefined
+        ? { expectedSourceVersion: sourceVersion }
+        : {}),
+    }));
 
   await batchQueue.add(
     "ingest-document",
@@ -374,7 +332,10 @@ export async function saveMemory(
   );
 
   return {
-    message: "Document ingestion job accepted",
+    message:
+      successes.length > 0
+        ? "Document ingestion job accepted"
+        : "Document already ingested; reusing existing source",
     jobId: processing.operationId,
     sourceId,
     ingestionOperationId: processing.operationId,

@@ -1,10 +1,20 @@
 import { Job, Queue, QueueEvents, Worker } from "bullmq";
+import { eq } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
+import { Client as MinioClient } from "minio";
 import { Client } from "pg";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import * as schema from "~/db/schema";
-import { sources, users } from "~/db/schema";
+import { sourceIngestionOperations, sources, users } from "~/db/schema";
 import {
   completeSourceIngestionOperation,
   createSourceIngestionOperation,
@@ -12,6 +22,7 @@ import {
   getSourceIngestionOperationById,
   markSourceIngestionProcessing,
 } from "~/lib/ingestion/source-processing";
+import { setTestDatabase } from "~/utils/db";
 
 const host = process.env["TEST_PG_HOST"] ?? "localhost";
 const port = Number(process.env["TEST_PG_PORT"] ?? 5431);
@@ -43,6 +54,13 @@ describeIfPostgres("retained processing retry", () => {
   let events: QueueEvents;
   let worker: Worker | undefined;
   let retrySourceProcessing: (typeof import("./retry-source-processing"))["retrySourceProcessing"];
+  let saveMemory: (typeof import("./save-document"))["saveMemory"];
+  let ingestDocument: (typeof import("~/lib/jobs/ingest-document"))["ingestDocument"];
+  const extractDocumentGraph = vi.fn(async () => undefined);
+  const convertToMarkdown = vi.fn(async () => ({
+    markdown: "Current request",
+    title: null,
+  }));
   beforeAll(async () => {
     const admin = new Client({ connectionString: dsn("postgres") });
     await admin.connect();
@@ -52,6 +70,7 @@ describeIfPostgres("retained processing retry", () => {
     await client.connect();
     database = drizzle(client, { schema, casing: "snake_case" });
     await migrate(database, { migrationsFolder: "./drizzle" });
+    setTestDatabase(database);
     const redisUrl = new URL(
       process.env["REDIS_URL"] ?? "redis://127.0.0.1:56380",
     );
@@ -61,9 +80,41 @@ describeIfPostgres("retained processing retry", () => {
     await events.waitUntilReady();
     vi.doMock("~/lib/queues", () => ({ batchQueue: queue }));
     vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+    vi.doMock("~/db", () => ({ default: database }));
+    const { SourceService } = await import("~/lib/sources");
+    vi.spyOn(MinioClient.prototype, "bucketExists").mockResolvedValue(true);
+    const service = new SourceService(
+      database,
+      new MinioClient({
+        endPoint: "localhost",
+        port: 9000,
+        useSSL: false,
+        accessKey: "unused",
+        secretKey: "unused",
+      }),
+      "unused",
+    );
+    vi.doMock("~/lib/sources", async () => ({
+      ...(await vi.importActual<typeof import("~/lib/sources")>(
+        "~/lib/sources",
+      )),
+      sourceService: service,
+    }));
+    vi.doMock("~/lib/ingestion/extract-document-graph", () => ({
+      extractDocumentGraph,
+    }));
+    vi.doMock("~/lib/converters/markitdown", () => ({ convertToMarkdown }));
     ({ retrySourceProcessing } = await import("./retry-source-processing"));
+    ({ saveMemory } = await import("./save-document"));
+    ({ ingestDocument } = await import("~/lib/jobs/ingest-document"));
   }, 120_000);
+  afterEach(async () => {
+    await worker?.close();
+    worker = undefined;
+    vi.clearAllMocks();
+  });
   afterAll(async () => {
+    setTestDatabase(null);
     await worker?.close();
     await events.close();
     await queue.obliterate({ force: true });
@@ -73,6 +124,176 @@ describeIfPostgres("retained processing retry", () => {
     await admin.connect();
     await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
     await admin.end();
+  });
+
+  it.each(["replay", "retry"] as const)(
+    "restores one missing document job through concurrent %s calls after queue acceptance fails",
+    async (recovery) => {
+      const request = {
+        userId: `orphan-document-${recovery}`,
+        updateExisting: false,
+        document: {
+          id: "html-message",
+          content: "<p>Current request</p>",
+          contentType: "html" as const,
+          scope: "personal" as const,
+          timestamp: new Date("2026-09-10T10:00:00.000Z"),
+          author: "Original author",
+          title: "Original title",
+        },
+      };
+      const unavailableRedis = vi
+        .spyOn(queue, "add")
+        .mockRejectedValueOnce(new Error("queue unavailable"));
+      try {
+        await expect(saveMemory(request)).rejects.toThrow("queue unavailable");
+      } finally {
+        unavailableRedis.mockRestore();
+      }
+      const [receipt] = await database
+        .select()
+        .from(sourceIngestionOperations)
+        .where(eq(sourceIngestionOperations.userId, request.userId));
+      if (!receipt) throw new Error("Expected durable receipt");
+      expect(receipt.status).toBe("queued");
+      expect(await queue.getJob(receipt.operationId)).toBeUndefined();
+      const recover = async (): Promise<void> => {
+        if (recovery === "replay") {
+          expect(await saveMemory(request)).toMatchObject({
+            sourceId: receipt.sourceId,
+            ingestionOperationId: receipt.operationId,
+          });
+        } else {
+          expect(
+            await retrySourceProcessing({
+              userId: request.userId,
+              operationId: receipt.operationId,
+            }),
+          ).toMatchObject({
+            processing: { operationId: receipt.operationId, status: "queued" },
+          });
+        }
+      };
+      await Promise.all([recover(), recover()]);
+      const job = await queue.getJob(receipt.operationId);
+      if (!job) throw new Error("Expected restored job");
+      expect(job.name).toBe("ingest-document");
+      expect(job.data).toMatchObject({
+        operationId: receipt.operationId,
+        sourceId: receipt.sourceId,
+        contentType: "html",
+        documentId: request.document.id,
+        timestamp: request.document.timestamp.toISOString(),
+        author: "Original author",
+        title: "Original title",
+      });
+      expect(
+        (await queue.getWaiting()).filter((waiting) => waiting.id === job.id),
+      ).toHaveLength(1);
+      expect(
+        await database
+          .select()
+          .from(sources)
+          .where(eq(sources.userId, request.userId)),
+      ).toHaveLength(1);
+      const { IngestDocumentJobInputSchema } = await import(
+        "~/lib/jobs/ingest-document"
+      );
+      worker = new Worker(
+        queueName,
+        async (queued) => {
+          await ingestDocument({
+            db: database,
+            ...IngestDocumentJobInputSchema.parse(queued.data),
+          });
+        },
+        { connection: queue.opts.connection },
+      );
+      await job.waitUntilFinished(events, 10_000);
+      expect(convertToMarkdown).toHaveBeenCalledExactlyOnceWith({
+        buffer: Buffer.from(request.document.content),
+        filename: "html-message.html",
+        mimeType: "text/html",
+      });
+      expect(extractDocumentGraph).toHaveBeenCalledOnce();
+      expect(
+        await getSourceIngestionOperationById({
+          db: database,
+          userId: request.userId,
+          operationId: receipt.operationId,
+        }),
+      ).toMatchObject({ status: "completed" });
+      expect(
+        await database
+          .select()
+          .from(sourceIngestionOperations)
+          .where(eq(sourceIngestionOperations.userId, request.userId)),
+      ).toHaveLength(1);
+    },
+  );
+
+  it("restores missing file jobs from their retained conversion settings", async () => {
+    const userId = "orphan-file";
+    const timestamp = new Date("2026-09-10T11:00:00.000Z");
+    await database.insert(users).values({ id: userId });
+    const [source] = await database
+      .insert(sources)
+      .values({
+        userId,
+        type: "document",
+        externalId: "attachment",
+        status: "pending",
+        lastIngestedAt: timestamp,
+        metadata: {
+          rawContent: "Attachment text",
+          filename: "attachment.txt",
+          mimeType: "text/plain",
+        },
+      })
+      .returning();
+    if (!source) throw new Error("Source missing");
+    const receipt = await createSourceIngestionOperation({
+      db: database,
+      userId,
+      sourceId: source.id,
+      externalId: source.externalId,
+      contentHash: "attachment-hash",
+    });
+    await retrySourceProcessing({ userId, operationId: receipt.operationId });
+    const job = await queue.getJob(receipt.operationId);
+    if (!job) throw new Error("Expected restored file job");
+    expect(job.name).toBe("ingest-file");
+    expect(job.data).toMatchObject({
+      userId,
+      sourceId: source.id,
+      operationId: receipt.operationId,
+      expectedSourceVersion: receipt.sourceVersion,
+      timestamp: timestamp.toISOString(),
+      filename: "attachment.txt",
+      mimeType: "text/plain",
+    });
+    const { ingestFile, IngestFileJobInputSchema } = await import(
+      "~/lib/jobs/ingest-file"
+    );
+    worker = new Worker(
+      queueName,
+      async (queued) => {
+        await ingestFile({
+          db: database,
+          ...IngestFileJobInputSchema.parse(queued.data),
+        });
+      },
+      { connection: queue.opts.connection },
+    );
+    await job.waitUntilFinished(events, 10_000);
+    expect(extractDocumentGraph).toHaveBeenCalledOnce();
+    expect(
+      await getSourceIngestionOperationById({
+        db: database,
+        userId,
+        operationId: receipt.operationId,
+      }),
+    ).toMatchObject({ status: "completed" });
   });
 
   it("retries a completed unreadable job and recovers a queue retry failure without relaxing ownership", async () => {

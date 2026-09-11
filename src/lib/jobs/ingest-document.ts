@@ -5,9 +5,8 @@
  *
  *   1. Loads the inline content back from the source row.
  *   2. Converts HTML → markdown via the markitdown sidecar when the caller
- *      flagged `contentType: "html"`, persisting the converted text back
- *      onto `sources.metadata.rawContent` so later reads/re-extractions
- *      see clean markdown.
+ *      flagged `contentType: "html"`, retaining the original source content
+ *      and storing converted Markdown separately for reads/re-extraction.
  *   3. Runs the shared `extractDocumentGraph` pipeline.
  */
 import { and, eq, sql } from "drizzle-orm";
@@ -16,6 +15,7 @@ import { DrizzleDB } from "~/db";
 import { sources } from "~/db/schema";
 import { convertToMarkdown } from "~/lib/converters/markitdown";
 import { extractDocumentGraph } from "~/lib/ingestion/extract-document-graph";
+import { extractEmailAttachment } from "~/lib/ingestion/extract-email-attachment";
 import {
   completeSourceIngestionOperation,
   advanceSourceIngestionOperationVersion,
@@ -28,7 +28,10 @@ import {
   assertSourcePartition,
   withSourceWriteFence,
 } from "~/lib/partition-access";
-import { contextPartitionKeySchema } from "~/lib/schemas/partition";
+import {
+  contextPartitionKeySchema,
+  type ContextPartitionKey,
+} from "~/lib/schemas/partition";
 import { sourceMetadataSchema, sourceService } from "~/lib/sources";
 import { typeIdSchema, type TypeId } from "~/types/typeid";
 
@@ -73,7 +76,9 @@ export async function ingestDocument({
   timestamp,
   author,
   title,
-}: IngestDocumentParams): Promise<void> {
+}: IngestDocumentParams): Promise<
+  { partitionKey: ContextPartitionKey | undefined } | undefined
+> {
   if (operationId !== undefined) {
     const context = await getSourceIngestionJobContext({
       db,
@@ -102,7 +107,9 @@ export async function ingestDocument({
       expectedSourceVersion: sourceVersion,
     });
     sourceVersion = processing.sourceVersion;
-    if (["completed", "failed", "purged"].includes(processing.status)) return;
+    if (processing.status === "completed") return { partitionKey };
+    if (processing.status === "failed" || processing.status === "purged")
+      return;
   }
 
   let extractionStarted = false;
@@ -114,7 +121,8 @@ export async function ingestDocument({
       .limit(1);
     const metadata = sourceMetadataSchema.parse(stored?.metadata ?? {});
     const convertedContent =
-      metadata.convertedToMarkdown === true ? metadata.rawContent : undefined;
+      metadata.convertedMarkdown ??
+      (metadata.convertedToMarkdown === true ? metadata.rawContent : undefined);
     const text =
       convertedContent ?? (await sourceService.fetchText(userId, sourceId));
 
@@ -132,9 +140,8 @@ export async function ingestDocument({
         resolvedTitle = converted.title;
       }
 
-      // Persist converted markdown (and any newly-derived title) so re-reads
-      // surface clean text instead of the original HTML. The merge is computed
-      // entirely in SQL so a concurrent metadata write can't clobber it; the
+      // Preserve original HTML and cache Markdown for re-extraction. Merge in
+      // SQL so a concurrent metadata write cannot clobber it; the
       // CASE on `title` preserves any user-supplied value.
       const titleClause =
         converted.title !== null
@@ -150,7 +157,7 @@ export async function ingestDocument({
           const [updated] = await tx
             .update(sources)
             .set({
-              metadata: sql`COALESCE(${sources.metadata}, '{}'::jsonb) || jsonb_build_object('rawContent', ${content}::text, 'convertedToMarkdown', true) || ${titleClause}`,
+              metadata: sql`COALESCE(${sources.metadata}, '{}'::jsonb) || jsonb_build_object('convertedMarkdown', ${content}::text, 'convertedToMarkdown', true) || ${titleClause}`,
             })
             .where(
               and(
@@ -175,6 +182,40 @@ export async function ingestDocument({
       );
     }
 
+    if (
+      metadata.sourceContext?.sourceKind === "email_attachment" &&
+      contentType !== "html" &&
+      metadata.convertedToMarkdown !== true
+    ) {
+      sourceVersion = await withSourceWriteFence(
+        db,
+        {
+          userId,
+          sources: [{ sourceId, expectedSourceVersion: sourceVersion }],
+        },
+        async (tx) => {
+          const [updated] = await tx
+            .update(sources)
+            .set({
+              metadata: sql`COALESCE(${sources.metadata}, '{}'::jsonb) || jsonb_build_object('convertedMarkdown', ${content}::text, 'convertedToMarkdown', true)`,
+            })
+            .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)))
+            .returning({ version: sources.version });
+          if (!updated)
+            throw new Error("Email attachment disappeared during processing");
+          if (operationId !== undefined)
+            await advanceSourceIngestionOperationVersion({
+              db: tx,
+              userId,
+              sourceId,
+              operationId,
+              sourceVersion: updated.version,
+            });
+          return updated.version;
+        },
+      );
+    }
+
     if (operationId !== undefined) {
       const extraction = await markSourceIngestionExtractionStarted({
         db,
@@ -183,23 +224,36 @@ export async function ingestDocument({
         sourceId: sourceId as TypeId<"source">,
         operationId,
       });
-      if (["completed", "failed", "purged"].includes(extraction.status)) return;
+      if (extraction.status === "completed") return { partitionKey };
+      if (extraction.status === "failed" || extraction.status === "purged")
+        return;
       extractionStarted = true;
     }
 
-    await extractDocumentGraph({
-      db,
-      userId,
-      sourceId: sourceId as TypeId<"source">,
-      expectedSourceVersion: sourceVersion,
-      externalId: externalId ?? documentId,
-      content,
-      timestamp,
-      logLabel: resolvedTitle ?? documentId,
-      ...(resolvedTitle !== undefined && { title: resolvedTitle }),
-      ...(author !== undefined && { author }),
-      emailContent: metadata.sourceContext?.sourceKind === "email",
-    });
+    if (metadata.sourceContext?.sourceKind === "email_attachment") {
+      await extractEmailAttachment({
+        db,
+        userId,
+        sourceId,
+        expectedSourceVersion: sourceVersion,
+        partitionKey,
+        context: metadata.sourceContext,
+      });
+    } else {
+      await extractDocumentGraph({
+        db,
+        userId,
+        sourceId: sourceId as TypeId<"source">,
+        expectedSourceVersion: sourceVersion,
+        externalId: externalId ?? documentId,
+        content,
+        timestamp,
+        logLabel: resolvedTitle ?? documentId,
+        ...(resolvedTitle !== undefined && { title: resolvedTitle }),
+        ...(author !== undefined && { author }),
+        emailContent: metadata.sourceContext?.sourceKind === "email",
+      });
+    }
 
     if (operationId !== undefined) {
       await completeSourceIngestionOperation({
@@ -214,6 +268,7 @@ export async function ingestDocument({
     console.log(
       `Successfully ingested and processed document ${documentId} for user ${userId}`,
     );
+    return { partitionKey };
   } catch (error) {
     if (operationId !== undefined && finalAttempt) {
       await failSourceIngestionOperation({

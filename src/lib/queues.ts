@@ -275,11 +275,12 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         );
 
         const { ingestDocument } = await import("./jobs/ingest-document");
-        await ingestDocument({
+        const result = await ingestDocument({
           db,
           ...data,
           finalAttempt: isFinalBullMQAttempt(job),
         });
+        if (result === undefined) return;
         console.log(
           `Ingested document ${data.documentId} for user ${data.userId}.`,
         );
@@ -288,7 +289,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         const { runDedupSweep: runDocDedupSweep } = await import(
           "./jobs/dedup-sweep"
         );
-        await runDocDedupSweep(data.userId, undefined, data.partitionKey);
+        await runDocDedupSweep(data.userId, undefined, result.partitionKey);
       } else if (job.name === "ingest-file") {
         const data = IngestFileJobInputSchema.parse(job.data);
         console.log(
@@ -296,11 +297,12 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         );
 
         const { ingestFile } = await import("./jobs/ingest-file");
-        await ingestFile({
+        const result = await ingestFile({
           db,
           ...data,
           finalAttempt: isFinalBullMQAttempt(job),
         });
+        if (result === undefined) return;
         console.log(
           `Ingested file ${data.filename} (${data.sourceId}) for user ${data.userId}.`,
         );
@@ -308,7 +310,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         const { runDedupSweep: runFileDedupSweep } = await import(
           "./jobs/dedup-sweep"
         );
-        await runFileDedupSweep(data.userId, undefined, data.partitionKey);
+        await runFileDedupSweep(data.userId, undefined, result.partitionKey);
       } else if (job.name === "ingest-transcript") {
         const data = IngestTranscriptJobInputSchema.parse(job.data);
         console.log(

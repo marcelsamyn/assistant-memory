@@ -11,7 +11,10 @@ import {
   sources,
   SourcesInsert,
 } from "~/db/schema";
-import { invalidateSourceExtractionRevision } from "~/lib/ingestion/source-revision";
+import {
+  hashSourceExtractionRevision,
+  invalidateSourceExtractionRevision,
+} from "~/lib/ingestion/source-revision";
 import { logEvent } from "~/lib/observability/log";
 import {
   PartitionAccessError,
@@ -28,7 +31,7 @@ import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { sourceContextSchema } from "~/lib/schemas/source-context";
 import {
   putSourceBlob,
-  SourceBlobUploadTimeoutError,
+  SourceBlobUploadRejectedError,
 } from "~/lib/source-blob-put";
 import { Scope, SourceType } from "~/types/graph";
 import { typeIdSchema, type TypeId } from "~/types/typeid";
@@ -37,9 +40,19 @@ import { env } from "~/utils/env";
 export const sourceMetadataSchema = z
   .object({
     rawContent: z.string().optional(),
+    /** Derived text; original inline content or blob bytes remain unchanged. */
+    convertedMarkdown: z.string().optional(),
+    filename: z.string().min(1).optional(),
     convertedToMarkdown: z.literal(true).optional(),
     /** Internal identity of the bytes and context accepted for extraction. */
     ingestionRevisionHash: z.string().optional(),
+    /** Conversion settings retained so a missing document job can be rebuilt. */
+    documentIngestion: z
+      .object({
+        documentId: z.string(),
+        contentType: z.enum(["markdown", "text", "html"]),
+      })
+      .optional(),
     /** Reference attribution surfaced via NodeCard.reference for reference-scope sources. */
     author: z.string().min(1).optional(),
     title: z.string().min(1).optional(),
@@ -199,6 +212,82 @@ export class SourceService {
     successes: TypeId<"source">[];
     failures: Array<{ sourceId?: TypeId<"source">; reason: string }>;
   }> {
+    return this.insertSources(inputs, rootWriteFence);
+  }
+
+  /** Resolve extraction defaults while holding the same identity gate as insertion. */
+  async insertIngestionSource(
+    input: Omit<SourceCreateInput, "timestamp"> & {
+      timestamp?: Date | undefined;
+      extractionContentHash: string;
+      extractionContentType: string;
+    },
+  ): Promise<{
+    successes: TypeId<"source">[];
+    failures: Array<{ sourceId?: TypeId<"source">; reason: string }>;
+    timestamp: Date;
+    metadata: Metadata;
+    revisionHash: string;
+  }> {
+    let timestamp = input.timestamp ?? new Date();
+    let metadata = sourceMetadataSchema.parse(input.metadata ?? {});
+    let revisionHash = "";
+    const result = await this.insertSources(
+      [{ ...input, timestamp }],
+      undefined,
+      async (tx, source) => {
+        const [previous] = await tx
+          .select({
+            metadata: sources.metadata,
+            timestamp: sources.lastIngestedAt,
+          })
+          .from(sources)
+          .where(
+            and(
+              eq(sources.userId, source.userId),
+              eq(sources.type, source.sourceType),
+              eq(sources.externalId, source.externalId),
+              isNull(sources.deletedAt),
+            ),
+          )
+          .limit(1);
+        const previousMetadata = sourceMetadataSchema.parse(
+          previous?.metadata ?? {},
+        );
+        timestamp = input.timestamp ?? previous?.timestamp ?? timestamp;
+        const author = metadata.author ?? previousMetadata.author;
+        revisionHash = hashSourceExtractionRevision(
+          input.extractionContentHash,
+          metadata.sourceContext,
+          {
+            scope: source.scope ?? "personal",
+            contentType: input.extractionContentType,
+            author,
+            timestamp,
+          },
+        );
+        metadata = {
+          ...metadata,
+          ...(author === undefined ? {} : { author }),
+          ingestionRevisionHash: revisionHash,
+        };
+        return { ...source, timestamp, metadata };
+      },
+    );
+    return { ...result, timestamp, metadata, revisionHash };
+  }
+
+  private async insertSources(
+    inputs: SourceCreateInput[],
+    rootWriteFence?: { userId: string; source: SourceWriteFence },
+    prepareInput?: (
+      tx: DrizzleDB,
+      input: SourceCreateInput,
+    ) => Promise<SourceCreateInput>,
+  ): Promise<{
+    successes: TypeId<"source">[];
+    failures: Array<{ sourceId?: TypeId<"source">; reason: string }>;
+  }> {
     const successes: TypeId<"source">[] = [];
     const failures: Array<{ sourceId?: TypeId<"source">; reason: string }> = [];
 
@@ -215,20 +304,33 @@ export class SourceService {
       ),
     );
 
-    // 1. Bulk insert initial source rows with status pending
-    const insertRows = inputs.map(
-      (input): SourcesInsert => ({
-        userId: input.userId,
-        partitionKey: input.partitionKey,
-        type: input.sourceType,
-        externalId: input.externalId,
-        parentSource: input.parentId,
-        scope: input.scope ?? "personal",
-        metadata: sourceMetadataSchema.parse(input.metadata ?? {}),
-        lastIngestedAt: input.timestamp,
-        status: "pending" as const,
-      }),
-    );
+    // Ingestion receipts can race the return from this method. Commit inline
+    // ingestion bytes with their identity so a duplicate can reuse them at once.
+    const inlineContent = (input: SourceCreateInput): string | undefined =>
+      input.content ??
+      (input.fileBuffer &&
+      input.fileBuffer.length <= this.inlineThreshold &&
+      isTextContentType(input.contentType)
+        ? input.fileBuffer.toString("utf-8")
+        : undefined);
+    const insertRows = () =>
+      inputs.map((input): SourcesInsert => {
+        const content = prepareInput ? inlineContent(input) : undefined;
+        return {
+          userId: input.userId,
+          partitionKey: input.partitionKey,
+          type: input.sourceType,
+          externalId: input.externalId,
+          parentSource: input.parentId,
+          scope: input.scope ?? "personal",
+          metadata: {
+            ...sourceMetadataSchema.parse(input.metadata ?? {}),
+            ...(content === undefined ? {} : { rawContent: content }),
+          },
+          lastIngestedAt: input.timestamp,
+          status: content === undefined ? "pending" : "completed",
+        };
+      });
 
     const inputLookup = new Map<string, SourceCreateInput>();
     const makeLookupKey = (
@@ -253,7 +355,7 @@ export class SourceService {
     const insertSourceRows = (database: DrizzleDB) =>
       database
         .insert(sources)
-        .values(insertRows)
+        .values(insertRows())
         .onConflictDoNothing({
           target: [sources.userId, sources.type, sources.externalId],
         })
@@ -284,6 +386,17 @@ export class SourceService {
         await lockSourceParentAttachmentGates(database, parentAttachments);
       }
       await assertLiveSourceParents(database, parentAttachments);
+      if (prepareInput) {
+        inputs = await Promise.all(
+          inputs.map((input) => prepareInput(database, input)),
+        );
+        for (const input of inputs) {
+          inputLookup.set(
+            makeLookupKey(input.userId, input.sourceType, input.externalId),
+            input,
+          );
+        }
+      }
       return insertSourceRows(database);
     };
     const inserted = rootWriteFence
@@ -327,19 +440,17 @@ export class SourceService {
         );
         continue;
       }
-      // Inline text when small enough. Binary bytes always use the blob path,
-      // even when they fit the inline threshold; UTF-8 decoding a PDF here
-      // would permanently corrupt the payload before conversion can run.
-      if (
-        input.content !== undefined ||
-        (input.fileBuffer &&
-          input.fileBuffer.length <= this.inlineThreshold &&
-          isTextContentType(input.contentType))
-      ) {
+      // Binary bytes use the blob path, regardless of size.
+      const content = inlineContent(input);
+      if (content !== undefined) {
+        if (prepareInput) {
+          successes.push(row.id);
+          continue;
+        }
         const existingMeta = sourceMetadataSchema.parse(row.metadata);
         const updatedMeta: Metadata = {
           ...existingMeta,
-          rawContent: input.content ?? input.fileBuffer!.toString("utf-8"),
+          rawContent: content,
         };
         try {
           await writePayload(row, (database) =>
@@ -366,11 +477,8 @@ export class SourceService {
           );
           successes.push(row.id);
         } catch (err: unknown) {
-          // A timed-out PUT has a durable unknown receipt. Only an observed
-          // storage commit can release that receipt for cleanup.
-          if (!(err instanceof SourceBlobUploadTimeoutError)) {
-            await this.scheduleFailedSourceBlobUploadCleanup(row);
-          }
+          // Cleanup preserves receipts whose remote storage outcome is unknown.
+          await this.recordFailedSourceBlobUpload(row);
           failures.push({ sourceId: row.id, reason: toErrorMessage(err) });
         }
       }
@@ -676,18 +784,19 @@ export class SourceService {
     } catch (error: unknown) {
       if (
         reservation?.previous?.state === "uploaded" &&
-        !(error instanceof SourceBlobUploadTimeoutError)
+        error instanceof SourceBlobUploadRejectedError
       ) {
-        // A failed replacement must not schedule deletion of the stable key:
-        // it still contains the last committed source revision.
+        // A rejected replacement leaves the prior bytes at the stable key.
         await this.cancelSourceBlobUploadBeforePut(source, reservation);
       } else if (reservation && !putStarted) {
         await this.cancelSourceBlobUploadBeforePut(source, reservation);
-      } else if (
-        putStarted &&
-        !(error instanceof SourceBlobUploadTimeoutError)
-      ) {
-        await this.scheduleFailedSourceBlobUploadCleanup(source);
+      } else if (putStarted) {
+        await this.recordFailedSourceBlobUpload(
+          source,
+          error instanceof SourceBlobUploadRejectedError
+            ? "cleanup_pending"
+            : "upload_unknown",
+        );
       }
       throw error;
     }
@@ -1003,8 +1112,8 @@ export class SourceService {
         reservation?.onPutStarted();
         await putSourceBlob(signedUrl, fileBuffer, this.blobUploadTimeoutMs);
       } catch (error: unknown) {
-        if (!(error instanceof SourceBlobUploadTimeoutError)) throw error;
-        // Socket cancellation cannot revoke a PUT already accepted remotely.
+        if (error instanceof SourceBlobUploadRejectedError) throw error;
+        // A timeout or lost connection cannot revoke a remotely accepted PUT.
         // Commit this fence before releasing the source lock to deletion.
         await tx
           .update(sourceBlobUploads)
@@ -1121,9 +1230,10 @@ export class SourceService {
     });
   }
 
-  /** Marks a failed or cancelled upload for durable physical cleanup. */
-  private async scheduleFailedSourceBlobUploadCleanup(
+  /** Retain uncertain PUTs; only definite failures may enter physical cleanup. */
+  private async recordFailedSourceBlobUpload(
     source: SourcesInsert & { id: TypeId<"source"> },
+    state: "cleanup_pending" | "upload_unknown" = "cleanup_pending",
   ): Promise<void> {
     await this.db.transaction(async (tx) => {
       const [lockedSource] = await tx
@@ -1152,7 +1262,7 @@ export class SourceService {
       ) {
         await tx
           .update(sourceBlobUploads)
-          .set({ state: "cleanup_pending", updatedAt: new Date() })
+          .set({ state, updatedAt: new Date() })
           .where(
             and(
               eq(sourceBlobUploads.userId, source.userId),
@@ -1242,11 +1352,12 @@ export class SourceService {
 
     for (const row of rows) {
       const meta = sourceMetadataSchema.parse(row.metadata ?? {});
-      if (meta.rawContent !== undefined) {
+      const content = meta.convertedMarkdown ?? meta.rawContent;
+      if (content !== undefined) {
         results.push({
           kind: "inline",
           sourceId: row.id,
-          content: meta.rawContent,
+          content,
         });
       } else if (row.contentLength === null && row.contentType === null) {
         continue;

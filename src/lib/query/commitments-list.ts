@@ -57,6 +57,7 @@ interface ListRow {
   statusMetadata: unknown;
   createdAt: Date;
   sourceId: TypeId<"source">;
+  presentationSourceId: TypeId<"source"> | null;
   sourceMetadata: unknown;
   sourceCreatedAt: Date | null;
   sourceLastIngestedAt: Date | null;
@@ -128,12 +129,12 @@ function escapeLike(term: string): string {
 }
 
 /**
- * Assemble the inbox card's inline evidence: provenance from the joined source
- * (present for every commitment with a resolvable source), plus the verbatim
- * excerpt + why when a `commitment_presentations` row exists.
+ * Keep presentation text attached to its own source, even when a later source
+ * changes the task's status. Without presentation text, cite the status source.
  */
 function buildPresentation(row: {
   sourceId: TypeId<"source">;
+  presentationSourceId: TypeId<"source"> | null;
   sourceMetadata: unknown;
   sourceCreatedAt: Date | null;
   sourceLastIngestedAt: Date | null;
@@ -144,7 +145,7 @@ function buildPresentation(row: {
     row.sourceCreatedAt === null
       ? null
       : {
-          sourceId: row.sourceId,
+          sourceId: row.presentationSourceId ?? row.sourceId,
           title: deriveTitle(row.sourceMetadata),
           overheardAt: row.sourceLastIngestedAt ?? row.sourceCreatedAt,
         };
@@ -264,6 +265,7 @@ export async function listCommitments(
       statusMetadata: claims.metadata,
       createdAt: nodes.createdAt,
       sourceId: claims.sourceId,
+      presentationSourceId: commitmentPresentations.sourceId,
       sourceMetadata: sources.metadata,
       sourceCreatedAt: sources.createdAt,
       sourceLastIngestedAt: sources.lastIngestedAt,
@@ -311,10 +313,16 @@ export async function listCommitments(
       ),
     )
     .leftJoin(dueMetadata, eq(dueMetadata.nodeId, dueClaim.objectNodeId))
-    .leftJoin(sources, eq(sources.id, claims.sourceId))
     .leftJoin(
       commitmentPresentations,
       eq(commitmentPresentations.taskId, nodes.id),
+    )
+    .leftJoin(
+      sources,
+      eq(
+        sources.id,
+        sql`coalesce(${commitmentPresentations.sourceId}, ${claims.sourceId})`,
+      ),
     )
     .where(and(...whereClauses.filter((c): c is SQL => c !== undefined)))
     .orderBy(...orderBy)

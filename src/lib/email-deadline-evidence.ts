@@ -7,6 +7,24 @@ function dateWords(text: string): string {
     .trim();
 }
 
+/** Only an unconditional removal sentence can clear a previously dated task. */
+export function hasEmailDeadlineRemovalEvidence(excerpt: string): boolean {
+  const sentences = normalizeEmailEvidence(excerpt).split(/(?<=[.!?;])\s+/u);
+  const removal =
+    /^(?:(?:the )?(?:deadline|due date) (?:is|has been) (?:removed|cancelled|canceled|withdrawn)|there is no (?:longer a )?deadline(?: now| anymore)?|(?:the task|this task|it) (?:has no|no longer has a) deadline|er is geen deadline(?: meer)?|de deadline is (?:vervallen|ingetrokken))(?:[.!;])?$/u;
+  const removals = sentences.filter((sentence) => removal.test(sentence));
+  if (removals.length === 0) return false;
+  // A replacement date, including an unsupported relative date, is not a
+  // removal. Leave the existing deadline intact when the excerpt is ambiguous.
+  return sentences.every(
+    (sentence) =>
+      removal.test(sentence) ||
+      !/\b(?:deadline|due|by|before|uiterlijk|tegen|vóór|voor)\b/u.test(
+        sentence,
+      ),
+  );
+}
+
 /** A normalized date must agree with the quoted, already-validated request. */
 export function hasEmailDeadlineEvidence(input: {
   dateLabel: string | undefined;

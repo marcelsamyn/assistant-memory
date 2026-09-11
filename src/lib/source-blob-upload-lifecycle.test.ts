@@ -361,6 +361,76 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
     await service.deleteRawBlobIfPresent(userId, sourceId);
   }, 30_000);
 
+  it("retains an unknown replacement if PostgreSQL rejects its descriptor after the PUT", async () => {
+    const userId = "replacement-descriptor-rejected";
+    await database.insert(users).values({ id: userId });
+    const service = new SourceService(database, minio, bucket, 1);
+    const initial = await service.insertMany([
+      {
+        userId,
+        sourceType: "document",
+        externalId: "descriptor-replacement",
+        timestamp: new Date(),
+        fileBuffer: Buffer.from("old bytes"),
+        contentType: "application/pdf",
+      },
+    ]);
+    const sourceId = initial.successes[0];
+    if (!sourceId) throw new Error("Expected source");
+    await postgres.query(`
+      CREATE FUNCTION reject_test_source_descriptor() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.metadata->>'rejectDescriptor' = 'true' THEN
+          RAISE EXCEPTION 'reject descriptor';
+        END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER reject_test_source_descriptor BEFORE UPDATE ON sources
+      FOR EACH ROW EXECUTE FUNCTION reject_test_source_descriptor();
+    `);
+    try {
+      await expect(
+        service.replaceFileContent({
+          userId,
+          sourceId,
+          partitionKey: undefined,
+          externalId: "descriptor-replacement",
+          buffer: Buffer.from("committed replacement bytes"),
+          contentType: "application/pdf",
+          contentHash: "descriptor-replacement",
+          metadata: { rejectDescriptor: true },
+          scope: "personal",
+          timestamp: new Date(),
+        }),
+      ).rejects.toThrow("reject descriptor");
+      const [upload] = await database
+        .select()
+        .from(sourceBlobUploads)
+        .where(eq(sourceBlobUploads.sourceId, sourceId));
+      const [source] = await database
+        .select()
+        .from(sources)
+        .where(eq(sources.id, sourceId));
+      expect(upload?.state).toBe("upload_unknown");
+      expect(source).toMatchObject({
+        status: "failed",
+        contentLength: Buffer.byteLength("old bytes"),
+      });
+      expect((await service.fetchRaw(userId, [sourceId]))[0]).toMatchObject({
+        kind: "blob",
+        buffer: Buffer.from("committed replacement bytes"),
+      });
+    } finally {
+      await postgres.query(
+        "DROP TRIGGER reject_test_source_descriptor ON sources; DROP FUNCTION reject_test_source_descriptor();",
+      );
+      await service.deleteRawBlobIfPresent(userId, sourceId);
+      await database
+        .delete(sourceBlobUploads)
+        .where(eq(sourceBlobUploads.sourceId, sourceId));
+    }
+  }, 30_000);
+
   it.each([
     "cleanup_pending",
     "cleanup_completed",
@@ -797,9 +867,14 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
     },
   );
 
-  it.each([false, true])(
-    "fences an unknown replacement when old bytes exist and the new PUT is buffered: %s",
-    async (buffered) => {
+  it.each([
+    { buffered: false, failure: "timeout" },
+    { buffered: true, failure: "timeout" },
+    { buffered: false, failure: "reset" },
+    { buffered: true, failure: "reset" },
+  ])(
+    "fences an unknown replacement after $failure (buffered: $buffered)",
+    async ({ buffered, failure }) => {
       const committed = deferred();
       const release = deferred();
       const proxy = createServer((request, response) => {
@@ -818,7 +893,10 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
                 storageResponse.statusCode === 200
               ) {
                 storageResponse.resume();
-                storageResponse.on("end", () => committed.resolve());
+                storageResponse.on("end", () => {
+                  committed.resolve();
+                  if (failure === "reset") response.destroy();
+                });
               } else {
                 response.writeHead(
                   storageResponse.statusCode ?? 502,
@@ -836,6 +914,7 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
           const chunks: Buffer[] = [];
           request.on("data", (chunk: Buffer) => chunks.push(chunk));
           request.on("end", () => {
+            if (failure === "reset") response.destroy();
             void release.promise.then(() => forward(Buffer.concat(chunks)));
           });
         } else forward();
@@ -853,7 +932,7 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
         accessKey: MINIO_ACCESS_KEY,
         secretKey: MINIO_SECRET_KEY,
       });
-      const userId = `source-upload-timeout-user-${buffered}`;
+      const userId = `source-upload-unknown-${failure}-${buffered}`;
       try {
         await database.insert(users).values({ id: userId });
         const initialService = new SourceService(database, minio, bucket, 1);
@@ -889,8 +968,24 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
           scope: "reference",
           timestamp: new Date("2026-09-10T08:00:00.000Z"),
         });
+        const failedUpload =
+          failure === "timeout"
+            ? expect(result).rejects.toThrow("storage outcome is unknown")
+            : expect(result).rejects.toMatchObject({ code: "ECONNRESET" });
         if (!buffered) await committed.promise;
-        await expect(result).rejects.toThrow("storage outcome is unknown");
+        await failedUpload;
+        const [failedSource] = await lifecycleDatabase
+          .select()
+          .from(sources)
+          .where(eq(sources.id, sourceId));
+        expect(failedSource).toMatchObject({
+          status: "failed",
+          contentLength: Buffer.byteLength("initial durable bytes"),
+        });
+        expect(failedSource?.metadata).not.toHaveProperty(
+          "filename",
+          "revised.pdf",
+        );
         const [upload] = await lifecycleDatabase
           .select()
           .from(sourceBlobUploads)
@@ -953,6 +1048,11 @@ describeIfInfrastructure("source blob upload lifecycle coordination", () => {
           .from(sourceBlobUploads)
           .where(eq(sourceBlobUploads.sourceId, sourceId));
         expect(stillUnknown?.state).toBe("upload_unknown");
+        const [stored] = await initialService.fetchRaw(userId, [sourceId]);
+        expect(stored).toMatchObject({
+          kind: "blob",
+          buffer: Buffer.from("revised bytes whose acknowledgement was lost"),
+        });
         await cleanupService.deleteRawBlobObjectKeyIfPresent(upload.objectKey);
       } finally {
         release.resolve();

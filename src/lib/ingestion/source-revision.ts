@@ -1,9 +1,10 @@
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, notExists, or, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import type { DrizzleDB } from "~/db";
 import {
   claims,
   commitmentPresentations,
+  nodes,
   sourceIngestionOperations,
   sourceLinks,
 } from "~/db/schema";
@@ -108,7 +109,10 @@ export async function invalidateSourceExtractionRevision(
     )
     .returning();
   await applyClaimLifecycle(tx, removed);
-  await tx.delete(sourceLinks).where(eq(sourceLinks.sourceId, sourceId));
+  const removedLinks = await tx
+    .delete(sourceLinks)
+    .where(eq(sourceLinks.sourceId, sourceId))
+    .returning({ nodeId: sourceLinks.nodeId });
   await tx
     .delete(commitmentPresentations)
     .where(
@@ -117,4 +121,55 @@ export async function invalidateSourceExtractionRevision(
         eq(commitmentPresentations.sourceId, sourceId),
       ),
     );
+
+  // Claims can be a node's only provenance, including object and participant
+  // references. Restrict cleanup to this revision's former evidence paths.
+  const candidateIds = [
+    ...new Set([
+      ...removedLinks.map((link) => link.nodeId),
+      ...removed.flatMap((claim) =>
+        [
+          claim.subjectNodeId,
+          claim.objectNodeId,
+          claim.assertedByNodeId,
+        ].filter((nodeId): nodeId is TypeId<"node"> => nodeId !== null),
+      ),
+    ]),
+  ];
+  if (candidateIds.length === 0) return;
+
+  // Lock before the evidence check so a concurrently committed source link or
+  // claim is visible before deletion. FK inserts wait on these same row locks.
+  await tx
+    .select({ id: nodes.id })
+    .from(nodes)
+    .where(and(eq(nodes.userId, userId), inArray(nodes.id, candidateIds)))
+    .orderBy(nodes.id)
+    .for("update");
+  // Metadata, embeddings, aliases, and presentations cascade with the node.
+  // Retained decisions and support from other sources keep shared nodes alive.
+  await tx.delete(nodes).where(
+    and(
+      eq(nodes.userId, userId),
+      inArray(nodes.id, candidateIds),
+      notExists(
+        tx
+          .select({ id: sourceLinks.id })
+          .from(sourceLinks)
+          .where(eq(sourceLinks.nodeId, nodes.id)),
+      ),
+      notExists(
+        tx
+          .select({ id: claims.id })
+          .from(claims)
+          .where(
+            or(
+              eq(claims.subjectNodeId, nodes.id),
+              eq(claims.objectNodeId, nodes.id),
+              eq(claims.assertedByNodeId, nodes.id),
+            ),
+          ),
+      ),
+    ),
+  );
 }

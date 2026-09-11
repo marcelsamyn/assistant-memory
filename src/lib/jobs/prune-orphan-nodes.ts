@@ -99,8 +99,11 @@ function sourceExpectsBlobCondition(
   );
 }
 
-function sourceHasInlineRawContent(metadata: unknown): boolean {
-  return sourceMetadataSchema.parse(metadata ?? {}).rawContent !== undefined;
+function sourceHasStoredText(metadata: unknown): boolean {
+  const parsed = sourceMetadataSchema.parse(metadata ?? {});
+  return (
+    parsed.rawContent !== undefined || parsed.convertedMarkdown !== undefined
+  );
 }
 
 function orphanEvidenceFreeCondition(
@@ -201,7 +204,7 @@ async function scanMissingBlobSources(
     hasMore: sourceRowsPlusOne.length > params.limit,
     candidates: sourceRows.filter(
       (row) =>
-        !sourceHasInlineRawContent(row.metadata) &&
+        !sourceHasStoredText(row.metadata) &&
         !existingBlobSourceIds.has(row.id),
     ),
   };
@@ -237,7 +240,7 @@ async function deleteStillMissingBlobSources(
   const stillMissingIds = sourceRows
     .filter(
       (row) =>
-        !sourceHasInlineRawContent(row.metadata) &&
+        !sourceHasStoredText(row.metadata) &&
         !existingBlobSourceIds.has(row.id),
     )
     .map((row) => row.id);

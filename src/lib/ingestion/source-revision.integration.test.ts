@@ -1,6 +1,6 @@
 import { hashSourceContent } from "./source-processing";
 import { hashSourceExtractionRevision } from "./source-revision";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { createApp, toNodeListener } from "h3";
@@ -13,6 +13,7 @@ import { confirmCommitment, dismissCommitment } from "~/lib/commitments";
 import { ingestFileResponseSchema } from "~/lib/schemas/ingest-file";
 import type { SourceContext } from "~/lib/schemas/source-context";
 import { SourceService } from "~/lib/sources";
+import { newTypeId } from "~/types/typeid";
 import { setTestDatabase } from "~/utils/db";
 import {
   resetTestOverrides,
@@ -211,6 +212,7 @@ describe.skipIf(!(await available()))(
       sourceContext: SourceContext,
       content = ai.excerpt,
       title?: string,
+      filename = "message.txt",
     ) {
       await database
         .insert(schema.users)
@@ -234,11 +236,7 @@ describe.skipIf(!(await available()))(
       form.set("externalId", "message");
       form.set("sourceContext", JSON.stringify(sourceContext));
       if (title !== undefined) form.set("title", title);
-      form.set(
-        "file",
-        new Blob([content], { type: "text/plain" }),
-        "message.txt",
-      );
+      form.set("file", new Blob([content], { type: "text/plain" }), filename);
       const response = await fetch(`${baseUrl}/ingest/file`, {
         method: "POST",
         body: form,
@@ -290,6 +288,408 @@ describe.skipIf(!(await available()))(
           ),
         );
     }
+
+    it.each(["document", "file"] as const)(
+      "removes orphaned %s nodes and projections before extracting the corrected revision",
+      async (kind) => {
+        const userId = `revision-orphans-${kind}`;
+        const first = await accept(kind, userId, context);
+        await runAccepted(kind, first.ingestionOperationId);
+        const originalNodes = await database
+          .select()
+          .from(schema.nodes)
+          .where(eq(schema.nodes.userId, userId));
+        expect(
+          originalNodes.filter((node) => node.nodeType === "Document"),
+        ).toHaveLength(1);
+        expect(
+          originalNodes.filter((node) => node.nodeType === "Task"),
+        ).toHaveLength(1);
+        const task = originalNodes.find((node) => node.nodeType === "Task");
+        if (!task) throw new Error("Expected extracted task");
+        await database.insert(schema.commitmentPresentations).values({
+          taskId: task.id,
+          userId,
+          sourceId: first.sourceId,
+          excerpt: ai.excerpt,
+          why: "The prior revision requested a document review.",
+        });
+        // Legacy extracted evidence can mention nodes without source links,
+        // including a participant referenced only as the claim's author.
+        const subjectId = newTypeId("node");
+        const objectId = newTypeId("node");
+        const participantId = newTypeId("node");
+        const claimOnlyIds = [subjectId, objectId, participantId];
+        await database.insert(schema.nodes).values(
+          claimOnlyIds.map((id) => ({
+            id,
+            userId,
+            nodeType: "Person" as const,
+          })),
+        );
+        const [legacyClaim] = await database
+          .insert(schema.claims)
+          .values({
+            userId,
+            sourceId: first.sourceId,
+            subjectNodeId: subjectId,
+            objectNodeId: objectId,
+            assertedByNodeId: participantId,
+            assertedByKind: "participant",
+            predicate: "RELATED_TO",
+            statement: "The prior revision said these people knew each other.",
+            statedAt: new Date("2026-09-10T08:00:00Z"),
+          })
+          .returning();
+        if (!legacyClaim) throw new Error("Expected legacy claim");
+        await database.insert(schema.nodeMetadata).values(
+          claimOnlyIds.map((nodeId) => ({
+            nodeId,
+            label: `Obsolete ${nodeId}`,
+            description: "Only supported by the prior revision.",
+          })),
+        );
+        const originalIds = [
+          ...originalNodes.map((node) => node.id),
+          ...claimOnlyIds,
+        ];
+        const vector = Array.from({ length: 1024 }, () => 0.01);
+        await database.insert(schema.nodeEmbeddings).values(
+          originalIds.map((nodeId) => ({
+            nodeId,
+            embedding: vector,
+            modelName: "test",
+          })),
+        );
+        await database.insert(schema.aliases).values(
+          originalIds.map((canonicalNodeId) => ({
+            userId,
+            canonicalNodeId,
+            aliasText: `Old ${canonicalNodeId}`,
+            normalizedAliasText: `old ${canonicalNodeId}`,
+          })),
+        );
+        await database.insert(schema.claimEmbeddings).values({
+          claimId: legacyClaim.id,
+          embedding: vector,
+          modelName: "test",
+        });
+        const correctedContext = {
+          ...context,
+          deliveryKind: "newsletter" as const,
+        };
+        const correction = await accept(kind, userId, correctedContext);
+        expect(correction.sourceId).toBe(first.sourceId);
+        expect(
+          await database
+            .select()
+            .from(schema.nodes)
+            .where(inArray(schema.nodes.id, originalIds)),
+        ).toEqual([]);
+        expect(
+          await database
+            .select()
+            .from(schema.nodeMetadata)
+            .where(inArray(schema.nodeMetadata.nodeId, originalIds)),
+        ).toEqual([]);
+        expect(
+          await database
+            .select()
+            .from(schema.nodeEmbeddings)
+            .where(inArray(schema.nodeEmbeddings.nodeId, originalIds)),
+        ).toEqual([]);
+        expect(
+          await database
+            .select()
+            .from(schema.aliases)
+            .where(inArray(schema.aliases.canonicalNodeId, originalIds)),
+        ).toEqual([]);
+        expect(
+          await database
+            .select()
+            .from(schema.claimEmbeddings)
+            .where(eq(schema.claimEmbeddings.claimId, legacyClaim.id)),
+        ).toEqual([]);
+        expect(
+          await database
+            .select()
+            .from(schema.commitmentPresentations)
+            .where(eq(schema.commitmentPresentations.userId, userId)),
+        ).toEqual([]);
+
+        await runAccepted(kind, correction.ingestionOperationId);
+        const documents = await database
+          .select()
+          .from(schema.nodes)
+          .where(
+            and(
+              eq(schema.nodes.userId, userId),
+              eq(schema.nodes.nodeType, "Document"),
+            ),
+          );
+        expect(documents).toHaveLength(1);
+        const [document] = documents;
+        if (!document) throw new Error("Expected corrected Document");
+        expect(
+          await database
+            .select()
+            .from(schema.sourceLinks)
+            .where(eq(schema.sourceLinks.sourceId, first.sourceId)),
+        ).toMatchObject([{ nodeId: document.id }]);
+        expect(await activeStatuses(userId)).toEqual([]);
+
+        const changed = await accept(
+          kind,
+          userId,
+          correctedContext,
+          "Corrected newsletter content.",
+        );
+        expect(
+          await database
+            .select()
+            .from(schema.nodes)
+            .where(eq(schema.nodes.id, document.id)),
+        ).toEqual([]);
+        await runAccepted(kind, changed.ingestionOperationId);
+        expect(
+          await database
+            .select()
+            .from(schema.nodes)
+            .where(
+              and(
+                eq(schema.nodes.userId, userId),
+                eq(schema.nodes.nodeType, "Document"),
+              ),
+            ),
+        ).toHaveLength(1);
+      },
+      30_000,
+    );
+
+    it("preserves shared nodes supported by source links or any claim role and leaves unrelated nodes intact", async () => {
+      const userId = "revision-shared-nodes";
+      const first = await accept("document", userId, context);
+      await runAccepted("document", first.ingestionOperationId);
+      const [otherSource] = await database
+        .insert(schema.sources)
+        .values({
+          userId,
+          type: "document",
+          externalId: "other-document",
+        })
+        .returning();
+      if (!otherSource) throw new Error("Expected independent source");
+      const linkedId = newTypeId("node");
+      const subjectId = newTypeId("node");
+      const objectId = newTypeId("node");
+      const participantId = newTypeId("node");
+      const unrelatedId = newTypeId("node");
+      const sharedIds = [linkedId, subjectId, objectId, participantId];
+      const retainedIds = [...sharedIds, unrelatedId];
+      const originalNodes = await database
+        .insert(schema.nodes)
+        .values(
+          retainedIds.map((id) => ({
+            id,
+            userId,
+            nodeType: "Person" as const,
+          })),
+        )
+        .returning();
+      const originalMetadata = await database
+        .insert(schema.nodeMetadata)
+        .values(
+          retainedIds.map((nodeId) => ({
+            nodeId,
+            label: `Retained ${nodeId}`,
+            description: "Retained independent evidence.",
+          })),
+        )
+        .returning();
+      const originalEmbeddings = await database
+        .insert(schema.nodeEmbeddings)
+        .values(
+          retainedIds.map((nodeId) => ({
+            nodeId,
+            embedding: Array.from({ length: 1024 }, () => 0.01),
+            modelName: "test",
+          })),
+        )
+        .returning();
+      await database
+        .insert(schema.sourceLinks)
+        .values([
+          ...sharedIds.map((nodeId) => ({ sourceId: first.sourceId, nodeId })),
+          { sourceId: otherSource.id, nodeId: linkedId },
+        ]);
+      const [otherClaim] = await database
+        .insert(schema.claims)
+        .values({
+          userId,
+          sourceId: otherSource.id,
+          subjectNodeId: subjectId,
+          objectNodeId: objectId,
+          assertedByNodeId: participantId,
+          assertedByKind: "participant",
+          predicate: "RELATED_TO",
+          statement: "Independent evidence supports all three claim roles.",
+          statedAt: new Date("2026-09-10T08:00:00Z"),
+        })
+        .returning();
+      if (!otherClaim) throw new Error("Expected independent claim");
+      await accept("document", userId, {
+        ...context,
+        deliveryKind: "newsletter",
+      });
+      expect(
+        await database
+          .select()
+          .from(schema.nodes)
+          .where(inArray(schema.nodes.id, retainedIds)),
+      ).toEqual(expect.arrayContaining(originalNodes));
+      expect(
+        await database
+          .select()
+          .from(schema.nodeMetadata)
+          .where(inArray(schema.nodeMetadata.nodeId, retainedIds)),
+      ).toEqual(expect.arrayContaining(originalMetadata));
+      expect(
+        await database
+          .select()
+          .from(schema.nodeEmbeddings)
+          .where(inArray(schema.nodeEmbeddings.nodeId, retainedIds)),
+      ).toEqual(expect.arrayContaining(originalEmbeddings));
+      expect(
+        await database
+          .select()
+          .from(schema.sourceLinks)
+          .where(eq(schema.sourceLinks.sourceId, otherSource.id)),
+      ).toMatchObject([{ nodeId: linkedId }]);
+      expect(
+        await database
+          .select()
+          .from(schema.claims)
+          .where(eq(schema.claims.id, otherClaim.id)),
+      ).toEqual([otherClaim]);
+    });
+
+    it.each(["title", "filename"] as const)(
+      "updates the linked Document %s on a completed file replay without re-extracting",
+      async (field) => {
+        const userId = `file-${field}-replay`;
+        const originalLabel =
+          field === "title" ? "Original title" : "Original file.txt";
+        const correctedLabel =
+          field === "title" ? "Corrected title" : "Corrected file.txt";
+        const content = "Please review the contract and send your comments.";
+        const accepted = await accept(
+          "file",
+          userId,
+          context,
+          content,
+          field === "title" ? originalLabel : undefined,
+          "Original file.txt",
+        );
+        await runAccepted("file", accepted.ingestionOperationId);
+        const linkedDocument = () =>
+          database
+            .select({
+              nodeId: schema.nodes.id,
+              label: schema.nodeMetadata.label,
+              canonicalLabel: schema.nodeMetadata.canonicalLabel,
+              description: schema.nodeMetadata.description,
+            })
+            .from(schema.sourceLinks)
+            .innerJoin(
+              schema.nodes,
+              eq(schema.nodes.id, schema.sourceLinks.nodeId),
+            )
+            .innerJoin(
+              schema.nodeMetadata,
+              eq(schema.nodeMetadata.nodeId, schema.nodes.id),
+            )
+            .where(
+              and(
+                eq(schema.sourceLinks.sourceId, accepted.sourceId),
+                eq(schema.nodes.nodeType, "Document"),
+              ),
+            );
+        const original = await linkedDocument();
+        expect(original).toEqual([
+          expect.objectContaining({ label: originalLabel }),
+        ]);
+        const queuedCount = queue.add.mock.calls.length;
+        const originalClaims = await activeStatuses(userId);
+
+        const replay = await accept(
+          "file",
+          userId,
+          context,
+          content,
+          field === "title" ? correctedLabel : undefined,
+          "Corrected file.txt",
+        );
+
+        expect(replay).toMatchObject({
+          sourceId: accepted.sourceId,
+          ingestionOperationId: accepted.ingestionOperationId,
+          message: "File revision already processed",
+        });
+        expect(await linkedDocument()).toEqual([
+          {
+            ...original[0],
+            label: correctedLabel,
+            canonicalLabel: correctedLabel.toLowerCase(),
+          },
+        ]);
+        const [source] = await database
+          .select({ metadata: schema.sources.metadata })
+          .from(schema.sources)
+          .where(eq(schema.sources.id, accepted.sourceId));
+        expect(source?.metadata).toMatchObject({
+          ...(field === "title"
+            ? { title: correctedLabel }
+            : { filename: correctedLabel }),
+          convertedMarkdown: content,
+        });
+        expect(await activeStatuses(userId)).toEqual(originalClaims);
+        expect(queue.add).toHaveBeenCalledTimes(queuedCount);
+        expect(
+          await database
+            .select({
+              operationId: schema.sourceIngestionOperations.operationId,
+              status: schema.sourceIngestionOperations.status,
+            })
+            .from(schema.sourceIngestionOperations)
+            .where(eq(schema.sourceIngestionOperations.userId, userId)),
+        ).toEqual([
+          { operationId: accepted.ingestionOperationId, status: "completed" },
+        ]);
+
+        const renamed = await accept(
+          "file",
+          userId,
+          context,
+          content,
+          undefined,
+          "Renamed again.txt",
+        );
+        expect(renamed.ingestionOperationId).toBe(
+          accepted.ingestionOperationId,
+        );
+        expect(await linkedDocument()).toEqual([
+          expect.objectContaining({
+            nodeId: original[0]?.nodeId,
+            label: field === "title" ? correctedLabel : "Renamed again.txt",
+            canonicalLabel:
+              field === "title"
+                ? correctedLabel.toLowerCase()
+                : "renamed again.txt",
+          }),
+        ]);
+        expect(queue.add).toHaveBeenCalledTimes(queuedCount);
+      },
+    );
 
     it.each(["document", "file"] as const)(
       "retracts corrected %s evidence and re-extracts context A→B→A and bytes A→B→A",
@@ -350,24 +750,29 @@ describe.skipIf(!(await available()))(
       30_000,
     );
 
-    it.each(["confirm", "dismiss"] as const)(
-      "preserves an explicit %s decision across context correction and restoration",
-      async (action) => {
-        const userId = `revision-user-${action}`;
-        const first = await accept("document", userId, context);
-        await runAccepted("document", first.ingestionOperationId);
+    it.each([
+      ["document", "confirm"],
+      ["document", "dismiss"],
+      ["file", "confirm"],
+      ["file", "dismiss"],
+    ] as const)(
+      "preserves an explicit %s %s decision across context correction and restoration",
+      async (kind, action) => {
+        const userId = `revision-user-${kind}-${action}`;
+        const first = await accept(kind, userId, context);
+        await runAccepted(kind, first.ingestionOperationId);
         const [status] = await activeStatuses(userId);
         if (!status) throw new Error("Expected tentative request");
         const input = { userId, taskId: status.subjectNodeId };
         if (action === "confirm") await confirmCommitment(input);
         else await dismissCommitment(input);
-        const correction = await accept("document", userId, {
+        const correction = await accept(kind, userId, {
           ...context,
           deliveryKind: "newsletter",
         });
-        await runAccepted("document", correction.ingestionOperationId);
-        const restored = await accept("document", userId, context);
-        await runAccepted("document", restored.ingestionOperationId);
+        await runAccepted(kind, correction.ingestionOperationId);
+        const restored = await accept(kind, userId, context);
+        await runAccepted(kind, restored.ingestionOperationId);
         const active = await activeStatuses(userId);
         if (action === "confirm")
           expect(active).toMatchObject([

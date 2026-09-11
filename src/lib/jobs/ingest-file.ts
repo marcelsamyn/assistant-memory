@@ -2,7 +2,7 @@
  * Worker for `POST /ingest/file`. The route already wrote the source row
  * (status `pending`) and uploaded the bytes to MinIO; the worker pulls
  * those bytes back, converts them to Markdown via the markitdown sidecar,
- * stores the converted text on `sources.metadata.rawContent`, and runs
+ * stores the converted text on `sources.metadata.convertedMarkdown`, and runs
  * the existing graph-extraction pipeline against it.
  *
  * Failure modes:
@@ -19,6 +19,7 @@ import { sources } from "~/db/schema";
 import { convertToMarkdown } from "~/lib/converters/markitdown";
 import { ensureUser } from "~/lib/ingestion/ensure-user";
 import { extractDocumentGraph } from "~/lib/ingestion/extract-document-graph";
+import { extractEmailAttachment } from "~/lib/ingestion/extract-email-attachment";
 import {
   completeSourceIngestionOperation,
   advanceSourceIngestionOperationVersion,
@@ -31,7 +32,10 @@ import {
   assertSourcePartition,
   withSourceWriteFence,
 } from "~/lib/partition-access";
-import { contextPartitionKeySchema } from "~/lib/schemas/partition";
+import {
+  contextPartitionKeySchema,
+  type ContextPartitionKey,
+} from "~/lib/schemas/partition";
 import { sourceMetadataSchema, sourceService } from "~/lib/sources";
 import { typeIdSchema, type TypeId } from "~/types/typeid";
 
@@ -66,7 +70,9 @@ export async function ingestFile({
   externalId,
   operationId,
   finalAttempt,
-}: IngestFileParams): Promise<void> {
+}: IngestFileParams): Promise<
+  { partitionKey: ContextPartitionKey | undefined } | undefined
+> {
   await ensureUser(db, userId);
   if (operationId !== undefined) {
     const context = await getSourceIngestionJobContext({
@@ -86,6 +92,29 @@ export async function ingestFile({
     ...(operationId === undefined ? { expectedSourceVersion } : {}),
   });
   let sourceVersion = expectedSourceVersion;
+
+  if (operationId !== undefined) {
+    const processing = await markSourceIngestionProcessing({
+      db,
+      userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
+      sourceId,
+      operationId,
+      expectedSourceVersion: sourceVersion,
+    });
+    sourceVersion = processing.sourceVersion;
+    if (processing.status === "completed") return { partitionKey };
+    if (processing.status === "failed" || processing.status === "purged")
+      return;
+  } else {
+    sourceVersion = await updateSourceWhileLive({
+      db,
+      userId,
+      sourceId,
+      expectedSourceVersion: sourceVersion,
+      set: { status: "processing" },
+    });
+  }
 
   const [row] = await db
     .select({
@@ -113,41 +142,24 @@ export async function ingestFile({
   const existingMeta = sourceMetadataSchema.parse(row.metadata ?? {});
   const explicitAuthor = existingMeta.author;
   const explicitTitle = existingMeta.title;
-
-  if (operationId !== undefined) {
-    const processing = await markSourceIngestionProcessing({
-      db,
-      userId,
-      ...(partitionKey !== undefined ? { partitionKey } : {}),
-      sourceId,
-      operationId,
-      expectedSourceVersion: sourceVersion,
-    });
-    sourceVersion = processing.sourceVersion;
-    if (["completed", "failed", "purged"].includes(processing.status)) return;
-  } else {
-    sourceVersion = await updateSourceWhileLive({
-      db,
-      userId,
-      sourceId,
-      expectedSourceVersion: sourceVersion,
-      set: { status: "processing" },
-    });
-  }
+  filename = existingMeta.filename ?? filename;
 
   let extractionStarted = false;
   try {
     // Original non-text bytes live only in blob storage. A binary contentType
     // plus rawContent therefore identifies a converted file from before the
     // explicit marker existed; original inline text has no contentType.
-    const hasConvertedContent =
-      existingMeta.rawContent !== undefined &&
+    const convertedContent =
+      existingMeta.convertedMarkdown ??
       (existingMeta.convertedToMarkdown === true ||
-        (row.contentType !== null && !row.contentType.startsWith("text/")));
+      (row.contentType !== null && !row.contentType.startsWith("text/"))
+        ? existingMeta.rawContent
+        : undefined);
+    const hasConvertedContent = convertedContent !== undefined;
     let converted: { markdown: string; title: string | null };
-    if (hasConvertedContent && existingMeta.rawContent !== undefined) {
+    if (convertedContent !== undefined) {
       converted = {
-        markdown: existingMeta.rawContent,
+        markdown: convertedContent,
         title: explicitTitle ?? null,
       };
     } else {
@@ -212,7 +224,7 @@ export async function ingestFile({
           const [updated] = await tx
             .update(sources)
             .set({
-              metadata: sql`COALESCE(${sources.metadata}, '{}'::jsonb) || jsonb_build_object('rawContent', ${converted.markdown}::text, 'convertedToMarkdown', true) || ${titleClause}`,
+              metadata: sql`COALESCE(${sources.metadata}, '{}'::jsonb) || jsonb_build_object('convertedMarkdown', ${converted.markdown}::text, 'convertedToMarkdown', true) || ${titleClause}`,
             })
             .where(and(eq(sources.id, sourceId), eq(sources.userId, userId)))
             .returning({ version: sources.version });
@@ -246,22 +258,35 @@ export async function ingestFile({
         sourceId,
         operationId,
       });
-      if (["completed", "failed", "purged"].includes(extraction.status)) return;
+      if (extraction.status === "completed") return { partitionKey };
+      if (extraction.status === "failed" || extraction.status === "purged")
+        return;
       extractionStarted = true;
     }
 
-    await extractDocumentGraph({
-      db,
-      userId,
-      sourceId: sourceId as TypeId<"source">,
-      expectedSourceVersion: sourceVersion,
-      externalId: externalId ?? row.externalId,
-      content: converted.markdown,
-      timestamp,
-      logLabel: filename,
-      title: documentTitle,
-      ...(explicitAuthor !== undefined && { author: explicitAuthor }),
-    });
+    if (existingMeta.sourceContext?.sourceKind === "email_attachment") {
+      await extractEmailAttachment({
+        db,
+        userId,
+        sourceId,
+        expectedSourceVersion: sourceVersion,
+        partitionKey,
+        context: existingMeta.sourceContext,
+      });
+    } else {
+      await extractDocumentGraph({
+        db,
+        userId,
+        sourceId: sourceId as TypeId<"source">,
+        expectedSourceVersion: sourceVersion,
+        externalId: externalId ?? row.externalId,
+        content: converted.markdown,
+        timestamp,
+        logLabel: filename,
+        title: documentTitle,
+        ...(explicitAuthor !== undefined && { author: explicitAuthor }),
+      });
+    }
 
     if (operationId !== undefined) {
       await completeSourceIngestionOperation({
@@ -280,6 +305,7 @@ export async function ingestFile({
         set: { status: "completed" },
       });
     }
+    return { partitionKey };
   } catch (error) {
     if (operationId !== undefined && finalAttempt) {
       await failSourceIngestionOperation({
