@@ -14,6 +14,8 @@ Documents and files can carry optional `sourceContext`: facts supplied by the ho
 
 If a processing receipt was saved but its queue job was not, resubmit the same ingestion request with the source-preserving defaults to restore the job. Legacy `updateExisting: true` replacement requests intentionally tombstone and recreate the source; use the processing retry endpoint when retained conversion settings are available.
 
+Display-only document/file title updates refresh the linked Document label and search embedding without repeating extraction. Source identity retirement blocks parent creation as well as content writes for every supported source type. Purged processing receipts retain status and internal references but erase the external identity and content hash.
+
 Concurrent document/file requests with the same identity reuse the first stored fallback timestamp when none is supplied. Readable email attachments can refine an existing request's label and statement while preserving its current-message citation, status, and manual confirmation or dismissal. Incoming lifecycle updates require a known matching requester; authenticated outgoing owner messages can update the owner's work.
 
 Matched email revisions can remove an earlier inferred deadline with explicit removal wording, such as “There is no deadline now” or “Er is geen deadline meer.” Omitted or ambiguous dates preserve the existing deadline, and email revisions do not clear dates set by the user. Presentation excerpts keep their original source citation when later messages change task status.

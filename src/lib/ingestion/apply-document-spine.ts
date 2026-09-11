@@ -19,10 +19,11 @@
  * document node, folded spine.
  */
 import { useDatabase } from "../../utils/db";
+import { generateAndInsertNodeEmbeddings } from "../embeddings-util";
 import { normalizeLabel } from "../label";
 import { and, eq } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
-import { nodeMetadata, nodes, sourceLinks } from "~/db/schema";
+import { nodeEmbeddings, nodeMetadata, nodes, sourceLinks } from "~/db/schema";
 import { withSourceWriteFence } from "~/lib/partition-access";
 import { type DocumentSpine } from "~/lib/schemas/document-spine";
 import { type TypeId } from "~/types/typeid";
@@ -59,9 +60,14 @@ export async function updateDocumentTitle(params: {
     },
     async (tx) => {
       const linked = await tx
-        .select({ nodeId: sourceLinks.nodeId })
+        .select({
+          nodeId: sourceLinks.nodeId,
+          label: nodeMetadata.label,
+          description: nodeMetadata.description,
+        })
         .from(sourceLinks)
         .innerJoin(nodes, eq(nodes.id, sourceLinks.nodeId))
+        .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
         .where(
           and(
             eq(sourceLinks.sourceId, params.sourceId),
@@ -70,12 +76,17 @@ export async function updateDocumentTitle(params: {
           ),
         )
         .limit(1);
-      const nodeId = linked[0]?.nodeId;
-      if (!nodeId) return;
+      const document = linked[0];
+      if (!document || document.label === label) return;
+      const { nodeId, description } = document;
       await tx
         .update(nodeMetadata)
         .set({ label, canonicalLabel })
         .where(eq(nodeMetadata.nodeId, nodeId));
+      await tx.delete(nodeEmbeddings).where(eq(nodeEmbeddings.nodeId, nodeId));
+      await generateAndInsertNodeEmbeddings(tx, [
+        { id: nodeId, label, description },
+      ]);
     },
   );
 }

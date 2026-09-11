@@ -1,5 +1,5 @@
 import handler from "./routes/sources/identity/lifecycle.post";
-import { createApp, readBody, toWebHandler, type H3Event } from "h3";
+import { createApp, toWebHandler } from "h3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PartitionAccessError } from "~/lib/partition-access";
 import { newTypeId } from "~/types/typeid";
@@ -30,6 +30,16 @@ describe("POST /sources/identity/lifecycle", () => {
     vi.clearAllMocks();
   });
 
+  function request(input: unknown): Promise<Response> {
+    return toWebHandler(createApp().use(handler))(
+      new Request("http://memory.test/sources/identity/lifecycle", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      }),
+    );
+  }
+
   it("retires a stable identity and returns the source that won the race", async () => {
     const source = {
       sourceId: newTypeId("source"),
@@ -44,10 +54,11 @@ describe("POST /sources/identity/lifecycle", () => {
       identities: [{ type: "document", externalId: "radar-gmail:opaque" }],
       action: "retire",
     };
-    vi.stubGlobal("readBody", async () => input);
     mocks.applySourceIdentityLifecycle.mockResolvedValue({ sources: [source] });
 
-    await expect(handler({} as H3Event)).resolves.toEqual({
+    const response = await request(input);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
       sources: [source],
     });
     expect(mocks.ensureUser).toHaveBeenCalledWith({}, input.userId);
@@ -60,16 +71,42 @@ describe("POST /sources/identity/lifecycle", () => {
   });
 
   it("restores an identity even when no source exists", async () => {
-    vi.stubGlobal("readBody", async () => ({
+    mocks.applySourceIdentityLifecycle.mockResolvedValue({ sources: [] });
+    const response = await request({
       userId: "user_mail",
       partitionKey: "radar:mail",
       identities: [{ type: "document", externalId: "radar-gmail:missing" }],
       action: "restore",
-    }));
-    mocks.applySourceIdentityLifecycle.mockResolvedValue({ sources: [] });
+    });
 
-    await expect(handler({} as H3Event)).resolves.toEqual({ sources: [] });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ sources: [] });
   });
+
+  it.each(["manual", "legacy_migration", "unknown"])(
+    "rejects unsupported identity type %s before changing state",
+    async (type) => {
+      const response = await request({
+        userId: "user_mail",
+        identities: [
+          { type: "document", externalId: "supported" },
+          { type, externalId: "unsupported" },
+        ],
+        action: "retire",
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body).toMatchObject({
+        statusMessage: "Validation Error",
+        data: { name: "ZodError" },
+      });
+      expect(JSON.parse(body.data.message)).toMatchObject([
+        { path: ["identities", 1, "type"], code: "invalid_value" },
+      ]);
+      expect(mocks.ensureUser).not.toHaveBeenCalled();
+      expect(mocks.applySourceIdentityLifecycle).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ["unregistered partition", "assertPartitionReadAllowed"],
@@ -78,20 +115,12 @@ describe("POST /sources/identity/lifecycle", () => {
     mocks[operation].mockRejectedValueOnce(
       new PartitionAccessError("PARTITION_UNAUTHORIZED", "Partition denied"),
     );
-    vi.stubGlobal("readBody", readBody);
-
-    const response = await toWebHandler(createApp().use(handler))(
-      new Request("http://memory.test/sources/identity/lifecycle", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          userId: "user_mail",
-          partitionKey: "radar:mail",
-          identities: [{ type: "document", externalId: "radar-gmail:opaque" }],
-          action: "retire",
-        }),
-      }),
-    );
+    const response = await request({
+      userId: "user_mail",
+      partitionKey: "radar:mail",
+      identities: [{ type: "document", externalId: "radar-gmail:opaque" }],
+      action: "retire",
+    });
 
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({

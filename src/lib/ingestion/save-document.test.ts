@@ -39,6 +39,7 @@ import { newTypeId } from "~/types/typeid";
 import { setTestDatabase } from "~/utils/db";
 
 vi.hoisted(() => {
+  vi.resetModules();
   process.env["DATABASE_URL"] ??=
     "postgres://postgres:postgres@localhost:5431/postgres";
   process.env["MEMORY_OPENAI_API_KEY"] ??= "test";
@@ -100,6 +101,13 @@ describeIfServer("document replacement source lifecycle", () => {
     vi.doMock("~/lib/queues", () => ({
       batchQueue: { add: addIngestionJob },
     }));
+    vi.doMock("~/lib/embeddings", () => ({
+      generateEmbeddings: async ({ input }: { input: string[] }) => ({
+        data: input.map(() => ({
+          embedding: Array.from({ length: 1024 }, () => 0.02),
+        })),
+      }),
+    }));
     service = new SourceService(
       database,
       new MinioClient({
@@ -125,6 +133,11 @@ describeIfServer("document replacement source lifecycle", () => {
   }, 120_000);
 
   afterAll(async () => {
+    vi.doUnmock("~/lib/embeddings");
+    vi.doUnmock("~/db");
+    vi.doUnmock("~/lib/sources");
+    vi.doUnmock("~/lib/queues");
+    vi.resetModules();
     setTestDatabase(null);
     await client.end();
     const admin = new Client({ connectionString: adminDsn() });

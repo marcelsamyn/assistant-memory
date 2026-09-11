@@ -715,6 +715,8 @@ export async function purgeSourceIngestionOperations(
     .update(sourceIngestionOperations)
     .set({
       status: "purged",
+      externalId: "",
+      contentHash: null,
       errorCode: "SOURCE_PURGED",
       updatedAt: new Date(),
       completedAt: new Date(),

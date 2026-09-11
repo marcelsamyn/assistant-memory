@@ -1,3 +1,4 @@
+import { updateDocumentTitle } from "./apply-document-spine";
 import { hashSourceContent } from "./source-processing";
 import { hashSourceExtractionRevision } from "./source-revision";
 import { and, eq, inArray } from "drizzle-orm";
@@ -37,6 +38,16 @@ const queue = vi.hoisted(() => ({
   add: vi
     .fn<(name: string, input: unknown) => Promise<void>>()
     .mockResolvedValue(undefined),
+}));
+const embeddings = vi.hoisted(() => ({
+  generate: vi.fn(async ({ input }: { input: string[] }) => ({
+    data: input.map(() => ({
+      embedding: Array.from({ length: 1024 }, () => 0.02),
+    })),
+  })),
+}));
+vi.mock("~/lib/embeddings", () => ({
+  generateEmbeddings: embeddings.generate,
 }));
 vi.mock("~/lib/queues", () => ({ batchQueue: queue }));
 vi.mock("~/lib/converters/markitdown", () => ({
@@ -167,6 +178,8 @@ describe.skipIf(!(await available()))(
     let ingestFile: typeof import("~/lib/jobs/ingest-file").ingestFile;
 
     beforeEach(() => {
+      setSkipEmbeddingPersistence(true);
+      embeddings.generate.mockClear();
       ai.excerpt = "Please review the contract and send your comments.";
       ai.lifecycle = "request";
       ai.previous = null;
@@ -597,24 +610,28 @@ describe.skipIf(!(await available()))(
       ).toEqual([otherClaim]);
     });
 
-    it.each(["title", "filename"] as const)(
-      "updates the linked Document %s on a completed file replay without re-extracting",
-      async (field) => {
-        const userId = `file-${field}-replay`;
+    it.each([
+      ["document", "title"],
+      ["file", "title"],
+      ["file", "filename"],
+    ] as const)(
+      "updates the linked Document label and embedding on a completed %s %s replay without re-extracting",
+      async (kind, field) => {
+        const userId = `${kind}-${field}-replay`;
         const originalLabel =
           field === "title" ? "Original title" : "Original file.txt";
         const correctedLabel =
           field === "title" ? "Corrected title" : "Corrected file.txt";
         const content = "Please review the contract and send your comments.";
         const accepted = await accept(
-          "file",
+          kind,
           userId,
           context,
           content,
           field === "title" ? originalLabel : undefined,
           "Original file.txt",
         );
-        await runAccepted("file", accepted.ingestionOperationId);
+        await runAccepted(kind, accepted.ingestionOperationId);
         const linkedDocument = () =>
           database
             .select({
@@ -642,11 +659,26 @@ describe.skipIf(!(await available()))(
         expect(original).toEqual([
           expect.objectContaining({ label: originalLabel }),
         ]);
+        const nodeId = original[0]!.nodeId;
+        const originalEmbedding = Array.from({ length: 1024 }, () => 0.01);
+        await database.insert(schema.nodeEmbeddings).values([
+          { nodeId, embedding: originalEmbedding, modelName: "old-model" },
+          {
+            nodeId,
+            embedding: originalEmbedding,
+            modelName: "jina-embeddings-v3",
+          },
+        ]);
+        const [originalSource] = await database
+          .select({ version: schema.sources.version })
+          .from(schema.sources)
+          .where(eq(schema.sources.id, accepted.sourceId));
+        setSkipEmbeddingPersistence(false);
         const queuedCount = queue.add.mock.calls.length;
         const originalClaims = await activeStatuses(userId);
 
         const replay = await accept(
-          "file",
+          kind,
           userId,
           context,
           content,
@@ -657,7 +689,10 @@ describe.skipIf(!(await available()))(
         expect(replay).toMatchObject({
           sourceId: accepted.sourceId,
           ingestionOperationId: accepted.ingestionOperationId,
-          message: "File revision already processed",
+          message:
+            kind === "file"
+              ? "File revision already processed"
+              : "Document already ingested; metadata updated",
         });
         expect(await linkedDocument()).toEqual([
           {
@@ -666,6 +701,37 @@ describe.skipIf(!(await available()))(
             canonicalLabel: correctedLabel.toLowerCase(),
           },
         ]);
+        const refreshedEmbeddings = await database
+          .select()
+          .from(schema.nodeEmbeddings)
+          .where(eq(schema.nodeEmbeddings.nodeId, nodeId));
+        expect(refreshedEmbeddings).toEqual([
+          expect.objectContaining({
+            modelName: "jina-embeddings-v3",
+            embedding: Array.from({ length: 1024 }, () => 0.02),
+          }),
+        ]);
+        expect(embeddings.generate).toHaveBeenCalledExactlyOnceWith({
+          model: "jina-embeddings-v3",
+          task: "retrieval.passage",
+          input: [`${correctedLabel}: ${original[0]?.description ?? ""}`],
+          truncate: true,
+        });
+        await expect(
+          updateDocumentTitle({
+            db: database,
+            userId,
+            sourceId: accepted.sourceId,
+            expectedSourceVersion: originalSource!.version,
+            title: "Stale title",
+          }),
+        ).rejects.toMatchObject({ code: "SOURCE_VERSION_CONFLICT" });
+        expect(
+          await database
+            .select()
+            .from(schema.nodeEmbeddings)
+            .where(eq(schema.nodeEmbeddings.nodeId, nodeId)),
+        ).toEqual(refreshedEmbeddings);
         const [source] = await database
           .select({ metadata: schema.sources.metadata })
           .from(schema.sources)
@@ -674,7 +740,7 @@ describe.skipIf(!(await available()))(
           ...(field === "title"
             ? { title: correctedLabel }
             : { filename: correctedLabel }),
-          convertedMarkdown: content,
+          ...(kind === "file" ? { convertedMarkdown: content } : {}),
         });
         expect(await activeStatuses(userId)).toEqual(originalClaims);
         expect(queue.add).toHaveBeenCalledTimes(queuedCount);
@@ -691,7 +757,7 @@ describe.skipIf(!(await available()))(
         ]);
 
         const renamed = await accept(
-          "file",
+          kind,
           userId,
           context,
           content,
@@ -714,6 +780,95 @@ describe.skipIf(!(await available()))(
         expect(queue.add).toHaveBeenCalledTimes(queuedCount);
       },
     );
+
+    it("rolls back Document metadata and vectors when title embedding fails, then retries without extraction", async () => {
+      const userId = "document-title-embedding-retry";
+      const content = "Please review the contract and send your comments.";
+      const accepted = await accept(
+        "document",
+        userId,
+        context,
+        content,
+        "Original title",
+      );
+      await runAccepted("document", accepted.ingestionOperationId);
+      const [document] = await database
+        .select({
+          nodeId: schema.nodes.id,
+          label: schema.nodeMetadata.label,
+          canonicalLabel: schema.nodeMetadata.canonicalLabel,
+          description: schema.nodeMetadata.description,
+        })
+        .from(schema.sourceLinks)
+        .innerJoin(schema.nodes, eq(schema.nodes.id, schema.sourceLinks.nodeId))
+        .innerJoin(
+          schema.nodeMetadata,
+          eq(schema.nodeMetadata.nodeId, schema.nodes.id),
+        )
+        .where(
+          and(
+            eq(schema.sourceLinks.sourceId, accepted.sourceId),
+            eq(schema.nodes.nodeType, "Document"),
+          ),
+        );
+      if (!document) throw new Error("Expected source Document node");
+      const originalVectors = await database
+        .insert(schema.nodeEmbeddings)
+        .values({
+          nodeId: document.nodeId,
+          embedding: Array.from({ length: 1024 }, () => 0.01),
+          modelName: "jina-embeddings-v3",
+        })
+        .returning();
+      const queuedCount = queue.add.mock.calls.length;
+      const originalClaims = await activeStatuses(userId);
+      setSkipEmbeddingPersistence(false);
+      embeddings.generate.mockRejectedValueOnce(
+        new Error("Embedding unavailable"),
+      );
+      await expect(
+        accept("document", userId, context, content, "Corrected title"),
+      ).rejects.toThrow("Embedding unavailable");
+      expect(
+        await database
+          .select()
+          .from(schema.nodeEmbeddings)
+          .where(eq(schema.nodeEmbeddings.nodeId, document.nodeId)),
+      ).toEqual(originalVectors);
+      expect(
+        await database
+          .select()
+          .from(schema.nodeMetadata)
+          .where(eq(schema.nodeMetadata.nodeId, document.nodeId)),
+      ).toMatchObject([document]);
+
+      const replay = await accept(
+        "document",
+        userId,
+        context,
+        content,
+        "Corrected title",
+      );
+      expect(replay.ingestionOperationId).toBe(accepted.ingestionOperationId);
+      expect(
+        await database
+          .select()
+          .from(schema.nodeEmbeddings)
+          .where(eq(schema.nodeEmbeddings.nodeId, document.nodeId)),
+      ).toMatchObject([
+        { embedding: Array.from({ length: 1024 }, () => 0.02) },
+      ]);
+      expect(
+        await database
+          .select()
+          .from(schema.nodeMetadata)
+          .where(eq(schema.nodeMetadata.nodeId, document.nodeId)),
+      ).toMatchObject([
+        { label: "Corrected title", canonicalLabel: "corrected title" },
+      ]);
+      expect(await activeStatuses(userId)).toEqual(originalClaims);
+      expect(queue.add).toHaveBeenCalledTimes(queuedCount);
+    });
 
     it.each(["document", "file"] as const)(
       "retracts corrected %s evidence and re-extracts context A→B→A and bytes A→B→A",

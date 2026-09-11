@@ -1,6 +1,7 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
+import { createApp, toWebHandler, type EventHandler } from "h3";
 import type { Client as MinioClient } from "minio";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -11,13 +12,24 @@ import {
   users,
   memoryPartitions,
 } from "~/db/schema";
+import { insertNewSources } from "~/lib/ingestion/insert-new-sources";
 import { lockSourceIdentityGates } from "~/lib/partition-access";
 import { setPartitionMigrationState } from "~/lib/partition-migration";
 import { contextPartitionKeySchema } from "~/lib/schemas/partition";
+import { sourceListableTypeEnum } from "~/lib/schemas/sources";
 import { applySourceIdentityLifecycle } from "~/lib/source-identity-lifecycle";
 import { SourceService } from "~/lib/sources";
+import {
+  setSkipJobEnqueue,
+  resetTestOverrides,
+  setSourceServiceOverride,
+} from "~/utils/test-overrides";
+
+const queue = vi.hoisted(() => ({ add: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("~/lib/queues", () => ({ batchQueue: queue }));
 
 vi.hoisted(() => {
+  vi.resetModules();
   process.env["DATABASE_URL"] ??=
     "postgres://postgres:postgres@localhost:5431/postgres";
   process.env["MEMORY_OPENAI_API_KEY"] ??= "test";
@@ -70,6 +82,7 @@ describeIfPostgres("source identity lifecycle", () => {
   let secondClient: Client;
   let firstDb: NodePgDatabase<typeof schema>;
   let secondDb: NodePgDatabase<typeof schema>;
+  let transcriptHandler: EventHandler;
 
   beforeAll(async () => {
     const admin = new Client({ connectionString: adminDsn() });
@@ -83,14 +96,153 @@ describeIfPostgres("source identity lifecycle", () => {
     secondDb = drizzle(secondClient, { schema, casing: "snake_case" });
     await migrate(firstDb, { migrationsFolder: "./drizzle" });
     await firstDb.insert(users).values({ id: "user_identity" });
+    vi.doMock("~/db", () => ({ default: firstDb }));
+    transcriptHandler = (await import("~/routes/transcript/ingest.post"))
+      .default;
   }, 120_000);
 
   afterAll(async () => {
+    vi.doUnmock("~/db");
+    vi.resetModules();
     await Promise.all([firstClient.end(), secondClient.end()]);
     const admin = new Client({ connectionString: adminDsn() });
     await admin.connect();
     await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
     await admin.end();
+  });
+
+  it.each(sourceListableTypeEnum.options)(
+    "enforces retirement before inserting %s sources and parents",
+    async (type) => {
+      const externalId = `retired-${type}`;
+      await applySourceIdentityLifecycle(firstDb, {
+        userId: "user_identity",
+        identities: [{ type, externalId }],
+        action: "retire",
+      });
+      const minio = {
+        bucketExists: vi.fn().mockResolvedValue(true),
+      } as unknown as MinioClient;
+      const service = new SourceService(firstDb, minio, "unused");
+      await expect(
+        service.insertMany([
+          {
+            userId: "user_identity",
+            sourceType: type,
+            externalId,
+            timestamp: new Date(),
+            content: "late content",
+          },
+        ]),
+      ).rejects.toMatchObject({ code: "SOURCE_IDENTITY_RETIRED" });
+      const input = {
+        db: firstDb,
+        userId: "user_identity",
+        parentSourceType: type,
+        parentSourceId: externalId,
+        childSourceType: "conversation_message" as const,
+        childSources: [
+          {
+            externalId: `child-${type}`,
+            timestamp: new Date(),
+            content: "Restored child turn",
+          },
+        ],
+      };
+      await expect(insertNewSources(input)).rejects.toMatchObject({
+        code: "SOURCE_IDENTITY_RETIRED",
+      });
+      expect(
+        await firstDb
+          .select()
+          .from(sources)
+          .where(
+            and(
+              eq(sources.userId, "user_identity"),
+              eq(sources.type, type),
+              eq(sources.externalId, externalId),
+            ),
+          ),
+      ).toEqual([]);
+      await applySourceIdentityLifecycle(firstDb, {
+        userId: "user_identity",
+        identities: [{ type, externalId }],
+        action: "restore",
+      });
+      setSkipJobEnqueue(true);
+      setSourceServiceOverride(service);
+      try {
+        await expect(insertNewSources(input)).resolves.toMatchObject({
+          sourceId: expect.stringMatching(/^src_/),
+        });
+      } finally {
+        resetTestOverrides();
+      }
+    },
+  );
+
+  it("rejects retired transcript intake before creation or mutation and resumes after restore", async () => {
+    const externalId = "retired-transcript-intake";
+    const lifecycle = {
+      userId: "user_identity",
+      identities: [{ type: "meeting_transcript" as const, externalId }],
+    };
+    const request = () =>
+      toWebHandler(createApp().use(transcriptHandler))(
+        new Request("http://memory.test/transcript/ingest", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            userId: "user_identity",
+            transcriptId: externalId,
+            occurredAt: "2026-09-10T09:00:00.000Z",
+            content: { kind: "raw", text: "Private meeting content" },
+          }),
+        }),
+      );
+    const stored = () =>
+      firstDb
+        .select()
+        .from(sources)
+        .where(
+          and(
+            eq(sources.userId, "user_identity"),
+            eq(sources.externalId, externalId),
+          ),
+        );
+    await applySourceIdentityLifecycle(firstDb, {
+      ...lifecycle,
+      action: "retire",
+    });
+    const denied = await request();
+    expect(denied.status).toBe(409);
+    await expect(denied.json()).resolves.toMatchObject({
+      data: { code: "SOURCE_IDENTITY_RETIRED" },
+    });
+    expect(await stored()).toEqual([]);
+    expect(queue.add).not.toHaveBeenCalled();
+    await applySourceIdentityLifecycle(firstDb, {
+      ...lifecycle,
+      action: "restore",
+    });
+    const accepted = await request();
+    expect(accepted.status).toBe(200);
+    const acceptedBody = await accepted.json();
+    const original = await stored();
+    expect(queue.add).toHaveBeenCalledExactlyOnceWith(
+      "ingest-transcript",
+      expect.objectContaining({
+        sourceId: acceptedBody.sourceId,
+        expectedSourceVersion: original[0]?.version,
+      }),
+    );
+    await applySourceIdentityLifecycle(firstDb, {
+      ...lifecycle,
+      action: "retire",
+    });
+    expect((await request()).status).toBe(409);
+    expect(await stored()).toEqual(original);
+    expect(queue.add).toHaveBeenCalledTimes(1);
   });
 
   it("returns a source that commits before retirement and rejects later creation", async () => {

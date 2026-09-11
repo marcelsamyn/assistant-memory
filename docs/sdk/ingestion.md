@@ -181,11 +181,13 @@ Ingestion accepts raw provider IDs and applies `contextualSourceExternalId` when
 
 If a retired contextual source moves, both its old and destination identities remain retired. Restoring the destination permits ingestion there without reopening the old identity to delayed deliveries. Restore the old identity separately only if ingestion in that partition is intended again.
 
-This call closes a durable ingestion gate and waits for concurrent source creation. It returns matching sources, or an empty array when none exist. The caller can then erase each returned source without a later request recreating it. Use `action: "restore"` when the external account is restored.
+This call closes a durable ingestion gate and waits for concurrent source creation, including conversation and transcript parents. It returns matching sources, or an empty array when none exist. The caller can then erase each returned source without a later request recreating it. Use `action: "restore"` when the external account is restored. Unsupported source types return a validation error before any identity changes.
 
 An identical contextual document retry keeps the stored content and processing receipt. Caller-supplied metadata fields can still be revised. Omitted metadata fields and timestamps retain their stored values.
 
-When only a document title changes, Memory updates the linked `Document` node as well as the source metadata and reuses the completed receipt. A failed replacement upload preserves the last committed blob until a replacement has committed; callers can retry the same source safely. A retry request returns a conflict while the retained queue job is still active, because reopening its receipt before that job finishes could leave the new work unscheduled.
+When only a document title or file title/filename changes, Memory updates the linked `Document` label and search embedding as well as the source metadata and reuses the completed receipt. A failed replacement upload preserves the last committed blob until a replacement has committed; callers can retry the same source safely. A retry request returns a conflict while the retained queue job is still active, because reopening its receipt before that job finishes could leave the new work unscheduled.
+
+Purging a source erases the external identity and content hash from all its retained processing receipts, including attachment receipts. Their operation IDs, source IDs, status, stage, attempt counts, and timestamps remain available for ordinary status reads.
 
 For email sources, Memory removes common reply and forward boundaries before chunking and extraction. Forwarded headers, `Original Message`, `Forwarded message`, `Begin forwarded message`, `On … wrote:`, and Dutch `Op … schreef:` sections are treated as history. The complete original source remains available through `getSource`; only current-message text can establish a new request or deadline.
 
