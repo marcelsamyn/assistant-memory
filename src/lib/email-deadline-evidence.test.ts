@@ -10,8 +10,19 @@ describe("grounded email deadlines", () => {
     "Please reply by September 15, 2026.",
     "Please reply by 15 September 2026.",
     "Antwoord uiterlijk 15 september 2026.",
+    "Antwoord uiterlijk voor 15 september 2026.",
+    "Antwoord uiterlijk tegen 15 september 2026.",
+    "De deadline is 15 september 2026.",
+    "Deadline voor 15 september 2026.",
+    "Deadline tegen 15 september 2026.",
+    "Antwoord ten laatste op 15 september 2026.",
+    "Antwoord ten laatste tegen 15 september 2026.",
+    "Antwoord ten laatste voor 15 september 2026.",
+    "Antwoord ten laatste vóór 15 september 2026.",
     "Antwoord vóór 15/09/2026.",
     "Date limite : au plus tard le 15 septembre 2026.",
+    "Bitte bis zum 15. September 2026 antworten.",
+    "Bitte spätestens am 15. September 2026 antworten.",
   ])("accepts the explicit matching date: %s", (statement) => {
     expect(
       hasEmailDeadlineEvidence({
@@ -33,6 +44,18 @@ describe("grounded email deadlines", () => {
     ["Please reply by 2026-02-29.", "2026-02-29"],
     ["Please reply by ticket2026-09-15.", "2026-09-15"],
     ["Please reply by tomorrow.", "2026-09-15"],
+    ["Maak de agenda voor 20 september 2026.", "2026-09-20"],
+    ["Plan het overleg voor 15 september 2026.", "2026-09-15"],
+    ["Plan het overleg op 15 september 2026.", "2026-09-15"],
+    ["Reserveer een tafel tegen 15 september 2026.", "2026-09-15"],
+    ["Antwoord tegen 15 september 2026.", "2026-09-15"],
+    ["Antwoord tegen 2026-09-15.", "2026-09-15"],
+    ["Antwoord niet uiterlijk tegen 15 september 2026.", "2026-09-15"],
+    ["Antwoord pas ten laatste tegen 15 september 2026.", "2026-09-15"],
+    ["Prepare the agenda for September 15, 2026.", "2026-09-15"],
+    ["The meeting is on September 15, 2026.", "2026-09-15"],
+    ["Préparez l'agenda pour le 15 septembre 2026.", "2026-09-15"],
+    ["Bereite die Tagesordnung für den 15. September 2026 vor.", "2026-09-15"],
   ])("leaves unsupported evidence undated: %s", (statement, dateLabel) => {
     expect(
       hasEmailDeadlineEvidence({
@@ -77,6 +100,11 @@ describe("explicit email deadline removal", () => {
     "There is no deadline now. Please finish by tomorrow.",
     "There is no deadline now. The new due date is Friday.",
     "Er is geen deadline meer. Antwoord uiterlijk morgen.",
+    "Er is geen deadline meer. Antwoord ten laatste morgen.",
+    "There is no deadline now. Répondez au plus tard demain.",
+    "There is no deadline now. Répondez avant demain.",
+    "There is no deadline now. Bitte bis morgen antworten.",
+    "There is no deadline now. Bitte spätestens morgen antworten.",
   ])("preserves existing dates for ambiguous evidence: %s", (excerpt) => {
     expect(hasEmailDeadlineRemovalEvidence(excerpt)).toBe(false);
   });

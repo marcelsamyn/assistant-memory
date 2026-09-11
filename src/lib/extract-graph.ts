@@ -35,6 +35,7 @@ import {
 import {
   formatEmailRequestCandidates,
   loadEmailRequestCandidates,
+  lockEmailRequestThread,
   resolveEmailRequest,
   type EmailRequestResolution,
 } from "./email-request-matching";
@@ -69,7 +70,7 @@ import { type OpenCommitment } from "./schemas/open-commitments";
 import type { ContextPartitionKey } from "./schemas/partition";
 import type { SourceContext } from "./schemas/source-context";
 import { TemporaryIdMapper } from "./temporary-id-mapper";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { zodResponseFormat } from "openai/helpers/zod.mjs";
 import { type DrizzleDB } from "~/db";
 import { claims, nodeMetadata, nodes, sourceLinks, sources } from "~/db/schema";
@@ -647,18 +648,14 @@ ${content}
       ...(emailContext === null
         ? {}
         : {
-            beforeSourceLocks: async (tx) => {
-              const threadKey = JSON.stringify([
-                "email-requests",
+            beforeSourceLocks: (tx) =>
+              lockEmailRequestThread(
+                tx,
                 userId,
-                partitionKey ?? null,
-                emailContext.accountId,
-                emailContext.threadId ?? sourceId,
-              ]);
-              await tx.execute(
-                sql`SELECT pg_advisory_xact_lock(hashtext(${threadKey}))`,
-              );
-            },
+                partitionKey,
+                emailContext,
+                sourceId,
+              ),
           }),
     },
     async (tx) => {

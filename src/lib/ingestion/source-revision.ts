@@ -7,14 +7,83 @@ import {
   nodes,
   sourceIngestionOperations,
   sourceLinks,
+  sources,
 } from "~/db/schema";
 import { applyClaimLifecycle } from "~/lib/claims/lifecycle";
+import {
+  isEmailContext,
+  readSourceContext,
+} from "~/lib/email-request-extraction";
+import { lockEmailRequestThread } from "~/lib/email-request-matching";
 import {
   sourceContextSchema,
   type SourceContext,
 } from "~/lib/schemas/source-context";
 import type { Scope } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
+
+/** Later email state is valid only while its matched request evidence exists. */
+async function removeDependentEmailClaims(
+  tx: DrizzleDB,
+  userId: string,
+  sourceId: TypeId<"source">,
+): Promise<(typeof claims.$inferSelect)[]> {
+  const dependentStatuses = await tx
+    .select()
+    .from(claims)
+    .where(
+      and(
+        eq(claims.userId, userId),
+        ne(claims.sourceId, sourceId),
+        eq(claims.predicate, "HAS_TASK_STATUS"),
+        sql`EXISTS (SELECT 1 FROM sources WHERE sources.id = ${claims.sourceId} AND sources.type <> 'manual')`,
+        sql`EXISTS (
+          SELECT 1 FROM claims AS revised
+          WHERE revised.user_id = ${userId}
+            AND revised.source_id = ${sourceId}
+            AND revised.subject_node_id = ${claims.subjectNodeId}
+            AND revised.predicate = 'HAS_TASK_STATUS'
+            AND (
+              ${claims.metadata}->'requestEvidence'->'supportingSourceIds' ? ${sourceId}
+              OR (
+                ${claims.metadata}->'requestEvidence'->>'requestId' = revised.metadata->'requestEvidence'->>'requestId'
+                AND ${claims.statedAt} >= revised.stated_at
+              )
+            )
+        )`,
+      ),
+    );
+  if (dependentStatuses.length === 0) return [];
+
+  // Deadlines cite the same email and task as the matched status, but do not
+  // store a separate request ID. Other tasks in those emails remain intact.
+  return tx
+    .delete(claims)
+    .where(
+      and(
+        eq(claims.userId, userId),
+        ne(claims.status, "retracted"),
+        or(
+          inArray(
+            claims.id,
+            dependentStatuses.map((claim) => claim.id),
+          ),
+          and(
+            eq(claims.predicate, "DUE_ON"),
+            or(
+              ...dependentStatuses.map((claim) =>
+                and(
+                  eq(claims.sourceId, claim.sourceId),
+                  eq(claims.subjectNodeId, claim.subjectNodeId),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+    .returning();
+}
 
 /** Internal receipt key; the supplied content hash remains a hash of bytes. */
 export function hashSourceExtractionRevision(
@@ -53,7 +122,31 @@ export function hashSourceExtractionRevision(
     .digest("hex");
 }
 
-/** Caller holds the source lock and commits replacement bytes in this transaction. */
+/** Caller holds the source identity gate, but has not locked source rows yet. */
+export async function lockSourceEmailRequestThread(
+  tx: DrizzleDB,
+  userId: string,
+  sourceId: TypeId<"source">,
+): Promise<void> {
+  const [source] = await tx
+    .select({ metadata: sources.metadata, partitionKey: sources.partitionKey })
+    .from(sources)
+    .where(and(eq(sources.userId, userId), eq(sources.id, sourceId)))
+    .limit(1);
+  const context = readSourceContext(source?.metadata);
+  if (!source || !isEmailContext(context)) return;
+  // The identity gate keeps stored context stable. Lock the old thread: the
+  // incoming revision can change or remove the context being invalidated.
+  await lockEmailRequestThread(
+    tx,
+    userId,
+    source.partitionKey ?? undefined,
+    context,
+    sourceId,
+  );
+}
+
+/** Caller holds the source lock and (for email) thread gate while replacing bytes. */
 export async function invalidateSourceExtractionRevision(
   tx: DrizzleDB,
   userId: string,
@@ -86,17 +179,35 @@ export async function invalidateSourceExtractionRevision(
     eq(claims.predicate, "HAS_TASK_STATUS"),
     hasUserDecision,
   );
-  await tx
-    .update(claims)
-    .set({ status: "superseded", updatedAt: new Date() })
+  // Removing an older claim must not restore a status hidden by a later
+  // dismissal. The lifecycle recomputation excludes retracted claims.
+  const dismissedTasks = await tx
+    .selectDistinct({ taskId: claims.subjectNodeId })
+    .from(claims)
     .where(
       and(
         eq(claims.userId, userId),
         eq(claims.sourceId, sourceId),
-        eq(claims.status, "active"),
-        retainedRequest,
+        eq(claims.predicate, "HAS_TASK_STATUS"),
+        sql`EXISTS (
+          SELECT 1 FROM claims AS dismissed
+          WHERE dismissed.subject_node_id = ${claims.subjectNodeId}
+            AND dismissed.predicate = 'HAS_TASK_STATUS'
+            AND dismissed.status = 'retracted'
+        )`,
+        sql`NOT EXISTS (
+          SELECT 1 FROM claims AS current
+          WHERE current.subject_node_id = ${claims.subjectNodeId}
+            AND current.predicate = 'HAS_TASK_STATUS'
+            AND current.status = 'active'
+        )`,
       ),
     );
+  const dependentClaims = await removeDependentEmailClaims(
+    tx,
+    userId,
+    sourceId,
+  );
   const removed = await tx
     .delete(claims)
     .where(
@@ -108,10 +219,57 @@ export async function invalidateSourceExtractionRevision(
       ),
     )
     .returning();
+  removed.push(...dependentClaims);
   await applyClaimLifecycle(tx, removed);
+  await tx
+    .update(claims)
+    .set({ status: "superseded", updatedAt: new Date() })
+    .where(
+      and(
+        eq(claims.userId, userId),
+        eq(claims.status, "active"),
+        or(
+          and(eq(claims.sourceId, sourceId), retainedRequest),
+          dismissedTasks.length === 0
+            ? undefined
+            : and(
+                eq(claims.predicate, "HAS_TASK_STATUS"),
+                inArray(
+                  claims.subjectNodeId,
+                  dismissedTasks.map((task) => task.taskId),
+                ),
+              ),
+        ),
+      ),
+    );
   const removedLinks = await tx
     .delete(sourceLinks)
-    .where(eq(sourceLinks.sourceId, sourceId))
+    .where(
+      or(
+        eq(sourceLinks.sourceId, sourceId),
+        ...dependentClaims.map((claim) =>
+          and(
+            eq(sourceLinks.sourceId, claim.sourceId),
+            eq(sourceLinks.nodeId, claim.subjectNodeId),
+            notExists(
+              tx
+                .select({ id: claims.id })
+                .from(claims)
+                .where(
+                  and(
+                    eq(claims.sourceId, sourceLinks.sourceId),
+                    or(
+                      eq(claims.subjectNodeId, sourceLinks.nodeId),
+                      eq(claims.objectNodeId, sourceLinks.nodeId),
+                      eq(claims.assertedByNodeId, sourceLinks.nodeId),
+                    ),
+                  ),
+                ),
+            ),
+          ),
+        ),
+      ),
+    )
     .returning({ nodeId: sourceLinks.nodeId });
   await tx
     .delete(commitmentPresentations)

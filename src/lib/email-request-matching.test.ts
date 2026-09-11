@@ -1,6 +1,8 @@
 import { isActionableEmailStatusClaim } from "./email-request-extraction";
 import {
   emailRequestId,
+  formatEmailRequestCandidates,
+  MAX_EMAIL_REQUEST_HISTORY_PROMPT_CHARS,
   normalizeEmailEvidence,
   resolveEmailRequest,
   stripQuotedEmailHistory,
@@ -116,6 +118,74 @@ function resolveUpdate(
 }
 
 describe("email request matching and evolution", () => {
+  it("bounds serialized history and keeps current and dismissed evidence ahead of old rows", () => {
+    const original = initialRequest();
+    const history = Array.from({ length: 600 }, (_, index) => ({
+      ...original,
+      sourceId: newTypeId("source"),
+      claimStatus: "superseded" as const,
+      statedAt: new Date(original.statedAt.getTime() + index * 60_000),
+      evidence: original.evidence?.emailThread
+        ? {
+            ...original.evidence,
+            emailThread: {
+              ...original.evidence.emailThread,
+              excerpt: 'Quoted "detail"\\\n'.repeat(200),
+            },
+          }
+        : null,
+    }));
+    const latest = history.at(-1);
+    if (!latest) throw new Error("Expected newest history");
+    const dismissed = {
+      ...original,
+      taskId: newTypeId("node"),
+      sourceId: newTypeId("source"),
+      claimStatus: "retracted" as const,
+    };
+    const prompt = formatEmailRequestCandidates([
+      ...history,
+      original,
+      dismissed,
+    ]);
+    expect(prompt.length).toBeLessThanOrEqual(
+      MAX_EMAIL_REQUEST_HISTORY_PROMPT_CHARS,
+    );
+    const serialized = prompt.split("\n")[1];
+    if (!serialized) throw new Error("Expected serialized history");
+    const data = JSON.parse(serialized);
+    expect(data.omittedRecords).toBe(602 - data.requests.length);
+    expect(data.omittedRecords).toBeGreaterThan(0);
+    expect(
+      data.requests.map((row: { sourceId: string }) => row.sourceId),
+    ).toEqual(
+      expect.arrayContaining([
+        original.sourceId,
+        dismissed.sourceId,
+        latest.sourceId,
+      ]),
+    );
+    expect(prompt).toContain(
+      "absence from this window does not prove a request is new",
+    );
+    expect(history[0]?.claimStatus).toBe("superseded");
+  });
+
+  it("keeps normal request citations intact and reports no omitted history", () => {
+    const original = initialRequest();
+    const prompt = formatEmailRequestCandidates([original]);
+    expect(prompt).toContain('"omittedRecords":0');
+    expect(prompt).toContain(emailRequestId(original));
+    expect(prompt).toContain(initialText);
+    expect(formatEmailRequestCandidates([])).toBe("");
+    expect(
+      resolveUpdate("I have finished the review.", "completion", [original]),
+    ).toMatchObject({
+      taskId: original.taskId,
+      status: "done",
+    });
+  });
+
   it("keeps a clarification open, preserves the original requester, and records the cited message", () => {
     const initial = initialRequest();
     const outgoing = {
