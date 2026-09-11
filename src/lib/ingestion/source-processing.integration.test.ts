@@ -1,7 +1,9 @@
+import { contextualSourceExternalId } from "./source-identity";
 import { and, eq } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client as MinioClient } from "minio";
+import { randomUUID } from "node:crypto";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
@@ -27,6 +29,7 @@ import {
   setPartitionMigrationState,
 } from "~/lib/partition-reclassification";
 import { contextPartitionKeySchema } from "~/lib/schemas/partition";
+import { applySourceLifecycleCommand } from "~/lib/source-lifecycle";
 import { SourceService } from "~/lib/sources";
 import { newTypeId } from "~/types/typeid";
 
@@ -446,6 +449,121 @@ describeIfServer("source ingestion operation integration", () => {
       sourceId: source.id,
       status: "purged",
     });
+  });
+
+  it("scrubs contextual identities and content hashes from every purged source-tree receipt", async () => {
+    const userId = "processing-private-receipts";
+    const externalId = contextualSourceExternalId({
+      externalId: "gmail:private-message-id",
+      accountId: "owner@example.com",
+    });
+    const root = await createSource(userId, externalId);
+    const [child, unrelated] = await database
+      .insert(sources)
+      .values([
+        {
+          userId,
+          type: "document",
+          externalId: `${externalId}:attachment-id`,
+          parentSource: root.id,
+        },
+        {
+          userId,
+          type: "document",
+          externalId: "retained-provider-message-id",
+        },
+      ])
+      .returning();
+    if (!child || !unrelated)
+      throw new Error("Expected child and unrelated sources");
+    const receipts = await Promise.all([
+      ...["hash-a", "hash-b"].map((contentHash) =>
+        createSourceIngestionOperation({
+          db: database,
+          userId,
+          sourceId: root.id,
+          externalId,
+          contentHash,
+        }),
+      ),
+      createSourceIngestionOperation({
+        db: database,
+        userId,
+        sourceId: child.id,
+        externalId: child.externalId,
+        contentHash: "attachment-hash",
+      }),
+    ]);
+    const retained = await createSourceIngestionOperation({
+      db: database,
+      userId,
+      sourceId: unrelated.id,
+      externalId: unrelated.externalId,
+      contentHash: "retained-content-hash",
+    });
+    const [beforeRetained] = await database
+      .select()
+      .from(sourceIngestionOperations)
+      .where(eq(sourceIngestionOperations.operationId, retained.operationId));
+    const [current] = await database
+      .select()
+      .from(sources)
+      .where(eq(sources.id, root.id));
+    const tombstone = await applySourceLifecycleCommand(database, {
+      userId,
+      sourceId: root.id,
+      expectedPartitionKey: null,
+      expectedSourceVersion: current!.version,
+      commandId: randomUUID(),
+      action: "tombstone",
+    });
+    await applySourceLifecycleCommand(database, {
+      userId,
+      sourceId: root.id,
+      expectedPartitionKey: null,
+      expectedSourceVersion: tombstone.sourceVersion!,
+      commandId: randomUUID(),
+      action: "purge",
+    });
+    for (const receipt of receipts) {
+      const [row] = await database
+        .select()
+        .from(sourceIngestionOperations)
+        .where(eq(sourceIngestionOperations.operationId, receipt.operationId));
+      expect(row).toMatchObject({
+        externalId: "",
+        contentHash: null,
+        status: "purged",
+        errorCode: "SOURCE_PURGED",
+      });
+      expect(JSON.stringify(row)).not.toContain(externalId);
+      await expect(
+        getSourceIngestionOperationById({
+          db: database,
+          userId,
+          operationId: receipt.operationId,
+        }),
+      ).resolves.toMatchObject({
+        operationId: receipt.operationId,
+        sourceId: receipt.sourceId,
+        status: "purged",
+        errorCode: "SOURCE_PURGED",
+      });
+    }
+    expect(
+      await database
+        .select()
+        .from(sourceIngestionOperations)
+        .where(eq(sourceIngestionOperations.operationId, retained.operationId)),
+    ).toEqual([beforeRetained]);
+    await expect(
+      getSourceIngestionJobContext({
+        db: database,
+        userId,
+        sourceId: unrelated.id,
+        operationId: retained.operationId,
+      }),
+    ).resolves.toMatchObject({ externalId: unrelated.externalId });
   });
 
   it("revises mutable metadata and replaces only this source's links", async () => {

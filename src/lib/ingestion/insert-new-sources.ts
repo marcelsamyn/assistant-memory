@@ -62,36 +62,49 @@ export async function insertNewSources(params: {
 
   await preparePartitionWrite(db, userId, partitionKey);
 
-  const [insertedParent] = await db
-    .insert(sources)
-    .values({
+  const parentSource = await withSourceWriteFence(
+    db,
+    {
       userId,
-      partitionKey,
-      type: parentSourceType,
-      externalId: parentSourceId,
-      scope,
-      lastIngestedAt: new Date(),
-    })
-    .onConflictDoNothing({
-      target: [sources.userId, sources.type, sources.externalId],
-    })
-    .returning();
+      sources: [],
+      sourceIdentities: [
+        { userId, sourceType: parentSourceType, externalId: parentSourceId },
+      ],
+    },
+    async (tx) => {
+      const [insertedParent] = await tx
+        .insert(sources)
+        .values({
+          userId,
+          partitionKey,
+          type: parentSourceType,
+          externalId: parentSourceId,
+          scope,
+          lastIngestedAt: new Date(),
+        })
+        .onConflictDoNothing({
+          target: [sources.userId, sources.type, sources.externalId],
+        })
+        .returning();
 
-  const parentSource =
-    insertedParent ??
-    (
-      await db
-        .select()
-        .from(sources)
-        .where(
-          and(
-            eq(sources.userId, userId),
-            eq(sources.type, parentSourceType),
-            eq(sources.externalId, parentSourceId),
-          ),
-        )
-        .limit(1)
-    )[0];
+      return (
+        insertedParent ??
+        (
+          await tx
+            .select()
+            .from(sources)
+            .where(
+              and(
+                eq(sources.userId, userId),
+                eq(sources.type, parentSourceType),
+                eq(sources.externalId, parentSourceId),
+              ),
+            )
+            .limit(1)
+        )[0]
+      );
+    },
+  );
 
   if (!parentSource) {
     throw new Error("Failed to upsert parent source");
