@@ -1,6 +1,7 @@
 import handler from "./routes/sources/processing.post";
-import type { H3Event } from "h3";
+import { createApp, readBody, toWebHandler, type H3Event } from "h3";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { PartitionAccessError } from "~/lib/partition-access";
 import { newTypeId } from "~/types/typeid";
 
 const mocks = vi.hoisted(() => ({
@@ -51,6 +52,31 @@ describe("POST /sources/processing", () => {
       userId: "user-1",
       partitionKey: "opaque:project-1",
       operationId: receipt.operationId,
+    });
+  });
+
+  it("returns a structured conflict for an unauthorized partition", async () => {
+    mocks.getSourceIngestionOperationById.mockRejectedValueOnce(
+      new PartitionAccessError("PARTITION_UNAUTHORIZED", "Partition denied"),
+    );
+    vi.stubGlobal("readBody", readBody);
+
+    const response = await toWebHandler(createApp().use(handler))(
+      new Request("http://memory.test/sources/processing", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          userId: "user-1",
+          partitionKey: "opaque:project-1",
+          operationId: "operation-1",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      statusMessage: "Partition denied",
+      data: { code: "PARTITION_UNAUTHORIZED" },
     });
   });
 });

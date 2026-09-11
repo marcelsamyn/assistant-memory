@@ -1,5 +1,6 @@
 import { defineEventHandler } from "h3";
 import { getSourceIngestionOperationById } from "~/lib/ingestion/source-processing";
+import { throwPartitionRouteError } from "~/lib/partition-route-errors";
 import {
   getSourceProcessingRequestSchema,
   getSourceProcessingResponseSchema,
@@ -10,11 +11,15 @@ export default defineEventHandler(async (event) => {
   const { userId, partitionKey, operationId } =
     getSourceProcessingRequestSchema.parse(await readBody(event));
   const db = await useDatabase();
-  const processing = await getSourceIngestionOperationById({
-    db,
-    userId,
-    ...(partitionKey !== undefined ? { partitionKey } : {}),
-    operationId,
-  });
-  return getSourceProcessingResponseSchema.parse({ processing });
+  try {
+    const processing = await getSourceIngestionOperationById({
+      db,
+      userId,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
+      operationId,
+    });
+    return getSourceProcessingResponseSchema.parse({ processing });
+  } catch (error) {
+    throwPartitionRouteError(error);
+  }
 });

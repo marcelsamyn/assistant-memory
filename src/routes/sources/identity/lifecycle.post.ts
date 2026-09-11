@@ -1,6 +1,7 @@
 import { defineEventHandler } from "h3";
 import { ensureUser } from "~/lib/ingestion/ensure-user";
 import { assertPartitionReadAllowed } from "~/lib/partition-access";
+import { throwPartitionRouteError } from "~/lib/partition-route-errors";
 import {
   sourceIdentityLifecycleRequestSchema,
   sourceIdentityLifecycleResponseSchema,
@@ -14,8 +15,12 @@ export default defineEventHandler(async (event) => {
   );
   const db = await useDatabase();
   await ensureUser(db, input.userId);
-  await assertPartitionReadAllowed(db, input.userId, input.partitionKey);
-  return sourceIdentityLifecycleResponseSchema.parse(
-    await applySourceIdentityLifecycle(db, input),
-  );
+  try {
+    await assertPartitionReadAllowed(db, input.userId, input.partitionKey);
+    return sourceIdentityLifecycleResponseSchema.parse(
+      await applySourceIdentityLifecycle(db, input),
+    );
+  } catch (error) {
+    throwPartitionRouteError(error);
+  }
 });

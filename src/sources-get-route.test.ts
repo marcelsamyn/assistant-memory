@@ -1,6 +1,7 @@
 import handler from "./routes/sources/get.post";
-import type { H3Event } from "h3";
+import { createApp, readBody, toWebHandler, type H3Event } from "h3";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { PartitionAccessError } from "~/lib/partition-access";
 import type { SourceSummary } from "~/lib/schemas/sources";
 import { newTypeId } from "~/types/typeid";
 
@@ -121,6 +122,38 @@ describe("POST /sources/get", () => {
       format: "markdown",
     });
   });
+
+  it.each(["getSourceSummary", "getSourceIngestionOperation"] as const)(
+    "returns a structured conflict when %s rejects partition access",
+    async (operation) => {
+      const source = makeSourceSummary("document");
+      mocks.getSourceSummary.mockResolvedValue(source);
+      mocks[operation].mockRejectedValueOnce(
+        new PartitionAccessError("PARTITION_UNAUTHORIZED", "Partition denied"),
+      );
+      vi.stubGlobal("readBody", readBody);
+
+      const response = await toWebHandler(createApp().use(handler))(
+        new Request("http://memory.test/sources/get", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            userId: "user_source",
+            partitionKey: "opaque:project-1",
+            sourceId: source.sourceId,
+            includeContent: true,
+          }),
+        }),
+      );
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({
+        statusMessage: "Partition denied",
+        data: { code: "PARTITION_UNAUTHORIZED" },
+      });
+      expect(mocks.fetchRaw).not.toHaveBeenCalled();
+    },
+  );
 });
 
 function makeSourceSummary(type: SourceSummary["type"]): SourceSummary {
