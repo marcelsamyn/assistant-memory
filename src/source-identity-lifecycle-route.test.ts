@@ -1,6 +1,7 @@
 import handler from "./routes/sources/identity/lifecycle.post";
-import type { H3Event } from "h3";
+import { createApp, readBody, toWebHandler, type H3Event } from "h3";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { PartitionAccessError } from "~/lib/partition-access";
 import { newTypeId } from "~/types/typeid";
 
 const mocks = vi.hoisted(() => ({
@@ -12,7 +13,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("~/lib/ingestion/ensure-user", () => ({
   ensureUser: mocks.ensureUser,
 }));
-vi.mock("~/lib/partition-access", () => ({
+vi.mock("~/lib/partition-access", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/lib/partition-access")>()),
   assertPartitionReadAllowed: mocks.assertPartitionReadAllowed,
 }));
 vi.mock("~/lib/source-identity-lifecycle", () => ({
@@ -67,5 +69,37 @@ describe("POST /sources/identity/lifecycle", () => {
     mocks.applySourceIdentityLifecycle.mockResolvedValue({ sources: [] });
 
     await expect(handler({} as H3Event)).resolves.toEqual({ sources: [] });
+  });
+
+  it.each([
+    ["unregistered partition", "assertPartitionReadAllowed"],
+    ["identity in another partition", "applySourceIdentityLifecycle"],
+  ] as const)("returns a structured conflict for %s", async (_, operation) => {
+    mocks[operation].mockRejectedValueOnce(
+      new PartitionAccessError("PARTITION_UNAUTHORIZED", "Partition denied"),
+    );
+    vi.stubGlobal("readBody", readBody);
+
+    const response = await toWebHandler(createApp().use(handler))(
+      new Request("http://memory.test/sources/identity/lifecycle", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          userId: "user_mail",
+          partitionKey: "radar:mail",
+          identities: [{ type: "document", externalId: "radar-gmail:opaque" }],
+          action: "retire",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      statusMessage: "Partition denied",
+      data: { code: "PARTITION_UNAUTHORIZED" },
+    });
+    if (operation === "assertPartitionReadAllowed") {
+      expect(mocks.applySourceIdentityLifecycle).not.toHaveBeenCalled();
+    }
   });
 });

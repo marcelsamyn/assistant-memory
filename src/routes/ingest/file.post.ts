@@ -1,5 +1,10 @@
 import { and, eq, isNull } from "drizzle-orm";
-import { createError, defineEventHandler, readMultipartFormData } from "h3";
+import {
+  createError,
+  defineEventHandler,
+  readMultipartFormData,
+  type H3Event,
+} from "h3";
 import { v4 as uuid } from "uuid";
 import db from "~/db";
 import { sources } from "~/db/schema";
@@ -10,11 +15,13 @@ import {
   findSourceIngestionOperation,
   hashSourceContent,
 } from "~/lib/ingestion/source-processing";
+import { throwPartitionRouteError } from "~/lib/partition-route-errors";
 import { batchQueue } from "~/lib/queues";
 import {
   ingestFileFieldsSchema,
   ingestFileResponseSchema,
   supportedFileMimeTypes,
+  type IngestFileResponse,
 } from "~/lib/schemas/ingest-file";
 import type { SourceProcessing } from "~/lib/schemas/source-processing";
 import { sourceMetadataSchema, sourceService } from "~/lib/sources";
@@ -28,7 +35,7 @@ function isSupportedMime(mime: string): boolean {
   return mime.startsWith("text/");
 }
 
-export default defineEventHandler(async (event) => {
+async function ingestFile(event: H3Event): Promise<IngestFileResponse> {
   const parts = await readMultipartFormData(event);
   if (!parts || parts.length === 0) {
     throw createError({
@@ -316,4 +323,12 @@ export default defineEventHandler(async (event) => {
     sourceId,
     ingestionOperationId: processing.operationId,
   });
+}
+
+export default defineEventHandler(async (event) => {
+  try {
+    return await ingestFile(event);
+  } catch (error) {
+    throwPartitionRouteError(error);
+  }
 });

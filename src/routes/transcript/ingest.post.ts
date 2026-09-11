@@ -1,16 +1,20 @@
 import { and, eq } from "drizzle-orm";
-import { createError } from "h3";
+import { createError, defineEventHandler, readBody, type H3Event } from "h3";
 import db from "~/db";
 import { sources } from "~/db/schema";
 import { ensureUser } from "~/lib/ingestion/ensure-user";
 import { preparePartitionWrite } from "~/lib/partition-access";
+import { throwPartitionRouteError } from "~/lib/partition-route-errors";
 import { batchQueue } from "~/lib/queues";
 import {
   ingestTranscriptRequestSchema,
   ingestTranscriptResponseSchema,
+  type IngestTranscriptResponse,
 } from "~/lib/schemas/ingest-transcript";
 
-export default defineEventHandler(async (event) => {
+async function ingestTranscript(
+  event: H3Event,
+): Promise<IngestTranscriptResponse> {
   const body = ingestTranscriptRequestSchema.parse(await readBody(event));
 
   // Pre-create the parent `meeting_transcript` source so the caller gets a
@@ -83,4 +87,12 @@ export default defineEventHandler(async (event) => {
     jobId: body.transcriptId,
     sourceId: parent.id,
   });
+}
+
+export default defineEventHandler(async (event) => {
+  try {
+    return await ingestTranscript(event);
+  } catch (error) {
+    throwPartitionRouteError(error);
+  }
 });

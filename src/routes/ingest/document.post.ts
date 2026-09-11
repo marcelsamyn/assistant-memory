@@ -1,5 +1,6 @@
 import { defineEventHandler } from "h3";
 import { saveMemory } from "~/lib/ingestion/save-document";
+import { throwPartitionRouteError } from "~/lib/partition-route-errors";
 import {
   ingestDocumentRequestSchema,
   ingestDocumentResponseSchema,
@@ -8,7 +9,11 @@ import {
 export default defineEventHandler(async (event) => {
   const { userId, partitionKey, document, updateExisting } =
     ingestDocumentRequestSchema.parse(await readBody(event));
-  return ingestDocumentResponseSchema.parse(
-    await saveMemory({ userId, partitionKey, document, updateExisting }),
-  );
+  try {
+    return ingestDocumentResponseSchema.parse(
+      await saveMemory({ userId, partitionKey, document, updateExisting }),
+    );
+  } catch (error) {
+    throwPartitionRouteError(error);
+  }
 });
