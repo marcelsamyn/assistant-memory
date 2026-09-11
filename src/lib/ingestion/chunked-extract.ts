@@ -114,7 +114,7 @@ export async function runChunkedExtraction(
     sourceType,
     sourceId,
     ...(expectedSourceVersion !== undefined ? { expectedSourceVersion } : {}),
-    content,
+    content: extractionContent,
     documentNodeId: linkedNodeId,
     title: documentMetadata?.title,
     logLabel,

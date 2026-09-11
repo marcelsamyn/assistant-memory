@@ -1,4 +1,6 @@
 /** Claim lifecycle transitions for sourced claims. Common aliases: supersession, claim lifecycle, single-valued claim policy. */
+import { hasEmailDeadlineRemovalEvidence } from "../email-deadline-evidence";
+import { applyEmailDeadlineRemovals } from "../email-deadline-lifecycle";
 import {
   readCommitmentRequestEvidence,
   type CommitmentRequestEvidence,
@@ -317,6 +319,27 @@ async function recomputeSingleValuedLifecycleForSubject(
   }
 
   await Promise.all(updates);
+
+  if (
+    subject.subjectType === "Task" &&
+    ((subject.predicate === "DUE_ON" &&
+      latestActive?.assertedByKind === "assistant_inferred") ||
+      subjectClaims.some((claim) => {
+        const evidence = emailLifecycleEvidence(claim);
+        return (
+          evidence?.matchStatus === "matched" &&
+          evidence.lifecycleEvidence === "current_message_revision" &&
+          evidence.emailThread !== undefined &&
+          hasEmailDeadlineRemovalEvidence(evidence.emailThread.excerpt)
+        );
+      }))
+  ) {
+    await applyEmailDeadlineRemovals(
+      database,
+      subject.userId,
+      subject.subjectNodeId,
+    );
+  }
 
   for (const transition of newlySuperseded) {
     logEvent("claim.superseded", {

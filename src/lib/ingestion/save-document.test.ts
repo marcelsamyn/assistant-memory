@@ -336,6 +336,10 @@ describeIfServer("document replacement source lifecycle", () => {
             },
           ),
           rawContent: "revised attachment",
+          documentIngestion: {
+            documentId: "attachment-1",
+            contentType: "text",
+          },
           title: "Current title",
           author: "Current author",
           sourceContext,
@@ -475,7 +479,7 @@ describeIfServer("document replacement source lifecycle", () => {
         const [converted] = await database
           .update(sources)
           .set({
-            metadata: sql`${sources.metadata} || ${JSON.stringify({ rawContent: "Keep the converted text.", title: "Converter title" })}::jsonb`,
+            metadata: sql`${sources.metadata} || ${JSON.stringify({ convertedMarkdown: "Keep the converted text.", convertedToMarkdown: true, title: "Converter title" })}::jsonb`,
           })
           .where(eq(sources.id, accepted.sourceId))
           .returning({ version: sources.version });

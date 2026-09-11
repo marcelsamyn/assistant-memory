@@ -323,6 +323,38 @@ describeIfServer("pruneOrphanNodes", () => {
     ).resolves.toMatchObject({ rows: [{ state: "tombstoned" }] });
   });
 
+  it("preserves converted text when the original blob is absent", async () => {
+    const userId = "user_prune_converted_file";
+    const sourceId = newTypeId("source");
+    await rootClient.query('INSERT INTO "users" ("id") VALUES ($1)', [userId]);
+    await seedSource(rootClient, { sourceId, userId, blobBacked: true });
+    await rootClient.query(
+      'UPDATE "sources" SET "metadata" = $1 WHERE "id" = $2',
+      [
+        {
+          convertedMarkdown: "# Retained document text",
+          convertedToMarkdown: true,
+        },
+        sourceId,
+      ],
+    );
+    const { pruneOrphanNodes } = await import("./prune-orphan-nodes");
+    const result = await pruneOrphanNodes(
+      { userId, dryRun: false, limit: 10 },
+      database,
+      blobStoreWithExistingSources([]),
+    );
+    expect(result.sourceScanCount).toBe(1);
+    expect(result.missingBlobSourceCandidateCount).toBe(0);
+    expect(result.deletedMissingBlobSourceCount).toBe(0);
+    expect(
+      await rootClient.query(
+        'SELECT "deleted_at" FROM "sources" WHERE "id" = $1',
+        [sourceId],
+      ),
+    ).toMatchObject({ rows: [{ deleted_at: null }] });
+  });
+
   it("preserves blob-backed sources whose objects still exist", async () => {
     const userId = "user_prune_existing_blob";
     const sourceId = newTypeId("source");

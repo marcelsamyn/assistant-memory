@@ -16,6 +16,11 @@ import {
   upsertCommitmentPresentation,
 } from "./commitment-presentation";
 import { debugGraph } from "./debug-utils";
+import {
+  loadEmailAttachmentEvidence,
+  formatEmailAttachmentEvidence,
+  enrichEmailAttachmentEvidence,
+} from "./email-attachment-evidence";
 import { hasEmailDeadlineEvidence } from "./email-deadline-evidence";
 import {
   buildCommitmentRequestEvidence,
@@ -196,10 +201,30 @@ export async function extractGraph({
     partitionKey,
     ...(expectedSourceVersion !== undefined ? { expectedSourceVersion } : {}),
   });
-  const resolvedSourceRefs =
-    sourceRefs.length > 0
+  const attachments =
+    emailContext === null
+      ? []
+      : await loadEmailAttachmentEvidence({
+          db,
+          userId,
+          sourceId,
+          partitionKey,
+          context: emailContext,
+        });
+  const resolvedSourceRefs: SourceRef[] = [
+    ...(sourceRefs.length > 0
       ? sourceRefs
-      : [{ externalId: sourceId, sourceId, statedAt }];
+      : [{ externalId: sourceId, sourceId, statedAt }]),
+    ...attachments
+      .filter(
+        (attachment) =>
+          !sourceRefs.some((ref) => ref.sourceId === attachment.sourceId),
+      )
+      .map((attachment) => ({
+        externalId: attachment.sourceId,
+        sourceId: attachment.sourceId,
+      })),
+  ];
   const sourceRefMap = new Map(
     resolvedSourceRefs.map((sourceRef) => [sourceRef.externalId, sourceRef]),
   );
@@ -207,6 +232,12 @@ export async function extractGraph({
     sourceId,
     ...resolvedSourceRefs.map((sourceRef) => sourceRef.sourceId),
   ]);
+  for (const attachment of attachments) {
+    const fence = sourceWriteFences.find(
+      (value) => value.sourceId === attachment.sourceId,
+    );
+    if (fence) fence.expectedSourceVersion = attachment.expectedSourceVersion;
+  }
   if (expectedSourceVersion !== undefined) {
     const rootFence = sourceWriteFences.find(
       (fence) => fence.sourceId === sourceId,
@@ -524,7 +555,7 @@ ${sourceRefsForPrompt}
 ${contentNote ? `\n${contentNote}\n` : ""}
 <${sourceType}>
 ${content}
-</${sourceType}>`;
+</${sourceType}>${formatEmailAttachmentEvidence(attachments)}`;
 
   const completion = await parseStructuredCompletion(
     client,
@@ -649,12 +680,27 @@ ${content}
         for (const claim of uniqueParsedLlmAttributeClaims) {
           if (sourceRefMap.get(claim.sourceRef)?.sourceId !== sourceId)
             continue;
+          await enrichEmailAttachmentEvidence({
+            db: tx,
+            userId,
+            sourceId,
+            content,
+            claim,
+            label: uniqueParsedLlmNodes.find(
+              (node) => node.id === claim.subjectId && node.type === "Task",
+            )?.label,
+            candidates,
+            attachments,
+          });
           const resolution = resolveEmailRequest({
             context: emailContext,
             claim,
             content,
             sourceId,
             candidates,
+            sourceIdsByRef: new Map(
+              resolvedSourceRefs.map((ref) => [ref.externalId, ref.sourceId]),
+            ),
             ...(operation ? { sourceOperationId: operation.operationId } : {}),
           });
           if (
@@ -1481,7 +1527,10 @@ async function _processAndInsertLlmClaims(
       assertedByKind:
         emailContext === null ? provenance.kind : "assistant_inferred",
       assertedByNodeId: provenance.nodeId,
-      statedAt: claimSource.statedAt,
+      statedAt:
+        [...emailResolutions].find(
+          ([status]) => status.subjectId === llmClaim.subjectId,
+        )?.[1].statedAt ?? claimSource.statedAt,
       validFrom:
         emailContext === null
           ? _parseOptionalDate(llmClaim.validFrom)

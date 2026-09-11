@@ -107,28 +107,55 @@ describe("runChunkedExtraction", () => {
     expect(calls[2]?.replaceFlag).toBe(false);
   });
 
-  it("removes forwarded history before email content is chunked", async () => {
-    vi.doMock("~/utils/env", () => ({
-      env: { INGEST_CHUNK_MAX_CHARS: 10_000, INGEST_DEBUG_DIR: undefined },
-    }));
-    const calls: string[] = [];
-    vi.doMock("~/lib/extract-graph", () => ({
-      extractGraph: vi.fn(async (params: { content: string }) => {
-        calls.push(params.content);
-        return { newNodesCreated: 0, claimsCreated: 0 };
-      }),
-    }));
-    const { runChunkedExtraction } = await import(
-      "~/lib/ingestion/chunked-extract"
-    );
-    await runChunkedExtraction({
-      ...makeBaseParams(),
-      emailContent: true,
-      content:
-        "Please review the new contract.\n---------- Forwarded message ---------\nFrom: old@example.com\nPlease review the old contract.",
-    });
-    expect(calls).toEqual(["Please review the new contract."]);
-  });
+  it.each([
+    "---------- Forwarded message ---------\nFrom: old@example.com\nPlease review the old contract.",
+    "On Monday, Old Sender wrote:\n> Please review the old contract.",
+  ])(
+    "removes email history from both spine and chunks: %s",
+    async (history) => {
+      vi.doMock("~/utils/env", () => ({
+        env: { INGEST_CHUNK_MAX_CHARS: 10_000, INGEST_DEBUG_DIR: undefined },
+      }));
+      const extractDocumentSpine = vi.fn(
+        async ({ content }: { content: string }) => ({
+          thesis: content,
+          spineConcepts: [{ label: content, description: content }],
+        }),
+      );
+      vi.doMock("~/lib/ingestion/extract-document-spine", () => ({
+        extractDocumentSpine,
+      }));
+      const calls: Array<{ content: string; contentNote?: string }> = [];
+      vi.doMock("~/lib/extract-graph", () => ({
+        extractGraph: vi.fn(
+          async (params: { content: string; contentNote?: string }) => {
+            calls.push(params);
+            return { newNodesCreated: 0, claimsCreated: 0 };
+          },
+        ),
+      }));
+      const { runChunkedExtraction } = await import(
+        "~/lib/ingestion/chunked-extract"
+      );
+      const input = {
+        ...makeBaseParams(),
+        emailContent: true,
+        content: `Please review the new contract.\n${history}`,
+      };
+      await runChunkedExtraction(input);
+      expect(extractDocumentSpine).toHaveBeenCalledWith({
+        userId: input.userId,
+        content: "Please review the new contract.",
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.content).toBe("Please review the new contract.");
+      expect(calls[0]?.contentNote).toContain(
+        "Please review the new contract.",
+      );
+      expect(JSON.stringify(calls)).not.toContain("old contract");
+      expect(input.content).toContain(history);
+    },
+  );
 
   it("transfers source-scoped replacement to the first chunk that actually succeeds", async () => {
     vi.doMock("~/utils/env", () => ({

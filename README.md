@@ -12,6 +12,14 @@ A stored source and the facts extracted from it are separate. Memory retains sou
 
 Documents and files can carry optional `sourceContext`: facts supplied by the host about origin, authorship, relationships, chronology, and completeness. Existing notes, conversations, and transcript integrations keep their input formats. No client needs to turn its content into email or identify tasks before storing it.
 
+If a processing receipt was saved but its queue job was not, resubmit the same ingestion request with the source-preserving defaults to restore the job. Legacy `updateExisting: true` replacement requests intentionally tombstone and recreate the source; use the processing retry endpoint when retained conversion settings are available.
+
+Concurrent document/file requests with the same identity reuse the first stored fallback timestamp when none is supplied. Readable email attachments can refine an existing request's label and statement while preserving its current-message citation, status, and manual confirmation or dismissal. Incoming lifecycle updates require a known matching requester; authenticated outgoing owner messages can update the owner's work.
+
+Matched email revisions can remove an earlier inferred deadline with explicit removal wording, such as “There is no deadline now” or “Er is geen deadline meer.” Omitted or ambiguous dates preserve the existing deadline, and email revisions do not clear dates set by the user. Presentation excerpts keep their original source citation when later messages change task status.
+
+Attachment evidence in each parent extraction prompt is limited to 32,000 serialized characters, with prefixes of at most 4,000 characters from each of the first 100 sources. Complete converted text remains available through source reads. Attachment refinements refresh canonical labels and search embeddings. Identical file replays refresh the linked Document label from a new title or, when no title is stored, its filename without re-extracting.
+
 See [the ingestion contract](docs/sdk/ingestion.md) for generic and email examples, processing receipts, source reads, and HTTP/SDK/MCP support. [Consumer migration notes](docs/sdk-consumer-migration.md) list the changes needed for existing integrations.
 
 ## Database migration logs
@@ -245,7 +253,7 @@ MCP connects over `GET /sse` and `POST /messages`. Tools use snake_case names:
 - `save_memory`: document ingestion using the `POST /ingest/document` schema. Honors `updateExisting` and returns the JSON acceptance receipt in a text content block.
 - `get_source_processing`: read one ingestion operation by `userId`, `partitionKey`, and `operationId`.
 - `retry_source_processing`: retry a failed operation through the same recovery service as HTTP.
-- `get_source`: read source metadata and, with `includeContent: true`, its stored text or converted Markdown.
+- `get_source`: read source metadata and, with `includeContent: true`, its stored text or converted Markdown. Conversion preserves the original source payload separately.
 - `bootstrap_memory`: fetch startup context before the first answer that depends on prior memory.
 - `search_memory` and `search_reference`: retrieve personal or reference material with source evidence.
 - `list_commitments`: inspect trusted tasks, candidates, or both through its provenance filter.

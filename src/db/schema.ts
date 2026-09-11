@@ -1177,9 +1177,8 @@ export const rollupStateRelations = relations(rollupState, ({ one }) => ({
 /**
  * Per-commitment presentation evidence (1:1 with a Task node): a verbatim
  * `excerpt` and a generated `why`, produced when the Task is first inferred.
- * Provenance (source title + timestamp) is NOT stored here — it is joined from
- * `sources` via the commitment's active status-claim `sourceId` at read time.
- * Decoupled from claims so it never rides a superseded status claim.
+ * Source title and timestamp are joined through this row's `sourceId`, so the
+ * original request excerpt keeps its citation when later claims change status.
  */
 export const commitmentPresentations = pgTable(
   "commitment_presentations",

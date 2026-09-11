@@ -209,6 +209,7 @@ export function resolveEmailRequest(params: {
   sourceId: TypeId<"source">;
   sourceOperationId?: string;
   candidates: EmailRequestCandidate[];
+  sourceIdsByRef?: ReadonlyMap<string, TypeId<"source">>;
 }): EmailRequestResolution | null {
   const { context, claim, content, sourceId, candidates } = params;
   const extracted = claim.emailRequestEvidence;
@@ -293,16 +294,44 @@ export function resolveEmailRequest(params: {
     if (identical.length > 0) return null;
   }
   if (matching.length === 0 && lifecycle !== "request") return null;
+  matching = matching.sort(
+    (a, b) =>
+      a.statedAt.getTime() - b.statedAt.getTime() ||
+      (a.evidence?.emailThread?.messageId ?? "").localeCompare(
+        b.evidence?.emailThread?.messageId ?? "",
+      ) ||
+      (a.evidence?.emailThread?.evidenceFingerprint ?? "").localeCompare(
+        b.evidence?.emailThread?.evidenceFingerprint ?? "",
+      ),
+  );
   const origin = matching.find(
     (candidate) => candidate.evidence !== null,
   )?.evidence;
   const ownerEmail = context.authenticatedUser?.email.toLowerCase();
   if (origin && origin.intendedResponder.toLowerCase() !== ownerEmail)
     return null;
+  // Promise evidence does not retain its original recipients. Only its author
+  // can change it; sharing a mailbox thread does not authorize another sender.
   if (
-    origin?.requester &&
+    origin?.kind === "user_promise" &&
+    (context.direction !== "outgoing" ||
+      context.sender?.email.toLowerCase() !== ownerEmail)
+  )
+    return null;
+  // Incoming updates need a known original requester. Missing provenance
+  // cannot authorize another participant to close or revise the owner's work.
+  if (
+    matching.length > 0 &&
     context.direction === "incoming" &&
-    context.sender?.email.toLowerCase() !== origin.requester.toLowerCase()
+    (!origin?.requester ||
+      context.sender?.email.toLowerCase() !== origin.requester.toLowerCase())
+  )
+    return null;
+  if (
+    matching.length > 0 &&
+    context.direction === "outgoing" &&
+    (ownerEmail === undefined ||
+      context.sender?.email.toLowerCase() !== ownerEmail)
   )
     return null;
   if (
@@ -314,16 +343,6 @@ export function resolveEmailRequest(params: {
     )
   )
     return null;
-  matching = matching.sort(
-    (a, b) =>
-      a.statedAt.getTime() - b.statedAt.getTime() ||
-      (a.evidence?.emailThread?.messageId ?? "").localeCompare(
-        b.evidence?.emailThread?.messageId ?? "",
-      ) ||
-      (a.evidence?.emailThread?.evidenceFingerprint ?? "").localeCompare(
-        b.evidence?.emailThread?.evidenceFingerprint ?? "",
-      ),
-  );
   const latest = matching.at(-1);
   const authoredTime = new Date(authoredAt);
   if (
@@ -363,7 +382,8 @@ export function resolveEmailRequest(params: {
     context,
     claim,
     claimSourceId: sourceId,
-    sourceIdsByRef: new Map([[claim.sourceRef, sourceId]]),
+    sourceIdsByRef:
+      params.sourceIdsByRef ?? new Map([[claim.sourceRef, sourceId]]),
   });
   if (baseEvidence === null) return null;
   const requestId = latest

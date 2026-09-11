@@ -12,6 +12,14 @@ export class SourceBlobUploadTimeoutError extends Error {
   }
 }
 
+/** A complete storage response explicitly rejected the PUT. */
+export class SourceBlobUploadRejectedError extends Error {
+  constructor(readonly statusCode: number) {
+    super(`Source blob upload returned HTTP ${statusCode}`);
+    this.name = "SourceBlobUploadRejectedError";
+  }
+}
+
 /** Cancels the actual PUT and waits for its local transport to close. */
 export async function putSourceBlob(
   signedUrl: string,
@@ -34,11 +42,12 @@ export async function putSourceBlob(
           request.destroy(error);
         });
         response.on("end", () => {
-          if (response.statusCode !== 200) {
-            failure ??= new Error(
-              `Source blob upload returned HTTP ${response.statusCode}`,
-            );
-          } else {
+          if (
+            response.statusCode !== undefined &&
+            response.statusCode !== 200
+          ) {
+            failure ??= new SourceBlobUploadRejectedError(response.statusCode);
+          } else if (response.statusCode === 200) {
             completed = true;
           }
         });

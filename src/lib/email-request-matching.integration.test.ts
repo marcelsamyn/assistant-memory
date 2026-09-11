@@ -1,4 +1,8 @@
 import {
+  loadEmailAttachmentEvidence,
+  MAX_EMAIL_ATTACHMENT_CONTENT_CHARS,
+} from "./email-attachment-evidence";
+import {
   loadEmailRequestCandidates,
   readRequestEvidence,
 } from "./email-request-matching";
@@ -15,11 +19,20 @@ import {
   type ContextPartitionKey,
 } from "./schemas/partition";
 import type { SourceContext } from "./schemas/source-context";
+import { sourceMetadataSchema } from "./sources";
 import { and, eq } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client, Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import * as schema from "~/db/schema";
 import { newTypeId, type TypeId } from "~/types/typeid";
 import { setTestDatabase } from "~/utils/db";
@@ -36,6 +49,18 @@ vi.mock("./queues", () => ({
   batchQueue: { add: async () => undefined },
 }));
 
+const embeddings = vi.hoisted(() => ({ inputs: [] as string[] }));
+vi.mock("./embeddings", () => ({
+  generateEmbeddings: async ({ input }: { input: string[] }) => {
+    embeddings.inputs.push(...input);
+    return {
+      data: input.map((text) => ({
+        embedding: Array.from({ length: 1024 }, () => text.length),
+      })),
+    };
+  },
+}));
+
 const ai = vi.hoisted(() => ({
   output: {
     nodes: [] as LlmOutputNode[],
@@ -46,6 +71,7 @@ const ai = vi.hoisted(() => ({
   },
   prompt: "",
   resolveCurrentSource: false,
+  presentationExcerpt: null as string | null,
 }));
 vi.mock("./ai", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./ai")>()),
@@ -83,9 +109,11 @@ vi.mock("./ai", async (importOriginal) => ({
         {
           message: {
             parsed:
-              audit.task === "commitment_presentation"
-                ? { excerpt: null, why: null }
-                : extraction,
+              audit.task === "document_spine"
+                ? { thesis: "An email request.", spineConcepts: [] }
+                : audit.task === "commitment_presentation"
+                  ? { excerpt: ai.presentationExcerpt, why: null }
+                  : extraction,
           },
         },
       ],
@@ -144,6 +172,12 @@ describeWithDatabase("email request extraction with PostgreSQL", () => {
     await admin.end();
   });
 
+  beforeEach(() => {
+    setSkipEmbeddingPersistence(true);
+    embeddings.inputs = [];
+    ai.presentationExcerpt = null;
+  });
+
   const baseContext: SourceContext = {
     version: 1,
     sourceKind: "email",
@@ -198,7 +232,11 @@ describeWithDatabase("email request extraction with PostgreSQL", () => {
       userId,
       type: "document",
       externalId: `${userId}/${messageId}`,
-      metadata: { sourceContext: context, title: messageId },
+      metadata: {
+        sourceContext: context,
+        title: messageId,
+        rawContent: content,
+      },
       ...(partitionKey === undefined ? {} : { partitionKey }),
     });
     await database
@@ -309,6 +347,360 @@ describeWithDatabase("email request extraction with PostgreSQL", () => {
       },
     };
   }
+
+  it.each(["completion", "revision"] as const)(
+    "keeps the original presentation citation after a later %s",
+    async (lifecycle) => {
+      const { listCommitments } = await import("./query/commitments-list");
+      const { getCommitment } = await import("./query/commitment-detail");
+      const userId = `email-presentation-${lifecycle}`;
+      ai.presentationExcerpt = contract;
+      const { message, previous } = await seedRequests(userId);
+      const text =
+        lifecycle === "completion"
+          ? "I reviewed the contract and sent all comments."
+          : "Please review the new liability terms in contract v2.";
+      const next = await createMessage(
+        userId,
+        lifecycle,
+        "2026-09-10T10:00:00.000Z",
+        text,
+        lifecycle === "completion",
+      );
+      output(next.sourceId, [text], lifecycle, previous);
+      await extractGraph(next.params);
+      const result = await listCommitments({
+        userId,
+        provenance: "all",
+        sort: "createdAt",
+        order: "asc",
+        limit: 50,
+      });
+      expect(
+        result.commitments.find((item) => item.taskId === previous.taskId),
+      ).toMatchObject({
+        sourceId: next.sourceId,
+        status: lifecycle === "completion" ? "done" : "pending",
+        statusAssertedByKind: "assistant_inferred",
+        presentation: {
+          excerpt: contract,
+          source: { sourceId: message.sourceId, title: "initial" },
+        },
+      });
+      const detail = await getCommitment({
+        userId,
+        taskId: previous.taskId,
+        includeSources: true,
+        includeHistory: true,
+      });
+      expect(detail.sources.map((source) => source.sourceId)).toEqual(
+        expect.arrayContaining([message.sourceId, next.sourceId]),
+      );
+    },
+  );
+
+  it("falls back to the active status source when no presentation was stored", async () => {
+    const { listCommitments } = await import("./query/commitments-list");
+    const userId = "email-presentation-fallback";
+    const { previous } = await seedRequests(userId);
+    const text = "I reviewed the contract and sent all comments.";
+    const next = await createMessage(
+      userId,
+      "completion",
+      "2026-09-10T10:00:00.000Z",
+      text,
+      true,
+    );
+    output(next.sourceId, [text], "completion", previous);
+    await extractGraph(next.params);
+    const result = await listCommitments({
+      userId,
+      provenance: "all",
+      sort: "createdAt",
+      order: "asc",
+      limit: 50,
+    });
+    expect(
+      result.commitments.find((item) => item.taskId === previous.taskId)
+        ?.presentation,
+    ).toMatchObject({
+      excerpt: null,
+      why: null,
+      source: { sourceId: next.sourceId, title: "completion" },
+    });
+  });
+
+  function addDeadline(
+    sourceId: TypeId<"source">,
+    subjectId: string,
+    date: string,
+  ): void {
+    ai.output.nodes.push({ id: "temp_due", type: "Temporal", label: date });
+    ai.output.relationshipClaims.push({
+      subjectId,
+      objectId: "temp_due",
+      predicate: "DUE_ON",
+      statement: `Please finish by ${date}.`,
+      sourceRef: sourceId,
+      assertionKind: "assistant_inferred",
+    });
+  }
+
+  async function seedDatedRequest(userId: string) {
+    const text = `${contract} Please finish by 2026-09-15.`;
+    const message = await createMessage(
+      userId,
+      "initial",
+      "2026-09-10T08:00:00.000Z",
+      text,
+    );
+    output(message.sourceId, [text]);
+    addDeadline(message.sourceId, "temp_task_0", "2026-09-15");
+    await extractGraph(message.params);
+    const [candidate] = await loadEmailRequestCandidates(
+      database,
+      userId,
+      undefined,
+      message.context,
+    );
+    if (!candidate?.evidence?.requestId)
+      throw new Error("Expected dated request");
+    return {
+      message,
+      previous: {
+        taskId: candidate.taskId,
+        requestId: candidate.evidence.requestId,
+        sourceId: message.sourceId,
+      },
+    };
+  }
+
+  it.each([
+    "tentative",
+    "confirmed",
+    "dismissed",
+    "manual date",
+    "Dutch",
+  ] as const)(
+    "clears only the inferred deadline on a matched revision (%s)",
+    async (state) => {
+      const { confirmCommitment, dismissCommitment, setCommitmentDue } =
+        await import("./commitments");
+      const { listCommitments } = await import("./query/commitments-list");
+      const userId = `email-remove-deadline-${state}`;
+      const { previous } = await seedDatedRequest(userId);
+      if (state === "confirmed")
+        await confirmCommitment({ userId, taskId: previous.taskId });
+      if (state === "dismissed")
+        await dismissCommitment({ userId, taskId: previous.taskId });
+      if (state === "manual date")
+        await setCommitmentDue({
+          userId,
+          taskId: previous.taskId,
+          dueOn: "2026-09-20",
+          assertedByKind: "user",
+        });
+      const text =
+        state === "Dutch"
+          ? "Bekijk de nieuwe voorwaarden. Er is geen deadline meer."
+          : "Please review the revised contract. There is no deadline now.";
+      const next = await createMessage(
+        userId,
+        "removal",
+        new Date(Date.now() + 60_000).toISOString(),
+        text,
+      );
+      output(next.sourceId, [text], "revision", previous);
+      await extractGraph(next.params);
+      await extractGraph(next.params);
+      const result = await listCommitments({
+        userId,
+        provenance: "all",
+        sort: "createdAt",
+        order: "asc",
+        limit: 50,
+      });
+      expect(result.commitments).toMatchObject([
+        {
+          taskId: previous.taskId,
+          status: "pending",
+          statusAssertedByKind: "assistant_inferred",
+          dueOn: state === "manual date" ? "2026-09-20" : null,
+        },
+      ]);
+      if (state !== "manual date") {
+        const [deadline] = await database
+          .select()
+          .from(schema.claims)
+          .where(
+            and(
+              eq(schema.claims.userId, userId),
+              eq(schema.claims.predicate, "DUE_ON"),
+            ),
+          );
+        const [revision] = await database
+          .select()
+          .from(schema.claims)
+          .where(
+            and(
+              eq(schema.claims.userId, userId),
+              eq(schema.claims.sourceId, next.sourceId),
+              eq(schema.claims.predicate, "HAS_TASK_STATUS"),
+            ),
+          );
+        expect(deadline).toMatchObject({
+          status: "superseded",
+          validTo: next.params.statedAt,
+          supersededByClaimId: revision?.id,
+        });
+      }
+    },
+  );
+
+  it("rejects a deadline removal from another thread", async () => {
+    const userId = "email-deadline-other-thread";
+    const { previous } = await seedDatedRequest(userId);
+    const text =
+      "Please review the revised contract. There is no deadline now.";
+    const next = await createMessage(
+      userId,
+      "other-thread",
+      "2026-09-10T10:00:00.000Z",
+      text,
+    );
+    await database
+      .update(schema.sources)
+      .set({
+        metadata: {
+          sourceContext: { ...next.context, threadId: "another-thread" },
+          rawContent: text,
+        },
+      })
+      .where(eq(schema.sources.id, next.sourceId));
+    output(next.sourceId, [text], "revision", previous);
+    await extractGraph(next.params);
+    const active = await database
+      .select()
+      .from(schema.claims)
+      .where(
+        and(
+          eq(schema.claims.userId, userId),
+          eq(schema.claims.subjectNodeId, previous.taskId),
+          eq(schema.claims.predicate, "DUE_ON"),
+          eq(schema.claims.status, "active"),
+        ),
+      );
+    expect(active).toHaveLength(1);
+  });
+
+  it.each([
+    ["ambiguous absence", "Please review the revised contract.", "revision"],
+    [
+      "unsupported replacement",
+      "Please review the revised contract. There is no deadline now. Please finish by tomorrow.",
+      "revision",
+    ],
+    [
+      "unmatched message",
+      "Please review the revised invoice. There is no deadline now.",
+      "request",
+    ],
+    ["clarification", "There is no deadline now.", "clarification"],
+  ] as const)(
+    "preserves existing deadlines for %s",
+    async (name, text, lifecycle) => {
+      const userId = `email-preserve-deadline-${name}`;
+      const { previous } = await seedDatedRequest(userId);
+      const next = await createMessage(
+        userId,
+        "update",
+        "2026-09-10T10:00:00.000Z",
+        text,
+      );
+      output(
+        next.sourceId,
+        [text],
+        lifecycle,
+        lifecycle === "request" ? undefined : previous,
+      );
+      await extractGraph(next.params);
+      const active = await database
+        .select()
+        .from(schema.claims)
+        .where(
+          and(
+            eq(schema.claims.userId, userId),
+            eq(schema.claims.subjectNodeId, previous.taskId),
+            eq(schema.claims.predicate, "DUE_ON"),
+            eq(schema.claims.status, "active"),
+          ),
+        );
+      expect(active).toHaveLength(1);
+    },
+  );
+
+  it("keeps deadline removal chronological when older and newer dates arrive later", async () => {
+    const { findSimilarClaims } = await import("./graph");
+    const { recomputeSingleValuedLifecycle } = await import(
+      "./claims/lifecycle"
+    );
+    setSkipEmbeddingPersistence(false);
+    const userId = "email-deadline-removal-order";
+    const { previous } = await seedDatedRequest(userId);
+    for (const [id, hour, date] of [
+      ["removal", "10", null],
+      ["earlier-date", "09", "2026-09-16"],
+      ["newer-date", "11", "2026-09-17"],
+    ] as const) {
+      const text =
+        date === null
+          ? "Please review the revised contract. There is no deadline now."
+          : `Please review the revised contract. Please finish by ${date}.`;
+      const next = await createMessage(
+        userId,
+        id,
+        `2026-09-10T${hour}:00:00.000Z`,
+        text,
+      );
+      output(next.sourceId, [text], "revision", previous);
+      if (date !== null) addDeadline(next.sourceId, previous.taskId, date);
+      embeddings.inputs = [];
+      await extractGraph(next.params);
+      await recomputeSingleValuedLifecycle(database, {
+        userId,
+        subjectNodeId: previous.taskId,
+        subjectType: "Task",
+        predicate: "DUE_ON",
+      });
+      const active = await database
+        .select({ sourceId: schema.claims.sourceId })
+        .from(schema.claims)
+        .where(
+          and(
+            eq(schema.claims.userId, userId),
+            eq(schema.claims.predicate, "DUE_ON"),
+            eq(schema.claims.status, "active"),
+          ),
+        );
+      expect(active).toEqual(
+        id === "newer-date" ? [{ sourceId: next.sourceId }] : [],
+      );
+      const search = await findSimilarClaims({
+        userId,
+        embedding: Array.from({ length: 1024 }, () => 1),
+        includeAssistantInferred: true,
+        limit: 50,
+      });
+      expect(
+        search.filter((claim) => claim.predicate === "DUE_ON"),
+      ).toHaveLength(id === "newer-date" ? 1 : 0);
+      if (date !== null) {
+        expect(embeddings.inputs).toContain(
+          `DUE_ON Please finish by ${date}. status=${id === "earlier-date" ? "superseded" : "active"} statedAt=${next.params.statedAt.toISOString()}`,
+        );
+      }
+    }
+  });
 
   it("keeps the same final requests and citations when later messages arrive out of order", async () => {
     const { getCommitment } = await import("./query/commitment-detail");
@@ -865,6 +1257,357 @@ describeWithDatabase("email request extraction with PostgreSQL", () => {
       expect(deadlines).toEqual([{ predicate: "DUE_ON", label: "2026-09-15" }]);
     },
   );
+  it.each(["new", "pending", "confirmed", "dismissed", "done"] as const)(
+    "re-extracts the parent with attachment evidence (request state: %s)",
+    async (state) => {
+      setSkipEmbeddingPersistence(false);
+      const existing = state !== "new";
+      const userId = `email-attachment-parent-${state}`;
+      const text =
+        "Please review the attached contract and send your comments.";
+      const message = await createMessage(
+        userId,
+        "attachment-parent",
+        "2026-09-10T08:00:00.000Z",
+        text,
+      );
+      output(message.sourceId, existing ? [text] : []);
+      await extractGraph(message.params);
+      const initial = await loadEmailRequestCandidates(
+        database,
+        userId,
+        undefined,
+        message.context,
+      );
+      if (state === "confirmed" || state === "dismissed") {
+        const { confirmCommitment, dismissCommitment } = await import(
+          "./commitments"
+        );
+        if (!initial[0]) throw new Error("Missing initial request");
+        await confirmCommitment({ userId, taskId: initial[0].taskId });
+        if (state === "dismissed")
+          await dismissCommitment({ userId, taskId: initial[0].taskId });
+      }
+      if (state === "done") {
+        await database
+          .update(schema.claims)
+          .set({ objectValue: "done" })
+          .where(eq(schema.claims.userId, userId));
+      }
+      const lifecycleRows = () =>
+        database
+          .select({
+            id: schema.claims.id,
+            status: schema.claims.status,
+            objectValue: schema.claims.objectValue,
+            assertedByKind: schema.claims.assertedByKind,
+            statedAt: schema.claims.statedAt,
+            updatedAt: schema.claims.updatedAt,
+          })
+          .from(schema.claims)
+          .where(eq(schema.claims.userId, userId))
+          .orderBy(schema.claims.id);
+      const before = await lifecycleRows();
+      const attachmentId = newTypeId("source");
+      const attachmentText =
+        "Contract v2: review clause 7, the revised liability cap.";
+      const completeAttachmentText =
+        attachmentText + "\n" + "Stored supporting detail. ".repeat(1_000);
+      await database.insert(schema.sources).values({
+        id: attachmentId,
+        userId,
+        type: "document",
+        externalId: `${userId}/attachment`,
+        metadata: {
+          ...(state === "new" || state === "confirmed"
+            ? {
+                rawContent: "Original unconverted attachment",
+                convertedMarkdown: completeAttachmentText,
+              }
+            : { rawContent: completeAttachmentText }),
+          convertedToMarkdown: true,
+          sourceContext: {
+            version: 1,
+            sourceKind: "email_attachment",
+            purpose: "Support the parent request",
+            relationship: "email_attachment",
+            accountId: message.context.accountId,
+            parentSourceId: message.sourceId,
+            messageId: message.context.messageId,
+            threadId: message.context.threadId,
+            currentMessageRole: "attachment",
+            completeness: "complete",
+          } satisfies SourceContext,
+        },
+      });
+      const loadedEvidence = await loadEmailAttachmentEvidence({
+        db: database,
+        userId,
+        sourceId: message.sourceId,
+        partitionKey: undefined,
+        context: message.context,
+      });
+      expect(loadedEvidence).toEqual([
+        {
+          sourceId: attachmentId,
+          expectedSourceVersion: 0,
+          content: completeAttachmentText.slice(
+            0,
+            MAX_EMAIL_ATTACHMENT_CONTENT_CHARS,
+          ),
+          truncated: true,
+        },
+      ]);
+      const operation = await createSourceIngestionOperation({
+        db: database,
+        userId,
+        sourceId: attachmentId,
+        externalId: `${userId}/attachment`,
+        contentHash: "attachment-content",
+      });
+      if (state === "new") {
+        await database
+          .update(schema.sources)
+          .set({
+            metadata: {
+              rawContent: `<p>${text}</p>`,
+              convertedMarkdown: text,
+              convertedToMarkdown: true,
+              documentIngestion: {
+                documentId: "attachment-parent",
+                contentType: "html",
+              },
+              sourceContext: message.context,
+            },
+          })
+          .where(eq(schema.sources.id, message.sourceId));
+      }
+      const refinedLabel = "Review contract clause 7 liability cap";
+      const refinedStatement =
+        "Review clause 7 of the attached contract and send comments on the liability cap.";
+      output(message.sourceId, [text, attachmentText]);
+      ai.output.nodes[0]!.label = refinedLabel;
+      ai.output.attributeClaims[0]!.statement = refinedStatement;
+      ai.output.attributeClaims = ai.output.attributeClaims.map((claim) => ({
+        ...claim,
+        sourceRef: `${userId}/attachment-parent`,
+        emailRequestEvidence: {
+          ...claim.emailRequestEvidence!,
+          supportingSourceRefs: [`${userId}/attachment-parent`, attachmentId],
+        },
+      }));
+      const { ingestFile } = await import("./jobs/ingest-file");
+      await ingestFile({
+        db: database,
+        userId,
+        sourceId: attachmentId,
+        expectedSourceVersion: operation.sourceVersion,
+        operationId: operation.operationId,
+        filename: "contract.txt",
+        mimeType: "text/plain",
+        timestamp: new Date(),
+        finalAttempt: false,
+      });
+      const allRequests = await loadEmailRequestCandidates(
+        database,
+        userId,
+        undefined,
+        message.context,
+      );
+      const requests = allRequests.filter(
+        (candidate) => candidate.sourceId === message.sourceId,
+      );
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.sourceId).toBe(message.sourceId);
+      expect(requests[0]?.status).toBe(state === "done" ? "done" : "pending");
+      expect(requests[0]?.label).toBe(refinedLabel);
+      expect(requests[0]?.statement).toBe(refinedStatement);
+      if (existing) {
+        expect(requests[0]?.taskId).toBe(initial[0]?.taskId);
+        expect(await lifecycleRows()).toEqual(before);
+      }
+      expect(requests[0]?.evidence?.supportingSourceIds).toContain(
+        attachmentId,
+      );
+      expect(requests[0]?.evidence?.emailThread?.excerpt).toBe(text);
+      expect(ai.prompt).toContain(attachmentText);
+      expect(ai.prompt).toContain("SUPPORTING EMAIL ATTACHMENTS");
+      const receipt = await database
+        .select()
+        .from(schema.sourceIngestionOperations)
+        .where(
+          eq(
+            schema.sourceIngestionOperations.operationId,
+            operation.operationId,
+          ),
+        );
+      expect(receipt[0]?.status).toBe("completed");
+      const [storedAttachment] = await database
+        .select()
+        .from(schema.sources)
+        .where(eq(schema.sources.id, attachmentId));
+      if (!storedAttachment) throw new Error("Missing attachment");
+      const attachmentMetadata = sourceMetadataSchema.parse(
+        storedAttachment.metadata,
+      );
+      expect(
+        attachmentMetadata.convertedMarkdown ?? attachmentMetadata.rawContent,
+      ).toBe(completeAttachmentText);
+      if (state === "new" || state === "confirmed")
+        expect(attachmentMetadata.rawContent).toBe(
+          "Original unconverted attachment",
+        );
+      if (state === "new") expect(ai.prompt).not.toContain(`<p>${text}</p>`);
+      async function expectTaskReadModel(
+        taskId: TypeId<"node">,
+        label: string,
+      ): Promise<void> {
+        const [metadata] = await database
+          .select()
+          .from(schema.nodeMetadata)
+          .where(eq(schema.nodeMetadata.nodeId, taskId));
+        expect(metadata).toMatchObject({
+          label,
+          canonicalLabel: label.toLowerCase(),
+        });
+        const vectors = await database
+          .select()
+          .from(schema.nodeEmbeddings)
+          .where(eq(schema.nodeEmbeddings.nodeId, taskId));
+        expect(vectors).toHaveLength(1);
+        const embeddingInput = `${label}: ${metadata?.description ?? ""}`;
+        expect(embeddings.inputs).toContain(embeddingInput);
+        expect(vectors[0]?.embedding).toEqual(
+          Array.from({ length: 1024 }, () => embeddingInput.length),
+        );
+      }
+      await expectTaskReadModel(requests[0]!.taskId, refinedLabel);
+      const correctedText =
+        "Corrected contract: clause 8 replaces clause 7; review the indemnity limit.";
+      await database
+        .update(schema.sources)
+        .set({
+          version: storedAttachment.version + 1,
+          metadata: {
+            ...sourceMetadataSchema.parse(storedAttachment.metadata),
+            rawContent: correctedText,
+            convertedMarkdown: correctedText,
+          },
+        })
+        .where(eq(schema.sources.id, attachmentId));
+      const correction = await createSourceIngestionOperation({
+        db: database,
+        userId,
+        sourceId: attachmentId,
+        externalId: `${userId}/attachment`,
+        contentHash: "corrected-attachment",
+        expectedSourceVersion: storedAttachment.version + 1,
+      });
+      ai.output.nodes[0]!.label = "Review contract clause 8 indemnity limit";
+      ai.output.attributeClaims[0]!.statement =
+        "Review clause 8 of the attached contract and send comments on the indemnity limit.";
+      await ingestFile({
+        db: database,
+        userId,
+        sourceId: attachmentId,
+        expectedSourceVersion: correction.sourceVersion,
+        operationId: correction.operationId,
+        filename: "contract.txt",
+        mimeType: "text/plain",
+        timestamp: new Date(),
+        finalAttempt: false,
+      });
+      const corrected = (
+        await loadEmailRequestCandidates(
+          database,
+          userId,
+          undefined,
+          message.context,
+        )
+      ).filter((candidate) => candidate.sourceId === message.sourceId);
+      expect(corrected).toHaveLength(1);
+      expect(corrected[0]).toMatchObject({
+        taskId: requests[0]!.taskId,
+        label: "Review contract clause 8 indemnity limit",
+        statement: ai.output.attributeClaims[0]!.statement,
+        status: requests[0]!.status,
+        claimStatus: requests[0]!.claimStatus,
+        evidence: { emailThread: { excerpt: text } },
+      });
+      expect(ai.prompt).toContain(correctedText);
+      await expectTaskReadModel(
+        corrected[0]!.taskId,
+        "Review contract clause 8 indemnity limit",
+      );
+      const statusVectors = await database
+        .select({ embedding: schema.claimEmbeddings.embedding })
+        .from(schema.claimEmbeddings)
+        .innerJoin(
+          schema.claims,
+          eq(schema.claims.id, schema.claimEmbeddings.claimId),
+        )
+        .where(
+          and(
+            eq(schema.claims.userId, userId),
+            eq(schema.claims.sourceId, message.sourceId),
+            eq(schema.claims.predicate, "HAS_TASK_STATUS"),
+          ),
+        );
+      expect(statusVectors).toHaveLength(corrected.length);
+      expect(
+        embeddings.inputs.some((input) =>
+          input.includes(ai.output.attributeClaims[0]!.statement),
+        ),
+      ).toBe(true);
+      if (existing) expect(await lifecycleRows()).toEqual(before);
+    },
+  );
+
+  it("anchors deadlines to authenticated email time despite delayed delivery and model dates", async () => {
+    const userId = "email-deadline-authored-at";
+    const text = `${contract} Please finish by 2026-09-15.`;
+    const message = await createMessage(
+      userId,
+      "delayed-deadline",
+      "2026-09-10T08:00:00.000Z",
+      text,
+    );
+    output(message.sourceId, [text]);
+    ai.output.nodes.push({
+      id: "temp_due",
+      type: "Temporal",
+      label: "2026-09-15",
+    });
+    ai.output.relationshipClaims = [
+      {
+        subjectId: "temp_task_0",
+        objectId: "temp_due",
+        predicate: "DUE_ON",
+        statement: "Please finish by 2026-09-15.",
+        sourceRef: message.sourceId,
+        assertionKind: "assistant_inferred",
+        statedAt: "2099-01-01T00:00:00.000Z",
+      },
+    ];
+    await extractGraph({
+      ...message.params,
+      statedAt: new Date("2026-09-12T12:00:00.000Z"),
+    });
+    const deadlines = await database
+      .select()
+      .from(schema.claims)
+      .where(
+        and(
+          eq(schema.claims.userId, userId),
+          eq(schema.claims.predicate, "DUE_ON"),
+        ),
+      );
+    expect(deadlines).toHaveLength(1);
+    expect(deadlines[0]?.statedAt.toISOString()).toBe(
+      message.context.authoredAt,
+    );
+  });
+
   it.each(["email", "email_attachment"] as const)(
     "does not record personal measurements from %s",
     async (sourceKind) => {

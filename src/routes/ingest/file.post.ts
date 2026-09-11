@@ -3,13 +3,13 @@ import { createError, defineEventHandler, readMultipartFormData } from "h3";
 import { v4 as uuid } from "uuid";
 import db from "~/db";
 import { sources } from "~/db/schema";
+import { updateDocumentTitle } from "~/lib/ingestion/apply-document-spine";
 import { contextualFileRevisionExternalId } from "~/lib/ingestion/source-identity";
 import {
   createSourceIngestionOperation,
   findSourceIngestionOperation,
   hashSourceContent,
 } from "~/lib/ingestion/source-processing";
-import { hashSourceExtractionRevision } from "~/lib/ingestion/source-revision";
 import { batchQueue } from "~/lib/queues";
 import {
   ingestFileFieldsSchema,
@@ -117,50 +117,24 @@ export default defineEventHandler(async (event) => {
       statusMessage: "source parent does not belong to the requested partition",
     });
   }
-  const [previous] = await db
-    .select({ metadata: sources.metadata, timestamp: sources.lastIngestedAt })
-    .from(sources)
-    .where(
-      and(
-        eq(sources.userId, parsed.userId),
-        eq(sources.type, "document"),
-        eq(sources.externalId, externalId),
-        isNull(sources.deletedAt),
-      ),
-    )
-    .limit(1);
-  const previousMetadata = sourceMetadataSchema.parse(previous?.metadata ?? {});
-  const timestamp = parsed.timestamp ?? previous?.timestamp ?? new Date();
-  const author = parsed.author ?? previousMetadata.author;
-  const revisionHash = hashSourceExtractionRevision(
-    contentHash,
-    parsed.sourceContext,
-    {
-      scope: parsed.scope,
-      contentType: parsed.mimeType,
-      author,
-      timestamp,
-    },
-  );
-
   // Only set `metadata.title` when the user explicitly supplied one.
   // The filename is stored separately under `metadata.filename` so the
   // worker can fill `title` from the converter's derived title (or the
   // listing endpoint can fall back to the filename for display) without
   // either path having to second-guess whether the existing title was
   // explicit or a filename fallback.
-  const metadata: Record<string, unknown> = {
-    ingestionRevisionHash: revisionHash,
+  const inputMetadata = {
     filename: parsed.filename,
     mimeType: parsed.mimeType,
+    ...(parsed.title === undefined ? {} : { title: parsed.title }),
+    ...(parsed.author === undefined ? {} : { author: parsed.author }),
+    ...(parsed.sourceContext === undefined
+      ? {}
+      : { sourceContext: parsed.sourceContext }),
   };
-  if (parsed.title !== undefined) metadata["title"] = parsed.title;
-  if (author !== undefined) metadata["author"] = author;
-  if (parsed.sourceContext !== undefined)
-    metadata["sourceContext"] = parsed.sourceContext;
 
-  const { successes, failures } = await sourceService.insertMany([
-    {
+  const { successes, failures, timestamp, metadata, revisionHash } =
+    await sourceService.insertIngestionSource({
       userId: parsed.userId,
       ...(parsed.partitionKey !== undefined
         ? { partitionKey: parsed.partitionKey }
@@ -176,12 +150,13 @@ export default defineEventHandler(async (event) => {
           }
         : {}),
       scope: parsed.scope,
-      timestamp,
+      timestamp: parsed.timestamp,
+      extractionContentHash: contentHash,
+      extractionContentType: parsed.mimeType,
       fileBuffer: filePart.data,
       contentType: parsed.mimeType,
-      metadata,
-    },
-  ]);
+      metadata: inputMetadata,
+    });
 
   if (failures.length > 0) {
     throw createError({
@@ -196,7 +171,11 @@ export default defineEventHandler(async (event) => {
   let existingProcessing: SourceProcessing | null = null;
   if (!sourceId) {
     const [existing] = await db
-      .select({ id: sources.id })
+      .select({
+        id: sources.id,
+        metadata: sources.metadata,
+        contentLength: sources.contentLength,
+      })
       .from(sources)
       .where(
         and(
@@ -226,7 +205,12 @@ export default defineEventHandler(async (event) => {
       sourceId,
       contentHash: revisionHash,
     });
-    if (!existingProcessing) {
+    const storedMetadata = sourceMetadataSchema.parse(existing.metadata);
+    const samePersistedRevision =
+      storedMetadata.ingestionRevisionHash === revisionHash &&
+      (typeof storedMetadata.rawContent === "string" ||
+        existing.contentLength !== null);
+    if (!existingProcessing && !samePersistedRevision) {
       await sourceService.replaceFileContent({
         userId: parsed.userId,
         sourceId,
@@ -242,10 +226,10 @@ export default defineEventHandler(async (event) => {
         scope: parsed.scope,
         timestamp,
       });
-    } else {
+    } else if (existingProcessing) {
       // Repeated bytes reuse their immutable receipt, but caller-owned source
       // metadata can still change without another extraction.
-      await sourceService.updateIngestionMetadata({
+      const updatedVersion = await sourceService.updateIngestionMetadata({
         userId: parsed.userId,
         sourceId,
         partitionKey: parsed.partitionKey,
@@ -256,6 +240,15 @@ export default defineEventHandler(async (event) => {
         scope: parsed.scope,
         timestamp,
       });
+      if (parsed.title !== undefined || storedMetadata.title === undefined) {
+        await updateDocumentTitle({
+          db,
+          userId: parsed.userId,
+          sourceId,
+          expectedSourceVersion: updatedVersion,
+          title: parsed.title ?? parsed.filename,
+        });
+      }
     }
   }
 

@@ -71,6 +71,7 @@ describeIfPostgres("unreadable file conversion", () => {
   let ingestFile: (typeof import("./ingest-file"))["ingestFile"];
   let ingestDocument: (typeof import("./ingest-document"))["ingestDocument"];
   let service: SourceService;
+  let getSource: (typeof import("~/lib/get-source"))["getSource"];
   let blobClient: MinioClient;
   const convertToMarkdown = vi.fn();
   const extractDocumentGraph = vi.fn();
@@ -82,6 +83,9 @@ describeIfPostgres("unreadable file conversion", () => {
   });
 
   beforeAll(async () => {
+    // Other integration suites exercise the real worker before this suite
+    // installs its conversion and extraction boundary mocks.
+    vi.resetModules();
     const admin = new Client({ connectionString: dsnFor(adminDatabase) });
     await admin.connect();
     await admin.query(`CREATE DATABASE "${dbName}"`);
@@ -104,6 +108,8 @@ describeIfPostgres("unreadable file conversion", () => {
       )),
       sourceService: service,
     }));
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+    ({ getSource } = await import("~/lib/get-source"));
     vi.doMock("~/lib/converters/markitdown", () => ({ convertToMarkdown }));
     vi.doMock("~/lib/ingestion/extract-document-graph", () => ({
       extractDocumentGraph,
@@ -113,11 +119,171 @@ describeIfPostgres("unreadable file conversion", () => {
   }, 120_000);
 
   afterAll(async () => {
+    vi.doUnmock("~/utils/db");
+    vi.doUnmock("~/lib/sources");
+    vi.doUnmock("~/lib/converters/markitdown");
+    vi.doUnmock("~/lib/ingestion/extract-document-graph");
+    vi.resetModules();
     await client.end();
     const admin = new Client({ connectionString: dsnFor(adminDatabase) });
     await admin.connect();
     await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
     await admin.end();
+  });
+
+  it.each(["document", "file"] as const)(
+    "returns the current partition after a retained %s job moves",
+    async (kind) => {
+      const userId = `moved-${kind}-job`;
+      const partitionKey = contextPartitionKeySchema.parse(`moved:${kind}`);
+      await database.insert(users).values({ id: userId });
+      const [source] = await database
+        .insert(sources)
+        .values({
+          userId,
+          type: "document",
+          externalId: `${kind}-before-move`,
+          metadata: { rawContent: "Current text", convertedToMarkdown: true },
+          status: "pending",
+        })
+        .returning();
+      if (!source) throw new Error("Source missing");
+      const operation = await createSourceIngestionOperation({
+        db: database,
+        userId,
+        sourceId: source.id,
+        externalId: source.externalId,
+        contentHash: hashSourceContent("Current text"),
+      });
+      await setPartitionMigrationState(database, {
+        userId,
+        expectedState: "unmigrated",
+        expectedVersion: 0,
+        nextState: "migrating",
+      });
+      await reclassifySourcePartition(database, {
+        userId,
+        sourceId: source.id,
+        expectedPartitionKey: null,
+        expectedSourceVersion: operation.sourceVersion,
+        targetPartitionKey: partitionKey,
+        bindingGeneration: "retained-job-move",
+      });
+      await setPartitionMigrationState(database, {
+        userId,
+        expectedState: "migrating",
+        expectedVersion: 1,
+        nextState: "migrated",
+        unassignedPartitionKey: partitionKey,
+      });
+      const common = {
+        db: database,
+        userId,
+        sourceId: source.id,
+        operationId: operation.operationId,
+        expectedSourceVersion: operation.sourceVersion,
+        timestamp: new Date(),
+        finalAttempt: false,
+      };
+      const run = () =>
+        kind === "document"
+          ? ingestDocument({
+              ...common,
+              documentId: source.externalId,
+              contentType: "text",
+            })
+          : ingestFile({
+              ...common,
+              filename: "request.txt",
+              mimeType: "text/plain",
+            });
+      expect(await run()).toEqual({ partitionKey });
+      expect(extractDocumentGraph).toHaveBeenCalledOnce();
+      expect(
+        await getSourceIngestionOperationById({
+          db: database,
+          userId,
+          partitionKey,
+          operationId: operation.operationId,
+        }),
+      ).toMatchObject({ status: "completed" });
+      expect(await run()).toEqual({ partitionKey });
+      expect(extractDocumentGraph).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("uses the replayed filename when the first queued file job starts", async () => {
+    const userId = "file-queued-filename-replay";
+    const content = "Original file text";
+    await database.insert(users).values({ id: userId });
+    const [source] = await database
+      .insert(sources)
+      .values({
+        userId,
+        type: "document",
+        externalId: "stable-file",
+        metadata: { rawContent: content, filename: "old-name.txt" },
+        status: "pending",
+      })
+      .returning();
+    if (!source) throw new Error("Expected source");
+    const operation = await createSourceIngestionOperation({
+      db: database,
+      userId,
+      sourceId: source.id,
+      externalId: source.externalId,
+      contentHash: hashSourceContent(content),
+    });
+    await service.updateIngestionMetadata({
+      userId,
+      sourceId: source.id,
+      partitionKey: undefined,
+      metadata: { filename: "current-name.txt" },
+      scope: "personal",
+    });
+    convertToMarkdown.mockResolvedValue({
+      markdown: "Converted file text",
+      title: null,
+    });
+    await ingestFile({
+      db: database,
+      userId,
+      sourceId: source.id,
+      operationId: operation.operationId,
+      expectedSourceVersion: operation.sourceVersion,
+      filename: "old-name.txt",
+      mimeType: "text/plain",
+      timestamp: new Date(),
+      finalAttempt: false,
+    });
+    expect(convertToMarkdown).toHaveBeenCalledWith({
+      buffer: Buffer.from(content),
+      filename: "current-name.txt",
+      mimeType: "text/plain",
+    });
+    expect(extractDocumentGraph).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "current-name.txt",
+        content: "Converted file text",
+      }),
+    );
+    const [stored] = await database
+      .select({ metadata: sources.metadata })
+      .from(sources)
+      .where(eq(sources.id, source.id));
+    expect(stored?.metadata).toMatchObject({
+      rawContent: content,
+      convertedMarkdown: "Converted file text",
+      filename: "current-name.txt",
+    });
+    expect(
+      await getSource({ userId, sourceId: source.id, includeContent: true }),
+    ).toMatchObject({
+      source: {
+        title: "current-name.txt",
+        content: { text: "Converted file text", format: "markdown" },
+      },
+    });
   });
 
   it("reuses converted HTML after extraction failure and converts a changed HTML revision once", async () => {
@@ -180,8 +346,14 @@ describeIfPostgres("unreadable file conversion", () => {
       .from(sources)
       .where(eq(sources.id, source.id));
     expect(converted?.metadata).toMatchObject({
-      rawContent: markdown,
+      rawContent: html,
+      convertedMarkdown: markdown,
       convertedToMarkdown: true,
+    });
+    expect(
+      await getSource({ userId, sourceId: source.id, includeContent: true }),
+    ).toMatchObject({
+      source: { content: { text: markdown, format: "markdown" } },
     });
     const changedHtml = "<p>Changed HTML</p>";
     const version = await service.replaceInlineContent({
@@ -225,6 +397,14 @@ describeIfPostgres("unreadable file conversion", () => {
       mimeType: "text/html",
     });
     expect(await service.fetchText(userId, source.id)).toBe("Changed HTML");
+    const [reconverted] = await database
+      .select({ metadata: sources.metadata })
+      .from(sources)
+      .where(eq(sources.id, source.id));
+    expect(reconverted?.metadata).toMatchObject({
+      rawContent: changedHtml,
+      convertedMarkdown: "Changed HTML",
+    });
   });
 
   it.each(["", " \n\t "])(
