@@ -7,13 +7,22 @@ import { createApp, toNodeListener } from "h3";
 import { Client as MinioClient } from "minio";
 import { createServer, type Server } from "node:http";
 import { Client, Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import * as schema from "~/db/schema";
 import { confirmCommitment, dismissCommitment } from "~/lib/commitments";
+import { readCommitmentRequestEvidence } from "~/lib/schemas/commitment-request-evidence";
 import { ingestFileResponseSchema } from "~/lib/schemas/ingest-file";
 import type { SourceContext } from "~/lib/schemas/source-context";
 import { SourceService } from "~/lib/sources";
-import { newTypeId } from "~/types/typeid";
+import { newTypeId, type TypeId } from "~/types/typeid";
 import { setTestDatabase } from "~/utils/db";
 import {
   resetTestOverrides,
@@ -38,6 +47,8 @@ vi.mock("~/lib/converters/markitdown", () => ({
 }));
 const ai = vi.hoisted(() => ({
   excerpt: "Please review the contract and send your comments.",
+  lifecycle: "request" as "request" | "completion" | "clarification",
+  previous: null as { requestId: string; sourceId: TypeId<"source"> } | null,
 }));
 vi.mock("~/lib/ai", async (original) => ({
   ...(await original<typeof import("~/lib/ai")>()),
@@ -72,15 +83,22 @@ vi.mock("~/lib/ai", async (original) => ({
                 {
                   subjectId: "temp_request",
                   predicate: "HAS_TASK_STATUS",
-                  objectValue: "pending",
+                  objectValue:
+                    ai.lifecycle === "completion" ? "done" : "pending",
                   statement: ai.excerpt,
                   sourceRef,
                   assertionKind: "assistant_inferred",
                   emailRequestEvidence: {
                     kind: "direct_request",
-                    lifecycle: "request",
+                    lifecycle: ai.lifecycle,
                     excerpt: ai.excerpt,
                     supportingSourceRefs: [sourceRef],
+                    ...(ai.previous
+                      ? {
+                          relatedRequestId: ai.previous.requestId,
+                          relatedSourceId: ai.previous.sourceId,
+                        }
+                      : {}),
                   },
                 },
               ],
@@ -147,6 +165,12 @@ describe.skipIf(!(await available()))(
     let saveMemory: typeof import("./save-document").saveMemory;
     let ingestDocument: typeof import("~/lib/jobs/ingest-document").ingestDocument;
     let ingestFile: typeof import("~/lib/jobs/ingest-file").ingestFile;
+
+    beforeEach(() => {
+      ai.excerpt = "Please review the contract and send your comments.";
+      ai.lifecycle = "request";
+      ai.previous = null;
+    });
 
     beforeAll(async () => {
       const admin = new Client({ connectionString: adminDsn });
@@ -785,6 +809,268 @@ describe.skipIf(!(await available()))(
       },
       30_000,
     );
+    it.each([
+      "tentative",
+      "confirmed",
+      "dismissed",
+      "dismissed-after-clarification",
+    ] as const)(
+      "removes later email completion when the original becomes a newsletter (%s)",
+      async (state) => {
+        const userId = `revision-dependent-${state}`;
+        const first = await accept("document", userId, context);
+        await runAccepted("document", first.ingestionOperationId);
+        const [original] = await activeStatuses(userId);
+        const evidence = readCommitmentRequestEvidence(original?.metadata);
+        if (!original || !evidence?.requestId)
+          throw new Error("Expected original email request");
+        if (state !== "tentative")
+          await confirmCommitment({ userId, taskId: original.subjectNodeId });
+        ai.excerpt = "The contract review is complete. Thank you.";
+        ai.lifecycle = "completion";
+        ai.previous = {
+          requestId: evidence.requestId,
+          sourceId: first.sourceId,
+        };
+        const completed = await saveMemory({
+          userId,
+          updateExisting: false,
+          document: {
+            id: "completion",
+            content: ai.excerpt,
+            contentType: "text",
+            scope: "personal",
+            sourceContext: {
+              ...context,
+              messageId: "completion",
+              authoredAt: "2099-09-11T08:00:00.000Z",
+            },
+          },
+        });
+        await runAccepted("document", completed.ingestionOperationId);
+        expect(await activeStatuses(userId)).toMatchObject([
+          {
+            sourceId: completed.sourceId,
+            objectValue: "done",
+            subjectNodeId: original.subjectNodeId,
+          },
+        ]);
+        if (state === "dismissed-after-clarification") {
+          ai.excerpt = "Can you confirm which contract version you reviewed?";
+          ai.lifecycle = "clarification";
+          const clarification = await saveMemory({
+            userId,
+            updateExisting: false,
+            document: {
+              id: "clarification",
+              content: ai.excerpt,
+              contentType: "text",
+              scope: "personal",
+              sourceContext: {
+                ...context,
+                messageId: "clarification",
+                authoredAt: "2099-09-12T08:00:00.000Z",
+              },
+            },
+          });
+          await runAccepted("document", clarification.ingestionOperationId);
+          expect(await activeStatuses(userId)).toMatchObject([
+            { sourceId: completed.sourceId, objectValue: "done" },
+          ]);
+        }
+        if (state === "dismissed" || state === "dismissed-after-clarification")
+          await dismissCommitment({ userId, taskId: original.subjectNodeId });
+
+        ai.lifecycle = "request";
+        ai.previous = null;
+        const correction = await accept("document", userId, {
+          ...context,
+          deliveryKind: "newsletter",
+        });
+        const expected =
+          state === "confirmed"
+            ? [
+                expect.objectContaining({
+                  subjectNodeId: original.subjectNodeId,
+                  assertedByKind: "user_confirmed",
+                  objectValue: "pending",
+                }),
+              ]
+            : [];
+        expect(await activeStatuses(userId)).toEqual(expected);
+        await runAccepted("document", correction.ingestionOperationId);
+        expect(await activeStatuses(userId)).toEqual(expected);
+        const laterStatuses = await database
+          .select()
+          .from(schema.claims)
+          .where(
+            and(
+              eq(schema.claims.sourceId, completed.sourceId),
+              eq(schema.claims.predicate, "HAS_TASK_STATUS"),
+            ),
+          );
+        const dismissed =
+          state === "dismissed" || state === "dismissed-after-clarification";
+        expect(laterStatuses).toHaveLength(dismissed ? 1 : 0);
+        if (dismissed) expect(laterStatuses[0]?.status).toBe("retracted");
+        const task = await database
+          .select()
+          .from(schema.nodes)
+          .where(eq(schema.nodes.id, original.subjectNodeId));
+        expect(task).toHaveLength(state === "tentative" ? 0 : 1);
+        expect(
+          await database
+            .select()
+            .from(schema.sources)
+            .where(eq(schema.sources.id, completed.sourceId)),
+        ).toHaveLength(1);
+      },
+      30_000,
+    );
+
+    it.each(["document", "file"] as const)(
+      "waits for a matched completion before invalidating its %s request",
+      async (kind) => {
+        const userId = `revision-concurrent-${kind}`;
+        const first = await accept(kind, userId, context);
+        await runAccepted(kind, first.ingestionOperationId);
+        const [original] = await activeStatuses(userId);
+        const evidence = readCommitmentRequestEvidence(original?.metadata);
+        if (!original || !evidence?.requestId)
+          throw new Error("Expected original email request");
+        ai.excerpt = "The contract review is complete. Thank you.";
+        ai.lifecycle = "completion";
+        ai.previous = {
+          requestId: evidence.requestId,
+          sourceId: first.sourceId,
+        };
+        const completed = await saveMemory({
+          userId,
+          updateExisting: false,
+          document: {
+            id: "completion",
+            content: ai.excerpt,
+            contentType: "text",
+            scope: "personal",
+            sourceContext: {
+              ...context,
+              messageId: "completion",
+              authoredAt: "2026-09-11T08:00:00.000Z",
+            },
+          },
+        });
+        const gate = new Client({ connectionString: dsn(name) });
+        await gate.connect();
+        // Pause after the real extractor reads candidates and resolves the
+        // request, but before its completion claim reaches the database.
+        await gate.query(`
+          CREATE FUNCTION block_email_completion() RETURNS trigger
+          LANGUAGE plpgsql AS $$
+          BEGIN
+            IF NEW.predicate = 'HAS_TASK_STATUS' AND NEW.object_value = 'done' THEN
+              PERFORM pg_advisory_xact_lock(913749, 1);
+            END IF;
+            RETURN NEW;
+          END;
+          $$;
+          CREATE TRIGGER block_email_completion BEFORE INSERT ON claims
+          FOR EACH ROW EXECUTE FUNCTION block_email_completion();
+        `);
+        const pending: Promise<unknown>[] = [];
+        try {
+          await gate.query("BEGIN");
+          await gate.query("SELECT pg_advisory_xact_lock(913749, 1)");
+          const extraction = runAccepted(
+            "document",
+            completed.ingestionOperationId,
+          );
+          pending.push(extraction);
+          // Observe rejection immediately; the awaited promise below still
+          // fails the test if extraction fails while a barrier is held.
+          void extraction.catch(() => undefined);
+          let extractionPid: number | undefined;
+          await expect
+            .poll(
+              async () => {
+                const { rows } = await pool.query<{ pid: number }>(
+                  `SELECT pid FROM pg_stat_activity
+                   WHERE datname = current_database()
+                     AND wait_event = 'advisory'
+                     AND query LIKE 'insert into "claims"%'`,
+                );
+                extractionPid = rows[0]?.pid;
+                return rows.length;
+              },
+              { timeout: 5_000 },
+            )
+            .toBe(1);
+          const correction = accept(
+            kind,
+            userId,
+            {
+              ...context,
+              deliveryKind: "newsletter",
+              threadId: "corrected-thread",
+            },
+            original.statement,
+          );
+          pending.push(correction);
+          void correction.catch(() => undefined);
+          // A changed thread ID must still invalidate under the stored old
+          // thread gate. Waiting here also proves no source row lock is held.
+          await expect
+            .poll(
+              async () => {
+                const { rows } = await pool.query<{ count: number }>(
+                  `SELECT count(*)::int AS count FROM pg_stat_activity
+                   WHERE datname = current_database()
+                     AND wait_event = 'advisory'
+                     AND query LIKE 'SELECT pg_advisory_xact_lock(hashtext(%'
+                     AND $1 = ANY(pg_blocking_pids(pid))`,
+                  [extractionPid],
+                );
+                return rows[0]?.count;
+              },
+              { timeout: 5_000 },
+            )
+            .toBe(1);
+          await gate.query(
+            "SELECT id FROM sources WHERE id = $1 FOR UPDATE NOWAIT",
+            [first.sourceId],
+          );
+          await gate.query("COMMIT");
+          await extraction;
+          await correction;
+          expect(
+            await database
+              .select()
+              .from(schema.claims)
+              .where(
+                and(
+                  eq(schema.claims.userId, userId),
+                  eq(schema.claims.predicate, "HAS_TASK_STATUS"),
+                ),
+              ),
+          ).toEqual([]);
+          expect(
+            await database
+              .select()
+              .from(schema.nodes)
+              .where(eq(schema.nodes.id, original.subjectNodeId)),
+          ).toEqual([]);
+        } finally {
+          await gate.query("ROLLBACK");
+          await Promise.allSettled(pending);
+          await gate.query(`
+            DROP TRIGGER block_email_completion ON claims;
+            DROP FUNCTION block_email_completion();
+          `);
+          await gate.end();
+        }
+      },
+      30_000,
+    );
+
     it("removes historical source-derived user claims when context is corrected to newsletter", async () => {
       const userId = "revision-model-user-claim";
       const first = await accept("document", userId, {

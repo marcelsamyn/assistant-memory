@@ -19,7 +19,7 @@ export function hasEmailDeadlineRemovalEvidence(excerpt: string): boolean {
   return sentences.every(
     (sentence) =>
       removal.test(sentence) ||
-      !/\b(?:deadline|due|by|before|uiterlijk|tegen|vóór|voor)\b/u.test(
+      !/\b(?:deadline|due|by|before|uiterlijk|ten laatste|tegen|vóór|voor|avant|au plus tard|bis|spätestens)\b/u.test(
         sentence,
       ),
   );
@@ -86,7 +86,7 @@ export function hasEmailDeadlineEvidence(input: {
     const datePattern = dateWords(form).split(" ").join("[\\s.,/-]+");
     // Match cues in prose; punctuation in a URL or identifier is not whitespace.
     return new RegExp(
-      `(?:^|\\s)(?:by|before|due(?: on| by)?|deadline(?: is| on| by)?|uiterlijk(?: op)?|tegen|vóór|voor|avant(?: le)?|au plus tard(?: le)?|bis(?: zum)?|spätestens(?: am)?)\\s+${datePattern}(?=$|[\\s.,;:!?])`,
+      `(?:^|\\s)(?:by|before|due(?: on| by)?|deadline(?: is| on| by| op| voor| vóór| tegen)?|uiterlijk(?: op| voor| vóór| tegen)?|ten laatste(?: op| voor| vóór| tegen)?|vóór|avant(?: le)?|au plus tard(?: le)?|bis(?: zum)?|spätestens(?: am)?)\\s+${datePattern}(?=$|[\\s.,;:!?])`,
       "u",
     ).test(quote);
   });

@@ -18,6 +18,8 @@ Concurrent document/file requests with the same identity reuse the first stored 
 
 Matched email revisions can remove an earlier inferred deadline with explicit removal wording, such as “There is no deadline now” or “Er is geen deadline meer.” Omitted or ambiguous dates preserve the existing deadline, and email revisions do not clear dates set by the user. Presentation excerpts keep their original source citation when later messages change task status.
 
+Correcting an email source also removes later inferred status and deadline claims that depend on its request evidence. Manual decisions and independent evidence remain. Request history in each extraction prompt is limited to 32,000 serialized characters, with active and dismissed state before older history and an explicit omitted-record count. Full history remains available to validate matches. Dutch dates introduced only by “voor” or “tegen” do not establish deadlines; explicit wording such as “uiterlijk,” “vóór,” or “deadline voor” is required.
+
 Attachment evidence in each parent extraction prompt is limited to 32,000 serialized characters, with prefixes of at most 4,000 characters from each of the first 100 sources. Complete converted text remains available through source reads. Attachment refinements refresh canonical labels and search embeddings. Identical file replays refresh the linked Document label from a new title or, when no title is stored, its filename without re-extracting.
 
 See [the ingestion contract](docs/sdk/ingestion.md) for generic and email examples, processing receipts, source reads, and HTTP/SDK/MCP support. [Consumer migration notes](docs/sdk-consumer-migration.md) list the changes needed for existing integrations.

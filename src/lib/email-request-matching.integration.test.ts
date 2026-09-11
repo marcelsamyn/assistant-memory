@@ -3,10 +3,17 @@ import {
   MAX_EMAIL_ATTACHMENT_CONTENT_CHARS,
 } from "./email-attachment-evidence";
 import {
+  formatEmailRequestCandidates,
   loadEmailRequestCandidates,
+  MAX_EMAIL_REQUEST_HISTORY_PROMPT_CHARS,
   readRequestEvidence,
 } from "./email-request-matching";
 import { createSourceIngestionOperation } from "./ingestion/source-processing";
+import {
+  invalidateSourceExtractionRevision,
+  lockSourceEmailRequestThread,
+} from "./ingestion/source-revision";
+import { withSourceWriteFence } from "./partition-access";
 import type {
   LlmOutputAlias,
   LlmOutputAttributeClaim,
@@ -398,6 +405,201 @@ describeWithDatabase("email request extraction with PostgreSQL", () => {
       );
     },
   );
+
+  it("loads more than 500 history rows while bounding the model prompt and matching the cited task", async () => {
+    const userId = "email-long-history";
+    const { message, previous } = await seedRequests(userId);
+    const [original] = await database
+      .select()
+      .from(schema.claims)
+      .where(
+        and(
+          eq(schema.claims.userId, userId),
+          eq(schema.claims.subjectNodeId, previous.taskId),
+        ),
+      );
+    if (!original) throw new Error("Expected original claim");
+    const evidence = readRequestEvidence(original.metadata);
+    if (!evidence?.emailThread) throw new Error("Expected email evidence");
+    await database.insert(schema.claims).values(
+      Array.from({ length: 510 }, (_, index) => ({
+        ...original,
+        id: newTypeId("claim"),
+        status: "superseded" as const,
+        statedAt: new Date(original.statedAt.getTime() - (index + 1) * 60_000),
+        metadata: {
+          requestEvidence: {
+            ...evidence,
+            emailThread: {
+              ...evidence.emailThread,
+              excerpt: `Earlier request ${index}: ${'Detail "quoted". '.repeat(200)}`,
+            },
+          },
+        },
+      })),
+    );
+    const candidates = await loadEmailRequestCandidates(
+      database,
+      userId,
+      undefined,
+      message.context,
+    );
+    expect(candidates).toHaveLength(512);
+    expect(formatEmailRequestCandidates(candidates).length).toBeLessThanOrEqual(
+      MAX_EMAIL_REQUEST_HISTORY_PROMPT_CHARS,
+    );
+    const text = "The contract review is complete. Thank you.";
+    const completion = await createMessage(
+      userId,
+      "completion",
+      "2026-09-10T10:00:00.000Z",
+      text,
+    );
+    output(completion.sourceId, [text], "completion", previous);
+    await extractGraph(completion.params);
+    expect(ai.prompt).toContain('"omittedRecords":');
+    const current = await database
+      .select()
+      .from(schema.claims)
+      .where(
+        and(
+          eq(schema.claims.userId, userId),
+          eq(schema.claims.subjectNodeId, previous.taskId),
+          eq(schema.claims.status, "active"),
+        ),
+      );
+    expect(current).toMatchObject([
+      { sourceId: completion.sourceId, objectValue: "done" },
+    ]);
+  });
+
+  it("removes dependent progress and deadlines after a middle message correction while retaining earlier and unrelated requests", async () => {
+    const userId = "email-middle-source-correction";
+    const { message, previous } = await seedRequests(userId);
+    const finished = "The contract review is complete.";
+    const completion = await createMessage(
+      userId,
+      "completion",
+      "2026-09-10T10:00:00.000Z",
+      finished,
+    );
+    output(completion.sourceId, [finished], "completion", previous);
+    await extractGraph(completion.params);
+    const clarificationText =
+      "Can you confirm which version you reviewed? Please finish by 2026-09-15.";
+    const clarification = await createMessage(
+      userId,
+      "clarification",
+      "2026-09-10T11:00:00.000Z",
+      clarificationText,
+    );
+    output(
+      clarification.sourceId,
+      [clarificationText],
+      "clarification",
+      previous,
+    );
+    addDeadline(clarification.sourceId, previous.taskId, "2026-09-15");
+    await extractGraph(clarification.params);
+    const before = await loadEmailRequestCandidates(
+      database,
+      userId,
+      undefined,
+      message.context,
+    );
+    expect(
+      before.find((candidate) => candidate.sourceId === clarification.sourceId),
+    ).toMatchObject({ status: "done", claimStatus: "active" });
+    // Long request chains retain only 100 source IDs. The stable request ID
+    // must still invalidate a later match when that citation prefix is gone.
+    const clarificationClaim = before.find(
+      (candidate) => candidate.sourceId === clarification.sourceId,
+    );
+    if (!clarificationClaim?.evidence)
+      throw new Error("Expected clarification evidence");
+    await database
+      .update(schema.claims)
+      .set({
+        metadata: {
+          requestEvidence: {
+            ...clarificationClaim.evidence,
+            supportingSourceIds: [clarification.sourceId],
+          },
+        },
+      })
+      .where(
+        and(
+          eq(schema.claims.sourceId, clarification.sourceId),
+          eq(schema.claims.predicate, "HAS_TASK_STATUS"),
+        ),
+      );
+    await withSourceWriteFence(
+      database,
+      {
+        userId,
+        sources: [{ sourceId: completion.sourceId }],
+        beforeSourceLocks: (tx) =>
+          lockSourceEmailRequestThread(tx, userId, completion.sourceId),
+      },
+      async (tx) => {
+        await invalidateSourceExtractionRevision(
+          tx,
+          userId,
+          completion.sourceId,
+        );
+        await tx
+          .update(schema.sources)
+          .set({
+            metadata: {
+              rawContent: finished,
+              sourceContext: {
+                ...completion.context,
+                deliveryKind: "newsletter",
+              },
+            },
+          })
+          .where(eq(schema.sources.id, completion.sourceId));
+      },
+    );
+    const after = await loadEmailRequestCandidates(
+      database,
+      userId,
+      undefined,
+      message.context,
+    );
+    expect(after).toHaveLength(2);
+    expect(
+      after.every(
+        (candidate) =>
+          candidate.claimStatus === "active" && candidate.status === "pending",
+      ),
+    ).toBe(true);
+    expect(
+      after.find((candidate) => candidate.taskId === previous.taskId)?.sourceId,
+    ).toBe(message.sourceId);
+    expect(
+      await database
+        .select()
+        .from(schema.claims)
+        .where(
+          and(
+            eq(schema.claims.userId, userId),
+            eq(schema.claims.predicate, "DUE_ON"),
+          ),
+        ),
+    ).toEqual([]);
+    expect(
+      await database
+        .select()
+        .from(schema.sources)
+        .where(
+          and(
+            eq(schema.sources.userId, userId),
+            eq(schema.sources.id, clarification.sourceId),
+          ),
+        ),
+    ).toHaveLength(1);
+  });
 
   it("falls back to the active status source when no presentation was stored", async () => {
     const { listCommitments } = await import("./query/commitments-list");

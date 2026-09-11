@@ -14,6 +14,7 @@ import {
 import {
   hashSourceExtractionRevision,
   invalidateSourceExtractionRevision,
+  lockSourceEmailRequestThread,
 } from "~/lib/ingestion/source-revision";
 import { logEvent } from "~/lib/observability/log";
 import {
@@ -532,8 +533,15 @@ export class SourceService {
         userId: input.userId,
         partitionKey: input.partitionKey,
         sources: [{ sourceId: input.sourceId }],
-        beforeSourceLocks: (tx) =>
-          lockSourceParentAttachmentGates(tx, parentAttachments),
+        beforeSourceLocks: async (tx) => {
+          await lockSourceParentAttachmentGates(tx, parentAttachments);
+          if (input.replaceDerivedLinks)
+            await lockSourceEmailRequestThread(
+              tx,
+              input.userId,
+              input.sourceId,
+            );
+        },
       },
       async (tx) => {
         await assertLiveSourceParents(tx, parentAttachments);
@@ -992,6 +1000,8 @@ export class SourceService {
           ]
         : [];
       await lockSourceParentAttachmentGates(tx, parentAttachments);
+      if (revision?.replaceDerivedLinks)
+        await lockSourceEmailRequestThread(tx, source.userId, source.id);
       const sourceIds = [
         ...new Set(fences.sources.map((fence) => fence.sourceId)),
       ].sort();
