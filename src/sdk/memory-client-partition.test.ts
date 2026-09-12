@@ -9,6 +9,38 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 describe("MemoryClient partition migration", () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it("initializes a brand-new partitioned identity", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ state: "migrated", version: 1, created: true }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new MemoryClient({
+      baseUrl: "http://memory.test",
+      partitionMaintenanceToken: "maintenance-secret",
+    });
+
+    await expect(
+      client.initializePartitionedUser({
+        userId: "new-user",
+        unassignedPartitionKey: contextPartitionKeySchema.parse("unassigned"),
+      }),
+    ).resolves.toEqual({ state: "migrated", version: 1, created: true });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://memory.test/maintenance/partition-initialize",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          userId: "new-user",
+          unassignedPartitionKey: "unassigned",
+        }),
+        headers: expect.objectContaining({
+          Authorization: "Bearer maintenance-secret",
+        }),
+      }),
+    );
+  });
+
   it("sends authenticated CAS and idempotent reclassification requests", async () => {
     const fetchMock = vi
       .fn()
