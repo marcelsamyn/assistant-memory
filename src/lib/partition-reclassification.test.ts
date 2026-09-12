@@ -572,6 +572,70 @@ describeIfServer("partition integrity and recovery", () => {
     expect(moved.sourceVersion).toBe(1);
   });
 
+  it("moves descendants whose recorded parent source no longer exists", async () => {
+    const userId = "partition-orphaned-source-tree";
+    const missingParentId = newTypeId("source");
+    const orphanedRootId = newTypeId("source");
+    const childId = newTypeId("source");
+    const partitionKey = contextPartitionKeySchema.parse(
+      "opaque:orphaned-tree",
+    );
+    await database.insert(users).values({ id: userId });
+    await database.insert(sources).values([
+      {
+        id: missingParentId,
+        userId,
+        type: "document",
+        externalId: "later-removed-parent",
+      },
+      {
+        id: orphanedRootId,
+        userId,
+        type: "document",
+        externalId: "orphaned-root",
+        parentSource: missingParentId,
+      },
+      {
+        id: childId,
+        userId,
+        type: "document",
+        externalId: "orphaned-child",
+        parentSource: orphanedRootId,
+      },
+    ]);
+    await database.delete(sources).where(eq(sources.id, missingParentId));
+    await startMigration(userId);
+
+    const moved = await reclassifySourcePartition(
+      database,
+      reclassifySourcePartitionRequestSchema.parse({
+        userId,
+        sourceId: orphanedRootId,
+        expectedPartitionKey: null,
+        targetPartitionKey: partitionKey,
+        expectedSourceVersion: 0,
+        bindingGeneration: "orphaned-tree-atomic",
+      }),
+    );
+
+    const movedSources = await database
+      .select({ id: sources.id, partitionKey: sources.partitionKey })
+      .from(sources)
+      .where(eq(sources.userId, userId));
+    expect(movedSources).toHaveLength(2);
+    expect(
+      movedSources.every((source) => source.partitionKey === partitionKey),
+    ).toBe(true);
+    const [command] = await database
+      .select({ sourceIds: sourcePartitionCommands.sourceIds })
+      .from(sourcePartitionCommands)
+      .where(eq(sourcePartitionCommands.userId, userId));
+    expect(command?.sourceIds).toEqual(
+      expect.arrayContaining([orphanedRootId, childId]),
+    );
+    expect(moved.sourceVersion).toBe(1);
+  });
+
   it("rejects null, inactive, and cross-partition writes after migration starts", async () => {
     const userId = "partition-db-integrity";
     const legacySourceId = newTypeId("source");

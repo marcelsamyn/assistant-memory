@@ -47,6 +47,7 @@ interface LockedSource {
   deletedAt: Date | null;
   type: typeof sources.$inferSelect.type;
   externalId: string;
+  parentSource: TypeId<"source"> | null;
   metadata: unknown;
 }
 
@@ -271,7 +272,12 @@ async function loadSourceTreeIds(
     ), descendants(source_id) AS (
       SELECT source_id
       FROM ancestors
-      WHERE parent_source IS NULL
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM ${sources} parent
+        WHERE parent.user_id = ${request.userId}
+          AND parent.id = ancestors.parent_source
+      )
       UNION
       SELECT child.id
       FROM ${sources} child
@@ -342,6 +348,7 @@ async function loadAndLockSourceTree(
         deletedAt: sources.deletedAt,
         type: sources.type,
         externalId: sources.externalId,
+        parentSource: sources.parentSource,
         metadata: sources.metadata,
       })
       .from(sources)
@@ -434,6 +441,11 @@ async function updateSourceTreePartitions(
       .set({
         partitionKey: request.targetPartitionKey,
         externalId,
+        parentSource:
+          source.parentSource !== null &&
+          !sourceTree.some((candidate) => candidate.id === source.parentSource)
+            ? null
+            : source.parentSource,
         metadata: sql`CASE WHEN ${sources.metadata}->'sourceContext' ? 'parentPartitionKey' THEN jsonb_set(${sources.metadata}, '{sourceContext,parentPartitionKey}', to_jsonb(${request.targetPartitionKey}::text)) ELSE ${sources.metadata} END`,
       })
       .where(
