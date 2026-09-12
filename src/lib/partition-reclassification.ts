@@ -1,5 +1,6 @@
 /** Atomic source reclassification with durable identity-split recovery. */
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import type { DrizzleDB } from "~/db";
 import {
   aliases,
@@ -189,18 +190,12 @@ export async function reclassifySourcePartition(
       sourceIds,
       touchedNodeIds,
     );
-    await rewireSourceEvidence(tx, request, sourceIds, nodeMappings);
-
-    const movedClaims = await tx
-      .update(claims)
-      .set({ partitionKey: request.targetPartitionKey, updatedAt: new Date() })
-      .where(
-        and(
-          eq(claims.userId, request.userId),
-          inArray(claims.sourceId, sourceIds),
-        ),
-      )
-      .returning({ id: claims.id });
+    const movedClaims = await rewireSourceEvidence(
+      tx,
+      request,
+      sourceIds,
+      nodeMappings,
+    );
 
     await tx.insert(sourcePartitionCommands).values({
       userId: request.userId,
@@ -620,7 +615,7 @@ async function rewireSourceEvidence(
   request: ReclassifySourcePartitionRequest,
   sourceIds: TypeId<"source">[],
   mappings: PartitionNodeMapping[],
-): Promise<void> {
+): Promise<Array<{ id: TypeId<"claim"> }>> {
   for (const mapping of mappings) {
     await tx
       .update(sourceLinks)
@@ -631,34 +626,35 @@ async function rewireSourceEvidence(
           eq(sourceLinks.nodeId, mapping.sourceNodeId),
         ),
       );
-    await tx
-      .update(claims)
-      .set({ subjectNodeId: mapping.replacementNodeId })
-      .where(
-        and(
-          inArray(claims.sourceId, sourceIds),
-          eq(claims.subjectNodeId, mapping.sourceNodeId),
-        ),
-      );
-    await tx
-      .update(claims)
-      .set({ objectNodeId: mapping.replacementNodeId })
-      .where(
-        and(
-          inArray(claims.sourceId, sourceIds),
-          eq(claims.objectNodeId, mapping.sourceNodeId),
-        ),
-      );
-    await tx
-      .update(claims)
-      .set({ assertedByNodeId: mapping.replacementNodeId })
-      .where(
-        and(
-          inArray(claims.sourceId, sourceIds),
-          eq(claims.assertedByNodeId, mapping.sourceNodeId),
-        ),
-      );
   }
+
+  const replacement = (column: AnyPgColumn) =>
+    mappings.length === 0
+      ? column
+      : sql`CASE ${sql.join(
+          mappings.map(
+            (mapping) =>
+              sql`WHEN ${column} = ${mapping.sourceNodeId} THEN ${mapping.replacementNodeId}`,
+          ),
+          sql` `,
+        )} ELSE ${column} END`;
+
+  return tx
+    .update(claims)
+    .set({
+      partitionKey: request.targetPartitionKey,
+      subjectNodeId: replacement(claims.subjectNodeId),
+      objectNodeId: replacement(claims.objectNodeId),
+      assertedByNodeId: replacement(claims.assertedByNodeId),
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(claims.userId, request.userId),
+        inArray(claims.sourceId, sourceIds),
+      ),
+    )
+    .returning({ id: claims.id });
 }
 
 async function nodeHasOtherPartitionSupport(

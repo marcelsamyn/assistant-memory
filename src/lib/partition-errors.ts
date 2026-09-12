@@ -6,6 +6,7 @@ import type {
 
 export type PartitionReclassificationErrorCode =
   | "MIGRATION_STATE_CONFLICT"
+  | "PARTITIONED_USER_INITIALIZATION_CONFLICT"
   | "MIGRATION_INCOMPLETE"
   | "SOURCE_NOT_FOUND"
   | "SOURCE_VERSION_CONFLICT"

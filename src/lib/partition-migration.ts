@@ -18,12 +18,60 @@ import {
 import { lockSourceIdentityGates } from "~/lib/partition-access";
 import { PartitionReclassificationError } from "~/lib/partition-errors";
 import type {
+  InitializePartitionedUserRequest,
+  InitializePartitionedUserResponse,
   PartitionMigrationState,
   SetPartitionMigrationStateRequest,
   SetPartitionMigrationStateResponse,
 } from "~/lib/schemas/partition";
 
 type Transaction = Parameters<Parameters<DrizzleDB["transaction"]>[0]>[0];
+
+/** Atomically creates a new Memory identity with partition enforcement enabled. */
+export async function initializePartitionedUser(
+  db: DrizzleDB,
+  request: InitializePartitionedUserRequest,
+): Promise<InitializePartitionedUserResponse> {
+  return db.transaction(async (tx) => {
+    const [insertedUser] = await tx
+      .insert(users)
+      .values({ id: request.userId })
+      .onConflictDoNothing({ target: users.id })
+      .returning({ id: users.id });
+
+    if (!insertedUser) {
+      await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, request.userId))
+        .for("update");
+      const current = await loadMigrationState(tx, request.userId);
+      if (current.state === "migrated") {
+        return { state: "migrated", version: current.version, created: false };
+      }
+      throw new PartitionReclassificationError(
+        "PARTITIONED_USER_INITIALIZATION_CONFLICT",
+        "Memory identity already exists and requires an explicit partition migration plan",
+        {
+          migrationState: current.state,
+          migrationVersion: current.version,
+        },
+      );
+    }
+
+    await tx.insert(memoryPartitions).values({
+      userId: request.userId,
+      partitionKey: request.unassignedPartitionKey,
+      status: "active",
+    });
+    await tx.insert(partitionMigrationState).values({
+      userId: request.userId,
+      state: "migrated",
+      version: 1,
+    });
+    return { state: "migrated", version: 1, created: true };
+  });
+}
 
 async function loadMigrationState(
   tx: Transaction,

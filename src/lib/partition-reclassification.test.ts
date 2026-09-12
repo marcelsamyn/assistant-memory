@@ -6,12 +6,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
 import {
   aliases,
+  claims,
   commitmentPresentations,
   memoryPartitions,
   nodeMetadata,
   nodes,
   nodeRedirects,
   partitionArtifactReceipts,
+  partitionMigrationState,
   partitionNodeMappings,
   rollupState,
   sourceLinks,
@@ -31,10 +33,14 @@ import {
   getPartitionInventory,
   getPartitionProgress,
 } from "~/lib/partition-inventory";
-import { setPartitionMigrationState } from "~/lib/partition-migration";
+import {
+  initializePartitionedUser,
+  setPartitionMigrationState,
+} from "~/lib/partition-migration";
 import { reclassifySourcePartition } from "~/lib/partition-reclassification";
 import {
   contextPartitionKeySchema,
+  initializePartitionedUserRequestSchema,
   reclassifySourcePartitionRequestSchema,
   setPartitionMigrationStateRequestSchema,
 } from "~/lib/schemas/partition";
@@ -114,6 +120,94 @@ describeIfServer("partition integrity and recovery", () => {
       }),
     );
   }
+
+  it("atomically initializes a brand-new partitioned identity", async () => {
+    const userId = "partition-initialize-new";
+    const partitionKey = contextPartitionKeySchema.parse("unassigned");
+    const request = initializePartitionedUserRequestSchema.parse({
+      userId,
+      unassignedPartitionKey: partitionKey,
+    });
+
+    await expect(initializePartitionedUser(database, request)).resolves.toEqual(
+      {
+        state: "migrated",
+        version: 1,
+        created: true,
+      },
+    );
+    await expect(initializePartitionedUser(database, request)).resolves.toEqual(
+      {
+        state: "migrated",
+        version: 1,
+        created: false,
+      },
+    );
+    await expect(
+      database
+        .select({ partitionKey: memoryPartitions.partitionKey })
+        .from(memoryPartitions)
+        .where(eq(memoryPartitions.userId, userId)),
+    ).resolves.toEqual([{ partitionKey }]);
+  });
+
+  it("initializes a brand-new identity once when requests race", async () => {
+    const userId = "partition-initialize-race";
+    const request = initializePartitionedUserRequestSchema.parse({
+      userId,
+      unassignedPartitionKey: "unassigned",
+    });
+
+    const results = await Promise.all([
+      initializePartitionedUser(database, request),
+      initializePartitionedUser(database, request),
+    ]);
+
+    expect(results).toEqual(
+      expect.arrayContaining([
+        { state: "migrated", version: 1, created: true },
+        { state: "migrated", version: 1, created: false },
+      ]),
+    );
+    await expect(
+      database.$count(
+        partitionMigrationState,
+        eq(partitionMigrationState.userId, userId),
+      ),
+    ).resolves.toBe(1);
+    await expect(
+      database.$count(memoryPartitions, eq(memoryPartitions.userId, userId)),
+    ).resolves.toBe(1);
+  });
+
+  it("refuses to initialize an existing identity with source-free legacy data", async () => {
+    const userId = "partition-initialize-existing";
+    const nodeId = newTypeId("node");
+    await database.insert(users).values({ id: userId });
+    await database
+      .insert(nodes)
+      .values({ id: nodeId, userId, nodeType: "Person" });
+    await database.insert(rollupState).values({ userId });
+
+    await expect(
+      initializePartitionedUser(
+        database,
+        initializePartitionedUserRequestSchema.parse({
+          userId,
+          unassignedPartitionKey: "unassigned",
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: "PARTITIONED_USER_INITIALIZATION_CONFLICT",
+      current: { migrationState: "unmigrated", migrationVersion: 0 },
+    });
+    await expect(
+      database.select().from(nodes).where(eq(nodes.id, nodeId)),
+    ).resolves.toMatchObject([{ partitionKey: null }]);
+    await expect(
+      database.select().from(rollupState).where(eq(rollupState.userId, userId)),
+    ).resolves.toMatchObject([{ partitionKey: null }]);
+  });
 
   it("creates a new Memory user with its first migration transition", async () => {
     const userId = "partition-new-user";
@@ -626,6 +720,67 @@ describeIfServer("partition integrity and recovery", () => {
           ),
         ),
     ).rejects.toThrow(/immutable as a complete set/);
+  });
+
+  it("moves a claim and its shared-node split without exposing an unpartitioned intermediate row", async () => {
+    const userId = "partition-shared-claim";
+    const sourceA = newTypeId("source");
+    const sourceB = newTypeId("source");
+    const sharedNodeId = newTypeId("node");
+    const claimId = newTypeId("claim");
+    const partitionKey = contextPartitionKeySchema.parse("opaque:shared-claim");
+    await database.insert(users).values({ id: userId });
+    await database.insert(sources).values([
+      { id: sourceA, userId, type: "document", externalId: "shared-claim-a" },
+      { id: sourceB, userId, type: "document", externalId: "shared-claim-b" },
+    ]);
+    await database
+      .insert(nodes)
+      .values({ id: sharedNodeId, userId, nodeType: "Person" });
+    await database.insert(sourceLinks).values([
+      { sourceId: sourceA, nodeId: sharedNodeId },
+      { sourceId: sourceB, nodeId: sharedNodeId },
+    ]);
+    await database.insert(claims).values({
+      id: claimId,
+      userId,
+      subjectNodeId: sharedNodeId,
+      objectValue: "Known by both sources",
+      predicate: "HAS_ATTRIBUTE",
+      statement: "The shared person has a note.",
+      sourceId: sourceA,
+      assertedByKind: "document_author",
+      statedAt: new Date(),
+    });
+    await startMigration(userId);
+
+    const moved = await reclassifySourcePartition(
+      database,
+      reclassifySourcePartitionRequestSchema.parse({
+        userId,
+        sourceId: sourceA,
+        expectedPartitionKey: null,
+        targetPartitionKey: partitionKey,
+        expectedSourceVersion: 0,
+        bindingGeneration: "shared-claim-move",
+      }),
+    );
+
+    expect(moved.nodeMappings).toHaveLength(1);
+    await expect(
+      database
+        .select({
+          partitionKey: claims.partitionKey,
+          subjectNodeId: claims.subjectNodeId,
+        })
+        .from(claims)
+        .where(eq(claims.id, claimId)),
+    ).resolves.toEqual([
+      {
+        partitionKey,
+        subjectNodeId: moved.nodeMappings[0]?.replacementNodeId,
+      },
+    ]);
   });
 
   it("rejects identity and payload mutations of completed receipts", async () => {

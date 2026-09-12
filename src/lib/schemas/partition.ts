@@ -61,6 +61,23 @@ export type SetPartitionMigrationStateResponse = z.infer<
   typeof setPartitionMigrationStateResponseSchema
 >;
 
+export const initializePartitionedUserRequestSchema = z.object({
+  userId: z.string().min(1),
+  unassignedPartitionKey: contextPartitionKeySchema,
+});
+export type InitializePartitionedUserRequest = z.infer<
+  typeof initializePartitionedUserRequestSchema
+>;
+
+export const initializePartitionedUserResponseSchema = z.object({
+  state: z.literal("migrated"),
+  version: z.number().int().positive(),
+  created: z.boolean(),
+});
+export type InitializePartitionedUserResponse = z.infer<
+  typeof initializePartitionedUserResponseSchema
+>;
+
 export const reclassifySourcePartitionRequestSchema = z.object({
   userId: z.string().min(1),
   sourceId: typeIdSchema("source"),

@@ -174,6 +174,8 @@ import {
   openCommitmentsResponseSchema,
 } from "../lib/schemas/open-commitments.js";
 import {
+  InitializePartitionedUserRequest,
+  InitializePartitionedUserResponse,
   ReclassifySourcePartitionRequest,
   ReclassifySourcePartitionResponse,
   PartitionInventoryRequest,
@@ -182,6 +184,7 @@ import {
   PartitionProgressResponse,
   SetPartitionMigrationStateRequest,
   SetPartitionMigrationStateResponse,
+  initializePartitionedUserResponseSchema,
   partitionInventoryResponseSchema,
   partitionProgressResponseSchema,
   reclassifySourcePartitionResponseSchema,
@@ -456,6 +459,17 @@ export class MemoryClient {
     const token = this.options.partitionMaintenanceToken;
     if (token === undefined) throw new PartitionMaintenanceUnavailableError();
     return this._fetch("POST", path, responseSchema, body, token, true);
+  }
+
+  /** Compare-and-set the migration fence for one user's opaque partitions. */
+  async initializePartitionedUser(
+    payload: InitializePartitionedUserRequest,
+  ): Promise<InitializePartitionedUserResponse> {
+    return this._fetchPartitionMaintenance(
+      "/maintenance/partition-initialize",
+      initializePartitionedUserResponseSchema,
+      payload,
+    );
   }
 
   /** Compare-and-set the migration fence for one user's opaque partitions. */
