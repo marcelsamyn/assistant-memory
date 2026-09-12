@@ -678,20 +678,30 @@ async function nodeHasOtherPartitionSupport(
   const result = await tx.execute<{ has_other_support: boolean }>(sql`
     SELECT EXISTS (
       SELECT 1 FROM ${sourceLinks} sl JOIN ${sources} s ON s.id = sl.source_id
-      WHERE sl.node_id = ${nodeId} AND s.user_id = ${request.userId}
-        AND s.id NOT IN (${sql.join(
-          movedSourceIds.map((sourceId) => sql`${sourceId}`),
-          sql`, `,
-        )})
-        AND s.partition_key IS DISTINCT FROM ${request.targetPartitionKey}
+      WHERE sl.node_id = ${nodeId}
+        AND (
+          s.user_id IS DISTINCT FROM ${request.userId}
+          OR (
+            s.id NOT IN (${sql.join(
+              movedSourceIds.map((sourceId) => sql`${sourceId}`),
+              sql`, `,
+            )})
+            AND s.partition_key IS DISTINCT FROM ${request.targetPartitionKey}
+          )
+        )
       UNION ALL
       SELECT 1 FROM ${claims} c
-      WHERE c.user_id = ${request.userId} AND c.source_id NOT IN (${sql.join(
-        movedSourceIds.map((sourceId) => sql`${sourceId}`),
-        sql`, `,
-      )})
-        AND (${nodeId} IN (c.subject_node_id, c.object_node_id, c.asserted_by_node_id))
-        AND c.partition_key IS DISTINCT FROM ${request.targetPartitionKey}
+      WHERE ${nodeId} IN (c.subject_node_id, c.object_node_id, c.asserted_by_node_id)
+        AND (
+          c.user_id IS DISTINCT FROM ${request.userId}
+          OR (
+            (c.source_id IS NULL OR c.source_id NOT IN (${sql.join(
+              movedSourceIds.map((sourceId) => sql`${sourceId}`),
+              sql`, `,
+            )}))
+            AND c.partition_key IS DISTINCT FROM ${request.targetPartitionKey}
+          )
+        )
     ) AS has_other_support
   `);
   return result.rows[0]?.has_other_support === true;

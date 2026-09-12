@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client } from "pg";
@@ -845,6 +845,163 @@ describeIfServer("partition integrity and recovery", () => {
         subjectNodeId: moved.nodeMappings[0]?.replacementNodeId,
       },
     ]);
+  });
+
+  it("splits a node that still has legacy cross-user dependents", async () => {
+    const userId = "partition-cross-user-owner";
+    const otherUserId = "partition-cross-user-dependent";
+    const sourceId = newTypeId("source");
+    const otherSourceId = newTypeId("source");
+    const nodeId = newTypeId("node");
+    const otherNodeId = newTypeId("node");
+    const crossUserClaimIds = [
+      newTypeId("claim"),
+      newTypeId("claim"),
+      newTypeId("claim"),
+    ];
+    const partitionKey = contextPartitionKeySchema.parse("opaque:cross-user");
+    await database.insert(users).values([{ id: userId }, { id: otherUserId }]);
+    await database.insert(sources).values([
+      { id: sourceId, userId, type: "document", externalId: "owned" },
+      {
+        id: otherSourceId,
+        userId: otherUserId,
+        type: "document",
+        externalId: "legacy-dependent",
+      },
+    ]);
+    await database.insert(nodes).values([
+      { id: nodeId, userId, nodeType: "Person" },
+      { id: otherNodeId, userId: otherUserId, nodeType: "Person" },
+    ]);
+    await database.insert(sourceLinks).values({ sourceId, nodeId });
+    await database.execute(
+      sql`ALTER TABLE source_links DISABLE TRIGGER source_links_partition_integrity`,
+    );
+    await database.execute(
+      sql`ALTER TABLE source_links DISABLE TRIGGER source_links_source_liveness`,
+    );
+    await database.execute(
+      sql`ALTER TABLE claims DISABLE TRIGGER claims_partition_integrity`,
+    );
+    await database.execute(
+      sql`ALTER TABLE claims DISABLE TRIGGER claims_source_liveness`,
+    );
+    try {
+      await database.insert(sourceLinks).values({
+        sourceId: otherSourceId,
+        nodeId,
+      });
+      await database.insert(claims).values([
+        {
+          id: crossUserClaimIds[0],
+          userId: otherUserId,
+          subjectNodeId: nodeId,
+          objectValue: "Cross-user subject",
+          predicate: "HAS_ATTRIBUTE",
+          statement: "A legacy claim uses the node as its subject.",
+          sourceId: otherSourceId,
+          assertedByKind: "document_author",
+          statedAt: new Date(),
+        },
+        {
+          id: crossUserClaimIds[1],
+          userId: otherUserId,
+          subjectNodeId: otherNodeId,
+          objectNodeId: nodeId,
+          predicate: "RELATED_TO",
+          statement: "A legacy claim uses the node as its object.",
+          sourceId: otherSourceId,
+          assertedByKind: "document_author",
+          statedAt: new Date(),
+        },
+        {
+          id: crossUserClaimIds[2],
+          userId: otherUserId,
+          subjectNodeId: otherNodeId,
+          objectValue: "Cross-user attribution",
+          predicate: "HAS_ATTRIBUTE",
+          statement: "A legacy claim uses the node as its attribution.",
+          sourceId: otherSourceId,
+          assertedByKind: "document_author",
+          assertedByNodeId: nodeId,
+          statedAt: new Date(),
+        },
+      ]);
+    } finally {
+      await database.execute(
+        sql`ALTER TABLE claims ENABLE TRIGGER claims_source_liveness`,
+      );
+      await database.execute(
+        sql`ALTER TABLE claims ENABLE TRIGGER claims_partition_integrity`,
+      );
+      await database.execute(
+        sql`ALTER TABLE source_links ENABLE TRIGGER source_links_partition_integrity`,
+      );
+      await database.execute(
+        sql`ALTER TABLE source_links ENABLE TRIGGER source_links_source_liveness`,
+      );
+    }
+    await startMigration(userId);
+
+    const moved = await reclassifySourcePartition(
+      database,
+      reclassifySourcePartitionRequestSchema.parse({
+        userId,
+        sourceId,
+        expectedPartitionKey: null,
+        targetPartitionKey: partitionKey,
+        expectedSourceVersion: 0,
+        bindingGeneration: "cross-user-split",
+      }),
+    );
+
+    expect(moved.nodeMappings).toHaveLength(1);
+    const replacementNodeId = moved.nodeMappings[0]?.replacementNodeId;
+    await expect(
+      database
+        .select({ sourceId: sourceLinks.sourceId, nodeId: sourceLinks.nodeId })
+        .from(sourceLinks)
+        .where(eq(sourceLinks.sourceId, sourceId)),
+    ).resolves.toEqual([{ sourceId, nodeId: replacementNodeId }]);
+    await expect(
+      database
+        .select({ sourceId: sourceLinks.sourceId, nodeId: sourceLinks.nodeId })
+        .from(sourceLinks)
+        .where(eq(sourceLinks.sourceId, otherSourceId)),
+    ).resolves.toEqual([{ sourceId: otherSourceId, nodeId }]);
+    await expect(
+      database
+        .select({
+          id: claims.id,
+          subjectNodeId: claims.subjectNodeId,
+          objectNodeId: claims.objectNodeId,
+          assertedByNodeId: claims.assertedByNodeId,
+        })
+        .from(claims)
+        .where(inArray(claims.id, crossUserClaimIds)),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        {
+          id: crossUserClaimIds[0],
+          subjectNodeId: nodeId,
+          objectNodeId: null,
+          assertedByNodeId: null,
+        },
+        {
+          id: crossUserClaimIds[1],
+          subjectNodeId: otherNodeId,
+          objectNodeId: nodeId,
+          assertedByNodeId: null,
+        },
+        {
+          id: crossUserClaimIds[2],
+          subjectNodeId: otherNodeId,
+          objectNodeId: null,
+          assertedByNodeId: nodeId,
+        },
+      ]),
+    );
   });
 
   it("rejects identity and payload mutations of completed receipts", async () => {
