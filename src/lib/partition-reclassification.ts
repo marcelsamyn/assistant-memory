@@ -561,9 +561,9 @@ async function moveOrSplitNodes(
   const mappings: PartitionNodeMapping[] = [];
   for (const sourceNodeId of nodeIds) {
     const [node] = await tx
-      .select({ nodeType: nodes.nodeType })
+      .select({ nodeType: nodes.nodeType, userId: nodes.userId })
       .from(nodes)
-      .where(and(eq(nodes.userId, request.userId), eq(nodes.id, sourceNodeId)))
+      .where(eq(nodes.id, sourceNodeId))
       .limit(1);
     if (!node) continue;
     const recoveryInput = {
@@ -574,10 +574,15 @@ async function moveOrSplitNodes(
       nodeType: node.nodeType,
       partitionKey: request.targetPartitionKey,
       bindingGeneration: request.bindingGeneration,
+      copySourceArtifacts: node.userId === request.userId,
     };
     const reused = await reusePartitionNodeMapping(recoveryInput);
     if (reused) {
       mappings.push(reused);
+      continue;
+    }
+    if (node.userId !== request.userId) {
+      mappings.push(await recoverPartitionNode(recoveryInput));
       continue;
     }
     if (
