@@ -1004,6 +1004,112 @@ describeIfServer("partition integrity and recovery", () => {
     );
   });
 
+  it("copies cross-user legacy claim evidence into the moving user's partition", async () => {
+    const userId = "partition-cross-user-evidence-owner";
+    const otherUserId = "partition-cross-user-evidence-node-owner";
+    const sourceId = newTypeId("source");
+    const subjectNodeId = newTypeId("node");
+    const crossUserNodeId = newTypeId("node");
+    const claimId = newTypeId("claim");
+    const partitionKey = contextPartitionKeySchema.parse(
+      "opaque:cross-user-evidence",
+    );
+    await database.insert(users).values([{ id: userId }, { id: otherUserId }]);
+    await database.insert(sources).values({
+      id: sourceId,
+      userId,
+      type: "document",
+      externalId: "legacy-cross-user-evidence",
+    });
+    await database.insert(nodes).values([
+      { id: subjectNodeId, userId, nodeType: "Person" },
+      { id: crossUserNodeId, userId: otherUserId, nodeType: "Object" },
+    ]);
+    await database.insert(nodeMetadata).values({
+      nodeId: crossUserNodeId,
+      label: "Private foreign label",
+      canonicalLabel: "private foreign label",
+      description: "Private foreign description",
+    });
+    await database.execute(
+      sql`ALTER TABLE claims DISABLE TRIGGER claims_partition_integrity`,
+    );
+    await database.execute(
+      sql`ALTER TABLE claims DISABLE TRIGGER claims_source_liveness`,
+    );
+    try {
+      await database.insert(claims).values({
+        id: claimId,
+        userId,
+        subjectNodeId,
+        objectNodeId: crossUserNodeId,
+        predicate: "RELATED_TO",
+        statement: "A legacy claim references another user's node.",
+        sourceId,
+        assertedByKind: "document_author",
+        statedAt: new Date(),
+      });
+    } finally {
+      await database.execute(
+        sql`ALTER TABLE claims ENABLE TRIGGER claims_source_liveness`,
+      );
+      await database.execute(
+        sql`ALTER TABLE claims ENABLE TRIGGER claims_partition_integrity`,
+      );
+    }
+    await startMigration(userId);
+
+    const moved = await reclassifySourcePartition(
+      database,
+      reclassifySourcePartitionRequestSchema.parse({
+        userId,
+        sourceId,
+        expectedPartitionKey: null,
+        targetPartitionKey: partitionKey,
+        expectedSourceVersion: 0,
+        bindingGeneration: "cross-user-evidence-copy",
+      }),
+    );
+
+    const crossUserMapping = moved.nodeMappings.find(
+      (mapping) => mapping.sourceNodeId === crossUserNodeId,
+    );
+    expect(crossUserMapping).toBeDefined();
+    if (!crossUserMapping) throw new Error("Expected cross-user node mapping");
+    await expect(
+      database
+        .select({
+          partitionKey: claims.partitionKey,
+          objectNodeId: claims.objectNodeId,
+        })
+        .from(claims)
+        .where(eq(claims.id, claimId)),
+    ).resolves.toEqual([
+      {
+        partitionKey,
+        objectNodeId: crossUserMapping.replacementNodeId,
+      },
+    ]);
+    await expect(
+      database
+        .select({ userId: nodes.userId, partitionKey: nodes.partitionKey })
+        .from(nodes)
+        .where(eq(nodes.id, crossUserMapping.replacementNodeId)),
+    ).resolves.toEqual([{ userId, partitionKey }]);
+    await expect(
+      database
+        .select({ label: nodeMetadata.label })
+        .from(nodeMetadata)
+        .where(eq(nodeMetadata.nodeId, crossUserMapping.replacementNodeId)),
+    ).resolves.toEqual([]);
+    await expect(
+      database
+        .select({ userId: nodes.userId, partitionKey: nodes.partitionKey })
+        .from(nodes)
+        .where(eq(nodes.id, crossUserNodeId)),
+    ).resolves.toEqual([{ userId: otherUserId, partitionKey: null }]);
+  });
+
   it("rejects identity and payload mutations of completed receipts", async () => {
     const userId = "partition-receipt-field-immutability";
     const otherUserId = `${userId}-other`;

@@ -33,6 +33,7 @@ interface RecoverPartitionNodeInput {
   nodeType: NodeType;
   partitionKey: ContextPartitionKey;
   bindingGeneration: string;
+  copySourceArtifacts?: boolean;
 }
 
 export interface ResumePartitionNodeRecoveryInput {
@@ -165,7 +166,9 @@ export async function reusePartitionNodeMapping(
       await reopenPartitionNodeMapping(input, existing.replacementNodeId);
       return rebuildReservedPartitionNode(input, null);
     }
-    await refreshSourceOwnedPresentation(input, existing.replacementNodeId);
+    if (input.copySourceArtifacts !== false) {
+      await refreshSourceOwnedPresentation(input, existing.replacementNodeId);
+    }
     return partitionNodeMappingSchema.parse({
       sourceNodeId: input.sourceNodeId,
       partitionKey: input.partitionKey,
@@ -543,16 +546,19 @@ async function rebuildReservedPartitionNode(
       ),
     );
 
-  const [metadata] = await input.tx
-    .select({
-      label: nodeMetadata.label,
-      canonicalLabel: nodeMetadata.canonicalLabel,
-      description: nodeMetadata.description,
-      additionalData: nodeMetadata.additionalData,
-    })
-    .from(nodeMetadata)
-    .where(eq(nodeMetadata.nodeId, input.sourceNodeId))
-    .limit(1);
+  const [metadata] =
+    input.copySourceArtifacts === false
+      ? []
+      : await input.tx
+          .select({
+            label: nodeMetadata.label,
+            canonicalLabel: nodeMetadata.canonicalLabel,
+            description: nodeMetadata.description,
+            additionalData: nodeMetadata.additionalData,
+          })
+          .from(nodeMetadata)
+          .where(eq(nodeMetadata.nodeId, input.sourceNodeId))
+          .limit(1);
   if (metadata) {
     await input.tx
       .insert(nodeMetadata)
@@ -572,36 +578,42 @@ async function rebuildReservedPartitionNode(
     redirectCount,
     profileCount,
     presentation,
-  ] = await Promise.all([
-    input.tx.$count(aliases, eq(aliases.canonicalNodeId, input.sourceNodeId)),
-    input.tx.$count(
-      nodeEmbeddings,
-      eq(nodeEmbeddings.nodeId, input.sourceNodeId),
-    ),
-    input.tx.$count(
-      nodeRedirects,
-      and(
-        eq(nodeRedirects.userId, input.userId),
-        eq(nodeRedirects.toNodeId, input.sourceNodeId),
-      ),
-    ),
-    input.tx.$count(userProfiles, eq(userProfiles.userId, input.userId)),
-    input.tx
-      .select({
-        userId: commitmentPresentations.userId,
-        sourceId: commitmentPresentations.sourceId,
-        excerpt: commitmentPresentations.excerpt,
-        why: commitmentPresentations.why,
-      })
-      .from(commitmentPresentations)
-      .where(
-        and(
-          eq(commitmentPresentations.taskId, input.sourceNodeId),
-          eq(commitmentPresentations.sourceId, input.sourceId),
-        ),
-      )
-      .limit(1),
-  ]);
+  ] =
+    input.copySourceArtifacts === false
+      ? [0, 0, 0, 0, []]
+      : await Promise.all([
+          input.tx.$count(
+            aliases,
+            eq(aliases.canonicalNodeId, input.sourceNodeId),
+          ),
+          input.tx.$count(
+            nodeEmbeddings,
+            eq(nodeEmbeddings.nodeId, input.sourceNodeId),
+          ),
+          input.tx.$count(
+            nodeRedirects,
+            and(
+              eq(nodeRedirects.userId, input.userId),
+              eq(nodeRedirects.toNodeId, input.sourceNodeId),
+            ),
+          ),
+          input.tx.$count(userProfiles, eq(userProfiles.userId, input.userId)),
+          input.tx
+            .select({
+              userId: commitmentPresentations.userId,
+              sourceId: commitmentPresentations.sourceId,
+              excerpt: commitmentPresentations.excerpt,
+              why: commitmentPresentations.why,
+            })
+            .from(commitmentPresentations)
+            .where(
+              and(
+                eq(commitmentPresentations.taskId, input.sourceNodeId),
+                eq(commitmentPresentations.sourceId, input.sourceId),
+              ),
+            )
+            .limit(1),
+        ]);
   const sourcePresentation = presentation[0];
   if (sourcePresentation) {
     await input.tx
