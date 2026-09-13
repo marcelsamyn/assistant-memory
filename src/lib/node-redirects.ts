@@ -2,7 +2,11 @@
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { nodeRedirects } from "~/db/schema";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import { partitionAccessCondition } from "~/lib/partition-access";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import type { TypeId } from "~/types/typeid";
 
 /** Accepts the db or an open transaction. */
@@ -67,6 +71,7 @@ export async function resolveNodeRedirects(
   userId: string,
   ids: TypeId<"node">[],
   partitionKey?: ContextPartitionKey,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<Map<TypeId<"node">, TypeId<"node">>> {
   const out = new Map<TypeId<"node">, TypeId<"node">>(
     ids.map((id) => [id, id]),
@@ -83,9 +88,12 @@ export async function resolveNodeRedirects(
     .where(
       and(
         eq(nodeRedirects.userId, userId),
-        partitionKey === undefined
-          ? isNull(nodeRedirects.partitionKey)
-          : eq(nodeRedirects.partitionKey, partitionKey),
+        partitionAccessCondition(
+          nodeRedirects.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
         inArray(nodeRedirects.fromNodeId, uniqueIds),
       ),
     );

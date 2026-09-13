@@ -1,11 +1,17 @@
 /** Batch-resolve node/claim/source ids to citation-ready records. */
 import { resolveNodeRedirects } from "./node-redirects";
 import type { ResolvedCitation } from "./schemas/resolve-citations";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { claims, nodeMetadata, nodes, sources } from "~/db/schema";
-import { assertPartitionReadAllowed } from "~/lib/partition-access";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import {
+  assertPartitionReadAllowed,
+  partitionAccessCondition,
+} from "~/lib/partition-access";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import type { TypeId } from "~/types/typeid";
 
 type Database =
@@ -37,8 +43,9 @@ export async function resolveCitations(
   userId: string,
   ids: string[],
   partitionKey?: ContextPartitionKey,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<ResolvedCitation[]> {
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
   const nodeIds = [
     ...new Set(ids.filter((i) => prefixOf(i) === "node")),
   ] as TypeId<"node">[];
@@ -55,6 +62,7 @@ export async function resolveCitations(
     userId,
     nodeIds,
     partitionKey,
+    accessScope,
   );
   const canonicalNodeIds = [...new Set(redirects.values())];
   const nodeRows = canonicalNodeIds.length
@@ -69,9 +77,12 @@ export async function resolveCitations(
         .where(
           and(
             eq(nodes.userId, userId),
-            partitionKey === undefined
-              ? isNull(nodes.partitionKey)
-              : eq(nodes.partitionKey, partitionKey),
+            partitionAccessCondition(
+              nodes.partitionKey,
+              userId,
+              partitionKey,
+              accessScope,
+            ),
             inArray(nodes.id, canonicalNodeIds),
           ),
         )
@@ -96,45 +107,104 @@ export async function resolveCitations(
     ? await db
         .select({
           id: claims.id,
+          partitionKey: claims.partitionKey,
           statement: claims.statement,
           description: claims.description,
           sourceId: claims.sourceId,
+          sourcePartitionKey: sources.partitionKey,
           subjectNodeId: claims.subjectNodeId,
+          objectNodeId: claims.objectNodeId,
           status: claims.status,
           sourceType: sources.type,
           sourceMetadata: sources.metadata,
         })
         .from(claims)
-        .leftJoin(sources, eq(sources.id, claims.sourceId))
+        .leftJoin(
+          sources,
+          and(eq(sources.id, claims.sourceId), eq(sources.userId, userId)),
+        )
         .where(
           and(
             eq(claims.userId, userId),
-            partitionKey === undefined
-              ? isNull(claims.partitionKey)
-              : eq(claims.partitionKey, partitionKey),
+            partitionAccessCondition(
+              claims.partitionKey,
+              userId,
+              partitionKey,
+              accessScope,
+            ),
             inArray(claims.id, claimIds),
           ),
         )
     : [];
+  const endpointIds = [
+    ...new Set(
+      claimRows.flatMap((row) => [
+        row.subjectNodeId,
+        ...(row.objectNodeId === null ? [] : [row.objectNodeId]),
+      ]),
+    ),
+  ];
+  const endpointRows =
+    accessScope === "workspace" && endpointIds.length > 0
+      ? await db
+          .select({ id: nodes.id, partitionKey: nodes.partitionKey })
+          .from(nodes)
+          .where(
+            and(
+              eq(nodes.userId, userId),
+              partitionAccessCondition(
+                nodes.partitionKey,
+                userId,
+                partitionKey,
+                accessScope,
+              ),
+              inArray(nodes.id, endpointIds),
+            ),
+          )
+      : [];
+  const endpointPartitionById = new Map(
+    endpointRows.map((row) => [row.id, row.partitionKey]),
+  );
   const claimById = new Map(claimRows.map((r) => [r.id, r]));
   const claimCitations: ResolvedCitation[] = claimIds.map((requestedId) => {
     const row = claimById.get(requestedId);
-    const active = row?.status === "active";
+    const endpointsMatch =
+      row !== undefined &&
+      (row.partitionKey ?? null) ===
+        (endpointPartitionById.get(row.subjectNodeId) ?? null) &&
+      (row.objectNodeId === null ||
+        (row.partitionKey ?? null) ===
+          (endpointPartitionById.get(row.objectNodeId) ?? null));
+    const sourceMatchesClaim =
+      row?.sourceType !== null &&
+      row?.sourceType !== undefined &&
+      (row.partitionKey ?? null) === (row.sourcePartitionKey ?? null);
+    const active =
+      row?.status === "active" &&
+      (accessScope !== "workspace" || (endpointsMatch && sourceMatchesClaim));
     return {
       requestedId,
       kind: "claim",
       available: active,
       canonicalId: active ? requestedId : null,
-      title: row?.statement ?? null,
-      snippet: row?.description ?? null,
-      source: row
-        ? {
-            id: row.sourceId,
-            title: titleFromMetadata(row.sourceMetadata),
-            type: row.sourceType ?? "unknown",
-          }
-        : null,
-      subjectNodeId: row?.subjectNodeId ?? null,
+      title:
+        active || accessScope !== "workspace" ? (row?.statement ?? null) : null,
+      snippet:
+        active || accessScope !== "workspace"
+          ? (row?.description ?? null)
+          : null,
+      source:
+        (active || accessScope !== "workspace") && row && sourceMatchesClaim
+          ? {
+              id: row.sourceId,
+              title: titleFromMetadata(row.sourceMetadata),
+              type: row.sourceType ?? "unknown",
+            }
+          : null,
+      subjectNodeId:
+        active || accessScope !== "workspace"
+          ? (row?.subjectNodeId ?? null)
+          : null,
     };
   });
 
@@ -150,9 +220,12 @@ export async function resolveCitations(
         .where(
           and(
             eq(sources.userId, userId),
-            partitionKey === undefined
-              ? isNull(sources.partitionKey)
-              : eq(sources.partitionKey, partitionKey),
+            partitionAccessCondition(
+              sources.partitionKey,
+              userId,
+              partitionKey,
+              accessScope,
+            ),
             inArray(sources.id, sourceIds),
           ),
         )
@@ -166,7 +239,10 @@ export async function resolveCitations(
       kind: "source",
       available: present,
       canonicalId: present ? requestedId : null,
-      title: row ? titleFromMetadata(row.metadata) : null,
+      title:
+        (present || accessScope !== "workspace") && row
+          ? titleFromMetadata(row.metadata)
+          : null,
       snippet: null,
       source: null,
     };

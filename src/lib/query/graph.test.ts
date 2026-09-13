@@ -53,6 +53,7 @@ describeIfServer("bounded graph reads", () => {
   const legacySourceId = newTypeId("source");
   const ids = Array.from({ length: 205 }, () => newTypeId("node")).sort();
   const legacyIds = Array.from({ length: 105 }, () => newTypeId("node")).sort();
+  const otherPartitionNodeId = newTypeId("node");
   let client: Client;
 
   beforeAll(async () => {
@@ -124,7 +125,7 @@ describeIfServer("bounded graph reads", () => {
         label: "Concept",
       },
       {
-        id: newTypeId("node"),
+        id: otherPartitionNodeId,
         partitionKey: otherPartition,
         nodeType: "Person" as const,
         label: "Other partition",
@@ -224,6 +225,41 @@ describeIfServer("bounded graph reads", () => {
     });
     expect(result.nodes.map((node) => node.id)).toEqual([ids[0]]);
     expect(result.claims).toEqual([]);
+  });
+
+  it("combines active partitions only when workspace access is explicit", async () => {
+    const { queryKnowledgeGraph } = await import("./graph");
+    const workspace = await queryKnowledgeGraph({
+      userId,
+      accessScope: "workspace",
+      maxNodes: ids.length + 1,
+      nodeTypes: ["Person"],
+    });
+
+    expect(workspace.nodes.map((node) => node.id)).toEqual(
+      [...ids, otherPartitionNodeId].sort(),
+    );
+    expect(workspace.claims).toHaveLength(2);
+    expect(workspace.claims).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          subject: ids[0],
+          object: ids[1],
+        }),
+        expect.objectContaining({
+          subject: ids[0],
+          object: ids[204],
+        }),
+      ]),
+    );
+
+    await expect(
+      queryKnowledgeGraph({
+        userId,
+        maxNodes: ids.length + 1,
+        nodeTypes: ["Person"],
+      }),
+    ).rejects.toMatchObject({ code: "PARTITION_REQUIRED" });
   });
 
   it("returns empty results when filters match no nodes", async () => {

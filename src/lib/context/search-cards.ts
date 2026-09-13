@@ -25,7 +25,10 @@ import { findSimilarClaims, findSimilarNodes } from "../graph";
 import { getNodeCards } from "./node-card";
 import type { NodeCard } from "./node-card-types";
 import type { ClaimEvidence } from "./types";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import type { NodeType, Scope } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { getSemanticSearchSubstringQuery } from "~/utils/test-overrides";
@@ -33,6 +36,7 @@ import { getSemanticSearchSubstringQuery } from "~/utils/test-overrides";
 export interface SearchCardsRequest {
   userId: string;
   partitionKey?: ContextPartitionKey;
+  accessScope?: MemoryAccessScope | undefined;
   query: string;
   limit?: number | undefined;
   /**
@@ -93,6 +97,7 @@ async function searchAsCards(
   const [similarNodes, similarClaims] = await Promise.all([
     findSimilarNodes({
       userId: req.userId,
+      accessScope: req.accessScope,
       ...(req.partitionKey !== undefined
         ? { partitionKey: req.partitionKey }
         : {}),
@@ -106,6 +111,7 @@ async function searchAsCards(
     }),
     findSimilarClaims({
       userId: req.userId,
+      accessScope: req.accessScope,
       ...(req.partitionKey !== undefined
         ? { partitionKey: req.partitionKey }
         : {}),
@@ -128,6 +134,7 @@ async function searchAsCards(
 
   const cardMap = await getNodeCards({
     userId: req.userId,
+    accessScope: req.accessScope,
     ...(req.partitionKey !== undefined
       ? { partitionKey: req.partitionKey }
       : {}),

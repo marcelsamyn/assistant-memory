@@ -7,7 +7,7 @@
  * Common aliases: hybrid search, explicit search, search pipeline, runSearch.
  */
 import { reciprocalRankFusion } from "./fusion";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { sources } from "~/db/schema";
 import {
@@ -21,7 +21,11 @@ import {
   type NodeSearchResult,
   type ClaimSearchResult,
 } from "~/lib/graph";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import { partitionAccessCondition } from "~/lib/partition-access";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import type {
   SearchHit,
   SearchRequest,
@@ -50,12 +54,14 @@ export type SourceHydrator = (
   sourceIds: TypeId<"source">[],
   userId?: string,
   partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
 ) => Promise<Map<string, HitSource>>;
 
 const dbHydrateSources: SourceHydrator = async (
   sourceIds,
   userId,
   partitionKey,
+  accessScope,
 ) => {
   const map = new Map<string, HitSource>();
   if (sourceIds.length === 0) return map;
@@ -74,9 +80,12 @@ const dbHydrateSources: SourceHydrator = async (
       and(
         eq(sources.userId, userId),
         inArray(sources.id, sourceIds),
-        partitionKey === undefined
-          ? isNull(sources.partitionKey)
-          : eq(sources.partitionKey, partitionKey),
+        partitionAccessCondition(
+          sources.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
       ),
     );
   for (const row of rows) {
@@ -92,10 +101,13 @@ const dbHydrateSources: SourceHydrator = async (
 };
 
 export async function explicitSearch(
-  params: ExplicitSearchParams,
+  params: ExplicitSearchParams & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
   hydrate: SourceHydrator = dbHydrateSources,
 ): Promise<SearchResponse> {
-  const { userId, partitionKey, query, limit, scope, filters } = params;
+  const { userId, partitionKey, query, limit, scope, filters, accessScope } =
+    params;
   const includeNodeTypes = filters?.entityTypes;
   const statedBetween = filters?.statedBetween;
   const legLimit = Math.max(limit * 2, 20);
@@ -110,6 +122,7 @@ export async function explicitSearch(
   ] = await Promise.all([
     findSimilarNodes({
       userId,
+      accessScope,
       ...(partitionKey === undefined ? {} : { partitionKey }),
       embedding,
       limit: legLimit,
@@ -118,6 +131,7 @@ export async function explicitSearch(
     }),
     findNodesByLexical({
       userId,
+      accessScope,
       ...(partitionKey === undefined ? {} : { partitionKey }),
       query,
       limit: legLimit,
@@ -126,6 +140,7 @@ export async function explicitSearch(
     }),
     findSimilarClaims({
       userId,
+      accessScope,
       ...(partitionKey === undefined ? {} : { partitionKey }),
       embedding,
       limit: legLimit,
@@ -134,6 +149,7 @@ export async function explicitSearch(
     }),
     findClaimsByLexical({
       userId,
+      accessScope,
       ...(partitionKey === undefined ? {} : { partitionKey }),
       query,
       limit: legLimit,
@@ -170,7 +186,12 @@ export async function explicitSearch(
         .filter((s): s is TypeId<"source"> => Boolean(s)),
     ),
   );
-  const sourceMap = await hydrate(claimSourceIds, userId, partitionKey);
+  const sourceMap = await hydrate(
+    claimSourceIds,
+    userId,
+    partitionKey,
+    accessScope,
+  );
 
   const nodeHits: SearchHit[] = nodeFusion.flatMap((f) => {
     const row = nodeById.get(f.id);

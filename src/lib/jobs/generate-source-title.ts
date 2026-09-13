@@ -1,6 +1,7 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { DrizzleDB } from "~/db";
 import { sources } from "~/db/schema";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { generateTitleFromContent } from "~/lib/source-title";
 import { sourceMetadataSchema, sourceService } from "~/lib/sources";
 import { deriveTitle } from "~/lib/sources-read";
@@ -19,6 +20,7 @@ async function gatherContentPreview(
   db: DrizzleDB,
   userId: string,
   sourceId: TypeId<"source">,
+  partitionKey: ContextPartitionKey | null,
 ): Promise<string | null> {
   const [own] = await sourceService.fetchRaw(userId, [sourceId]);
   if (own?.kind === "inline") return own.content.slice(0, PREVIEW_MAX_CHARS);
@@ -27,8 +29,14 @@ async function gatherContentPreview(
   }
 
   const children = await db.query.sources.findMany({
-    where: (s, { and: a, eq: e }) =>
-      a(e(s.userId, userId), e(s.parentSource, sourceId)),
+    where: (s, { and: a, eq: e, isNull: n }) =>
+      a(
+        e(s.userId, userId),
+        e(s.parentSource, sourceId),
+        partitionKey === null
+          ? n(s.partitionKey)
+          : e(s.partitionKey, partitionKey),
+      ),
     orderBy: (s, { asc: ascFn }) => ascFn(s.createdAt),
     limit: MAX_CHILDREN,
   });
@@ -59,6 +67,7 @@ export async function generateSourceTitle(
       type: sources.type,
       metadata: sources.metadata,
       version: sources.version,
+      partitionKey: sources.partitionKey,
       deletedAt: sources.deletedAt,
     })
     .from(sources)
@@ -67,7 +76,12 @@ export async function generateSourceTitle(
   if (!row || row.deletedAt !== null) return { generated: false };
   if (deriveTitle(row.metadata)) return { generated: false };
 
-  const preview = await gatherContentPreview(db, userId, sourceId);
+  const preview = await gatherContentPreview(
+    db,
+    userId,
+    sourceId,
+    row.partitionKey,
+  );
   if (!preview) return { generated: false };
 
   const title = await generateTitleFromContent({
@@ -87,6 +101,9 @@ export async function generateSourceTitle(
         eq(sources.id, sourceId),
         eq(sources.userId, userId),
         eq(sources.version, row.version),
+        row.partitionKey === null
+          ? isNull(sources.partitionKey)
+          : eq(sources.partitionKey, row.partitionKey),
         isNull(sources.deletedAt),
         sql`NOT (COALESCE(${sources.metadata}, '{}'::jsonb) ? 'title')`,
       ),

@@ -1,5 +1,6 @@
 import { defineEventHandler, createError } from "h3";
 import { createAlias } from "~/lib/alias";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   createAliasRequestSchema,
   createAliasResponseSchema,
@@ -7,7 +8,11 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const aliasInput = createAliasRequestSchema.parse(await readBody(event));
+  const accessScope = getRequestAccessScope(event);
+  const aliasInput = {
+    ...createAliasRequestSchema.parse(await readBody(event)),
+    accessScope,
+  };
   const db = await useDatabase();
   try {
     const alias = await createAlias(db, aliasInput);

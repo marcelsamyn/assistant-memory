@@ -1,5 +1,6 @@
 import { defineEventHandler, createError } from "h3";
 import { deleteNode } from "~/lib/node";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   deleteNodeRequestSchema,
   deleteNodeResponseSchema,
@@ -21,6 +22,7 @@ import {
  * deleted node by label or id — that is content drift, not a broken FK.
  */
 export default defineEventHandler(async (event) => {
+  const accessScope = getRequestAccessScope(event);
   const { userId, partitionKey, nodeId } = deleteNodeRequestSchema.parse(
     await readBody(event),
   );
@@ -28,6 +30,7 @@ export default defineEventHandler(async (event) => {
     userId,
     nodeId,
     partitionKey,
+    accessScope,
   );
   if (!deleted) {
     throw createError({ statusCode: 404, statusMessage: "Node not found" });

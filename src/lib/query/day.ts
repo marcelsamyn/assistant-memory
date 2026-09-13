@@ -1,22 +1,35 @@
-import { findDayNode } from "../graph";
-import { assertPartitionReadAllowed } from "../partition-access";
+import { findDayNode, findDayNodes } from "../graph";
+import {
+  assertPartitionReadAllowed,
+  partitionAccessCondition,
+} from "../partition-access";
 import { QueryDayRequest, QueryDayResponse } from "../schemas/query-day";
-import { and, eq, isNull, ne, or } from "drizzle-orm";
+import { and, asc, eq, inArray, not, or, sql } from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
+import type { MemoryAccessScope } from "~/lib/schemas/partition";
 import { useDatabase } from "~/utils/db";
 
 /**
  * Retrieve memories linked to a given day.
  */
 export async function queryDayMemories(
-  params: QueryDayRequest,
+  params: QueryDayRequest & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
 ): Promise<QueryDayResponse> {
-  const { userId, partitionKey, date, includeFormattedResult } = params;
+  const { userId, partitionKey, date, includeFormattedResult, accessScope } =
+    params;
   const db = await useDatabase();
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
 
-  const dayNodeId = await findDayNode(db, userId, date, partitionKey);
-  if (!dayNodeId) {
+  const workspaceAggregate =
+    accessScope === "workspace" && partitionKey === undefined;
+  const dayNodeIds = workspaceAggregate
+    ? await findDayNodes(db, userId, date, partitionKey, accessScope)
+    : [await findDayNode(db, userId, date, partitionKey, accessScope)].filter(
+        (id): id is NonNullable<typeof id> => id !== null,
+      );
+  if (dayNodeIds.length === 0) {
     return {
       date,
       nodes: [],
@@ -24,7 +37,7 @@ export async function queryDayMemories(
     };
   }
 
-  const connectedNodes = await db
+  const connectedNodesQuery = db
     .select({
       id: nodes.id,
       nodeType: nodes.nodeType,
@@ -39,11 +52,11 @@ export async function queryDayMemories(
       claims,
       or(
         and(
-          eq(claims.subjectNodeId, dayNodeId),
+          inArray(claims.subjectNodeId, dayNodeIds),
           eq(claims.objectNodeId, nodes.id),
         ),
         and(
-          eq(claims.objectNodeId, dayNodeId),
+          inArray(claims.objectNodeId, dayNodeIds),
           eq(claims.subjectNodeId, nodes.id),
         ),
       ),
@@ -52,17 +65,30 @@ export async function queryDayMemories(
     .where(
       and(
         eq(claims.userId, userId),
-        partitionKey === undefined
-          ? isNull(claims.partitionKey)
-          : eq(claims.partitionKey, partitionKey),
+        partitionAccessCondition(
+          claims.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
         eq(claims.status, "active"),
         eq(nodes.userId, userId),
-        partitionKey === undefined
-          ? isNull(nodes.partitionKey)
-          : eq(nodes.partitionKey, partitionKey),
-        ne(nodes.id, dayNodeId),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
+        not(inArray(nodes.id, dayNodeIds)),
+        sql`${claims.partitionKey} IS NOT DISTINCT FROM ${nodes.partitionKey}`,
       ),
     );
+
+  const connectedNodes = workspaceAggregate
+    ? await connectedNodesQuery
+        .orderBy(asc(nodes.id), asc(claims.id))
+        .limit(200)
+    : await connectedNodesQuery;
 
   const uniqueNodesMap = new Map<string, (typeof connectedNodes)[number]>();
   connectedNodes.forEach((node) => {

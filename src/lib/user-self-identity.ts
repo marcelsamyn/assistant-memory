@@ -17,8 +17,15 @@ import type { DrizzleDB } from "~/db";
 import { nodeMetadata, nodes } from "~/db/schema";
 import { createAlias } from "~/lib/alias";
 import { normalizeLabel } from "~/lib/label";
-import { preparePartitionWrite } from "~/lib/partition-access";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import {
+  ensurePersonalPartition,
+  partitionAccessCondition,
+  preparePartitionWrite,
+} from "~/lib/partition-access";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import type { TypeId } from "~/types/typeid";
 
 /** Count whitespace-separated tokens in an alias (after trimming). */
@@ -103,11 +110,35 @@ export async function ensureUserSelfPersonNode(
   db: DrizzleDB,
   userId: string,
   partitionKey?: ContextPartitionKey,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<TypeId<"node">> {
-  await preparePartitionWrite(db, userId, partitionKey);
+  let effectivePartitionKey = partitionKey;
+  if (accessScope === "workspace" && partitionKey === undefined) {
+    const [existing] = await db
+      .select({ partitionKey: nodes.partitionKey })
+      .from(nodes)
+      .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
+      .where(
+        and(
+          eq(nodes.userId, userId),
+          eq(nodes.nodeType, "Person"),
+          partitionAccessCondition(
+            nodes.partitionKey,
+            userId,
+            undefined,
+            accessScope,
+          ),
+          sql`${nodeMetadata.additionalData}->>'isUserSelf' = 'true'`,
+        ),
+      )
+      .limit(1);
+    effectivePartitionKey =
+      existing?.partitionKey ?? (await ensurePersonalPartition(db, userId));
+  }
+  await preparePartitionWrite(db, userId, effectivePartitionKey);
   return db.transaction(async (tx) => {
     await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtext(${`user_self_person:${userId}:${partitionKey ?? "unpartitioned"}`}))`,
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`user_self_person:${userId}:${effectivePartitionKey ?? "unpartitioned"}`}))`,
     );
 
     const existing = await tx
@@ -118,9 +149,9 @@ export async function ensureUserSelfPersonNode(
         and(
           eq(nodes.userId, userId),
           eq(nodes.nodeType, "Person"),
-          partitionKey === undefined
+          effectivePartitionKey === undefined
             ? isNull(nodes.partitionKey)
-            : eq(nodes.partitionKey, partitionKey),
+            : eq(nodes.partitionKey, effectivePartitionKey),
           sql`${nodeMetadata.additionalData}->>'isUserSelf' = 'true'`,
         ),
       )
@@ -129,7 +160,11 @@ export async function ensureUserSelfPersonNode(
 
     const [newNode] = await tx
       .insert(nodes)
-      .values({ userId, partitionKey, nodeType: "Person" })
+      .values({
+        userId,
+        partitionKey: effectivePartitionKey,
+        nodeType: "Person",
+      })
       .returning();
     if (!newNode) {
       throw new Error(`Failed to create user-self Person node for ${userId}`);
@@ -158,8 +193,14 @@ export async function ensureUserSelfIdentity(
   userId: string,
   aliases: string[],
   partitionKey?: ContextPartitionKey,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<TypeId<"node">> {
-  const nodeId = await ensureUserSelfPersonNode(db, userId, partitionKey);
+  const nodeId = await ensureUserSelfPersonNode(
+    db,
+    userId,
+    partitionKey,
+    accessScope,
+  );
 
   const primaryLabel = selectPrimarySelfLabel(aliases);
   if (primaryLabel) {
@@ -189,6 +230,7 @@ export async function ensureUserSelfIdentity(
         partitionKey,
         canonicalNodeId: nodeId,
         aliasText: alias,
+        accessScope,
       }),
     ),
   );

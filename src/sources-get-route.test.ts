@@ -2,6 +2,7 @@ import handler from "./routes/sources/get.post";
 import { createApp, readBody, toWebHandler, type H3Event } from "h3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PartitionAccessError } from "~/lib/partition-access";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import type { SourceSummary } from "~/lib/schemas/sources";
 import { newTypeId } from "~/types/typeid";
 
@@ -9,6 +10,10 @@ const mocks = vi.hoisted(() => ({
   fetchRaw: vi.fn(),
   getSourceSummary: vi.fn(),
   getSourceIngestionOperation: vi.fn(),
+}));
+
+const requestAccessMocks = vi.hoisted(() => ({
+  getRequestAccessScope: vi.fn((): "partition" | "workspace" => "partition"),
 }));
 
 vi.mock("~/lib/ingestion/source-processing", () => ({
@@ -22,6 +27,8 @@ vi.mock("~/lib/sources", () => ({
 vi.mock("~/lib/sources-read", () => ({
   getSourceSummary: mocks.getSourceSummary,
 }));
+
+vi.mock("~/lib/request-access", () => requestAccessMocks);
 
 vi.mock("~/utils/db", () => ({
   useDatabase: async (): Promise<unknown> => ({}),
@@ -120,6 +127,58 @@ describe("POST /sources/get", () => {
     expect(response.source.content).toEqual({
       text: "# Notes\nbody",
       format: "markdown",
+    });
+  });
+
+  it("propagates workspace scope and the source partition to content processing", async () => {
+    const source = {
+      ...makeSourceSummary("document"),
+      partitionKey: contextPartitionKeySchema.parse("workspace:source"),
+    };
+    requestAccessMocks.getRequestAccessScope.mockReturnValue("workspace");
+    mocks.getSourceSummary.mockResolvedValue(source);
+    mocks.getSourceIngestionOperation.mockResolvedValue(null);
+    mocks.fetchRaw.mockResolvedValue([
+      {
+        kind: "inline",
+        sourceId: source.sourceId,
+        content: "workspace content",
+      },
+    ]);
+    vi.stubGlobal("readBody", readBody);
+
+    const response = await toWebHandler(createApp().use(handler))(
+      new Request("http://memory.test/sources/get", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-memory-access-scope": "workspace",
+        },
+        body: JSON.stringify({
+          userId: "user_source",
+          sourceId: source.sourceId,
+          includeContent: true,
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.getSourceSummary).toHaveBeenCalledWith(
+      expect.anything(),
+      "user_source",
+      source.sourceId,
+      undefined,
+      "workspace",
+    );
+    expect(mocks.getSourceIngestionOperation).toHaveBeenCalledWith({
+      db: expect.anything(),
+      userId: "user_source",
+      partitionKey: source.partitionKey,
+      sourceId: source.sourceId,
+      accessScope: "workspace",
+    });
+    await expect(response.json()).resolves.toMatchObject({
+      source: { content: { text: "workspace content", format: "markdown" } },
     });
   });
 

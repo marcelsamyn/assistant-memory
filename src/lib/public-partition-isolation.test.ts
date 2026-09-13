@@ -23,8 +23,6 @@ const TEST_DB_ADMIN_DB = process.env["TEST_PG_ADMIN_DB"] ?? "postgres";
 
 let database: NodePgDatabase<typeof schema>;
 
-vi.mock("~/utils/db", () => ({ useDatabase: async () => database }));
-
 const adminDsn = () =>
   `postgres://${TEST_DB_USER}:${TEST_DB_PASSWORD}@${TEST_DB_HOST}:${TEST_DB_PORT}/${TEST_DB_ADMIN_DB}`;
 const dsnFor = (name: string) =>
@@ -113,9 +111,16 @@ describeIfServer("public evidence partition isolation", () => {
         description: "Client B's Alex",
       },
     ]);
+
+    // Keep this test's database binding local to its lifetime. A hoisted mock
+    // would remain registered when Vitest reuses this worker for another file.
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
   }, 60_000);
 
   afterAll(async () => {
+    vi.doUnmock("~/utils/db");
+    vi.resetModules();
     await client.end();
     const admin = new Client({ connectionString: adminDsn() });
     await admin.connect();

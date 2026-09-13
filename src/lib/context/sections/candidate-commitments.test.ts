@@ -1,5 +1,5 @@
 import { assembleCandidateCommitmentsSection } from "./candidate-commitments";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { getCandidateCommitments } from "~/lib/query/open-commitments";
 import type { OpenCommitment } from "~/lib/schemas/open-commitments";
 
@@ -7,6 +7,13 @@ import type { OpenCommitment } from "~/lib/schemas/open-commitments";
 vi.mock("~/lib/query/open-commitments", () => ({
   getCandidateCommitments: vi.fn(),
 }));
+
+afterAll(() => {
+  // Do not let this partial mock hide the real open-commitments export from
+  // another test file sharing the Vitest worker.
+  vi.doUnmock("~/lib/query/open-commitments");
+  vi.resetModules();
+});
 
 function c(
   partial: Partial<OpenCommitment> & { label: string },

@@ -1,5 +1,7 @@
 import { defineEventHandler, readBody } from "h3";
+import { PartitionedCleanupGraphUnsupportedError } from "~/lib/jobs/cleanup-graph";
 import { batchQueue } from "~/lib/queues";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   cleanupRequestSchema,
   cleanupResponseSchema,
@@ -7,6 +9,9 @@ import {
 
 export default defineEventHandler(async (event) => {
   const params = cleanupRequestSchema.parse(await readBody(event));
+  if (getRequestAccessScope(event) === "workspace") {
+    throw new PartitionedCleanupGraphUnsupportedError();
+  }
 
   await batchQueue.add("cleanup-graph", params);
 

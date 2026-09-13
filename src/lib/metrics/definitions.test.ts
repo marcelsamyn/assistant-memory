@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { HIGH_SIMILARITY, MID_SIMILARITY } from "~/lib/metrics/constants";
-import { metricDefinitionEmbeddingText } from "~/lib/metrics/definitions";
+import {
+  deleteMetricDefinition,
+  MetricDefinitionPartitionUnsupportedError,
+  metricDefinitionEmbeddingText,
+} from "~/lib/metrics/definitions";
 import { proposedMetricDefinitionSchema } from "~/lib/schemas/metric-definition";
 import {
   deleteMetricDefinitionRequestSchema,
@@ -100,5 +104,15 @@ describe("metric definitions", () => {
         metricDefinitionId: newTypeId("metric_definition"),
       }),
     ).not.toThrow();
+  });
+
+  it("refuses workspace definition deletion before a cross-partition cascade", async () => {
+    await expect(
+      deleteMetricDefinition(
+        "user_A",
+        newTypeId("metric_definition"),
+        "workspace",
+      ),
+    ).rejects.toBeInstanceOf(MetricDefinitionPartitionUnsupportedError);
   });
 });

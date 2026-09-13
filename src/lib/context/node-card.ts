@@ -23,17 +23,31 @@ import type {
   NodeCardRecentEvidence,
   NodeCardSource,
 } from "./node-card-types";
-import { and, desc, eq, exists, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, exists, inArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
-import { claims, nodeMetadata, nodes, sourceLinks, sources } from "~/db/schema";
-import { listAliasesForNodeIds } from "~/lib/alias";
+import type { DrizzleDB } from "~/db";
+import {
+  aliases,
+  claims,
+  nodeMetadata,
+  nodes,
+  sourceLinks,
+  sources,
+} from "~/db/schema";
+import { listAliasesForNodeIds, type AliasSelect } from "~/lib/alias";
 import {
   PREDICATE_POLICIES,
   resolvePredicatePolicy,
 } from "~/lib/claims/predicate-policies";
-import { assertPartitionReadAllowed } from "~/lib/partition-access";
+import {
+  assertPartitionReadAllowed,
+  partitionAccessCondition,
+} from "~/lib/partition-access";
 import { getOpenCommitments } from "~/lib/query/open-commitments";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import {
   AttributePredicateEnum,
   type AssertedByKind,
@@ -47,12 +61,14 @@ import { useDatabase } from "~/utils/db";
 export interface GetNodeCardParams {
   userId: string;
   partitionKey?: ContextPartitionKey;
+  accessScope?: MemoryAccessScope | undefined;
   nodeId: TypeId<"node">;
 }
 
 export interface GetNodeCardsParams {
   userId: string;
   partitionKey?: ContextPartitionKey;
+  accessScope?: MemoryAccessScope | undefined;
   nodeIds: readonly TypeId<"node">[];
 }
 
@@ -124,6 +140,7 @@ async function loadNodesBasicsMany(
   userId: string,
   nodeIds: readonly TypeId<"node">[],
   partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
 ): Promise<Map<TypeId<"node">, NodeBasics>> {
   const result = new Map<TypeId<"node">, NodeBasics>();
   if (nodeIds.length === 0) return result;
@@ -138,6 +155,12 @@ async function loadNodesBasicsMany(
         eq(sourceLinks.nodeId, nodes.id),
         eq(sources.userId, userId),
         eq(sources.scope, "personal"),
+        partitionAccessCondition(
+          sources.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
       ),
     );
 
@@ -149,6 +172,12 @@ async function loadNodesBasicsMany(
         eq(claims.userId, userId),
         eq(claims.scope, "personal"),
         eq(claims.status, "active"),
+        partitionAccessCondition(
+          claims.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
         or(
           eq(claims.subjectNodeId, nodes.id),
           eq(claims.objectNodeId, nodes.id),
@@ -165,6 +194,12 @@ async function loadNodesBasicsMany(
         eq(sourceLinks.nodeId, nodes.id),
         eq(sources.userId, userId),
         eq(sources.scope, "reference"),
+        partitionAccessCondition(
+          sources.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
       ),
     );
 
@@ -176,6 +211,12 @@ async function loadNodesBasicsMany(
         eq(claims.userId, userId),
         eq(claims.scope, "reference"),
         eq(claims.status, "active"),
+        partitionAccessCondition(
+          claims.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
         or(
           eq(claims.subjectNodeId, nodes.id),
           eq(claims.objectNodeId, nodes.id),
@@ -197,9 +238,12 @@ async function loadNodesBasicsMany(
     .where(
       and(
         eq(nodes.userId, userId),
-        partitionKey === undefined
-          ? isNull(nodes.partitionKey)
-          : eq(nodes.partitionKey, partitionKey),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
         inArray(nodes.id, nodeIds as TypeId<"node">[]),
       ),
     );
@@ -238,6 +282,8 @@ function deriveScope(
 async function loadActiveClaimsBySubjectMany(
   userId: string,
   nodeIds: readonly TypeId<"node">[],
+  partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
 ): Promise<Map<TypeId<"node">, ActiveClaimRow[]>> {
   const result = new Map<TypeId<"node">, ActiveClaimRow[]>();
   if (nodeIds.length === 0) return result;
@@ -260,6 +306,12 @@ async function loadActiveClaimsBySubjectMany(
         eq(claims.userId, userId),
         inArray(claims.subjectNodeId, nodeIds as TypeId<"node">[]),
         eq(claims.status, "active"),
+        partitionAccessCondition(
+          claims.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
       ),
     )
     .orderBy(desc(claims.statedAt), desc(claims.createdAt));
@@ -273,7 +325,10 @@ async function loadActiveClaimsBySubjectMany(
 }
 
 async function batchResolveLabels(
+  userId: string,
   nodeIds: TypeId<"node">[],
+  partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
 ): Promise<Map<TypeId<"node">, string | null>> {
   const result = new Map<TypeId<"node">, string | null>();
   if (nodeIds.length === 0) return result;
@@ -281,7 +336,19 @@ async function batchResolveLabels(
   const rows = await db
     .select({ nodeId: nodeMetadata.nodeId, label: nodeMetadata.label })
     .from(nodeMetadata)
-    .where(inArray(nodeMetadata.nodeId, nodeIds));
+    .innerJoin(nodes, eq(nodes.id, nodeMetadata.nodeId))
+    .where(
+      and(
+        eq(nodes.userId, userId),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
+        inArray(nodeMetadata.nodeId, nodeIds),
+      ),
+    );
   for (const row of rows) {
     result.set(row.nodeId, row.label);
   }
@@ -312,6 +379,40 @@ function buildAliasListFromMap(
   return ordered;
 }
 
+/** Load aliases with the same explicit partition scope as their node cards. */
+async function loadAliasesForNodeIds(
+  db: DrizzleDB,
+  userId: string,
+  nodeIds: TypeId<"node">[],
+  partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
+): Promise<Map<TypeId<"node">, AliasSelect[]>> {
+  if (accessScope !== "workspace") {
+    return listAliasesForNodeIds(db, userId, nodeIds, partitionKey);
+  }
+  const aliasMap = new Map<TypeId<"node">, AliasSelect[]>();
+  for (const nodeId of nodeIds) aliasMap.set(nodeId, []);
+  if (nodeIds.length === 0) return aliasMap;
+  const rows = await db
+    .select()
+    .from(aliases)
+    .where(
+      and(
+        eq(aliases.userId, userId),
+        partitionAccessCondition(
+          aliases.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
+        inArray(aliases.canonicalNodeId, nodeIds),
+      ),
+    )
+    .orderBy(asc(aliases.createdAt), asc(aliases.aliasText));
+  for (const alias of rows) aliasMap.get(alias.canonicalNodeId)?.push(alias);
+  return aliasMap;
+}
+
 /**
  * Batch source-provenance lookup, for any scope. Returns the most-recent
  * backing source (largest `lastIngestedAt`, fallback `createdAt`) per node id,
@@ -322,6 +423,8 @@ function buildAliasListFromMap(
 async function loadSourceMetadataMany(
   userId: string,
   nodeIds: readonly TypeId<"node">[],
+  partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
 ): Promise<Map<TypeId<"node">, NodeCardSource>> {
   const result = new Map<TypeId<"node">, NodeCardSource>();
   if (nodeIds.length === 0) return result;
@@ -341,6 +444,12 @@ async function loadSourceMetadataMany(
       and(
         eq(sources.userId, userId),
         inArray(sourceLinks.nodeId, nodeIds as TypeId<"node">[]),
+        partitionAccessCondition(
+          sources.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
       ),
     )
     // NULLS LAST: Postgres sorts NULLs first under DESC by default, which would
@@ -392,6 +501,12 @@ async function loadSourceMetadataMany(
       and(
         eq(nodes.userId, userId),
         eq(nodes.nodeType, "Document"),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
         inArray(sourceLinks.sourceId, chosenSourceIds),
       ),
     );
@@ -523,20 +638,30 @@ function assembleCard(
 export async function getNodeCards(
   params: GetNodeCardsParams,
 ): Promise<Map<TypeId<"node">, NodeCard>> {
-  const { userId, partitionKey } = params;
+  const { userId, partitionKey, accessScope } = params;
   const uniqueIds = [...new Set(params.nodeIds)];
   const result = new Map<TypeId<"node">, NodeCard>();
   if (uniqueIds.length === 0) return result;
 
   const db = await useDatabase();
-  await assertPartitionReadAllowed(db, userId, partitionKey);
-  const basicsMap = await loadNodesBasicsMany(userId, uniqueIds, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
+  const basicsMap = await loadNodesBasicsMany(
+    userId,
+    uniqueIds,
+    partitionKey,
+    accessScope,
+  );
   const resolvedIds = uniqueIds.filter((id) => basicsMap.has(id));
   if (resolvedIds.length === 0) return result;
 
   const [claimsBySubject, aliasMap] = await Promise.all([
-    loadActiveClaimsBySubjectMany(userId, resolvedIds),
-    listAliasesForNodeIds(db, userId, resolvedIds),
+    loadActiveClaimsBySubjectMany(
+      userId,
+      resolvedIds,
+      partitionKey,
+      accessScope,
+    ),
+    loadAliasesForNodeIds(db, userId, resolvedIds, partitionKey, accessScope),
   ]);
 
   // Collect all relationship object node ids and Person ids in one pass so the
@@ -555,9 +680,19 @@ export async function getNodeCards(
 
   const [labelByNodeId, sourceMetaByNodeId, openCommitmentsByPerson] =
     await Promise.all([
-      batchResolveLabels(Array.from(objectIdSet)),
-      loadSourceMetadataMany(userId, resolvedIds),
-      loadOpenCommitmentsForPersons(userId, personIds, partitionKey),
+      batchResolveLabels(
+        userId,
+        Array.from(objectIdSet),
+        partitionKey,
+        accessScope,
+      ),
+      loadSourceMetadataMany(userId, resolvedIds, partitionKey, accessScope),
+      loadOpenCommitmentsForPersons(
+        userId,
+        personIds,
+        partitionKey,
+        accessScope,
+      ),
     ]);
 
   for (const nodeId of resolvedIds) {
@@ -591,6 +726,7 @@ async function loadOpenCommitmentsForPersons(
   userId: string,
   personIds: readonly TypeId<"node">[],
   partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope,
 ): Promise<Map<TypeId<"node">, NodeCard["openCommitments"]>> {
   const result = new Map<TypeId<"node">, NodeCard["openCommitments"]>();
   if (personIds.length === 0) return result;
@@ -599,6 +735,7 @@ async function loadOpenCommitmentsForPersons(
       const commitments = await getOpenCommitments({
         userId,
         ...(partitionKey !== undefined ? { partitionKey } : {}),
+        accessScope,
         ownedBy: id,
       });
       return [id, commitments] as const;
@@ -618,6 +755,7 @@ export async function getNodeCard(
     ...(params.partitionKey !== undefined
       ? { partitionKey: params.partitionKey }
       : {}),
+    accessScope: params.accessScope,
     nodeIds: [params.nodeId],
   });
   return cards.get(params.nodeId) ?? null;

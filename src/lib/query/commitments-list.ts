@@ -28,7 +28,10 @@ import {
   sources,
 } from "~/db/schema";
 import { coerceTaskStatus } from "~/lib/claims/task-status";
-import { assertPartitionReadAllowed } from "~/lib/partition-access";
+import {
+  assertPartitionReadAllowed,
+  partitionAccessCondition,
+} from "~/lib/partition-access";
 import { commitmentRequestEvidenceSchema } from "~/lib/schemas/commitment-request-evidence";
 import type {
   CommitmentListItem,
@@ -38,6 +41,7 @@ import type {
   ListCommitmentsRequest,
   ListCommitmentsResponse,
 } from "~/lib/schemas/list-commitments";
+import type { MemoryAccessScope } from "~/lib/schemas/partition";
 import { deriveTitle } from "~/lib/sources-read";
 import type { AssertedByKind } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
@@ -157,7 +161,9 @@ function buildPresentation(row: {
 }
 
 export async function listCommitments(
-  params: ListCommitmentsRequest,
+  params: ListCommitmentsRequest & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
 ): Promise<ListCommitmentsResponse> {
   const {
     userId,
@@ -176,12 +182,13 @@ export async function listCommitments(
     order,
     limit,
     cursor,
+    accessScope,
   } = params;
 
   const db = await useDatabase();
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
   const partitionFilter = (column: typeof claims.partitionKey) =>
-    partitionKey === undefined ? isNull(column) : eq(column, partitionKey);
+    partitionAccessCondition(column, userId, partitionKey, accessScope);
   const ownerClaim = aliasedTable(claims, "ownerClaim");
   const ownerMetadata = aliasedTable(nodeMetadata, "ownerMetadata");
   const dueClaim = aliasedTable(claims, "dueClaim");
@@ -278,9 +285,12 @@ export async function listCommitments(
       and(
         eq(nodes.id, claims.subjectNodeId),
         eq(nodes.userId, userId),
-        partitionKey === undefined
-          ? isNull(nodes.partitionKey)
-          : eq(nodes.partitionKey, partitionKey),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
         eq(nodes.nodeType, "Task"),
       ),
     )
@@ -319,9 +329,18 @@ export async function listCommitments(
     )
     .leftJoin(
       sources,
-      eq(
-        sources.id,
-        sql`coalesce(${commitmentPresentations.sourceId}, ${claims.sourceId})`,
+      and(
+        eq(
+          sources.id,
+          sql`coalesce(${commitmentPresentations.sourceId}, ${claims.sourceId})`,
+        ),
+        eq(sources.userId, userId),
+        partitionAccessCondition(
+          sources.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
       ),
     )
     .where(and(...whereClauses.filter((c): c is SQL => c !== undefined)))

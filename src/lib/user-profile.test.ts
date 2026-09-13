@@ -11,6 +11,7 @@ import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import { getUserSelfAliases, setUserSelfAliases } from "~/lib/user-profile";
 import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 
@@ -211,6 +212,41 @@ describeIfServer("user-profile self-aliases helpers", () => {
     await expect(
       setUserSelfAliases(database, userId, ["Marcel", ""]),
     ).rejects.toThrow();
+  });
+
+  it("rolls back the profile when identity partition validation fails", async () => {
+    const userId = "user_profile_partition_failure";
+    await seedUser(userId);
+    await rootClient.query(
+      `INSERT INTO "partition_migration_state" ("user_id", "state")
+       VALUES ($1, 'migrated')`,
+      [userId],
+    );
+    await rootClient.query(
+      `INSERT INTO "memory_partitions" ("user_id", "partition_key", "status")
+       VALUES ($1, 'room:inactive', 'quarantined')`,
+      [userId],
+    );
+
+    await expect(
+      setUserSelfAliases(
+        database,
+        userId,
+        ["Marcel Samyn"],
+        contextPartitionKeySchema.parse("room:inactive"),
+      ),
+    ).rejects.toMatchObject({ code: "PARTITION_UNAUTHORIZED" });
+
+    const profileRows = await rootClient.query(
+      `SELECT 1 FROM "user_profiles" WHERE "user_id" = $1`,
+      [userId],
+    );
+    const identityRows = await rootClient.query(
+      `SELECT 1 FROM "nodes" WHERE "user_id" = $1`,
+      [userId],
+    );
+    expect(profileRows.rows).toHaveLength(0);
+    expect(identityRows.rows).toHaveLength(0);
   });
 });
 

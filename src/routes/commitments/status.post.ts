@@ -1,5 +1,10 @@
 import { defineEventHandler, createError } from "h3";
-import { setCommitmentStatus, TaskNotFoundError } from "~/lib/commitments";
+import {
+  CrossPartitionCommitmentError,
+  setCommitmentStatus,
+  TaskNotFoundError,
+} from "~/lib/commitments";
+import { withRequestAccessScope } from "~/lib/request-access";
 import {
   setCommitmentStatusRequestSchema,
   setCommitmentStatusResponseSchema,
@@ -8,7 +13,9 @@ import {
 export default defineEventHandler(async (event) => {
   const params = setCommitmentStatusRequestSchema.parse(await readBody(event));
   try {
-    const result = await setCommitmentStatus(params);
+    const result = await setCommitmentStatus(
+      withRequestAccessScope(event, params),
+    );
     return setCommitmentStatusResponseSchema.parse(result);
   } catch (e) {
     if (e instanceof TaskNotFoundError) {
@@ -17,6 +24,9 @@ export default defineEventHandler(async (event) => {
         statusMessage: e.message,
         data: { name: e.name, taskId: e.taskId },
       });
+    }
+    if (e instanceof CrossPartitionCommitmentError) {
+      throw createError({ statusCode: 409, statusMessage: e.message });
     }
     throw e;
   }

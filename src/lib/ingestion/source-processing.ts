@@ -5,9 +5,13 @@ import { sourceIngestionOperations, sources } from "~/db/schema";
 import {
   PartitionAccessError,
   assertPartitionReadAllowed,
+  partitionAccessCondition,
   withSourceWriteFence,
 } from "~/lib/partition-access";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import type {
   SourceProcessing,
   SourceProcessingStage,
@@ -49,6 +53,52 @@ function assertSourcePartitionMatches(
       "Source does not belong to the requested memory partition",
     );
   }
+}
+
+export interface SourceProcessingPartitionResolution {
+  found: boolean;
+  partitionKey: ContextPartitionKey | undefined;
+}
+
+/** Resolve an operation's owned partition before calling a strict operation API. */
+export async function resolveSourceProcessingPartition(input: {
+  db: DrizzleDB;
+  userId: string;
+  operationId: string;
+  partitionKey?: ContextPartitionKey;
+  accessScope?: MemoryAccessScope;
+}): Promise<SourceProcessingPartitionResolution> {
+  if (input.accessScope !== "workspace" || input.partitionKey !== undefined) {
+    return { found: true, partitionKey: input.partitionKey };
+  }
+  const [operation] = await input.db
+    .select({ partitionKey: sourceIngestionOperations.partitionKey })
+    .from(sourceIngestionOperations)
+    .where(
+      and(
+        eq(sourceIngestionOperations.userId, input.userId),
+        eq(sourceIngestionOperations.operationId, input.operationId),
+        partitionAccessCondition(
+          sourceIngestionOperations.partitionKey,
+          input.userId,
+          undefined,
+          "workspace",
+        ),
+      ),
+    )
+    .limit(1);
+  if (!operation) return { found: false, partitionKey: undefined };
+  if (operation.partitionKey !== null) {
+    await assertPartitionReadAllowed(
+      input.db,
+      input.userId,
+      operation.partitionKey,
+    );
+  }
+  return {
+    found: true,
+    partitionKey: operation.partitionKey ?? undefined,
+  };
 }
 
 /** Creates or reuses the receipt for the current bytes and extraction context. */
@@ -220,8 +270,14 @@ export async function getSourceIngestionOperation(input: {
   partitionKey?: ContextPartitionKey;
   sourceId: TypeId<"source">;
   operationId?: string;
+  accessScope?: MemoryAccessScope;
 }): Promise<SourceProcessing | null> {
-  await assertPartitionReadAllowed(input.db, input.userId, input.partitionKey);
+  await assertPartitionReadAllowed(
+    input.db,
+    input.userId,
+    input.partitionKey,
+    input.accessScope,
+  );
   const [operation] = await input.db
     .select()
     .from(sourceIngestionOperations)
@@ -232,9 +288,12 @@ export async function getSourceIngestionOperation(input: {
         input.operationId
           ? eq(sourceIngestionOperations.operationId, input.operationId)
           : undefined,
-        input.partitionKey === undefined
-          ? isNull(sourceIngestionOperations.partitionKey)
-          : eq(sourceIngestionOperations.partitionKey, input.partitionKey),
+        partitionAccessCondition(
+          sourceIngestionOperations.partitionKey,
+          input.userId,
+          input.partitionKey,
+          input.accessScope,
+        ),
       ),
     )
     .orderBy(
@@ -251,8 +310,14 @@ export async function getSourceIngestionOperationById(input: {
   userId: string;
   partitionKey?: ContextPartitionKey;
   operationId: string;
+  accessScope?: MemoryAccessScope;
 }): Promise<SourceProcessing | null> {
-  await assertPartitionReadAllowed(input.db, input.userId, input.partitionKey);
+  await assertPartitionReadAllowed(
+    input.db,
+    input.userId,
+    input.partitionKey,
+    input.accessScope,
+  );
   const [operation] = await input.db
     .select()
     .from(sourceIngestionOperations)
@@ -260,9 +325,12 @@ export async function getSourceIngestionOperationById(input: {
       and(
         eq(sourceIngestionOperations.userId, input.userId),
         eq(sourceIngestionOperations.operationId, input.operationId),
-        input.partitionKey === undefined
-          ? isNull(sourceIngestionOperations.partitionKey)
-          : eq(sourceIngestionOperations.partitionKey, input.partitionKey),
+        partitionAccessCondition(
+          sourceIngestionOperations.partitionKey,
+          input.userId,
+          input.partitionKey,
+          input.accessScope,
+        ),
       ),
     )
     .limit(1);
@@ -275,8 +343,14 @@ export async function retrySourceIngestionOperation(input: {
   userId: string;
   partitionKey?: ContextPartitionKey;
   operationId: string;
+  accessScope?: MemoryAccessScope;
 }): Promise<SourceProcessing> {
-  await assertPartitionReadAllowed(input.db, input.userId, input.partitionKey);
+  await assertPartitionReadAllowed(
+    input.db,
+    input.userId,
+    input.partitionKey,
+    input.accessScope,
+  );
   return input.db.transaction(async (tx) => {
     const [operation] = await tx
       .select()
@@ -285,9 +359,12 @@ export async function retrySourceIngestionOperation(input: {
         and(
           eq(sourceIngestionOperations.userId, input.userId),
           eq(sourceIngestionOperations.operationId, input.operationId),
-          input.partitionKey === undefined
-            ? isNull(sourceIngestionOperations.partitionKey)
-            : eq(sourceIngestionOperations.partitionKey, input.partitionKey),
+          partitionAccessCondition(
+            sourceIngestionOperations.partitionKey,
+            input.userId,
+            input.partitionKey,
+            input.accessScope,
+          ),
         ),
       )
       .for("update")

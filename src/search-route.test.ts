@@ -8,6 +8,10 @@ vi.mock("~/lib/search/explicit-search", () => ({
   explicitSearch: mocks.explicitSearch,
 }));
 
+function testEvent(): H3Event {
+  return { node: { req: { headers: {} } } } as unknown as H3Event;
+}
+
 describe("POST /search", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -36,7 +40,7 @@ describe("POST /search", () => {
       ],
     });
 
-    const response = searchResponseSchema.parse(await handler({} as H3Event));
+    const response = searchResponseSchema.parse(await handler(testEvent()));
     expect(response.hits).toHaveLength(1);
     expect(mocks.explicitSearch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -51,6 +55,6 @@ describe("POST /search", () => {
 
   it("rejects an empty query", async () => {
     vi.stubGlobal("readBody", async () => ({ userId: "u", query: "" }));
-    await expect(handler({} as H3Event)).rejects.toThrow();
+    await expect(handler(testEvent())).rejects.toThrow();
   });
 });

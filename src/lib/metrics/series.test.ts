@@ -3,6 +3,7 @@ import { newTypeId } from "~/types/typeid";
 
 vi.mock("~/lib/metrics/partition", () => ({
   assertMetricPartitionRead: async () => undefined,
+  metricDefinitionPartitionCondition: () => undefined,
   metricObservationPartitionCondition: () => undefined,
 }));
 

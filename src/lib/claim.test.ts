@@ -924,4 +924,126 @@ describeIfServer("reattributeClaim", () => {
       }
     },
   );
+
+  it("does not resurrect a claim when a concurrent retract wins the row lock", async () => {
+    const userId = "user_concurrent_retract";
+    const sourceId = newTypeId("source");
+    const originalId = newTypeId("claim");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    const retractClient = new Client({ connectionString: dsnFor(dbName) });
+    const reattributeClient = new Client({
+      connectionString: dsnFor(dbName),
+    });
+    const lockerClient = new Client({ connectionString: dsnFor(dbName) });
+    await Promise.all([
+      client.connect(),
+      retractClient.connect(),
+      reattributeClient.connect(),
+      lockerClient.connect(),
+    ]);
+    const database = drizzle(client, { schema, casing: "snake_case" });
+    const retractDatabase = drizzle(retractClient, {
+      schema,
+      casing: "snake_case",
+    });
+    const reattributeDatabase = drizzle(reattributeClient, {
+      schema,
+      casing: "snake_case",
+    });
+
+    try {
+      await createSchema(client);
+      await client.query(
+        `INSERT INTO "users" ("id") VALUES ($1) ON CONFLICT DO NOTHING`,
+        [userId],
+      );
+      await client.query(
+        `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "status")
+           VALUES ($1, $2, 'manual', 'manual:concurrent-retract', 'completed')`,
+        [sourceId, userId],
+      );
+      const oldSubjectId = await seedNode(client, userId, "Person", "Bob");
+      const newSubjectId = await seedNode(client, userId, "Person", "Alice");
+      const objectId = await seedNode(client, userId, "Object", "Laptop");
+      await database.insert(schema.claims).values({
+        id: originalId,
+        userId,
+        subjectNodeId: oldSubjectId,
+        objectNodeId: objectId,
+        predicate: "OWNS",
+        statement: "Bob owns a laptop.",
+        sourceId,
+        scope: "personal",
+        assertedByKind: "user",
+        statedAt: new Date("2026-05-01T00:00:00.000Z"),
+        status: "active",
+      });
+
+      await lockerClient.query("BEGIN");
+      await lockerClient.query(
+        `SELECT id FROM "claims" WHERE id = $1 FOR UPDATE`,
+        [originalId],
+      );
+
+      vi.resetModules();
+      let databaseCalls = 0;
+      vi.doMock("~/utils/db", () => ({
+        useDatabase: async () => {
+          databaseCalls += 1;
+          return databaseCalls === 1 ? retractDatabase : reattributeDatabase;
+        },
+      }));
+      const { reattributeClaim, updateClaim } = await import("./claim");
+      const { setSkipEmbeddingPersistence } = await import(
+        "~/utils/test-overrides"
+      );
+      setSkipEmbeddingPersistence(true);
+
+      let retractSettled = false;
+      const retractPromise = updateClaim(userId, originalId, {
+        status: "retracted",
+      }).then((result) => {
+        retractSettled = true;
+        return result;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(retractSettled).toBe(false);
+
+      const reattributePromise = reattributeClaim({
+        userId,
+        claimId: originalId,
+        replace: "subject",
+        newNodeId: newSubjectId,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await lockerClient.query("COMMIT");
+
+      await expect(retractPromise).resolves.toMatchObject({
+        id: originalId,
+        status: "retracted",
+      });
+      await expect(reattributePromise).rejects.toMatchObject({
+        name: "InactiveClaimReattributionError",
+      });
+      await expect(
+        client.query<{ id: string; status: string }>(
+          `SELECT id, status FROM "claims" WHERE user_id = $1`,
+          [userId],
+        ),
+      ).resolves.toMatchObject({
+        rows: [{ id: originalId, status: "retracted" }],
+      });
+    } finally {
+      await lockerClient.query("ROLLBACK").catch(() => undefined);
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await Promise.all([
+        client.end(),
+        retractClient.end(),
+        reattributeClient.end(),
+        lockerClient.end(),
+      ]);
+    }
+  });
 });

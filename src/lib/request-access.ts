@@ -23,3 +23,12 @@ export function getRequestAccessScope(event: H3Event): MemoryAccessScope {
   }
   return parsed.data;
 }
+
+/** Attach workspace authority only when the request explicitly opted in. */
+export function withRequestAccessScope<T extends object>(
+  event: H3Event,
+  value: T,
+): T & { accessScope?: MemoryAccessScope | undefined } {
+  const accessScope = getRequestAccessScope(event);
+  return accessScope === "workspace" ? { ...value, accessScope } : value;
+}

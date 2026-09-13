@@ -16,11 +16,15 @@ import type {
   ClaimEvidence,
   ContextSectionRecentSupersessions,
 } from "../types";
-import { and, desc, eq, gte, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { claims, nodeMetadata } from "~/db/schema";
 import { FORCE_REFRESH_PREDICATES } from "~/lib/jobs/atlas-invalidation";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import { partitionAccessCondition } from "~/lib/partition-access";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import type { AssertedByKind, ClaimStatus } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 
@@ -59,6 +63,7 @@ export async function assembleRecentSupersessionsSection(
   userId: string,
   asOf: Date,
   partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
 ): Promise<ContextSectionRecentSupersessions | null> {
   if (FORCE_REFRESH_PREDICATES.length === 0) return null;
   const since = new Date(asOf.getTime() - RECENT_WINDOW_MS);
@@ -76,9 +81,12 @@ export async function assembleRecentSupersessionsSection(
     .where(
       and(
         eq(claims.userId, userId),
-        partitionKey === undefined
-          ? isNull(claims.partitionKey)
-          : eq(claims.partitionKey, partitionKey),
+        partitionAccessCondition(
+          claims.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
         eq(claims.scope, "personal"),
         inArray(claims.predicate, [...FORCE_REFRESH_PREDICATES]),
         inArray(claims.status, [...RECENT_STATUSES]),

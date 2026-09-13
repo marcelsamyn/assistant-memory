@@ -13,6 +13,10 @@ import { newTypeId } from "~/types/typeid";
 const mocks = vi.hoisted(() => ({ saveMemory: vi.fn() }));
 vi.mock("~/lib/ingestion/save-document", () => mocks);
 
+function testEvent(): H3Event {
+  return { node: { req: { headers: {} } } } as unknown as H3Event;
+}
+
 describe("POST /ingest/document", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -32,11 +36,12 @@ describe("POST /ingest/document", () => {
       sourceId,
     });
 
-    await expect(handler({} as H3Event)).resolves.toMatchObject({ sourceId });
+    await expect(handler(testEvent())).resolves.toMatchObject({ sourceId });
     expect(mocks.saveMemory).toHaveBeenCalledWith({
       userId: "user_document",
       partitionKey: "room:client",
       updateExisting: false,
+      accessScope: "partition",
       document: {
         id: "document-1",
         content: "Remember this",
@@ -86,6 +91,6 @@ describe("POST /ingest/document", () => {
       document: { id: "document-1", content: "Remember this" },
     }));
 
-    await expect(handler({} as H3Event)).rejects.toBe(error);
+    await expect(handler(testEvent())).rejects.toBe(error);
   });
 });

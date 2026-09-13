@@ -7,6 +7,14 @@ const queueMocks = vi.hoisted(() => ({
   add: vi.fn(),
 }));
 
+const workspaceMocks = vi.hoisted(() => ({
+  getRequestAccessScope: vi.fn(() => "partition"),
+  assertWorkspaceOperationReady: vi.fn(),
+  resolveWorkspacePartitions: vi.fn(async (_db, _userId, partitionKey) => [
+    partitionKey,
+  ]),
+}));
+
 vi.mock("~/lib/queues", () => ({
   batchQueue: { getJob: queueMocks.getJob, add: queueMocks.add },
   ROLLUP_JOB_OPTIONS: {
@@ -15,6 +23,19 @@ vi.mock("~/lib/queues", () => ({
     removeOnComplete: true,
     removeOnFail: 100,
   },
+}));
+
+vi.mock("~/lib/request-access", () => ({
+  getRequestAccessScope: workspaceMocks.getRequestAccessScope,
+}));
+
+vi.mock("~/lib/workspace-partitions", () => ({
+  assertWorkspaceOperationReady: workspaceMocks.assertWorkspaceOperationReady,
+  resolveWorkspacePartitions: workspaceMocks.resolveWorkspacePartitions,
+}));
+
+vi.mock("~/utils/db", () => ({
+  useDatabase: vi.fn().mockResolvedValue({}),
 }));
 
 describe("POST /rollup", () => {
@@ -93,5 +114,36 @@ describe("POST /rollup", () => {
 
     await expect(handler({} as H3Event)).rejects.toThrow();
     expect(queueMocks.add).not.toHaveBeenCalled();
+  });
+
+  it("splits a workspace budget across strict partition jobs", async () => {
+    workspaceMocks.getRequestAccessScope.mockReturnValue("workspace");
+    workspaceMocks.resolveWorkspacePartitions.mockResolvedValue([
+      "workspace:one",
+      "workspace:two",
+    ]);
+    vi.stubGlobal("readBody", async () => ({
+      userId: "user_r",
+      maxLlmCalls: 5,
+    }));
+    queueMocks.getJob.mockResolvedValue(undefined);
+    queueMocks.add.mockResolvedValue({});
+
+    const response = await handler({} as H3Event);
+
+    expect(queueMocks.add).toHaveBeenCalledTimes(2);
+    expect(queueMocks.add).toHaveBeenNthCalledWith(
+      1,
+      "rollup",
+      { userId: "user_r", maxLlmCalls: 3, partitionKey: "workspace:one" },
+      expect.objectContaining({ jobId: "rollup:user_r:workspace:one" }),
+    );
+    expect(queueMocks.add).toHaveBeenNthCalledWith(
+      2,
+      "rollup",
+      { userId: "user_r", maxLlmCalls: 2, partitionKey: "workspace:two" },
+      expect.objectContaining({ jobId: "rollup:user_r:workspace:two" }),
+    );
+    expect(response).toMatchObject({ enqueued: true });
   });
 });

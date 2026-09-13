@@ -419,6 +419,103 @@ describeIfServer("getConversationBootstrapContext", () => {
     });
   });
 
+  it("workspace bootstrap combines active Atlas entries without crossing users or inactive partitions", async () => {
+    await withFreshSchema(async (client, database) => {
+      const userId = "user_workspace_atlas";
+      const foreignUserId = "user_workspace_atlas_foreign";
+      const partitionA = contextPartitionKeySchema.parse("opaque:atlas-a");
+      const partitionB = contextPartitionKeySchema.parse("opaque:atlas-b");
+      const inactivePartition = contextPartitionKeySchema.parse(
+        "opaque:atlas-inactive",
+      );
+      const foreignPartition = contextPartitionKeySchema.parse(
+        "opaque:atlas-foreign",
+      );
+      const atlasA = newTypeId("node");
+      const atlasB = newTypeId("node");
+      const atlasInactive = newTypeId("node");
+      const atlasForeign = newTypeId("node");
+
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1), ($2)`, [
+        userId,
+        foreignUserId,
+      ]);
+      await database.insert(schema.memoryPartitions).values([
+        { userId, partitionKey: partitionA, status: "active" },
+        { userId, partitionKey: partitionB, status: "active" },
+        { userId, partitionKey: inactivePartition, status: "quarantined" },
+        {
+          userId: foreignUserId,
+          partitionKey: foreignPartition,
+          status: "active",
+        },
+      ]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type", "partition_key")
+         VALUES ($1, $5, 'Atlas', $7),
+                ($2, $5, 'Atlas', $8),
+                ($3, $5, 'Atlas', $9),
+                ($4, $6, 'Atlas', $10)`,
+        [
+          atlasA,
+          atlasB,
+          atlasInactive,
+          atlasForeign,
+          userId,
+          foreignUserId,
+          partitionA,
+          partitionB,
+          inactivePartition,
+          foreignPartition,
+        ],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "description")
+         VALUES ($1, $5, 'Atlas', 'Atlas from room A'),
+                ($2, $6, 'Atlas', 'Atlas from room B'),
+                ($3, $7, 'Atlas', 'Atlas from inactive room'),
+                ($4, $8, 'Atlas', 'Atlas from another user')`,
+        [
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          atlasA,
+          atlasB,
+          atlasInactive,
+          atlasForeign,
+        ],
+      );
+
+      const fakeRedis = createFakeRedis();
+      vi.resetModules();
+      vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+      vi.doMock("../queues", () => ({ redisConnection: fakeRedis }));
+
+      try {
+        const { getConversationBootstrapContext } = await import(
+          "./assemble-bootstrap-context"
+        );
+        const bundle = await getConversationBootstrapContext({
+          userId,
+          accessScope: "workspace",
+          options: { forceRefresh: true },
+        });
+        const atlas = bundle.sections.find(
+          (section) => section.kind === "atlas",
+        );
+        expect(atlas?.content).toContain("Atlas from room A");
+        expect(atlas?.content).toContain("Atlas from room B");
+        expect(atlas?.content).not.toContain("Atlas from inactive room");
+        expect(atlas?.content).not.toContain("Atlas from another user");
+      } finally {
+        vi.doUnmock("~/utils/db");
+        vi.doUnmock("../queues");
+        vi.resetModules();
+      }
+    });
+  });
+
   it("skips empty sections: pinned + open_commitments only when atlas/preferences/supersessions are absent", async () => {
     await withFreshSchema(async (client, database) => {
       const userId = "user_sparse";
@@ -526,15 +623,17 @@ describeIfServer("getConversationBootstrapContext", () => {
       vi.doMock("../queues", () => ({ redisConnection: fakeRedis }));
       // Spy on the underlying cheap section query — wrap the real impl so we
       // confirm zero calls on the cached read.
-      const realModule = await import("../query/open-commitments");
+      const realModule = await vi.importActual<
+        typeof import("../query/open-commitments")
+      >("../query/open-commitments");
       vi.doMock("../query/open-commitments", () => ({
+        ...realModule,
         getOpenCommitments: async (
           ...args: Parameters<typeof realModule.getOpenCommitments>
         ) => {
           openCommitmentsCalls += 1;
           return realModule.getOpenCommitments(...args);
         },
-        getCandidateCommitments: realModule.getCandidateCommitments,
       }));
 
       try {
@@ -629,7 +728,25 @@ describeIfServer("getConversationBootstrapContext", () => {
           ],
           assembledAt: new Date(),
         });
+        await setCachedBundle(
+          userId,
+          {
+            sections: [
+              {
+                kind: "pinned",
+                content: "workspace primed",
+                usage: "workspace primed",
+              },
+            ],
+            assembledAt: new Date(),
+          },
+          undefined,
+          "workspace",
+        );
         expect(await getCachedBundle(userId)).not.toBeNull();
+        expect(
+          await getCachedBundle(userId, undefined, "workspace"),
+        ).not.toBeNull();
 
         // Drive supersession + the invalidation hook.
         const { applyClaimLifecycle } = await import("../claims/lifecycle");
@@ -648,6 +765,9 @@ describeIfServer("getConversationBootstrapContext", () => {
         expect(triggered).toBe(true);
 
         expect(await getCachedBundle(userId)).toBeNull();
+        expect(
+          await getCachedBundle(userId, undefined, "workspace"),
+        ).toBeNull();
       } finally {
         vi.doUnmock("~/utils/db");
         vi.doUnmock("../queues");
@@ -719,6 +839,97 @@ describeIfServer("getConversationBootstrapContext", () => {
         (await getCachedBundle("cache-user", partitionKey))?.sections[0]
           ?.content,
       ).toBe("room");
+    } finally {
+      vi.doUnmock("../queues");
+      vi.resetModules();
+    }
+  });
+
+  it("keeps workspace bundles distinct from strict bundles", async () => {
+    const fakeRedis = createFakeRedis();
+    vi.resetModules();
+    vi.doMock("../queues", () => ({ redisConnection: fakeRedis }));
+
+    try {
+      const { getCachedBundle, setCachedBundle } = await import("./cache");
+      await setCachedBundle(
+        "cache-user-workspace",
+        {
+          sections: [{ kind: "pinned", content: "strict", usage: "strict" }],
+          assembledAt: new Date(),
+        },
+        undefined,
+        "partition",
+      );
+      await setCachedBundle(
+        "cache-user-workspace",
+        {
+          sections: [
+            { kind: "pinned", content: "workspace", usage: "workspace" },
+          ],
+          assembledAt: new Date(),
+        },
+        undefined,
+        "workspace",
+      );
+
+      expect(
+        (await getCachedBundle("cache-user-workspace"))?.sections[0]?.content,
+      ).toBe("strict");
+      expect(
+        (await getCachedBundle("cache-user-workspace", undefined, "workspace"))
+          ?.sections[0]?.content,
+      ).toBe("workspace");
+    } finally {
+      vi.doUnmock("../queues");
+      vi.resetModules();
+    }
+  });
+
+  it("invalidates the aggregate workspace bundle for a partition supersession", async () => {
+    const fakeRedis = createFakeRedis();
+    const partitionA = contextPartitionKeySchema.parse("cache:partition-a");
+    const partitionB = contextPartitionKeySchema.parse("cache:partition-b");
+    vi.resetModules();
+    vi.doMock("../queues", () => ({ redisConnection: fakeRedis }));
+
+    try {
+      const { getCachedBundle, invalidateCachedBundle, setCachedBundle } =
+        await import("./cache");
+      const bundle = (content: string) => ({
+        sections: [{ kind: "pinned" as const, content, usage: content }],
+        assembledAt: new Date(),
+      });
+      await setCachedBundle(
+        "cache-invalidation",
+        bundle("partition-a"),
+        partitionA,
+      );
+      await setCachedBundle(
+        "cache-invalidation",
+        bundle("partition-b"),
+        partitionB,
+      );
+      await setCachedBundle(
+        "cache-invalidation",
+        bundle("workspace"),
+        undefined,
+        "workspace",
+      );
+
+      await invalidateCachedBundle("cache-invalidation", partitionA);
+
+      await expect(
+        getCachedBundle("cache-invalidation", partitionA),
+      ).resolves.toBeNull();
+      await expect(
+        getCachedBundle("cache-invalidation", undefined, "workspace"),
+      ).resolves.toBeNull();
+      await expect(
+        getCachedBundle("cache-invalidation", partitionB),
+      ).resolves.toMatchObject({
+        sections: [{ content: "partition-b" }],
+      });
     } finally {
       vi.doUnmock("../queues");
       vi.resetModules();

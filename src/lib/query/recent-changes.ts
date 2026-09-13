@@ -6,7 +6,6 @@ import {
   exists,
   gte,
   inArray,
-  isNull,
   lt,
   lte,
   notInArray,
@@ -15,7 +14,11 @@ import {
 } from "drizzle-orm";
 import { z } from "zod";
 import { claims, nodeMetadata, nodes, sources } from "~/db/schema";
-import { assertPartitionReadAllowed } from "~/lib/partition-access";
+import {
+  assertPartitionReadAllowed,
+  partitionAccessCondition,
+} from "~/lib/partition-access";
+import type { MemoryAccessScope } from "~/lib/schemas/partition";
 import {
   type ChangeKind,
   type QueryRecentChangesRequest,
@@ -77,9 +80,11 @@ function toTime(value: Date | string): number {
  * for the full contract.
  */
 export async function queryRecentChanges(
-  params: QueryRecentChangesRequest,
+  params: QueryRecentChangesRequest & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
 ): Promise<QueryRecentChangesResponse> {
-  const { userId, partitionKey, nodeTypes, limit } = params;
+  const { userId, partitionKey, nodeTypes, limit, accessScope } = params;
   const since = new Date(params.since);
   const until = params.until ? new Date(params.until) : new Date();
 
@@ -89,15 +94,19 @@ export async function queryRecentChanges(
   }
 
   const db = await useDatabase();
-  await assertPartitionReadAllowed(db, userId, partitionKey);
-  const claimPartitionFilter =
-    partitionKey === undefined
-      ? isNull(claims.partitionKey)
-      : eq(claims.partitionKey, partitionKey);
-  const nodePartitionFilter =
-    partitionKey === undefined
-      ? isNull(nodes.partitionKey)
-      : eq(nodes.partitionKey, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
+  const claimPartitionFilter = partitionAccessCondition(
+    claims.partitionKey,
+    userId,
+    partitionKey,
+    accessScope,
+  );
+  const nodePartitionFilter = partitionAccessCondition(
+    nodes.partitionKey,
+    userId,
+    partitionKey,
+    accessScope,
+  );
 
   // A claim counts as changed when either its insert (createdAt) or its last
   // mutation (updatedAt) lands inside the window. GREATEST orders by whichever
@@ -137,6 +146,13 @@ export async function queryRecentChanges(
               .where(
                 and(
                   eq(objectNode.id, claims.objectNodeId),
+                  eq(objectNode.userId, userId),
+                  partitionAccessCondition(
+                    objectNode.partitionKey,
+                    userId,
+                    partitionKey,
+                    accessScope,
+                  ),
                   inArray(objectNode.nodeType, nodeTypes),
                 ),
               ),
@@ -171,6 +187,13 @@ export async function queryRecentChanges(
       and(
         eq(claims.userId, userId),
         claimPartitionFilter,
+        eq(nodes.userId, userId),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
         eq(claims.status, "active"),
         eq(claims.scope, "personal"),
         claimChangedInWindow,
@@ -306,6 +329,12 @@ export async function queryRecentChanges(
         and(
           eq(sources.userId, userId),
           inArray(sources.id, sourceIds as TypeId<"source">[]),
+          partitionAccessCondition(
+            sources.partitionKey,
+            userId,
+            partitionKey,
+            accessScope,
+          ),
         ),
       );
 

@@ -1,6 +1,6 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
-import { metricObservations } from "~/db/schema";
+import { metricObservations, sources } from "~/db/schema";
 import {
   getMetricDefinitionBySlug,
   resolveMetricDefinition,
@@ -12,7 +12,9 @@ import {
   upsertMetricPushSource,
 } from "~/lib/metrics/sources";
 import {
+  assertPartitionReadAllowed,
   assertSourcePartition,
+  ensurePersonalPartition,
   withSourceWriteFence,
 } from "~/lib/partition-access";
 import type {
@@ -20,7 +22,10 @@ import type {
   ProposedMetricDefinition,
 } from "~/lib/schemas/metric-definition";
 import type { MetricObservationErrorCode } from "~/lib/schemas/metric-observation";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import { newTypeId, type TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -96,6 +101,43 @@ export interface RecordMetricObservationsResult {
   inserted: number;
   observations: MetricObservationRowResult[];
   errors: MetricObservationRowError[];
+}
+
+type MetricObservationSource =
+  | { sourceId: TypeId<"source"> }
+  | { type: "metric_push" | "metric_manual"; externalId: string };
+
+/** Resolve a workspace measurement write to one concrete source partition. */
+export async function resolveMetricObservationPartition(
+  db: DrizzleDB,
+  userId: string,
+  partitionKey: ContextPartitionKey | undefined,
+  source: MetricObservationSource,
+  accessScope: MemoryAccessScope = "partition",
+): Promise<ContextPartitionKey | undefined> {
+  if (accessScope !== "workspace" || partitionKey !== undefined) {
+    return partitionKey;
+  }
+
+  const [existing] = await db
+    .select({ partitionKey: sources.partitionKey })
+    .from(sources)
+    .where(
+      "sourceId" in source
+        ? and(eq(sources.userId, userId), eq(sources.id, source.sourceId))
+        : and(
+            eq(sources.userId, userId),
+            eq(sources.type, source.type),
+            eq(sources.externalId, source.externalId),
+          ),
+    )
+    .limit(1);
+
+  if (existing?.partitionKey !== null && existing?.partitionKey !== undefined) {
+    await assertPartitionReadAllowed(db, userId, existing.partitionKey);
+    return existing.partitionKey;
+  }
+  return ensurePersonalPartition(db, userId);
 }
 
 export class MetricObservationOutOfRangeError extends Error {

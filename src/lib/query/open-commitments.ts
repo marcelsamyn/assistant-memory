@@ -5,7 +5,6 @@ import {
   eq,
   inArray,
   isNotNull,
-  isNull,
   lte,
   ne,
   aliasedTable,
@@ -13,11 +12,15 @@ import {
 } from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
 import { coerceTaskStatus } from "~/lib/claims/task-status";
-import { assertPartitionReadAllowed } from "~/lib/partition-access";
+import {
+  assertPartitionReadAllowed,
+  partitionAccessCondition,
+} from "~/lib/partition-access";
 import {
   type OpenCommitment,
   type OpenCommitmentsRequest,
 } from "~/lib/schemas/open-commitments";
+import type { MemoryAccessScope } from "~/lib/schemas/partition";
 import { type TaskStatus } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
@@ -98,7 +101,9 @@ function subJoinProvenanceFilter(
 
 /** List lifecycle-current open Task nodes. Common aliases: open tasks, commitments, todos. */
 export async function getOpenCommitments(
-  params: OpenCommitmentsRequest,
+  params: OpenCommitmentsRequest & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
 ): Promise<OpenCommitment[]> {
   return queryCommitments(params, "trusted");
 }
@@ -111,20 +116,24 @@ export async function getOpenCommitments(
  * candidate commitments, inferred tasks, unconfirmed tasks, tasks to confirm.
  */
 export async function getCandidateCommitments(
-  params: OpenCommitmentsRequest,
+  params: OpenCommitmentsRequest & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
 ): Promise<OpenCommitment[]> {
   return queryCommitments(params, "candidate");
 }
 
 async function queryCommitments(
-  params: OpenCommitmentsRequest,
+  params: OpenCommitmentsRequest & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
   provenance: CommitmentProvenance,
 ): Promise<OpenCommitment[]> {
-  const { userId, partitionKey, ownedBy, dueBefore } = params;
+  const { userId, partitionKey, ownedBy, dueBefore, accessScope } = params;
   const db = await useDatabase();
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
   const partitionFilter = (column: typeof claims.partitionKey) =>
-    partitionKey === undefined ? isNull(column) : eq(column, partitionKey);
+    partitionAccessCondition(column, userId, partitionKey, accessScope);
   const ownerClaim = aliasedTable(claims, "ownerClaim");
   const ownerMetadata = aliasedTable(nodeMetadata, "ownerMetadata");
   const dueClaim = aliasedTable(claims, "dueClaim");
@@ -149,9 +158,12 @@ async function queryCommitments(
       and(
         eq(nodes.id, claims.subjectNodeId),
         eq(nodes.userId, userId),
-        partitionKey === undefined
-          ? isNull(nodes.partitionKey)
-          : eq(nodes.partitionKey, partitionKey),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
         eq(nodes.nodeType, "Task"),
       ),
     )

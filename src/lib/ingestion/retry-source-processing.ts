@@ -7,8 +7,12 @@ import {
   getSourceIngestionOperationById,
   retrySourceIngestionOperation,
 } from "~/lib/ingestion/source-processing";
-import { PartitionAccessError } from "~/lib/partition-access";
+import {
+  PartitionAccessError,
+  preparePartitionWrite,
+} from "~/lib/partition-access";
 import { batchQueue } from "~/lib/queues";
+import type { MemoryAccessScope } from "~/lib/schemas/partition";
 import {
   retrySourceProcessingResponseSchema,
   type RetrySourceProcessingRequest,
@@ -20,7 +24,7 @@ import { useDatabase } from "~/utils/db";
 
 /** Retry a failed job or restore a queued receipt whose job was never saved. */
 export async function retrySourceProcessing(
-  input: RetrySourceProcessingRequest,
+  input: RetrySourceProcessingRequest & { accessScope?: MemoryAccessScope },
 ): Promise<RetrySourceProcessingResponse> {
   const db = await useDatabase();
   const operationInput = {
@@ -30,6 +34,9 @@ export async function retrySourceProcessing(
     ...(input.partitionKey !== undefined
       ? { partitionKey: input.partitionKey }
       : {}),
+    ...(input.accessScope !== undefined
+      ? { accessScope: input.accessScope }
+      : {}),
   };
   const operation = await getSourceIngestionOperationById(operationInput);
   if (!operation)
@@ -37,6 +44,14 @@ export async function retrySourceProcessing(
       "PARTITION_UNAUTHORIZED",
       "Source ingestion operation was not found",
     );
+  // A workspace read may find a legacy NULL receipt while migration is still
+  // running. Retry can restore a missing job or mutate the receipt, so fence
+  // that concrete write scope before touching Redis or the database again.
+  await preparePartitionWrite(
+    db,
+    input.userId,
+    operation.partitionKey ?? undefined,
+  );
   const job = await batchQueue.getJob(input.operationId);
   if (!job) {
     await restoreQueuedSourceJob(db, input.userId, operation);

@@ -1,9 +1,16 @@
 /** Alias operations for identity resolution and display names. */
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { aliases, nodes } from "~/db/schema";
-import { preparePartitionWrite } from "~/lib/partition-access";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import {
+  assertPartitionReadAllowed,
+  partitionAccessCondition,
+  preparePartitionWrite,
+} from "~/lib/partition-access";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import type { TypeId } from "~/types/typeid";
 
 export type AliasSelect = typeof aliases.$inferSelect;
@@ -13,6 +20,7 @@ export interface CreateAliasInput {
   partitionKey?: ContextPartitionKey | undefined;
   canonicalNodeId: TypeId<"node">;
   aliasText: string;
+  accessScope?: MemoryAccessScope;
 }
 
 /** Normalize alias text for exact matching. Common aliases: alias key, normalized alias. */
@@ -25,6 +33,7 @@ async function assertCanonicalNodeOwnership(
   userId: string,
   canonicalNodeId: TypeId<"node">,
   partitionKey: ContextPartitionKey | undefined,
+  accessScope: MemoryAccessScope,
 ): Promise<ContextPartitionKey | null> {
   const [node] = await database
     .select({ id: nodes.id, partitionKey: nodes.partitionKey })
@@ -33,9 +42,12 @@ async function assertCanonicalNodeOwnership(
       and(
         eq(nodes.id, canonicalNodeId),
         eq(nodes.userId, userId),
-        partitionKey === undefined
-          ? isNull(nodes.partitionKey)
-          : eq(nodes.partitionKey, partitionKey),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
       ),
     )
     .limit(1);
@@ -51,7 +63,13 @@ export async function createAlias(
   database: DrizzleDB,
   input: CreateAliasInput,
 ): Promise<AliasSelect> {
-  await preparePartitionWrite(database, input.userId, input.partitionKey);
+  const accessScope = input.accessScope ?? "partition";
+  await assertPartitionReadAllowed(
+    database,
+    input.userId,
+    input.partitionKey,
+    accessScope,
+  );
   const normalizedAliasText = normalizeAliasText(input.aliasText);
   if (normalizedAliasText.length === 0) {
     throw new Error("Alias text is required");
@@ -62,6 +80,12 @@ export async function createAlias(
     input.userId,
     input.canonicalNodeId,
     input.partitionKey,
+    accessScope,
+  );
+  await preparePartitionWrite(
+    database,
+    input.userId,
+    partitionKey ?? undefined,
   );
 
   const [inserted] = await database
@@ -90,6 +114,11 @@ export async function createAlias(
     .where(
       and(
         eq(aliases.userId, input.userId),
+        partitionAccessCondition(
+          aliases.partitionKey,
+          input.userId,
+          partitionKey ?? undefined,
+        ),
         eq(aliases.normalizedAliasText, normalizedAliasText),
         eq(aliases.canonicalNodeId, input.canonicalNodeId),
       ),
@@ -109,17 +138,39 @@ export async function deleteAlias(
   userId: string,
   aliasId: TypeId<"alias">,
   partitionKey?: ContextPartitionKey,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<boolean> {
-  await preparePartitionWrite(database, userId, partitionKey);
+  await assertPartitionReadAllowed(database, userId, partitionKey, accessScope);
+  const [existing] = await database
+    .select({ partitionKey: aliases.partitionKey })
+    .from(aliases)
+    .where(
+      and(
+        eq(aliases.id, aliasId),
+        eq(aliases.userId, userId),
+        partitionAccessCondition(
+          aliases.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
+      ),
+    )
+    .limit(1);
+  if (!existing) return false;
+  const objectPartitionKey = existing.partitionKey ?? undefined;
+  await preparePartitionWrite(database, userId, objectPartitionKey);
   const deleted = await database
     .delete(aliases)
     .where(
       and(
         eq(aliases.id, aliasId),
         eq(aliases.userId, userId),
-        partitionKey === undefined
-          ? isNull(aliases.partitionKey)
-          : eq(aliases.partitionKey, partitionKey),
+        partitionAccessCondition(
+          aliases.partitionKey,
+          userId,
+          objectPartitionKey,
+        ),
       ),
     )
     .returning({ id: aliases.id });
@@ -134,19 +185,42 @@ export async function deleteAliasByText(
   canonicalNodeId: TypeId<"node">,
   aliasText: string,
   partitionKey?: ContextPartitionKey,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<boolean> {
-  await preparePartitionWrite(database, userId, partitionKey);
+  await assertPartitionReadAllowed(database, userId, partitionKey, accessScope);
   const normalizedAliasText = normalizeAliasText(aliasText);
   if (normalizedAliasText.length === 0) return false;
 
+  const [existing] = await database
+    .select({ partitionKey: aliases.partitionKey })
+    .from(aliases)
+    .where(
+      and(
+        eq(aliases.userId, userId),
+        partitionAccessCondition(
+          aliases.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
+        eq(aliases.canonicalNodeId, canonicalNodeId),
+        eq(aliases.normalizedAliasText, normalizedAliasText),
+      ),
+    )
+    .limit(1);
+  if (!existing) return false;
+  const objectPartitionKey = existing.partitionKey ?? undefined;
+  await preparePartitionWrite(database, userId, objectPartitionKey);
   const deleted = await database
     .delete(aliases)
     .where(
       and(
         eq(aliases.userId, userId),
-        partitionKey === undefined
-          ? isNull(aliases.partitionKey)
-          : eq(aliases.partitionKey, partitionKey),
+        partitionAccessCondition(
+          aliases.partitionKey,
+          userId,
+          objectPartitionKey,
+        ),
         eq(aliases.canonicalNodeId, canonicalNodeId),
         eq(aliases.normalizedAliasText, normalizedAliasText),
       ),
@@ -162,6 +236,7 @@ export async function listAliasesForNodeIds(
   userId: string,
   nodeIds: TypeId<"node">[],
   partitionKey?: ContextPartitionKey,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<Map<TypeId<"node">, AliasSelect[]>> {
   const uniqueNodeIds = [...new Set(nodeIds)];
   const aliasMap = new Map<TypeId<"node">, AliasSelect[]>();
@@ -179,9 +254,12 @@ export async function listAliasesForNodeIds(
     .where(
       and(
         eq(aliases.userId, userId),
-        partitionKey === undefined
-          ? isNull(aliases.partitionKey)
-          : eq(aliases.partitionKey, partitionKey),
+        partitionAccessCondition(
+          aliases.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
         inArray(aliases.canonicalNodeId, uniqueNodeIds),
       ),
     )

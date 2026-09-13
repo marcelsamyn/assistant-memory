@@ -1,5 +1,6 @@
 import { defineEventHandler } from "h3";
 import { queryDayMemories } from "~/lib/query/day";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   queryDayRequestSchema,
   queryDayResponseSchema,
@@ -10,11 +11,13 @@ import {
 //      and what's mentioned inside is one hop further
 
 export default defineEventHandler(async (event) => {
+  const accessScope = getRequestAccessScope(event);
   const { userId, partitionKey, date, includeFormattedResult } =
     queryDayRequestSchema.parse(await readBody(event));
   return queryDayResponseSchema.parse(
     await queryDayMemories({
       userId,
+      accessScope,
       ...(partitionKey !== undefined ? { partitionKey } : {}),
       date,
       includeFormattedResult,

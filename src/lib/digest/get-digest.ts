@@ -18,6 +18,7 @@ import {
   type GetDigestResponse,
 } from "~/lib/schemas/digest";
 import type { OpenCommitment } from "~/lib/schemas/open-commitments";
+import type { MemoryAccessScope } from "~/lib/schemas/partition";
 import { startOfDayInTimeZone } from "~/lib/time-zone";
 
 const DEFAULT_UPCOMING_WITHIN_DAYS = 7;
@@ -84,7 +85,9 @@ function pinnedSubset(bundle: ContextBundle): ContextBundle {
 }
 
 export async function getDigest(
-  params: GetDigestRequest,
+  params: GetDigestRequest & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
 ): Promise<GetDigestResponse> {
   const {
     userId,
@@ -95,6 +98,7 @@ export async function getDigest(
     metricMoverLimit,
     whatsNewLimit,
     includePinned = true,
+    accessScope,
   } = params;
 
   const since = params.since ?? startOfDayInTimeZone(date, timeZone);
@@ -105,15 +109,18 @@ export async function getDigest(
     getOpenCommitments({
       userId,
       ...(partitionKey !== undefined ? { partitionKey } : {}),
+      accessScope,
     }),
     getMetricMovers({
       userId,
       ...(partitionKey !== undefined ? { partitionKey } : {}),
+      accessScope,
       ...(metricMoverLimit !== undefined && { limit: metricMoverLimit }),
     }),
     queryRecentChanges({
       userId,
       ...(partitionKey !== undefined ? { partitionKey } : {}),
+      accessScope,
       since: since.toISOString(),
       limit: whatsNewLimit ?? DEFAULT_WHATS_NEW_LIMIT,
     }),
@@ -121,6 +128,7 @@ export async function getDigest(
       ? getConversationBootstrapContext({
           userId,
           ...(partitionKey !== undefined ? { partitionKey } : {}),
+          accessScope,
         })
       : Promise.resolve(null),
   ]);

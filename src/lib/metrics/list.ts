@@ -21,6 +21,7 @@ import {
   type ListMetricsRequest,
   type MetricDefinitionWithStats,
 } from "~/lib/schemas/metric-read";
+import type { MemoryAccessScope } from "~/lib/schemas/partition";
 import { useDatabase } from "~/utils/db";
 
 function numberOrNull(value: string | number | null): number | null {
@@ -32,9 +33,12 @@ export async function listMetrics({
   userId,
   partitionKey,
   filter,
-}: ListMetricsRequest): Promise<MetricDefinitionWithStats[]> {
+  accessScope,
+}: ListMetricsRequest & {
+  accessScope?: MemoryAccessScope | undefined;
+}): Promise<MetricDefinitionWithStats[]> {
   const db = await useDatabase();
-  await assertMetricPartitionRead(db, userId, partitionKey);
+  await assertMetricPartitionRead(db, userId, partitionKey, accessScope);
   const search = filter?.search === "" ? undefined : filter?.search;
   const definitions = await db
     .select()
@@ -42,7 +46,7 @@ export async function listMetrics({
     .where(
       and(
         eq(metricDefinitions.userId, userId),
-        metricDefinitionPartitionCondition(userId, partitionKey),
+        metricDefinitionPartitionCondition(userId, partitionKey, accessScope),
         filter?.needsReview === undefined
           ? undefined
           : eq(metricDefinitions.needsReview, filter.needsReview),
@@ -71,7 +75,7 @@ export async function listMetrics({
     .where(
       and(
         eq(metricObservations.userId, userId),
-        metricObservationPartitionCondition(userId, partitionKey),
+        metricObservationPartitionCondition(userId, partitionKey, accessScope),
         inArray(metricObservations.metricDefinitionId, definitionIds),
       ),
     )
@@ -90,7 +94,7 @@ export async function listMetrics({
     .where(
       and(
         eq(metricObservations.userId, userId),
-        metricObservationPartitionCondition(userId, partitionKey),
+        metricObservationPartitionCondition(userId, partitionKey, accessScope),
         inArray(metricObservations.metricDefinitionId, definitionIds),
       ),
     )

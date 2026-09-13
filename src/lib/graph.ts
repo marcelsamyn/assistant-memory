@@ -1,6 +1,7 @@
 import {
   sql,
   eq,
+  asc,
   desc,
   cosineDistance,
   and,
@@ -26,8 +27,14 @@ import {
   sources,
 } from "~/db/schema";
 import { generateEmbeddings } from "~/lib/embeddings";
-import { assertPartitionReadAllowed } from "~/lib/partition-access";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import {
+  assertPartitionReadAllowed,
+  partitionAccessCondition,
+} from "~/lib/partition-access";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import {
   type AssertedByKind,
   type ClaimStatus,
@@ -99,6 +106,7 @@ export type SimilaritySearchBase = (
   limit?: number;
   userId: string;
   partitionKey?: ContextPartitionKey;
+  accessScope?: MemoryAccessScope | undefined;
 };
 
 /** Options for semantic search */
@@ -147,6 +155,7 @@ export interface ClaimSearchResult {
 export interface LexicalSearchParams {
   userId: string;
   partitionKey?: ContextPartitionKey;
+  accessScope?: MemoryAccessScope | undefined;
   query: string;
   limit?: number;
   /** Single scope to restrict to. Defaults to "personal"; never blends. */
@@ -190,6 +199,7 @@ function nodeHasScopeSupport(
   userId: string,
   scope: Scope,
   partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
 ): SQL<boolean> {
   return sql<boolean>`(
     EXISTS (
@@ -199,14 +209,14 @@ function nodeHasScopeSupport(
       WHERE ${sourceLinks.nodeId} = ${nodes.id}
         AND ${sources.userId} = ${userId}
         AND ${sources.scope} = ${scope}
-        AND ${partitionKey === undefined ? isNull(sources.partitionKey) : eq(sources.partitionKey, partitionKey)}
+        AND ${partitionAccessCondition(sources.partitionKey, userId, partitionKey, accessScope)}
     )
     OR EXISTS (
       SELECT 1
       FROM ${claims}
       WHERE ${claims.userId} = ${userId}
         AND ${claims.scope} = ${scope}
-        AND ${partitionKey === undefined ? isNull(claims.partitionKey) : eq(claims.partitionKey, partitionKey)}
+        AND ${partitionAccessCondition(claims.partitionKey, userId, partitionKey, accessScope)}
         AND ${claims.status} = 'active'
         AND (
           ${claims.subjectNodeId} = ${nodes.id}
@@ -229,9 +239,10 @@ export async function findSimilarNodes(
     includeReference = false,
     scope,
     partitionKey,
+    accessScope,
   } = opts;
   const db = await useDatabase();
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
   const substringQuery = getSemanticSearchSubstringQuery();
   if (substringQuery !== null) {
     return findSimilarNodesViaSubstring(opts, substringQuery);
@@ -247,14 +258,17 @@ export async function findSimilarNodes(
   // Base conditions
   let whereCondition = and(
     eq(nodes.userId, userId),
-    partitionKey === undefined
-      ? isNull(nodes.partitionKey)
-      : eq(nodes.partitionKey, partitionKey),
+    partitionAccessCondition(
+      nodes.partitionKey,
+      userId,
+      partitionKey,
+      accessScope,
+    ),
     scope
-      ? nodeHasScopeSupport(userId, scope, partitionKey)
+      ? nodeHasScopeSupport(userId, scope, partitionKey, accessScope)
       : includeReference
         ? undefined
-        : nodeHasScopeSupport(userId, "personal", partitionKey),
+        : nodeHasScopeSupport(userId, "personal", partitionKey, accessScope),
     sql`${similarity} IS NOT NULL`,
   );
 
@@ -317,6 +331,7 @@ export async function findSimilarClaims(
     scope,
     includeAssistantInferred = false,
     partitionKey,
+    accessScope,
   } = opts;
 
   const emb =
@@ -325,14 +340,17 @@ export async function findSimilarClaims(
       : await generateTextEmbedding(opts.text);
   const similarity = sql<number>`1 - (${cosineDistance(claimEmbeddings.embedding, emb)})`;
   const db = await useDatabase();
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
 
   // Base conditions
   let whereCondition = and(
     eq(claims.userId, userId),
-    partitionKey === undefined
-      ? isNull(claims.partitionKey)
-      : eq(claims.partitionKey, partitionKey),
+    partitionAccessCondition(
+      claims.partitionKey,
+      userId,
+      partitionKey,
+      accessScope,
+    ),
     scope
       ? eq(claims.scope, scope)
       : includeReference
@@ -422,20 +440,24 @@ async function findSimilarNodesViaSubstring(
     includeReference = false,
     scope,
     partitionKey,
+    accessScope,
   } = opts;
   const db = await useDatabase();
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
 
   let where = and(
     eq(nodes.userId, userId),
-    partitionKey === undefined
-      ? isNull(nodes.partitionKey)
-      : eq(nodes.partitionKey, partitionKey),
+    partitionAccessCondition(
+      nodes.partitionKey,
+      userId,
+      partitionKey,
+      accessScope,
+    ),
     scope
-      ? nodeHasScopeSupport(userId, scope, partitionKey)
+      ? nodeHasScopeSupport(userId, scope, partitionKey, accessScope)
       : includeReference
         ? undefined
-        : nodeHasScopeSupport(userId, "personal", partitionKey),
+        : nodeHasScopeSupport(userId, "personal", partitionKey, accessScope),
     sql`lower(${nodeMetadata.label}) LIKE ${`%${query.toLowerCase()}%`}`,
   );
   if (excludeNodeTypes && excludeNodeTypes.length > 0) {
@@ -477,18 +499,22 @@ async function findSimilarClaimsViaSubstring(
     scope,
     includeAssistantInferred = false,
     partitionKey,
+    accessScope,
   } = opts;
   const db = await useDatabase();
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
 
   const subjectNodeMetadata = aliasedTable(nodeMetadata, "subjectNodeMetadata");
   const objectNodeMetadata = aliasedTable(nodeMetadata, "objectNodeMetadata");
 
   const where = and(
     eq(claims.userId, userId),
-    partitionKey === undefined
-      ? isNull(claims.partitionKey)
-      : eq(claims.partitionKey, partitionKey),
+    partitionAccessCondition(
+      claims.partitionKey,
+      userId,
+      partitionKey,
+      accessScope,
+    ),
     scope
       ? eq(claims.scope, scope)
       : includeReference
@@ -546,6 +572,7 @@ export async function findOneHopNodes(
     includeReference?: boolean;
     includeAssistantInferred?: boolean;
     partitionKey?: ContextPartitionKey;
+    accessScope?: MemoryAccessScope | undefined;
   } = {},
 ): Promise<OneHopNode[]> {
   if (nodeIds.length === 0) return [];
@@ -553,8 +580,9 @@ export async function findOneHopNodes(
     includeReference = false,
     includeAssistantInferred = false,
     partitionKey,
+    accessScope,
   } = options;
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
   const sub = db
     .select({
       claimId: claims.id,
@@ -569,14 +597,18 @@ export async function findOneHopNodes(
       >`CASE WHEN ${inArray(claims.subjectNodeId, nodeIds)} THEN ${claims.objectNodeId} ELSE ${claims.subjectNodeId} END`.as(
         "nodeId",
       ),
+      partitionKey: claims.partitionKey,
     })
     .from(claims)
     .where(
       and(
         eq(claims.userId, userId),
-        partitionKey === undefined
-          ? isNull(claims.partitionKey)
-          : eq(claims.partitionKey, partitionKey),
+        partitionAccessCondition(
+          claims.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
         includeReference ? undefined : eq(claims.scope, "personal"),
         includeAssistantInferred
           ? undefined
@@ -618,7 +650,20 @@ export async function findOneHopNodes(
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
     .leftJoin(srcMeta, eq(srcMeta.nodeId, sub.subjectId))
     .leftJoin(tgtMeta, eq(tgtMeta.nodeId, sub.objectId))
-    .where(and(not(inArray(nodes.id, nodeIds)), isNotNull(nodeMetadata.label)))
+    .where(
+      and(
+        eq(nodes.userId, userId),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
+        not(inArray(nodes.id, nodeIds)),
+        isNotNull(nodeMetadata.label),
+        sql`${sub.partitionKey} IS NOT DISTINCT FROM ${nodes.partitionKey}`,
+      ),
+    )
     .orderBy(nodes.id)
     .limit(50);
 }
@@ -629,9 +674,10 @@ export async function findNodesByType(
   nodeType: NodeType,
   limit = 200,
   partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
 ): Promise<NodeSearchResult[]> {
   const db = await useDatabase();
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
   return db
     .select({
       id: nodes.id,
@@ -646,9 +692,12 @@ export async function findNodesByType(
     .where(
       and(
         eq(nodes.userId, userId),
-        partitionKey === undefined
-          ? isNull(nodes.partitionKey)
-          : eq(nodes.partitionKey, partitionKey),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
         eq(nodes.nodeType, nodeType),
         isNotNull(nodeMetadata.label),
       ),
@@ -663,8 +712,9 @@ export async function findDayNode(
   userId: string,
   date: string,
   partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
 ): Promise<TypeId<"node"> | null> {
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
   const [day] = await db
     .select({ id: nodes.id })
     .from(nodes)
@@ -672,15 +722,52 @@ export async function findDayNode(
     .where(
       and(
         eq(nodes.userId, userId),
-        partitionKey === undefined
-          ? isNull(nodes.partitionKey)
-          : eq(nodes.partitionKey, partitionKey),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
         eq(nodes.nodeType, NodeTypeEnum.enum.Temporal),
         eq(nodeMetadata.label, date),
       ),
     )
     .limit(1);
   return day?.id ?? null;
+}
+
+/**
+ * Fetch all Temporal day nodes for a date in one bounded workspace query.
+ * Strict callers keep the legacy single-node helper above.
+ */
+export async function findDayNodes(
+  db: DrizzleDB,
+  userId: string,
+  date: string,
+  partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
+): Promise<TypeId<"node">[]> {
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
+  const days = await db
+    .select({ id: nodes.id })
+    .from(nodes)
+    .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
+    .where(
+      and(
+        eq(nodes.userId, userId),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
+        eq(nodes.nodeType, NodeTypeEnum.enum.Temporal),
+        eq(nodeMetadata.label, date),
+      ),
+    )
+    .orderBy(asc(nodes.id))
+    .limit(64);
+  return days.map((day) => day.id);
 }
 
 /**
@@ -692,6 +779,7 @@ export async function fetchSourceIdsForNodes(
   userId: string,
   nodeIds: TypeId<"node">[],
   partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
 ): Promise<Map<TypeId<"node">, string[]>> {
   if (nodeIds.length === 0) return new Map();
 
@@ -702,12 +790,18 @@ export async function fetchSourceIdsForNodes(
     })
     .from(sourceLinks)
     .innerJoin(sources, eq(sources.id, sourceLinks.sourceId))
+    .innerJoin(nodes, eq(nodes.id, sourceLinks.nodeId))
     .where(
       and(
         eq(sources.userId, userId),
-        partitionKey === undefined
-          ? isNull(sources.partitionKey)
-          : eq(sources.partitionKey, partitionKey),
+        partitionAccessCondition(
+          sources.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
+        eq(nodes.userId, userId),
+        sql`${sources.partitionKey} IS NOT DISTINCT FROM ${nodes.partitionKey}`,
         inArray(sourceLinks.nodeId, nodeIds),
       ),
     );
@@ -733,11 +827,14 @@ export async function fetchClaimsBetweenNodeIds(
   userId: string,
   nodeIds: TypeId<"node">[],
   partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
 ) {
   if (nodeIds.length === 0) return [];
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
   const src = aliasedTable(nodeMetadata, "src");
   const tgt = aliasedTable(nodeMetadata, "tgt");
+  const subjectNode = aliasedTable(nodes, "claim_subject_node");
+  const objectNode = aliasedTable(nodes, "claim_object_node");
   return db
     .select({
       id: claims.id,
@@ -756,14 +853,35 @@ export async function fetchClaimsBetweenNodeIds(
       status: claims.status,
     })
     .from(claims)
+    .innerJoin(subjectNode, eq(subjectNode.id, claims.subjectNodeId))
+    .innerJoin(objectNode, eq(objectNode.id, claims.objectNodeId))
     .innerJoin(src, eq(src.nodeId, claims.subjectNodeId))
     .innerJoin(tgt, eq(tgt.nodeId, claims.objectNodeId))
     .where(
       and(
         eq(claims.userId, userId),
-        partitionKey === undefined
-          ? isNull(claims.partitionKey)
-          : eq(claims.partitionKey, partitionKey),
+        eq(subjectNode.userId, userId),
+        eq(objectNode.userId, userId),
+        partitionAccessCondition(
+          claims.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
+        partitionAccessCondition(
+          subjectNode.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
+        partitionAccessCondition(
+          objectNode.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
+        sql`${claims.partitionKey} IS NOT DISTINCT FROM ${subjectNode.partitionKey}`,
+        sql`${subjectNode.partitionKey} IS NOT DISTINCT FROM ${objectNode.partitionKey}`,
         eq(claims.status, "active"),
         inArray(claims.subjectNodeId, nodeIds),
         inArray(claims.objectNodeId, nodeIds),
@@ -789,9 +907,10 @@ export async function findNodesByLexical(
     excludeNodeTypes,
     includeNodeTypes,
     partitionKey,
+    accessScope,
   } = params;
   const db = await useDatabase();
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
 
   const tsq = sql`websearch_to_tsquery('english', ${query})`;
   // search_tsv is a migration-managed generated column, intentionally not
@@ -810,10 +929,13 @@ export async function findNodesByLexical(
 
   let where = and(
     eq(nodes.userId, userId),
-    partitionKey === undefined
-      ? isNull(nodes.partitionKey)
-      : eq(nodes.partitionKey, partitionKey),
-    nodeHasScopeSupport(userId, scope, partitionKey),
+    partitionAccessCondition(
+      nodes.partitionKey,
+      userId,
+      partitionKey,
+      accessScope,
+    ),
+    nodeHasScopeSupport(userId, scope, partitionKey, accessScope),
     matched,
   );
   if (includeNodeTypes && includeNodeTypes.length > 0) {
@@ -865,9 +987,10 @@ export async function findClaimsByLexical(
     statedBetween,
     includeAssistantInferred = false,
     partitionKey,
+    accessScope,
   } = params;
   const db = await useDatabase();
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
 
   const tsq = sql`websearch_to_tsquery('english', ${query})`;
   // search_tsv is a migration-managed generated column (see findNodesByLexical).
@@ -883,9 +1006,12 @@ export async function findClaimsByLexical(
 
   let where = and(
     eq(claims.userId, userId),
-    partitionKey === undefined
-      ? isNull(claims.partitionKey)
-      : eq(claims.partitionKey, partitionKey),
+    partitionAccessCondition(
+      claims.partitionKey,
+      userId,
+      partitionKey,
+      accessScope,
+    ),
     eq(claims.scope, scope),
     includeAssistantInferred
       ? undefined

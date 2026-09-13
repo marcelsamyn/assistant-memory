@@ -8,6 +8,10 @@ import { newTypeId } from "~/types/typeid";
 const mocks = vi.hoisted(() => ({ getDigest: vi.fn() }));
 vi.mock("~/lib/digest/get-digest", () => ({ getDigest: mocks.getDigest }));
 
+function testEvent(): H3Event {
+  return { node: { req: { headers: {} } } } as unknown as H3Event;
+}
+
 describe("POST /digest", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -68,14 +72,13 @@ describe("POST /digest", () => {
     }));
     mocks.getDigest.mockResolvedValue(digest);
 
-    const response = getDigestResponseSchema.parse(
-      await handler({} as H3Event),
-    );
+    const response = getDigestResponseSchema.parse(await handler(testEvent()));
 
     expect(mocks.getDigest).toHaveBeenCalledWith({
       userId: "user_digest",
       date: "2026-05-29",
       timeZone: "UTC",
+      accessScope: "partition",
     });
     expect(response.commitments.dueToday[0]!.dueOn).toBe("2026-05-29");
     expect(response.metricMovers[0]!.direction).toBe("down");
@@ -89,7 +92,7 @@ describe("POST /digest", () => {
       timeZone: "Not/AZone",
     }));
 
-    await expect(handler({} as H3Event)).rejects.toThrow();
+    await expect(handler(testEvent())).rejects.toThrow();
     expect(mocks.getDigest).not.toHaveBeenCalled();
   });
 });

@@ -1,24 +1,45 @@
 import { defineEventHandler, readBody } from "h3";
+import { PartitionedCleanupGraphUnsupportedError } from "~/lib/jobs/cleanup-graph";
 import {
   cleanupPlaceholders,
   seedClaimsCleanupForPlaceholders,
 } from "~/lib/jobs/cleanup-placeholders";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   cleanupPlaceholdersRequestSchema,
   cleanupPlaceholdersResponseSchema,
 } from "~/lib/schemas/cleanup-placeholders";
+import { resolveWorkspacePartitions } from "~/lib/workspace-partitions";
+import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
   const params = cleanupPlaceholdersRequestSchema.parse(await readBody(event));
-
-  const result = await cleanupPlaceholders({
-    userId: params.userId,
-    ...(params.partitionKey !== undefined
-      ? { partitionKey: params.partitionKey }
-      : {}),
-    olderThanDays: params.olderThanDays,
-    limit: params.limit,
-  });
+  const accessScope = getRequestAccessScope(event);
+  if (accessScope === "workspace" && params.triggerCleanup) {
+    throw new PartitionedCleanupGraphUnsupportedError();
+  }
+  const db = await useDatabase();
+  const partitions = await resolveWorkspacePartitions(
+    db,
+    params.userId,
+    params.partitionKey,
+    accessScope,
+  );
+  const surfaced = [];
+  let remainingLimit = params.limit;
+  for (const strictPartitionKey of partitions) {
+    if (remainingLimit === 0) break;
+    const result = await cleanupPlaceholders({
+      ...params,
+      limit: Math.min(params.limit, remainingLimit),
+      ...(strictPartitionKey === undefined
+        ? { partitionKey: undefined }
+        : { partitionKey: strictPartitionKey }),
+    });
+    surfaced.push(...result.placeholders);
+    remainingLimit -= result.placeholders.length;
+  }
+  const result = { placeholders: surfaced.slice(0, params.limit) };
 
   const candidatesFound = result.placeholders.reduce(
     (acc, row) => acc + row.candidates.length,
@@ -28,17 +49,7 @@ export default defineEventHandler(async (event) => {
   let seededCleanupJob = false;
   let jobId: string | undefined;
   if (params.triggerCleanup) {
-    const seeded = await seedClaimsCleanupForPlaceholders(
-      {
-        userId: params.userId,
-        ...(params.partitionKey !== undefined
-          ? { partitionKey: params.partitionKey }
-          : {}),
-        olderThanDays: params.olderThanDays,
-        limit: params.limit,
-      },
-      result,
-    );
+    const seeded = await seedClaimsCleanupForPlaceholders(params, result);
     if (seeded) {
       seededCleanupJob = true;
       jobId = seeded.jobId;

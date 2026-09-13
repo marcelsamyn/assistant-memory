@@ -15,8 +15,13 @@ import {
   findSourceIngestionOperation,
   hashSourceContent,
 } from "~/lib/ingestion/source-processing";
+import {
+  ensurePersonalPartition,
+  PartitionAccessError,
+} from "~/lib/partition-access";
 import { throwPartitionRouteError } from "~/lib/partition-route-errors";
 import { batchQueue } from "~/lib/queues";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   ingestFileFieldsSchema,
   ingestFileResponseSchema,
@@ -25,6 +30,7 @@ import {
 } from "~/lib/schemas/ingest-file";
 import type { SourceProcessing } from "~/lib/schemas/source-processing";
 import { sourceMetadataSchema, sourceService } from "~/lib/sources";
+import { assertWorkspaceOperationReady } from "~/lib/workspace-partitions";
 import { env } from "~/utils/env";
 
 const SUPPORTED_MIME_SET = new Set<string>(supportedFileMimeTypes);
@@ -94,6 +100,43 @@ async function ingestFile(event: H3Event): Promise<IngestFileResponse> {
       ? JSON.parse(fields["sourceContext"])
       : undefined,
   });
+  const accessScope = getRequestAccessScope(event);
+  let partitionKey = parsed.partitionKey;
+  if (accessScope === "workspace") {
+    if (parsed.sourceContext?.parentSourceId !== undefined) {
+      const [parent] = await db
+        .select({ partitionKey: sources.partitionKey })
+        .from(sources)
+        .where(
+          and(
+            eq(sources.userId, parsed.userId),
+            eq(sources.id, parsed.sourceContext.parentSourceId),
+            isNull(sources.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!parent) {
+        throw new PartitionAccessError(
+          "PARTITION_UNAUTHORIZED",
+          "Source parent does not exist in the requested workspace",
+        );
+      }
+      const parentPartitionKey = parent.partitionKey ?? undefined;
+      if (
+        (partitionKey !== undefined && partitionKey !== parentPartitionKey) ||
+        (parsed.sourceContext.parentPartitionKey !== undefined &&
+          parsed.sourceContext.parentPartitionKey !== parentPartitionKey)
+      ) {
+        throw new PartitionAccessError(
+          "PARTITION_UNAUTHORIZED",
+          "Source parent does not belong to the requested partition",
+        );
+      }
+      partitionKey = parentPartitionKey;
+    } else if (partitionKey === undefined) {
+      partitionKey = await ensurePersonalPartition(db, parsed.userId);
+    }
+  }
 
   if (!isSupportedMime(parsed.mimeType)) {
     throw createError({
@@ -103,21 +146,49 @@ async function ingestFile(event: H3Event): Promise<IngestFileResponse> {
   }
 
   const contentHash = hashSourceContent(filePart.data);
+  if (
+    accessScope === "workspace" &&
+    parsed.partitionKey === undefined &&
+    parsed.sourceContext === undefined &&
+    parsed.externalId !== undefined
+  ) {
+    const existingExternalId = contextualFileRevisionExternalId({
+      externalId: parsed.externalId,
+      contentHash,
+    });
+    const [existing] = await db
+      .select({ partitionKey: sources.partitionKey })
+      .from(sources)
+      .where(
+        and(
+          eq(sources.userId, parsed.userId),
+          eq(sources.type, "document"),
+          eq(sources.externalId, existingExternalId),
+          isNull(sources.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (existing) partitionKey = existing.partitionKey ?? undefined;
+  }
+  await assertWorkspaceOperationReady(
+    db,
+    parsed.userId,
+    [partitionKey],
+    accessScope,
+  );
   const externalId = contextualFileRevisionExternalId({
     externalId: parsed.externalId ?? `file:${uuid()}`,
     ...(parsed.sourceContext !== undefined
       ? {
           accountId: parsed.sourceContext.accountId,
-          ...(parsed.partitionKey !== undefined
-            ? { partitionKey: parsed.partitionKey }
-            : {}),
+          ...(partitionKey !== undefined ? { partitionKey } : {}),
         }
       : {}),
     contentHash,
   });
   if (
     parsed.sourceContext?.parentPartitionKey !== undefined &&
-    parsed.sourceContext.parentPartitionKey !== parsed.partitionKey
+    parsed.sourceContext.parentPartitionKey !== partitionKey
   ) {
     throw createError({
       statusCode: 403,
@@ -143,16 +214,15 @@ async function ingestFile(event: H3Event): Promise<IngestFileResponse> {
   const { successes, failures, timestamp, metadata, revisionHash } =
     await sourceService.insertIngestionSource({
       userId: parsed.userId,
-      ...(parsed.partitionKey !== undefined
-        ? { partitionKey: parsed.partitionKey }
-        : {}),
+      accessScope,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
       sourceType: "document",
       externalId,
       ...(parsed.sourceContext?.parentSourceId !== undefined
         ? {
             parentId: parsed.sourceContext.parentSourceId,
-            ...(parsed.partitionKey !== undefined
-              ? { parentPartitionKey: parsed.partitionKey }
+            ...(partitionKey !== undefined
+              ? { parentPartitionKey: partitionKey }
               : {}),
           }
         : {}),
@@ -190,9 +260,9 @@ async function ingestFile(event: H3Event): Promise<IngestFileResponse> {
           eq(sources.type, "document"),
           eq(sources.externalId, externalId),
           isNull(sources.deletedAt),
-          parsed.partitionKey === undefined
+          partitionKey === undefined
             ? isNull(sources.partitionKey)
-            : eq(sources.partitionKey, parsed.partitionKey),
+            : eq(sources.partitionKey, partitionKey),
         ),
       )
       .limit(1);
@@ -206,9 +276,7 @@ async function ingestFile(event: H3Event): Promise<IngestFileResponse> {
     existingProcessing = await findSourceIngestionOperation({
       db,
       userId: parsed.userId,
-      ...(parsed.partitionKey !== undefined
-        ? { partitionKey: parsed.partitionKey }
-        : {}),
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
       sourceId,
       contentHash: revisionHash,
     });
@@ -221,7 +289,8 @@ async function ingestFile(event: H3Event): Promise<IngestFileResponse> {
       await sourceService.replaceFileContent({
         userId: parsed.userId,
         sourceId,
-        partitionKey: parsed.partitionKey,
+        partitionKey,
+        accessScope,
         buffer: filePart.data,
         contentType: parsed.mimeType,
         externalId,
@@ -239,7 +308,8 @@ async function ingestFile(event: H3Event): Promise<IngestFileResponse> {
       const updatedVersion = await sourceService.updateIngestionMetadata({
         userId: parsed.userId,
         sourceId,
-        partitionKey: parsed.partitionKey,
+        partitionKey,
+        accessScope,
         metadata,
         ...(parsed.sourceContext?.parentSourceId !== undefined
           ? { parentId: parsed.sourceContext.parentSourceId }
@@ -275,9 +345,7 @@ async function ingestFile(event: H3Event): Promise<IngestFileResponse> {
   const processing = await createSourceIngestionOperation({
     db,
     userId: parsed.userId,
-    ...(parsed.partitionKey !== undefined
-      ? { partitionKey: parsed.partitionKey }
-      : {}),
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
     sourceId,
     externalId,
     contentHash: revisionHash,
@@ -301,7 +369,7 @@ async function ingestFile(event: H3Event): Promise<IngestFileResponse> {
     "ingest-file",
     {
       userId: parsed.userId,
-      partitionKey: parsed.partitionKey,
+      partitionKey,
       sourceId,
       expectedSourceVersion: processing.sourceVersion,
       filename: parsed.filename,

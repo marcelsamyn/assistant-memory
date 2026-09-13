@@ -1,6 +1,7 @@
 import { getDeepResearchResult } from "~/lib/cache/deep-research-cache";
 import { formatSearchResultsAsXml } from "~/lib/formatting";
 import { searchMemory } from "~/lib/query/search";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   querySearchRequestSchema,
   QuerySearchResponse,
@@ -9,6 +10,7 @@ import {
 } from "~/lib/schemas/query-search";
 
 export default defineEventHandler(async (event) => {
+  const accessScope = getRequestAccessScope(event);
   // Parse the request
   const {
     userId,
@@ -22,6 +24,7 @@ export default defineEventHandler(async (event) => {
   // Get the standard search results
   const { searchResults } = await searchMemory({
     userId,
+    accessScope,
     ...(partitionKey !== undefined ? { partitionKey } : {}),
     query,
     limit,
@@ -38,11 +41,10 @@ export default defineEventHandler(async (event) => {
   }
 
   // Try to get deep research results from cache
-  const deepResults = await getDeepResearchResult(
-    userId,
-    conversationId,
-    partitionKey,
-  );
+  const deepResults =
+    accessScope === "workspace"
+      ? null
+      : await getDeepResearchResult(userId, conversationId, partitionKey);
 
   // If no deep research results, format and return standard results
   if (!deepResults) {

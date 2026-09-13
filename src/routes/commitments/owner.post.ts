@@ -1,6 +1,11 @@
 import { defineEventHandler, createError } from "h3";
 import { NodesNotFoundError } from "~/lib/claim";
-import { setCommitmentOwner, TaskNotFoundError } from "~/lib/commitments";
+import {
+  CrossPartitionCommitmentError,
+  setCommitmentOwner,
+  TaskNotFoundError,
+} from "~/lib/commitments";
+import { withRequestAccessScope } from "~/lib/request-access";
 import {
   setCommitmentOwnerRequestSchema,
   setCommitmentOwnerResponseSchema,
@@ -9,7 +14,9 @@ import {
 export default defineEventHandler(async (event) => {
   const params = setCommitmentOwnerRequestSchema.parse(await readBody(event));
   try {
-    const result = await setCommitmentOwner(params);
+    const result = await setCommitmentOwner(
+      withRequestAccessScope(event, params),
+    );
     return setCommitmentOwnerResponseSchema.parse(result);
   } catch (e) {
     if (e instanceof TaskNotFoundError) {
@@ -25,6 +32,9 @@ export default defineEventHandler(async (event) => {
         statusMessage: e.message,
         data: { name: e.name, missingNodeIds: e.missingNodeIds },
       });
+    }
+    if (e instanceof CrossPartitionCommitmentError) {
+      throw createError({ statusCode: 409, statusMessage: e.message });
     }
     throw e;
   }

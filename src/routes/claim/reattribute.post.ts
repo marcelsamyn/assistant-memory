@@ -4,17 +4,35 @@ import {
   InactiveClaimReattributionError,
   NodesNotFoundError,
   reattributeClaim,
+  resolveClaimPartition,
 } from "~/lib/claim";
 import { CrossScopeMergeError } from "~/lib/node";
+import { throwPartitionRouteError } from "~/lib/partition-route-errors";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   reattributeClaimRequestSchema,
   reattributeClaimResponseSchema,
 } from "~/lib/schemas/claim";
+import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
   const input = reattributeClaimRequestSchema.parse(await readBody(event));
+  const accessScope = getRequestAccessScope(event);
   try {
-    const claim = await reattributeClaim(input);
+    const resolution = await resolveClaimPartition(
+      await useDatabase(),
+      input.userId,
+      input.claimId,
+      input.partitionKey,
+      accessScope,
+    );
+    if (!resolution.found) {
+      throw createError({ statusCode: 404, statusMessage: "Claim not found" });
+    }
+    const claim = await reattributeClaim({
+      ...input,
+      partitionKey: resolution.partitionKey,
+    });
     if (!claim) {
       throw createError({ statusCode: 404, statusMessage: "Claim not found" });
     }
@@ -52,6 +70,6 @@ export default defineEventHandler(async (event) => {
         data: { name: e.name, nodeIds: e.nodeIds, scopes: e.scopes },
       });
     }
-    throw e;
+    throwPartitionRouteError(e);
   }
 });

@@ -9,7 +9,10 @@
 import { eq, sql } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { userProfiles } from "~/db/schema";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import {
   userProfileMetadataSchema,
   type UserProfileMetadata,
@@ -54,6 +57,7 @@ export async function setUserSelfAliases(
   userId: string,
   aliases: string[],
   partitionKey?: ContextPartitionKey,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<{ aliases: string[] }> {
   // Validate via the metadata schema — same path the read takes, so an
   // alias that survives the writer round-trips through the reader cleanly.
@@ -62,28 +66,39 @@ export async function setUserSelfAliases(
   });
   const nextAliases = parsed.userSelfAliases;
 
-  const existing = await readMetadata(db, userId);
-  if (existing === null) {
-    await db.insert(userProfiles).values({
-      id: newTypeId("user_profile"),
-      userId,
-      content: "",
-      metadata: { ...parsed, userSelfAliases: nextAliases },
-    });
-  } else {
-    // Merge: replace `userSelfAliases`, preserve catchall keys.
-    const nextMetadata: UserProfileMetadata = {
-      ...existing,
-      userSelfAliases: nextAliases,
-    };
-    await db
-      .update(userProfiles)
-      .set({ metadata: nextMetadata, lastUpdatedAt: sql`now()` })
-      .where(eq(userProfiles.userId, userId));
-  }
+  // Keep the profile and graph identity update in one transaction. Identity
+  // validation can fail after it resolves the profile row (for example when
+  // the requested partition is no longer active); committing the profile
+  // first would leave configuration and the self node out of sync.
+  await db.transaction(async (tx) => {
+    const existing = await readMetadata(tx, userId);
+    if (existing === null) {
+      await tx.insert(userProfiles).values({
+        id: newTypeId("user_profile"),
+        userId,
+        content: "",
+        metadata: { ...parsed, userSelfAliases: nextAliases },
+      });
+    } else {
+      // Merge: replace `userSelfAliases`, preserve catchall keys.
+      const nextMetadata: UserProfileMetadata = {
+        ...existing,
+        userSelfAliases: nextAliases,
+      };
+      await tx
+        .update(userProfiles)
+        .set({ metadata: nextMetadata, lastUpdatedAt: sql`now()` })
+        .where(eq(userProfiles.userId, userId));
+    }
 
-  // Keep the self node's label + distinguishing aliases in sync with config.
-  await ensureUserSelfIdentity(db, userId, nextAliases, partitionKey);
+    await ensureUserSelfIdentity(
+      tx,
+      userId,
+      nextAliases,
+      partitionKey,
+      accessScope,
+    );
+  });
 
   return { aliases: nextAliases };
 }

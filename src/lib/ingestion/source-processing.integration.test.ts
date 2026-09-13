@@ -8,6 +8,7 @@ import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
 import {
+  memoryPartitions,
   nodes,
   sourceIngestionOperations,
   sourceLinks,
@@ -19,6 +20,7 @@ import {
   createSourceIngestionOperation,
   failSourceIngestionOperation,
   getSourceIngestionOperationById,
+  resolveSourceProcessingPartition,
   markSourceIngestionProcessing,
   purgeSourceIngestionOperations,
   retrySourceIngestionOperation,
@@ -100,6 +102,57 @@ describeIfServer("source ingestion operation integration", () => {
     if (!source) throw new Error("Source was not created");
     return source;
   }
+
+  it("resolves a migrated source receipt across workspace partitions", async () => {
+    const userId = "processing-workspace-read-user";
+    const partitionKey = contextPartitionKeySchema.parse(
+      "processing:workspace-read",
+    );
+    const sourceId = newTypeId("source");
+    await database.insert(users).values({ id: userId });
+    await database.insert(schema.partitionMigrationState).values({
+      userId,
+      state: "migrated",
+      version: 1,
+    });
+    await database.insert(memoryPartitions).values({ userId, partitionKey });
+    await database.insert(sources).values({
+      id: sourceId,
+      userId,
+      partitionKey,
+      type: "document",
+      externalId: "processing-workspace-read",
+      status: "pending",
+    });
+    const operation = await createSourceIngestionOperation({
+      db: database,
+      userId,
+      partitionKey,
+      sourceId,
+      externalId: "processing-workspace-read",
+      contentHash: "workspace-read-hash",
+    });
+
+    await expect(
+      resolveSourceProcessingPartition({
+        db: database,
+        userId,
+        operationId: operation.operationId,
+        accessScope: "workspace",
+      }),
+    ).resolves.toEqual({ found: true, partitionKey });
+    await expect(
+      getSourceIngestionOperationById({
+        db: database,
+        userId,
+        operationId: operation.operationId,
+        accessScope: "workspace",
+      }),
+    ).resolves.toMatchObject({
+      operationId: operation.operationId,
+      partitionKey,
+    });
+  });
 
   it("moves an accepted operation through queued, processing, and completed", async () => {
     const userId = "processing-transitions-user";
