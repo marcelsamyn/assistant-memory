@@ -113,19 +113,17 @@ export async function saveMemory(
       }
       partitionKey = parentPartitionKey;
     } else if (partitionKey === undefined) {
-      const [existingRoot] = !updateExisting
-        ? await db
-            .select({ partitionKey: sources.partitionKey })
-            .from(sources)
-            .where(
-              and(
-                eq(sources.userId, userId),
-                eq(sources.type, "document"),
-                eq(sources.externalId, document.id),
-              ),
-            )
-            .limit(1)
-        : [];
+      const [existingRoot] = await db
+        .select({ partitionKey: sources.partitionKey })
+        .from(sources)
+        .where(
+          and(
+            eq(sources.userId, userId),
+            eq(sources.type, "document"),
+            eq(sources.externalId, document.id),
+          ),
+        )
+        .limit(1);
       partitionKey =
         existingRoot?.partitionKey ??
         (await ensurePersonalPartition(db, userId));

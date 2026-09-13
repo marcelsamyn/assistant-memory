@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 
@@ -208,6 +209,120 @@ describeIfServer("loadTimelinePeriods", () => {
           "2026-06-30",
         ),
       ).toEqual([]);
+    } finally {
+      await client.end();
+    }
+  });
+
+  it("combines duplicate workspace period keys with partition-labelled summaries", async () => {
+    const userId = "user_timeline_periods_workspace";
+    const partitionA = contextPartitionKeySchema.parse("periods:active-a");
+    const partitionB = contextPartitionKeySchema.parse("periods:active-b");
+    const dayA = newTypeId("node");
+    const dayB = newTypeId("node");
+    const rollupA = newTypeId("node");
+    const rollupB = newTypeId("node");
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    try {
+      await database.insert(schema.users).values({ id: userId });
+      await database.insert(schema.memoryPartitions).values([
+        { userId, partitionKey: partitionA, status: "active" },
+        { userId, partitionKey: partitionB, status: "active" },
+      ]);
+      await database.insert(schema.partitionMigrationState).values({
+        userId,
+        state: "migrated",
+      });
+      await database.insert(schema.nodes).values([
+        { id: dayA, userId, partitionKey: partitionA, nodeType: "Temporal" },
+        { id: dayB, userId, partitionKey: partitionB, nodeType: "Temporal" },
+        {
+          id: rollupA,
+          userId,
+          partitionKey: partitionA,
+          nodeType: "Temporal",
+        },
+        {
+          id: rollupB,
+          userId,
+          partitionKey: partitionB,
+          nodeType: "Temporal",
+        },
+      ]);
+      await database.insert(schema.nodeMetadata).values([
+        {
+          id: newTypeId("node_metadata"),
+          nodeId: dayA,
+          label: "2026-06-10",
+        },
+        {
+          id: newTypeId("node_metadata"),
+          nodeId: dayB,
+          label: "2026-06-10",
+        },
+        {
+          id: newTypeId("node_metadata"),
+          nodeId: rollupA,
+          label: "2026-06",
+          description: "June room A",
+          additionalData: {
+            rollup: {
+              fingerprint: "period-a",
+              summarizedAt: "2026-06-15T00:00:00.000Z",
+            },
+          },
+        },
+        {
+          id: newTypeId("node_metadata"),
+          nodeId: rollupB,
+          label: "2026-06",
+          description: "June room B",
+          additionalData: {
+            rollup: {
+              fingerprint: "period-b",
+              summarizedAt: "2026-06-15T00:00:00.000Z",
+            },
+          },
+        },
+      ]);
+
+      const workspacePeriods = await loadTimelinePeriods(
+        database,
+        userId,
+        "2026-06-01",
+        "2026-06-30",
+        undefined,
+        "workspace",
+      );
+      expect(workspacePeriods).toEqual([
+        {
+          key: "2026-06",
+          granularity: "month",
+          summary: "Summary 1: June room A\nSummary 2: June room B",
+          temporalNodeId: [rollupA, rollupB].sort()[0],
+        },
+      ]);
+      expect(workspacePeriods[0]!.summary).not.toContain(partitionA);
+      expect(workspacePeriods[0]!.summary).not.toContain(partitionB);
+
+      const strictPeriods = await loadTimelinePeriods(
+        database,
+        userId,
+        "2026-06-01",
+        "2026-06-30",
+        partitionA,
+      );
+      expect(strictPeriods).toEqual([
+        {
+          key: "2026-06",
+          granularity: "month",
+          summary: "June room A",
+          temporalNodeId: rollupA,
+        },
+      ]);
     } finally {
       await client.end();
     }

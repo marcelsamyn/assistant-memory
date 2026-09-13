@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import {
   queryTimelineRequestSchema,
   queryTimelineResponseSchema,
@@ -312,6 +313,297 @@ describeIfServer("queryTimeline", () => {
       ]);
       expect(spanning.days.map((d) => d.date)).not.toContain("2026-07");
       expect(spanning.days.map((d) => d.date)).not.toContain("2026-06");
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("paginates workspace days by distinct date and unions active partitions", async () => {
+    const userId = "user_timeline_workspace";
+    const otherUserId = "other_timeline_workspace";
+    const partitionA = contextPartitionKeySchema.parse("timeline:active-a");
+    const partitionB = contextPartitionKeySchema.parse("timeline:active-b");
+    const inactivePartition =
+      contextPartitionKeySchema.parse("timeline:inactive");
+    const foreignPartition =
+      contextPartitionKeySchema.parse("timeline:foreign");
+    const dayA = newTypeId("node");
+    const dayB = newTypeId("node");
+    const olderDay = newTypeId("node");
+    const inactiveDay = newTypeId("node");
+    const foreignDay = newTypeId("node");
+    const entryA = newTypeId("node");
+    const entryB = newTypeId("node");
+    const olderEntry = newTypeId("node");
+    const inactiveEntry = newTypeId("node");
+    const foreignEntry = newTypeId("node");
+    const sourceA = newTypeId("source");
+    const sourceB = newTypeId("source");
+    const olderSource = newTypeId("source");
+    const inactiveSource = newTypeId("source");
+    const foreignSource = newTypeId("source");
+    const claimA = newTypeId("claim");
+    const claimB = newTypeId("claim");
+    const olderClaim = newTypeId("claim");
+    const inactiveClaim = newTypeId("claim");
+    const foreignClaim = newTypeId("claim");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await database
+        .insert(schema.users)
+        .values([{ id: userId }, { id: otherUserId }]);
+      await database.insert(schema.memoryPartitions).values([
+        { userId, partitionKey: partitionA, status: "active" },
+        { userId, partitionKey: partitionB, status: "active" },
+        { userId, partitionKey: inactivePartition, status: "quarantined" },
+        {
+          userId: otherUserId,
+          partitionKey: foreignPartition,
+          status: "active",
+        },
+      ]);
+      await database.insert(schema.partitionMigrationState).values({
+        userId,
+        state: "migrated",
+      });
+      await database.insert(schema.sources).values([
+        {
+          id: sourceA,
+          userId,
+          partitionKey: partitionA,
+          type: "conversation",
+          externalId: "timeline-source-a",
+          status: "completed",
+        },
+        {
+          id: sourceB,
+          userId,
+          partitionKey: partitionB,
+          type: "conversation",
+          externalId: "timeline-source-b",
+          status: "completed",
+        },
+        {
+          id: olderSource,
+          userId,
+          partitionKey: partitionA,
+          type: "conversation",
+          externalId: "timeline-source-older",
+          status: "completed",
+        },
+        {
+          id: inactiveSource,
+          userId,
+          partitionKey: inactivePartition,
+          type: "conversation",
+          externalId: "timeline-source-inactive",
+          status: "completed",
+        },
+        {
+          id: foreignSource,
+          userId: otherUserId,
+          partitionKey: foreignPartition,
+          type: "conversation",
+          externalId: "timeline-source-foreign",
+          status: "completed",
+        },
+      ]);
+      await database.insert(schema.nodes).values([
+        { id: dayA, userId, partitionKey: partitionA, nodeType: "Temporal" },
+        { id: dayB, userId, partitionKey: partitionB, nodeType: "Temporal" },
+        {
+          id: olderDay,
+          userId,
+          partitionKey: partitionA,
+          nodeType: "Temporal",
+        },
+        {
+          id: inactiveDay,
+          userId,
+          partitionKey: inactivePartition,
+          nodeType: "Temporal",
+        },
+        {
+          id: foreignDay,
+          userId: otherUserId,
+          partitionKey: foreignPartition,
+          nodeType: "Temporal",
+        },
+        { id: entryA, userId, partitionKey: partitionA, nodeType: "Person" },
+        { id: entryB, userId, partitionKey: partitionB, nodeType: "Person" },
+        {
+          id: olderEntry,
+          userId,
+          partitionKey: partitionA,
+          nodeType: "Person",
+        },
+        {
+          id: inactiveEntry,
+          userId,
+          partitionKey: inactivePartition,
+          nodeType: "Person",
+        },
+        {
+          id: foreignEntry,
+          userId: otherUserId,
+          partitionKey: foreignPartition,
+          nodeType: "Person",
+        },
+      ]);
+      await database.insert(schema.nodeMetadata).values([
+        { id: newTypeId("node_metadata"), nodeId: dayA, label: "2026-06-11" },
+        { id: newTypeId("node_metadata"), nodeId: dayB, label: "2026-06-11" },
+        {
+          id: newTypeId("node_metadata"),
+          nodeId: olderDay,
+          label: "2026-06-10",
+        },
+        {
+          id: newTypeId("node_metadata"),
+          nodeId: inactiveDay,
+          label: "2026-06-12",
+        },
+        {
+          id: newTypeId("node_metadata"),
+          nodeId: foreignDay,
+          label: "2026-06-13",
+        },
+        { id: newTypeId("node_metadata"), nodeId: entryA, label: "A" },
+        { id: newTypeId("node_metadata"), nodeId: entryB, label: "B" },
+        { id: newTypeId("node_metadata"), nodeId: olderEntry, label: "Older" },
+        {
+          id: newTypeId("node_metadata"),
+          nodeId: inactiveEntry,
+          label: "Inactive",
+        },
+        {
+          id: newTypeId("node_metadata"),
+          nodeId: foreignEntry,
+          label: "Foreign",
+        },
+      ]);
+      await database.insert(schema.claims).values([
+        {
+          id: claimA,
+          userId,
+          partitionKey: partitionA,
+          subjectNodeId: entryA,
+          objectNodeId: dayA,
+          predicate: "OCCURRED_ON",
+          statement: "A occurred on 2026-06-11.",
+          sourceId: sourceA,
+          scope: "personal",
+          assertedByKind: "user",
+          statedAt: new Date("2026-06-11T10:00:00.000Z"),
+          status: "active",
+        },
+        {
+          id: claimB,
+          userId,
+          partitionKey: partitionB,
+          subjectNodeId: entryB,
+          objectNodeId: dayB,
+          predicate: "OCCURRED_ON",
+          statement: "B occurred on 2026-06-11.",
+          sourceId: sourceB,
+          scope: "personal",
+          assertedByKind: "user",
+          statedAt: new Date("2026-06-11T09:00:00.000Z"),
+          status: "active",
+        },
+        {
+          id: olderClaim,
+          userId,
+          partitionKey: partitionA,
+          subjectNodeId: olderEntry,
+          objectNodeId: olderDay,
+          predicate: "OCCURRED_ON",
+          statement: "Older occurred on 2026-06-10.",
+          sourceId: olderSource,
+          scope: "personal",
+          assertedByKind: "user",
+          statedAt: new Date("2026-06-10T10:00:00.000Z"),
+          status: "active",
+        },
+        {
+          id: inactiveClaim,
+          userId,
+          partitionKey: inactivePartition,
+          subjectNodeId: inactiveEntry,
+          objectNodeId: inactiveDay,
+          predicate: "OCCURRED_ON",
+          statement: "Inactive occurred on 2026-06-12.",
+          sourceId: inactiveSource,
+          scope: "personal",
+          assertedByKind: "user",
+          statedAt: new Date("2026-06-12T10:00:00.000Z"),
+          status: "active",
+        },
+        {
+          id: foreignClaim,
+          userId: otherUserId,
+          partitionKey: foreignPartition,
+          subjectNodeId: foreignEntry,
+          objectNodeId: foreignDay,
+          predicate: "OCCURRED_ON",
+          statement: "Foreign occurred on 2026-06-13.",
+          sourceId: foreignSource,
+          scope: "personal",
+          assertedByKind: "user",
+          statedAt: new Date("2026-06-13T10:00:00.000Z"),
+          status: "active",
+        },
+      ]);
+
+      const { queryTimeline } = await import("./timeline");
+      const firstPage = queryTimelineResponseSchema.parse(
+        await queryTimeline({
+          ...queryTimelineRequestSchema.parse({
+            userId,
+            limit: 1,
+            offset: 0,
+          }),
+          accessScope: "workspace",
+        }),
+      );
+      expect(firstPage.totalDays).toBe(2);
+      expect(firstPage.days).toHaveLength(1);
+      expect(firstPage.days[0]).toMatchObject({
+        date: "2026-06-11",
+        temporalNodeId: [dayA, dayB].sort()[0],
+        nodeCount: 2,
+      });
+      expect(firstPage.days[0]!.nodes.map((node) => node.id).sort()).toEqual(
+        [entryA, entryB].sort(),
+      );
+      expect(firstPage.hasMore).toBe(true);
+
+      const secondPage = queryTimelineResponseSchema.parse(
+        await queryTimeline({
+          ...queryTimelineRequestSchema.parse({
+            userId,
+            limit: 1,
+            offset: 1,
+          }),
+          accessScope: "workspace",
+        }),
+      );
+      expect(secondPage.days).toMatchObject([
+        {
+          date: "2026-06-10",
+          temporalNodeId: olderDay,
+          nodeCount: 1,
+        },
+      ]);
+      expect(secondPage.hasMore).toBe(false);
     } finally {
       vi.doUnmock("~/utils/db");
       vi.resetModules();

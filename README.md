@@ -10,6 +10,33 @@ Memory is a shared store for clients such as Petals, Claude Code, Codex, and oth
 
 A stored source and the facts extracted from it are separate. Memory retains source content even when extraction finds no task. Summaries, claims, and possible commitments are derived views; processing completion does not mean every fact has become a graph claim. Read the source text when those views are insufficient.
 
+## Partition access
+
+`MemoryClient` uses strict partition access by default. Pass an explicit
+`partitionKey` for context-specific evidence. For ordinary operations that
+must read a user's active partitions, derive a separate client:
+
+```ts
+const workspaceClient = client.withWorkspaceAccess();
+const result = await workspaceClient.querySearch({
+  userId,
+  query: "workshop notes",
+});
+```
+
+The workspace client sends `x-memory-access-scope: workspace`. An explicit
+`partitionKey` still limits that request to one partition. Workspace reads
+exclude inactive partitions and other users; legacy NULL-partition rows remain
+visible only before migration completes. New root content uses Memory's
+`memory:personal` partition after migration, child sources inherit their
+parent partition, and existing-object mutations resolve the actual owned
+partition before applying strict write checks.
+
+Use strict access for preparation, partition-specific evidence, cleanup, and
+maintenance. AI graph cleanup is disabled for partitioned data. The admin
+user-self-identity backfill remains strict-only pending a partition-scoped
+implementation.
+
 Documents and files can carry optional `sourceContext`: facts supplied by the host about origin, authorship, relationships, chronology, and completeness. Existing notes, conversations, and transcript integrations keep their input formats. No client needs to turn its content into email or identify tasks before storing it.
 
 If a processing receipt was saved but its queue job was not, resubmit the same ingestion request with the source-preserving defaults to restore the job. Legacy `updateExisting: true` replacement requests intentionally tombstone and recreate the source; use the processing retry endpoint when retained conversion settings are available.

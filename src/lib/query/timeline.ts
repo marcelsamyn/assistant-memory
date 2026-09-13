@@ -7,7 +7,18 @@ import {
   QueryTimelineResponse,
 } from "../schemas/query-timeline";
 import { loadTimelinePeriods } from "./timeline-periods";
-import { and, eq, or, gte, lte, desc, inArray, sql, count } from "drizzle-orm";
+import {
+  and,
+  count,
+  countDistinct,
+  desc,
+  eq,
+  gte,
+  inArray,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
 import type { MemoryAccessScope } from "~/lib/schemas/partition";
 import { NodeTypeEnum } from "~/types/graph";
@@ -70,10 +81,14 @@ export async function queryTimeline(
     ...(since ? [gte(nodeMetadata.label, since)] : []),
     ...(until ? [lte(nodeMetadata.label, until)] : []),
   );
+  const workspaceAggregation =
+    accessScope === "workspace" && partitionKey === undefined;
 
   // Step 1: Count total days with data in the range (DB-level).
   const [countResult] = await db
-    .select({ total: count() })
+    .select({
+      total: workspaceAggregation ? countDistinct(nodeMetadata.label) : count(),
+    })
     .from(nodes)
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
     .where(dayNodeWhere);
@@ -89,19 +104,47 @@ export async function queryTimeline(
     };
   }
 
-  // Step 2: Fetch the paginated day nodes (DB-level limit/offset).
-  // Most recent first so pagination scrolls backward in time.
-  const paginatedDayNodes = await db
-    .select({
-      id: nodes.id,
-      label: nodeMetadata.label,
-    })
-    .from(nodes)
-    .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-    .where(dayNodeWhere)
-    .orderBy(desc(nodeMetadata.label))
-    .limit(limit)
-    .offset(offset);
+  // Step 2: Fetch the paginated day labels (DB-level limit/offset).
+  // Workspace pagination is by distinct date, not by duplicate Temporal rows
+  // left behind in separate active partitions. Strict callers retain the
+  // historical row pagination behavior.
+  const paginatedDayLabels = workspaceAggregation
+    ? await db
+        .select({ label: nodeMetadata.label })
+        .from(nodes)
+        .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
+        .where(dayNodeWhere)
+        .groupBy(nodeMetadata.label)
+        .orderBy(desc(nodeMetadata.label))
+        .limit(limit)
+        .offset(offset)
+    : [];
+  const selectedDayLabels = paginatedDayLabels.flatMap(({ label }) =>
+    label ? [label] : [],
+  );
+  const paginatedDayNodes = workspaceAggregation
+    ? await db
+        .select({
+          id: nodes.id,
+          label: nodeMetadata.label,
+        })
+        .from(nodes)
+        .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
+        .where(
+          and(dayNodeWhere, inArray(nodeMetadata.label, selectedDayLabels)),
+        )
+        .orderBy(nodeMetadata.label, nodes.id)
+    : await db
+        .select({
+          id: nodes.id,
+          label: nodeMetadata.label,
+        })
+        .from(nodes)
+        .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
+        .where(dayNodeWhere)
+        .orderBy(desc(nodeMetadata.label))
+        .limit(limit)
+        .offset(offset);
 
   if (paginatedDayNodes.length === 0) {
     return {
@@ -113,6 +156,9 @@ export async function queryTimeline(
   }
 
   const dayNodeIds = paginatedDayNodes.map((d) => d.id);
+  const dayNodeLabelById = new Map(
+    paginatedDayNodes.map((dayNode) => [dayNode.id, dayNode.label]),
+  );
 
   // Step 3: Batch-fetch all connected nodes for the paginated day nodes.
   // This avoids N+1 queries — one query gets everything.
@@ -179,9 +225,11 @@ export async function queryTimeline(
     );
 
   // Step 4: Group connected nodes by day node and build response.
-  const nodesByDay = new Map<TypeId<"node">, typeof connectedRows>();
+  const nodesByDay = new Map<string, typeof connectedRows>();
   for (const row of connectedRows) {
-    const dayId = row.dayNodeId;
+    const dayId = workspaceAggregation
+      ? (dayNodeLabelById.get(row.dayNodeId) ?? row.dayNodeId)
+      : row.dayNodeId;
     const existing = nodesByDay.get(dayId);
     if (existing) {
       existing.push(row);
@@ -190,9 +238,28 @@ export async function queryTimeline(
     }
   }
 
-  const days = paginatedDayNodes.map((dayNode) => {
+  const representativeByDate = new Map<
+    string,
+    (typeof paginatedDayNodes)[number]
+  >();
+  if (workspaceAggregation) {
+    for (const dayNode of paginatedDayNodes) {
+      if (dayNode.label && !representativeByDate.has(dayNode.label)) {
+        representativeByDate.set(dayNode.label, dayNode);
+      }
+    }
+  }
+  const dayRows = workspaceAggregation
+    ? selectedDayLabels.flatMap((label) => {
+        const representative = representativeByDate.get(label);
+        return representative ? [representative] : [];
+      })
+    : paginatedDayNodes;
+
+  const days = dayRows.map((dayNode) => {
     const dayId = dayNode.id;
-    const allConnected = nodesByDay.get(dayId) ?? [];
+    const dayKey = workspaceAggregation ? dayNode.label! : dayId;
+    const allConnected = nodesByDay.get(dayKey) ?? [];
 
     // Deduplicate by node id (a node can be connected via multiple edges)
     const uniqueMap = new Map<string, (typeof allConnected)[number]>();
