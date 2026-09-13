@@ -229,6 +229,319 @@ describeIfServer("partition integrity and recovery", () => {
     ).resolves.toEqual([{ id: userId }]);
   });
 
+  it("isolates foreign dependents before assigning legacy nodes to unassigned", async () => {
+    const userId = "partition-finalize-node-owner";
+    const dependentUserId = "partition-finalize-dependent";
+    const sourceId = newTypeId("source");
+    const nodeId = newTypeId("node");
+    const dependentSubjectId = newTypeId("node");
+    const claimId = newTypeId("claim");
+    const unassignedPartitionKey = contextPartitionKeySchema.parse(
+      "opaque:finalize-unassigned",
+    );
+    await database
+      .insert(users)
+      .values([{ id: userId }, { id: dependentUserId }]);
+    await database.insert(sources).values({
+      id: sourceId,
+      userId: dependentUserId,
+      type: "document",
+      externalId: "foreign-dependent",
+    });
+    await database.insert(nodes).values([
+      { id: nodeId, userId, nodeType: "Person" },
+      {
+        id: dependentSubjectId,
+        userId: dependentUserId,
+        nodeType: "Person",
+      },
+    ]);
+    await database.insert(nodeMetadata).values({
+      nodeId,
+      label: "Private owner label",
+      canonicalLabel: "private owner label",
+    });
+    await database.insert(aliases).values({
+      id: newTypeId("alias"),
+      userId,
+      aliasText: "Owner alias",
+      normalizedAliasText: "owner alias",
+      canonicalNodeId: nodeId,
+    });
+    await database.insert(nodeRedirects).values({
+      userId,
+      fromNodeId: nodeId,
+      toNodeId: nodeId,
+    });
+    await database.execute(
+      sql`ALTER TABLE source_links DISABLE TRIGGER source_links_partition_integrity`,
+    );
+    await database.execute(
+      sql`ALTER TABLE source_links DISABLE TRIGGER source_links_source_liveness`,
+    );
+    await database.execute(
+      sql`ALTER TABLE claims DISABLE TRIGGER claims_partition_integrity`,
+    );
+    await database.execute(
+      sql`ALTER TABLE claims DISABLE TRIGGER claims_source_liveness`,
+    );
+    try {
+      await database.insert(sourceLinks).values({ sourceId, nodeId });
+      await database.insert(claims).values({
+        id: claimId,
+        userId: dependentUserId,
+        subjectNodeId: dependentSubjectId,
+        objectNodeId: nodeId,
+        predicate: "RELATED_TO",
+        statement: "A legacy claim references the owner's node.",
+        sourceId,
+        assertedByKind: "document_author",
+        statedAt: new Date(),
+      });
+    } finally {
+      await database.execute(
+        sql`ALTER TABLE claims ENABLE TRIGGER claims_source_liveness`,
+      );
+      await database.execute(
+        sql`ALTER TABLE claims ENABLE TRIGGER claims_partition_integrity`,
+      );
+      await database.execute(
+        sql`ALTER TABLE source_links ENABLE TRIGGER source_links_source_liveness`,
+      );
+      await database.execute(
+        sql`ALTER TABLE source_links ENABLE TRIGGER source_links_partition_integrity`,
+      );
+    }
+    await startMigration(userId);
+
+    await expect(
+      setPartitionMigrationState(
+        database,
+        setPartitionMigrationStateRequestSchema.parse({
+          userId,
+          expectedState: "migrating",
+          expectedVersion: 1,
+          nextState: "migrated",
+          unassignedPartitionKey,
+        }),
+      ),
+    ).resolves.toEqual({ state: "migrated", version: 2 });
+
+    const [link] = await database
+      .select({ nodeId: sourceLinks.nodeId })
+      .from(sourceLinks)
+      .where(eq(sourceLinks.sourceId, sourceId));
+    const [claim] = await database
+      .select({ objectNodeId: claims.objectNodeId })
+      .from(claims)
+      .where(eq(claims.id, claimId));
+    expect(link?.nodeId).toBe(claim?.objectNodeId);
+    expect(link?.nodeId).not.toBe(nodeId);
+    if (!link) throw new Error("Expected isolated source link");
+    await expect(
+      database
+        .select({ userId: nodes.userId, partitionKey: nodes.partitionKey })
+        .from(nodes)
+        .where(eq(nodes.id, link.nodeId)),
+    ).resolves.toEqual([{ userId: dependentUserId, partitionKey: null }]);
+    await expect(
+      database
+        .select({ label: nodeMetadata.label })
+        .from(nodeMetadata)
+        .where(eq(nodeMetadata.nodeId, link.nodeId)),
+    ).resolves.toEqual([]);
+    await expect(
+      database
+        .select({ partitionKey: nodes.partitionKey })
+        .from(nodes)
+        .where(eq(nodes.id, nodeId)),
+    ).resolves.toEqual([{ partitionKey: unassignedPartitionKey }]);
+    await expect(
+      database
+        .select({ partitionKey: aliases.partitionKey })
+        .from(aliases)
+        .where(eq(aliases.canonicalNodeId, nodeId)),
+    ).resolves.toEqual([{ partitionKey: unassignedPartitionKey }]);
+    await expect(
+      database
+        .select({ partitionKey: nodeRedirects.partitionKey })
+        .from(nodeRedirects)
+        .where(eq(nodeRedirects.toNodeId, nodeId)),
+    ).resolves.toEqual([{ partitionKey: unassignedPartitionKey }]);
+  });
+
+  it("isolates every claim role by dependent partition during finalization", async () => {
+    const userId = "partition-finalize-role-owner";
+    const dependentUserId = "partition-finalize-role-dependent";
+    const partitionA = contextPartitionKeySchema.parse("opaque:dependent-a");
+    const partitionB = contextPartitionKeySchema.parse("opaque:dependent-b");
+    const sourceA = newTypeId("source");
+    const sourceB = newTypeId("source");
+    const ownerNodeId = newTypeId("node");
+    const subjectA = newTypeId("node");
+    const subjectB = newTypeId("node");
+    const subjectClaimId = newTypeId("claim");
+    const actorClaimId = newTypeId("claim");
+    await database
+      .insert(users)
+      .values([{ id: userId }, { id: dependentUserId }]);
+    await database.insert(memoryPartitions).values([
+      { userId: dependentUserId, partitionKey: partitionA },
+      { userId: dependentUserId, partitionKey: partitionB },
+    ]);
+    await database.insert(sources).values([
+      {
+        id: sourceA,
+        userId: dependentUserId,
+        type: "document",
+        externalId: "dependent-a",
+        partitionKey: partitionA,
+      },
+      {
+        id: sourceB,
+        userId: dependentUserId,
+        type: "document",
+        externalId: "dependent-b",
+        partitionKey: partitionB,
+      },
+    ]);
+    await database.insert(nodes).values([
+      { id: ownerNodeId, userId, nodeType: "Object" },
+      {
+        id: subjectA,
+        userId: dependentUserId,
+        nodeType: "Person",
+        partitionKey: partitionA,
+      },
+      {
+        id: subjectB,
+        userId: dependentUserId,
+        nodeType: "Person",
+        partitionKey: partitionB,
+      },
+    ]);
+    await database.execute(
+      sql`ALTER TABLE source_links DISABLE TRIGGER source_links_partition_integrity`,
+    );
+    await database.execute(
+      sql`ALTER TABLE source_links DISABLE TRIGGER source_links_source_liveness`,
+    );
+    await database.execute(
+      sql`ALTER TABLE claims DISABLE TRIGGER claims_partition_integrity`,
+    );
+    await database.execute(
+      sql`ALTER TABLE claims DISABLE TRIGGER claims_source_liveness`,
+    );
+    try {
+      await database.insert(sourceLinks).values([
+        { sourceId: sourceA, nodeId: ownerNodeId },
+        { sourceId: sourceB, nodeId: ownerNodeId },
+      ]);
+      await database.insert(claims).values([
+        {
+          id: subjectClaimId,
+          userId: dependentUserId,
+          subjectNodeId: ownerNodeId,
+          objectValue: "Foreign subject",
+          predicate: "HAS_ATTRIBUTE",
+          statement: "The foreign node is the subject.",
+          sourceId: sourceA,
+          partitionKey: partitionA,
+          assertedByKind: "document_author",
+          statedAt: new Date(),
+        },
+        {
+          id: actorClaimId,
+          userId: dependentUserId,
+          subjectNodeId: subjectB,
+          objectValue: "Foreign actor",
+          predicate: "HAS_ATTRIBUTE",
+          statement: "The foreign node is the attribution.",
+          sourceId: sourceB,
+          partitionKey: partitionB,
+          assertedByKind: "document_author",
+          assertedByNodeId: ownerNodeId,
+          statedAt: new Date(),
+        },
+      ]);
+    } finally {
+      await database.execute(
+        sql`ALTER TABLE claims ENABLE TRIGGER claims_source_liveness`,
+      );
+      await database.execute(
+        sql`ALTER TABLE claims ENABLE TRIGGER claims_partition_integrity`,
+      );
+      await database.execute(
+        sql`ALTER TABLE source_links ENABLE TRIGGER source_links_source_liveness`,
+      );
+      await database.execute(
+        sql`ALTER TABLE source_links ENABLE TRIGGER source_links_partition_integrity`,
+      );
+    }
+    await startMigration(userId);
+    await setPartitionMigrationState(
+      database,
+      setPartitionMigrationStateRequestSchema.parse({
+        userId,
+        expectedState: "migrating",
+        expectedVersion: 1,
+        nextState: "migrated",
+        unassignedPartitionKey: "unassigned",
+      }),
+    );
+
+    const links = await database
+      .select({ sourceId: sourceLinks.sourceId, nodeId: sourceLinks.nodeId })
+      .from(sourceLinks)
+      .where(inArray(sourceLinks.sourceId, [sourceA, sourceB]));
+    const replacementA = links.find(
+      (link) => link.sourceId === sourceA,
+    )?.nodeId;
+    const replacementB = links.find(
+      (link) => link.sourceId === sourceB,
+    )?.nodeId;
+    expect(replacementA).toBeDefined();
+    expect(replacementB).toBeDefined();
+    expect(replacementA).not.toBe(replacementB);
+    if (!replacementA || !replacementB) {
+      throw new Error("Expected partition-specific replacements");
+    }
+    await expect(
+      database
+        .select({
+          id: claims.id,
+          subjectNodeId: claims.subjectNodeId,
+          assertedByNodeId: claims.assertedByNodeId,
+        })
+        .from(claims)
+        .where(inArray(claims.id, [subjectClaimId, actorClaimId])),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        {
+          id: subjectClaimId,
+          subjectNodeId: replacementA,
+          assertedByNodeId: null,
+        },
+        {
+          id: actorClaimId,
+          subjectNodeId: subjectB,
+          assertedByNodeId: replacementB,
+        },
+      ]),
+    );
+    await expect(
+      database
+        .select({ id: nodes.id, partitionKey: nodes.partitionKey })
+        .from(nodes)
+        .where(inArray(nodes.id, [replacementA, replacementB])),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        { id: replacementA, partitionKey: partitionA },
+        { id: replacementB, partitionKey: partitionB },
+      ]),
+    );
+  });
+
   it("returns authoritative state when initial migration CAS calls race", async () => {
     const userId = "partition-cas-race";
     await database.insert(users).values({ id: userId });

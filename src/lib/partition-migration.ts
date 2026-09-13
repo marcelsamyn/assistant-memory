@@ -1,5 +1,5 @@
 /** Compare-and-set lifecycle for enabling partition enforcement per user. */
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import {
   aliases,
@@ -18,12 +18,15 @@ import {
 import { lockSourceIdentityGates } from "~/lib/partition-access";
 import { PartitionReclassificationError } from "~/lib/partition-errors";
 import type {
+  ContextPartitionKey,
   InitializePartitionedUserRequest,
   InitializePartitionedUserResponse,
   PartitionMigrationState,
   SetPartitionMigrationStateRequest,
   SetPartitionMigrationStateResponse,
 } from "~/lib/schemas/partition";
+import type { NodeType } from "~/types/graph";
+import type { TypeId } from "~/types/typeid";
 
 type Transaction = Parameters<Parameters<DrizzleDB["transaction"]>[0]>[0];
 
@@ -226,6 +229,8 @@ async function finishLegacyMigration(
       ),
     );
 
+  await isolateForeignNodeDependents(tx, request.userId);
+
   const orphanNodes = await tx
     .select({ id: nodes.id })
     .from(nodes)
@@ -329,4 +334,88 @@ async function finishLegacyMigration(
         isNull(sourceIdentityTombstones.partitionKey),
       ),
     );
+}
+
+async function isolateForeignNodeDependents(
+  tx: Transaction,
+  userId: string,
+): Promise<void> {
+  const dependents = await tx.execute<{
+    source_node_id: TypeId<"node">;
+    node_type: NodeType;
+    dependent_user_id: string;
+    dependent_partition_key: ContextPartitionKey | null;
+  }>(sql`
+    SELECT DISTINCT
+      n.id AS source_node_id,
+      n.node_type,
+      s.user_id AS dependent_user_id,
+      s.partition_key AS dependent_partition_key
+    FROM ${nodes} n
+    JOIN ${sourceLinks} sl ON sl.node_id = n.id
+    JOIN ${sources} s ON s.id = sl.source_id
+    WHERE n.user_id = ${userId}
+      AND n.partition_key IS NULL
+      AND s.user_id IS DISTINCT FROM ${userId}
+    UNION
+    SELECT DISTINCT
+      n.id AS source_node_id,
+      n.node_type,
+      c.user_id AS dependent_user_id,
+      c.partition_key AS dependent_partition_key
+    FROM ${nodes} n
+    JOIN ${claims} c
+      ON n.id = c.subject_node_id
+      OR n.id = c.object_node_id
+      OR n.id = c.asserted_by_node_id
+    WHERE n.user_id = ${userId}
+      AND n.partition_key IS NULL
+      AND c.user_id IS DISTINCT FROM ${userId}
+  `);
+
+  for (const dependent of dependents.rows) {
+    const [replacement] = await tx
+      .insert(nodes)
+      .values({
+        userId: dependent.dependent_user_id,
+        nodeType: dependent.node_type,
+        partitionKey: dependent.dependent_partition_key,
+      })
+      .returning({ id: nodes.id });
+    if (!replacement) throw new Error("Failed to isolate foreign node support");
+
+    await tx
+      .update(sourceLinks)
+      .set({ nodeId: replacement.id })
+      .where(
+        and(
+          eq(sourceLinks.nodeId, dependent.source_node_id),
+          sql`EXISTS (
+            SELECT 1 FROM ${sources} s
+            WHERE s.id = ${sourceLinks.sourceId}
+              AND s.user_id = ${dependent.dependent_user_id}
+              AND s.partition_key IS NOT DISTINCT FROM ${dependent.dependent_partition_key}
+          )`,
+        ),
+      );
+    await tx
+      .update(claims)
+      .set({
+        subjectNodeId: sql`CASE WHEN ${claims.subjectNodeId} = ${dependent.source_node_id} THEN ${replacement.id} ELSE ${claims.subjectNodeId} END`,
+        objectNodeId: sql`CASE WHEN ${claims.objectNodeId} = ${dependent.source_node_id} THEN ${replacement.id} ELSE ${claims.objectNodeId} END`,
+        assertedByNodeId: sql`CASE WHEN ${claims.assertedByNodeId} = ${dependent.source_node_id} THEN ${replacement.id} ELSE ${claims.assertedByNodeId} END`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(claims.userId, dependent.dependent_user_id),
+          sql`${claims.partitionKey} IS NOT DISTINCT FROM ${dependent.dependent_partition_key}`,
+          or(
+            eq(claims.subjectNodeId, dependent.source_node_id),
+            eq(claims.objectNodeId, dependent.source_node_id),
+            eq(claims.assertedByNodeId, dependent.source_node_id),
+          ),
+        ),
+      );
+  }
 }
