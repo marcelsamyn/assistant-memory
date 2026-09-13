@@ -34,6 +34,18 @@ strict client. AI graph cleanup remains disabled for partitioned data until
 its cleanup engine is partition-safe. Scratchpads remain user-global assistant
 workspace, not partitioned evidence.
 
+Processing status reads use the same public projection through HTTP, SDK 2.6,
+and MCP. If the exact retained queue job is terminally failed while its
+durable receipt remains `queued` or `processing`, the response reports
+`status: "failed"` and `errorCode: "PROCESSING_INTERRUPTED"`. This is a
+read-only projection with no automatic retry or receipt write. It preserves
+the existing user, strict, workspace, and explicit-partition checks. A Redis
+outage remains an error, not a failed status. The existing SDK response schema
+already accepts this string error code, so no SDK republish is required. Use
+the retry path only when the retained operation is appropriate to retry; it
+rechecks the current source and source version and can return a lifecycle
+conflict.
+
 ---
 
 ## 2.5.0 — contextual ingestion and exact processing receipts
