@@ -21,6 +21,7 @@ import {
   assertPartitionReadAllowed,
   partitionAccessCondition,
 } from "~/lib/partition-access";
+import { claimEndpointOwnershipCondition } from "~/lib/query/claim-endpoint-access";
 import type { GetNodeResponse } from "~/lib/schemas/node";
 import {
   DEFAULT_EXCLUDED_NODE_TYPES,
@@ -159,6 +160,7 @@ export async function fetchNodesBySource(
     .from(nodes)
     .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
     .innerJoin(sourceLinks, eq(sourceLinks.nodeId, nodes.id))
+    .innerJoin(sources, eq(sources.id, sourceLinks.sourceId))
     .where(
       and(
         eq(nodes.userId, userId),
@@ -197,6 +199,16 @@ export async function fetchNodesBySource(
   if (includeClaims) {
     const srcMeta = aliasedTable(nodeMetadata, "srcMeta");
     const tgtMeta = aliasedTable(nodeMetadata, "tgtMeta");
+    const subjectUserId = sql`(
+      SELECT subject_endpoint.user_id
+        FROM "nodes" AS subject_endpoint
+       WHERE subject_endpoint.id = ${claims.subjectNodeId}
+    )`;
+    const subjectPartitionKey = sql`(
+      SELECT subject_endpoint.partition_key
+        FROM "nodes" AS subject_endpoint
+       WHERE subject_endpoint.id = ${claims.subjectNodeId}
+    )`;
 
     claimRows = await db
       .select({
@@ -230,6 +242,16 @@ export async function fetchNodesBySource(
           ),
           eq(claims.status, "active"),
           inArray(claims.subjectNodeId, pageIds),
+          claimEndpointOwnershipCondition(
+            {
+              claimUserId: claims.userId,
+              claimPartitionKey: claims.partitionKey,
+              subjectUserId,
+              subjectPartitionKey,
+              objectNodeId: claims.objectNodeId,
+            },
+            userId,
+          ),
         ),
       );
   }

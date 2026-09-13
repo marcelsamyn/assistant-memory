@@ -2,7 +2,7 @@ import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
 import {
   aliases,
@@ -564,6 +564,156 @@ describeIfServer("partition integrity and recovery", () => {
         code: "MIGRATION_STATE_CONFLICT",
         current: { migrationState: "migrating", migrationVersion: 1 },
       },
+    });
+  });
+
+  it("serializes migration start with concurrent legacy batch deletion", async () => {
+    const waitForUserLock = async (
+      observer: Client,
+      pid: number,
+    ): Promise<void> => {
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        const result = await observer.query<{ wait_event_type: string | null }>(
+          `SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1`,
+          [pid],
+        );
+        if (result.rows[0]?.wait_event_type === "Lock") return;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error(
+        `PostgreSQL session ${pid} did not wait for the user lock`,
+      );
+    };
+
+    const { setTestDatabase } = await import("~/utils/db");
+    const { batchDeleteNodes } = await import("~/lib/node");
+    const runRace = async ({
+      userId,
+      startBatchFirst,
+    }: {
+      userId: string;
+      startBatchFirst: boolean;
+    }): Promise<void> => {
+      const nodeId = newTypeId("node");
+      const gateClient = new Client({ connectionString: dsnFor(dbName) });
+      const batchClient = new Client({ connectionString: dsnFor(dbName) });
+      const migrationClient = new Client({ connectionString: dsnFor(dbName) });
+      const observerClient = new Client({ connectionString: dsnFor(dbName) });
+      await Promise.all([
+        gateClient.connect(),
+        batchClient.connect(),
+        migrationClient.connect(),
+        observerClient.connect(),
+      ]);
+      const batchDatabase = drizzle(batchClient, {
+        schema,
+        casing: "snake_case",
+      });
+      const migrationDatabase = drizzle(migrationClient, {
+        schema,
+        casing: "snake_case",
+      });
+      try {
+        await database.insert(users).values({ id: userId });
+        await database.insert(nodes).values({
+          id: nodeId,
+          userId,
+          nodeType: "Person",
+        });
+        await gateClient.query("BEGIN");
+        await gateClient.query(
+          `SELECT id FROM "users" WHERE id = $1 FOR NO KEY UPDATE`,
+          [userId],
+        );
+
+        setTestDatabase(batchDatabase);
+        const batchPidResult = await batchClient.query<{ pid: number }>(
+          "SELECT pg_backend_pid() AS pid",
+        );
+        const migrationPidResult = await migrationClient.query<{ pid: number }>(
+          "SELECT pg_backend_pid() AS pid",
+        );
+        const batchPid = batchPidResult.rows[0]!.pid;
+        const migrationPid = migrationPidResult.rows[0]!.pid;
+        const request = setPartitionMigrationStateRequestSchema.parse({
+          userId,
+          expectedState: "unmigrated",
+          expectedVersion: 0,
+          nextState: "migrating",
+        });
+        const batchPromise = startBatchFirst
+          ? batchDeleteNodes(userId, [nodeId], undefined, "workspace")
+          : undefined;
+        if (batchPromise) await waitForUserLock(observerClient, batchPid);
+
+        const migrationPromise = setPartitionMigrationState(
+          migrationDatabase,
+          request,
+        );
+        if (!startBatchFirst) {
+          await waitForUserLock(observerClient, migrationPid);
+        }
+        const deferredBatchPromise = startBatchFirst
+          ? batchPromise!
+          : batchDeleteNodes(userId, [nodeId], undefined, "workspace");
+        await waitForUserLock(
+          observerClient,
+          startBatchFirst ? migrationPid : batchPid,
+        );
+        await gateClient.query("COMMIT");
+
+        const [batchResult, migrationResult] = await Promise.allSettled([
+          deferredBatchPromise,
+          migrationPromise,
+        ]);
+        if (startBatchFirst) {
+          expect(batchResult).toMatchObject({
+            status: "fulfilled",
+            value: 1,
+          });
+          expect(migrationResult).toMatchObject({
+            status: "fulfilled",
+            value: { state: "migrating", version: 1 },
+          });
+          await expect(
+            database.$count(nodes, eq(nodes.id, nodeId)),
+          ).resolves.toBe(0);
+        } else {
+          expect(migrationResult).toMatchObject({
+            status: "fulfilled",
+            value: { state: "migrating", version: 1 },
+          });
+          expect(batchResult).toMatchObject({
+            status: "rejected",
+            reason: { code: "PARTITION_REQUIRED" },
+          });
+          await expect(
+            database.$count(nodes, eq(nodes.id, nodeId)),
+          ).resolves.toBe(1);
+        }
+      } finally {
+        await gateClient.query("ROLLBACK").catch(() => undefined);
+        setTestDatabase(null);
+        // The race imports node dynamically. Clear that dependency graph so
+        // later suites can install their own embedding mock.
+        vi.resetModules();
+        await Promise.all([
+          gateClient.end(),
+          batchClient.end(),
+          migrationClient.end(),
+          observerClient.end(),
+        ]);
+      }
+    };
+
+    await runRace({
+      userId: "partition-batch-before-migration",
+      startBatchFirst: true,
+    });
+    await runRace({
+      userId: "partition-migration-before-batch",
+      startBatchFirst: false,
     });
   });
 

@@ -7,11 +7,12 @@
  * `user_confirmed`. Capped at 20.
  */
 import type { ClaimEvidence, ContextSectionPreferences } from "../types";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { aliasedTable, and, desc, eq, inArray } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
-import { claims, nodeMetadata } from "~/db/schema";
+import { claims, nodeMetadata, nodes } from "~/db/schema";
 import { PREDICATE_POLICIES } from "~/lib/claims/predicate-policies";
 import { partitionAccessCondition } from "~/lib/partition-access";
+import { claimEndpointOwnershipCondition } from "~/lib/query/claim-endpoint-access";
 import type {
   ContextPartitionKey,
   MemoryAccessScope,
@@ -62,6 +63,8 @@ export async function assemblePreferencesSection(
 ): Promise<ContextSectionPreferences | null> {
   if (PREFERENCE_PREDICATES.length === 0) return null;
 
+  const subjectNode = aliasedTable(nodes, "preferenceSubjectNode");
+
   const rows: PreferenceRow[] = await db
     .select({
       claimId: claims.id,
@@ -72,6 +75,7 @@ export async function assemblePreferencesSection(
       subjectLabel: nodeMetadata.label,
     })
     .from(claims)
+    .innerJoin(subjectNode, eq(subjectNode.id, claims.subjectNodeId))
     .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, claims.subjectNodeId))
     .where(
       and(
@@ -86,6 +90,16 @@ export async function assemblePreferencesSection(
         eq(claims.status, "active"),
         inArray(claims.predicate, [...PREFERENCE_PREDICATES]),
         inArray(claims.assertedByKind, [...TRUSTED_KINDS]),
+        claimEndpointOwnershipCondition(
+          {
+            claimUserId: claims.userId,
+            claimPartitionKey: claims.partitionKey,
+            subjectUserId: subjectNode.userId,
+            subjectPartitionKey: subjectNode.partitionKey,
+            objectNodeId: claims.objectNodeId,
+          },
+          userId,
+        ),
       ),
     )
     .orderBy(desc(claims.statedAt))

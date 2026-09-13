@@ -10,7 +10,7 @@
 // (same as src/routes/digest.post.ts), which is what lets the route test
 // stub it via vi.stubGlobal.
 import { defineEventHandler } from "h3";
-import { batchQueue, ROLLUP_JOB_OPTIONS } from "~/lib/queues";
+import { batchQueue, redisConnection, ROLLUP_JOB_OPTIONS } from "~/lib/queues";
 import { getRequestAccessScope } from "~/lib/request-access";
 import {
   rollupRequestSchema,
@@ -26,7 +26,7 @@ export default defineEventHandler(async (event) => {
   const params = rollupRequestSchema.parse(await readBody(event));
   const db = await useDatabase();
   const accessScope = getRequestAccessScope(event);
-  const partitions = await resolveWorkspacePartitions(
+  const resolvedPartitions = await resolveWorkspacePartitions(
     db,
     params.userId,
     params.partitionKey,
@@ -35,9 +35,24 @@ export default defineEventHandler(async (event) => {
   await assertWorkspaceOperationReady(
     db,
     params.userId,
-    partitions,
+    resolvedPartitions,
     accessScope,
   );
+  let partitions = resolvedPartitions;
+  if (
+    accessScope === "workspace" &&
+    params.partitionKey === undefined &&
+    partitions.length > 1 &&
+    params.maxLlmCalls > 0
+  ) {
+    const cursor = await redisConnection.incr(
+      batchQueue.toKey(`rollup-fair-cursor:${params.userId}`),
+    );
+    const offset = (cursor - 1) % partitions.length;
+    partitions = partitions.map(
+      (_, index) => partitions[(index + offset) % partitions.length]!,
+    );
+  }
   const baseBudget =
     partitions.length === 0
       ? 0

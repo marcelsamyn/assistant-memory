@@ -19,10 +19,12 @@ import {
   getWorkspaceAtlasEntries,
 } from "~/lib/atlas";
 import { assembleAtlasSection } from "~/lib/context/sections/atlas";
+import { findDayNode } from "~/lib/graph";
 import {
   getSourceIngestionOperationById,
   resolveSourceProcessingPartition,
 } from "~/lib/ingestion/source-processing";
+import { pruneStaleNodesWorkspace } from "~/lib/jobs/prune-stale-nodes";
 import {
   ensurePersonalPartition,
   partitionAccessCondition,
@@ -578,5 +580,822 @@ describeIfServer("workspace partition access", () => {
         accessScope: "workspace",
       }),
     ).resolves.toMatchObject({ operationId, sourceId: migratingSource });
+  });
+
+  it("returns every active workspace day memory after deduplication", async () => {
+    const date = "2026-05-01";
+    const dayA = newTypeId("node");
+    const dayB = newTypeId("node");
+    const activeNodeIds = Array.from({ length: 204 }, () => newTypeId("node"));
+    const inactiveNodeId = newTypeId("node");
+    const foreignNodeId = newTypeId("node");
+    const crossPartitionNodeId = newTypeId("node");
+    const sourceA = newTypeId("source");
+    const sourceB = newTypeId("source");
+
+    await database.insert(nodes).values([
+      {
+        id: dayA,
+        userId,
+        partitionKey: partitionA,
+        nodeType: "Temporal",
+      },
+      {
+        id: dayB,
+        userId,
+        partitionKey: partitionB,
+        nodeType: "Temporal",
+      },
+      ...activeNodeIds.map((id, index) => ({
+        id,
+        userId,
+        partitionKey: index < 102 ? partitionA : partitionB,
+        nodeType: "Object" as const,
+      })),
+      {
+        id: foreignNodeId,
+        userId: otherUserId,
+        partitionKey: partitionA,
+        nodeType: "Object",
+      },
+      {
+        id: crossPartitionNodeId,
+        userId,
+        partitionKey: partitionB,
+        nodeType: "Object",
+      },
+    ]);
+    await client.query(`ALTER TABLE "nodes" DISABLE TRIGGER USER`);
+    try {
+      await database.insert(nodes).values({
+        id: inactiveNodeId,
+        userId,
+        partitionKey: quarantined,
+        nodeType: "Object",
+      });
+    } finally {
+      await client.query(`ALTER TABLE "nodes" ENABLE TRIGGER USER`);
+    }
+    await database.insert(nodeMetadata).values([
+      { id: newTypeId("node_metadata"), nodeId: dayA, label: date },
+      { id: newTypeId("node_metadata"), nodeId: dayB, label: date },
+      ...activeNodeIds.map((nodeId, index) => ({
+        id: newTypeId("node_metadata"),
+        nodeId,
+        label: `Day memory ${index}`,
+        description: `Complete day memory ${index}`,
+      })),
+      {
+        id: newTypeId("node_metadata"),
+        nodeId: inactiveNodeId,
+        label: "Inactive day memory",
+      },
+      {
+        id: newTypeId("node_metadata"),
+        nodeId: foreignNodeId,
+        label: "Foreign day memory",
+      },
+      {
+        id: newTypeId("node_metadata"),
+        nodeId: crossPartitionNodeId,
+        label: "Cross-partition day memory",
+      },
+    ]);
+    await database.insert(sources).values([
+      {
+        id: sourceA,
+        userId,
+        type: "manual",
+        externalId: "workspace-day-large-source-a",
+        partitionKey: partitionA,
+      },
+      {
+        id: sourceB,
+        userId,
+        type: "manual",
+        externalId: "workspace-day-large-source-b",
+        partitionKey: partitionB,
+      },
+    ]);
+    const activeClaims = activeNodeIds.map((nodeId, index) => ({
+      id: newTypeId("claim"),
+      userId,
+      partitionKey: index < 102 ? partitionA : partitionB,
+      subjectNodeId: nodeId,
+      objectNodeId: index < 102 ? dayA : dayB,
+      predicate: "OCCURRED_ON" as const,
+      statement: `Day memory ${index} occurred on ${date}.`,
+      sourceId: index < 102 ? sourceA : sourceB,
+      assertedByKind: "user" as const,
+      statedAt: new Date("2026-05-01T12:00:00Z"),
+    }));
+    await database.insert(claims).values([
+      ...activeClaims,
+      {
+        ...activeClaims[0]!,
+        id: newTypeId("claim"),
+        statement: `Day memory 0 was also recorded on ${date}.`,
+      },
+    ]);
+    await client.query(`ALTER TABLE "claims" DISABLE TRIGGER USER`);
+    try {
+      await database.insert(claims).values([
+        {
+          id: newTypeId("claim"),
+          userId,
+          partitionKey: partitionA,
+          subjectNodeId: foreignNodeId,
+          objectNodeId: dayA,
+          predicate: "OCCURRED_ON",
+          statement: "Foreign day memory must stay hidden.",
+          sourceId: sourceA,
+          assertedByKind: "user",
+          statedAt: new Date("2026-05-01T13:00:00Z"),
+        },
+        {
+          id: newTypeId("claim"),
+          userId,
+          partitionKey: partitionA,
+          subjectNodeId: inactiveNodeId,
+          objectNodeId: dayA,
+          predicate: "OCCURRED_ON",
+          statement: "Inactive day memory must stay hidden.",
+          sourceId: sourceA,
+          assertedByKind: "user",
+          statedAt: new Date("2026-05-01T14:00:00Z"),
+        },
+        {
+          id: newTypeId("claim"),
+          userId,
+          partitionKey: partitionA,
+          subjectNodeId: crossPartitionNodeId,
+          objectNodeId: dayA,
+          predicate: "OCCURRED_ON",
+          statement: "Cross-partition day memory must stay hidden.",
+          sourceId: sourceA,
+          assertedByKind: "user",
+          statedAt: new Date("2026-05-01T15:00:00Z"),
+        },
+      ]);
+    } finally {
+      await client.query(`ALTER TABLE "claims" ENABLE TRIGGER USER`);
+    }
+
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+    try {
+      const { queryDayMemories } = await import("./query/day");
+      const result = await queryDayMemories({
+        userId,
+        date,
+        includeFormattedResult: true,
+        accessScope: "workspace",
+      });
+      const formattedResult = result.formattedResult ?? "";
+
+      expect(result.nodeCount).toBe(activeNodeIds.length);
+      expect(new Set(result.nodes.map((node) => node.id)).size).toBe(
+        activeNodeIds.length,
+      );
+      expect(result.nodes.map((node) => node.id)).toEqual(
+        expect.arrayContaining(activeNodeIds),
+      );
+      for (const index of activeNodeIds.keys()) {
+        expect(formattedResult).toContain(`**Day memory ${index}**`);
+      }
+      expect(formattedResult).not.toContain("Foreign day memory");
+      expect(formattedResult).not.toContain("Inactive day memory");
+      expect(formattedResult).not.toContain("Cross-partition day memory");
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+    }
+  });
+
+  it("reads day memories from every active workspace partition", async () => {
+    const manyUserId = "workspace-access-many-days";
+    const manyForeignUserId = "workspace-access-many-days-foreign";
+    const date = "2026-05-02";
+    const activePartitions = Array.from({ length: 65 }, (_, index) =>
+      contextPartitionKeySchema.parse(
+        `room:day-${String(index).padStart(2, "0")}`,
+      ),
+    );
+    const inactivePartition = contextPartitionKeySchema.parse(
+      "room:day-quarantined",
+    );
+    const dayIds = Array.from({ length: 65 }, () => newTypeId("node"));
+    const lastDayId = [...dayIds].sort().at(-1)!;
+    const lastPartition = activePartitions[dayIds.indexOf(lastDayId)]!;
+    const activeMemoryId = newTypeId("node");
+    const inactiveDayId = newTypeId("node");
+    const inactiveMemoryId = newTypeId("node");
+    const foreignDayId = newTypeId("node");
+    const foreignMemoryId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const foreignSourceId = newTypeId("source");
+
+    await database
+      .insert(users)
+      .values([{ id: manyUserId }, { id: manyForeignUserId }]);
+    await database.insert(memoryPartitions).values([
+      ...activePartitions.map((partitionKey) => ({
+        userId: manyUserId,
+        partitionKey,
+        status: "active" as const,
+      })),
+      {
+        userId: manyUserId,
+        partitionKey: inactivePartition,
+        status: "quarantined",
+      },
+      {
+        userId: manyForeignUserId,
+        partitionKey: activePartitions[0]!,
+        status: "active",
+      },
+    ]);
+    await database.insert(partitionMigrationState).values([
+      { userId: manyUserId, state: "migrated", version: 1 },
+      { userId: manyForeignUserId, state: "migrated", version: 1 },
+    ]);
+    await database.insert(nodes).values([
+      ...dayIds.map((id, index) => ({
+        id,
+        userId: manyUserId,
+        partitionKey: activePartitions[index]!,
+        nodeType: "Temporal" as const,
+      })),
+      {
+        id: activeMemoryId,
+        userId: manyUserId,
+        partitionKey: lastPartition,
+        nodeType: "Person" as const,
+      },
+      {
+        id: foreignDayId,
+        userId: manyForeignUserId,
+        partitionKey: activePartitions[0]!,
+        nodeType: "Temporal" as const,
+      },
+      {
+        id: foreignMemoryId,
+        userId: manyForeignUserId,
+        partitionKey: activePartitions[0]!,
+        nodeType: "Person" as const,
+      },
+    ]);
+    await client.query(`ALTER TABLE "nodes" DISABLE TRIGGER USER`);
+    try {
+      await database.insert(nodes).values([
+        {
+          id: inactiveDayId,
+          userId: manyUserId,
+          partitionKey: inactivePartition,
+          nodeType: "Temporal",
+        },
+        {
+          id: inactiveMemoryId,
+          userId: manyUserId,
+          partitionKey: inactivePartition,
+          nodeType: "Person",
+        },
+      ]);
+    } finally {
+      await client.query(`ALTER TABLE "nodes" ENABLE TRIGGER USER`);
+    }
+    await database.insert(nodeMetadata).values([
+      ...dayIds.map((nodeId) => ({
+        id: newTypeId("node_metadata"),
+        nodeId,
+        label: date,
+      })),
+      {
+        id: newTypeId("node_metadata"),
+        nodeId: activeMemoryId,
+        label: "Active many-partition memory",
+      },
+      {
+        id: newTypeId("node_metadata"),
+        nodeId: inactiveDayId,
+        label: date,
+      },
+      {
+        id: newTypeId("node_metadata"),
+        nodeId: inactiveMemoryId,
+        label: "Inactive many-partition memory",
+      },
+      {
+        id: newTypeId("node_metadata"),
+        nodeId: foreignDayId,
+        label: date,
+      },
+      {
+        id: newTypeId("node_metadata"),
+        nodeId: foreignMemoryId,
+        label: "Foreign many-partition memory",
+      },
+    ]);
+    await database.insert(sources).values([
+      {
+        id: sourceId,
+        userId: manyUserId,
+        type: "manual",
+        externalId: "workspace-many-days-source",
+        partitionKey: lastPartition,
+      },
+      {
+        id: foreignSourceId,
+        userId: manyForeignUserId,
+        type: "manual",
+        externalId: "workspace-many-days-foreign-source",
+        partitionKey: activePartitions[0]!,
+      },
+    ]);
+    await database.insert(claims).values({
+      id: newTypeId("claim"),
+      userId: manyUserId,
+      partitionKey: lastPartition,
+      subjectNodeId: activeMemoryId,
+      objectNodeId: lastDayId,
+      predicate: "OCCURRED_ON",
+      statement: `Active memory occurred on ${date}.`,
+      sourceId,
+      assertedByKind: "user",
+      statedAt: new Date("2026-05-02T12:00:00Z"),
+    });
+    await client.query(`ALTER TABLE "claims" DISABLE TRIGGER USER`);
+    try {
+      await database.insert(claims).values([
+        {
+          id: newTypeId("claim"),
+          userId: manyUserId,
+          partitionKey: inactivePartition,
+          subjectNodeId: inactiveMemoryId,
+          objectNodeId: inactiveDayId,
+          predicate: "OCCURRED_ON",
+          statement: `Inactive memory occurred on ${date}.`,
+          sourceId,
+          assertedByKind: "user",
+          statedAt: new Date("2026-05-02T13:00:00Z"),
+        },
+        {
+          id: newTypeId("claim"),
+          userId: manyUserId,
+          partitionKey: activePartitions[0]!,
+          subjectNodeId: foreignMemoryId,
+          objectNodeId: foreignDayId,
+          predicate: "OCCURRED_ON",
+          statement: `Foreign memory occurred on ${date}.`,
+          sourceId,
+          assertedByKind: "user",
+          statedAt: new Date("2026-05-02T14:00:00Z"),
+        },
+      ]);
+    } finally {
+      await client.query(`ALTER TABLE "claims" ENABLE TRIGGER USER`);
+    }
+
+    expect(await findDayNode(database, manyUserId, date, lastPartition)).toBe(
+      lastDayId,
+    );
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+    try {
+      const { queryDayMemories } = await import("./query/day");
+      await expect(
+        queryDayMemories({
+          userId: manyUserId,
+          date,
+          includeFormattedResult: true,
+          accessScope: "workspace",
+        }),
+      ).resolves.toMatchObject({
+        nodeCount: 1,
+        nodes: [
+          expect.objectContaining({
+            id: activeMemoryId,
+            nodeType: "Person",
+          }),
+        ],
+        formattedResult: expect.stringContaining(
+          "Active many-partition memory",
+        ),
+      });
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+    }
+  });
+
+  it("does not cap complete workspace atlas reads before ownership checks", async () => {
+    const largeUserId = "workspace-access-large-atlas";
+    const foreignUserId = "workspace-access-large-atlas-foreign";
+    const assistantId = "assistant-workspace-large";
+    const activePartition =
+      contextPartitionKeySchema.parse("room:large-active");
+    const secondPartition =
+      contextPartitionKeySchema.parse("room:large-second");
+    const inactivePartition = contextPartitionKeySchema.parse(
+      "room:large-quarantined",
+    );
+    const sourceId = newTypeId("source");
+    const userAtlasIds = Array.from({ length: 33 }, () => newTypeId("node"));
+    const assistantAtlasIds = Array.from({ length: 33 }, () =>
+      newTypeId("node"),
+    );
+    const assistantAtlasId = assistantAtlasIds[0]!;
+    const endpointIds = Array.from({ length: 501 }, () => newTypeId("node"));
+    const inactiveEndpointId = newTypeId("node");
+    const foreignEndpointId = newTypeId("node");
+    const crossPartitionEndpointId = newTypeId("node");
+
+    await database
+      .insert(users)
+      .values([{ id: largeUserId }, { id: foreignUserId }]);
+    await database.insert(memoryPartitions).values([
+      { userId: largeUserId, partitionKey: activePartition, status: "active" },
+      { userId: largeUserId, partitionKey: secondPartition, status: "active" },
+      {
+        userId: largeUserId,
+        partitionKey: inactivePartition,
+        status: "quarantined",
+      },
+      {
+        userId: foreignUserId,
+        partitionKey: activePartition,
+        status: "active",
+      },
+    ]);
+    await database.insert(nodes).values([
+      ...userAtlasIds.map((id) => ({
+        id,
+        userId: largeUserId,
+        partitionKey: activePartition,
+        nodeType: "Atlas" as const,
+      })),
+      ...assistantAtlasIds.map((id) => ({
+        id,
+        userId: largeUserId,
+        partitionKey: activePartition,
+        nodeType: "Atlas" as const,
+      })),
+      ...endpointIds.map((id) => ({
+        id,
+        userId: largeUserId,
+        partitionKey: activePartition,
+        nodeType: "Object" as const,
+      })),
+      {
+        id: inactiveEndpointId,
+        userId: largeUserId,
+        partitionKey: inactivePartition,
+        nodeType: "Object" as const,
+      },
+      {
+        id: foreignEndpointId,
+        userId: foreignUserId,
+        partitionKey: activePartition,
+        nodeType: "Object" as const,
+      },
+      {
+        id: crossPartitionEndpointId,
+        userId: largeUserId,
+        partitionKey: secondPartition,
+        nodeType: "Object" as const,
+      },
+    ]);
+    await database.insert(nodeMetadata).values([
+      ...userAtlasIds.map((nodeId, index) => ({
+        id: newTypeId("node_metadata"),
+        nodeId,
+        label: "Atlas",
+        description: `Atlas entry ${index}`,
+      })),
+      ...assistantAtlasIds.map((nodeId, index) => ({
+        id: newTypeId("node_metadata"),
+        nodeId,
+        label: assistantId,
+        description: `Assistant atlas entry ${index}`,
+      })),
+    ]);
+    await database.insert(sources).values({
+      id: sourceId,
+      userId: largeUserId,
+      type: "manual",
+      externalId: "workspace-large-atlas-source",
+      partitionKey: activePartition,
+    });
+    await database.insert(claims).values(
+      endpointIds.map((objectNodeId) => ({
+        id: newTypeId("claim"),
+        userId: largeUserId,
+        partitionKey: activePartition,
+        subjectNodeId: assistantAtlasId,
+        objectNodeId,
+        predicate: "OWNS" as const,
+        statement: "Assistant atlas owns an endpoint.",
+        sourceId,
+        assertedByKind: "system" as const,
+        statedAt: new Date("2026-02-01T00:00:00Z"),
+      })),
+    );
+    // These malformed edges model historical rows that were written before
+    // partition integrity was enforced. They must never enter a workspace
+    // result after migration.
+    await client.query(`ALTER TABLE "claims" DISABLE TRIGGER USER`);
+    try {
+      await database.insert(claims).values([
+        {
+          id: newTypeId("claim"),
+          userId: largeUserId,
+          partitionKey: activePartition,
+          subjectNodeId: assistantAtlasId,
+          objectNodeId: inactiveEndpointId,
+          predicate: "OWNS",
+          statement: "Quarantined endpoint must stay hidden.",
+          sourceId,
+          assertedByKind: "system",
+          statedAt: new Date("2026-02-02T00:00:00Z"),
+        },
+        {
+          id: newTypeId("claim"),
+          userId: largeUserId,
+          partitionKey: activePartition,
+          subjectNodeId: assistantAtlasId,
+          objectNodeId: foreignEndpointId,
+          predicate: "OWNS",
+          statement: "Foreign endpoint must stay hidden.",
+          sourceId,
+          assertedByKind: "system",
+          statedAt: new Date("2026-02-03T00:00:00Z"),
+        },
+        {
+          id: newTypeId("claim"),
+          userId: largeUserId,
+          partitionKey: activePartition,
+          subjectNodeId: assistantAtlasId,
+          objectNodeId: crossPartitionEndpointId,
+          predicate: "OWNS",
+          statement: "Cross-partition endpoint must stay hidden.",
+          sourceId,
+          assertedByKind: "system",
+          statedAt: new Date("2026-02-04T00:00:00Z"),
+        },
+      ]);
+    } finally {
+      await client.query(`ALTER TABLE "claims" ENABLE TRIGGER USER`);
+    }
+    await database.insert(partitionMigrationState).values({
+      userId: largeUserId,
+      state: "migrated",
+    });
+
+    const atlasEntries = await getWorkspaceAtlasEntries(
+      database,
+      largeUserId,
+      assistantId,
+    );
+    expect(atlasEntries.user).toHaveLength(33);
+    expect(atlasEntries.assistant).toHaveLength(33);
+
+    const relatedIds = await getWorkspaceAssistantAtlasNodeIds(
+      database,
+      largeUserId,
+      assistantId,
+    );
+    expect(relatedIds).toHaveLength(501);
+    expect(relatedIds).toEqual(expect.arrayContaining(endpointIds));
+    expect(relatedIds).not.toContain(inactiveEndpointId);
+    expect(relatedIds).not.toContain(foreignEndpointId);
+    expect(relatedIds).not.toContain(crossPartitionEndpointId);
+  });
+
+  it("ranks stale candidates across active partitions under one total limit", async () => {
+    const pruneUserId = "workspace-stale-global";
+    const pruneOtherUserId = "workspace-stale-foreign";
+    const prunePartitionA = contextPartitionKeySchema.parse("workspace:a");
+    const prunePartitionB = contextPartitionKeySchema.parse("workspace:b");
+    const pruneInactive = contextPartitionKeySchema.parse("workspace:inactive");
+    await database
+      .insert(users)
+      .values([{ id: pruneUserId }, { id: pruneOtherUserId }]);
+    await database.insert(memoryPartitions).values([
+      { userId: pruneUserId, partitionKey: prunePartitionA, status: "active" },
+      { userId: pruneUserId, partitionKey: prunePartitionB, status: "active" },
+      {
+        userId: pruneUserId,
+        partitionKey: pruneInactive,
+        status: "quarantined",
+      },
+    ]);
+    await database.insert(partitionMigrationState).values({
+      userId: pruneUserId,
+      state: "migrated",
+    });
+
+    const highId = newTypeId("node");
+    const lowId = newTypeId("node");
+    const selfId = newTypeId("node");
+    const inactiveId = newTypeId("node");
+    const foreignId = newTypeId("node");
+    await client.query(`ALTER TABLE "nodes" DISABLE TRIGGER USER`);
+    try {
+      await database.insert(nodes).values([
+        {
+          id: highId,
+          userId: pruneUserId,
+          partitionKey: prunePartitionB,
+          nodeType: "Concept",
+          createdAt: new Date("2025-01-01T00:00:00Z"),
+        },
+        {
+          id: lowId,
+          userId: pruneUserId,
+          partitionKey: prunePartitionA,
+          nodeType: "Concept",
+          createdAt: new Date("2025-01-01T00:00:00Z"),
+        },
+        {
+          id: selfId,
+          userId: pruneUserId,
+          partitionKey: prunePartitionA,
+          nodeType: "Person",
+          createdAt: new Date("2025-01-01T00:00:00Z"),
+        },
+        {
+          id: inactiveId,
+          userId: pruneUserId,
+          partitionKey: pruneInactive,
+          nodeType: "Concept",
+          createdAt: new Date("2025-01-01T00:00:00Z"),
+        },
+        {
+          id: foreignId,
+          userId: pruneOtherUserId,
+          partitionKey: prunePartitionB,
+          nodeType: "Concept",
+          createdAt: new Date("2025-01-01T00:00:00Z"),
+        },
+      ]);
+    } finally {
+      await client.query(`ALTER TABLE "nodes" ENABLE TRIGGER USER`);
+    }
+    await database.insert(nodeMetadata).values([
+      {
+        nodeId: highId,
+        label: "High score",
+      },
+      {
+        nodeId: lowId,
+        label: "Low score",
+      },
+      {
+        nodeId: selfId,
+        label: "Owner",
+        additionalData: { isUserSelf: true },
+      },
+      {
+        nodeId: inactiveId,
+        label: "Inactive",
+      },
+      {
+        nodeId: foreignId,
+        label: "Foreign",
+      },
+    ]);
+
+    const sourceId = newTypeId("source");
+    await database.insert(sources).values({
+      id: sourceId,
+      userId: pruneUserId,
+      partitionKey: prunePartitionA,
+      type: "manual",
+      externalId: "workspace-stale-global-source",
+    });
+    await database.insert(claims).values({
+      id: newTypeId("claim"),
+      userId: pruneUserId,
+      partitionKey: prunePartitionA,
+      subjectNodeId: lowId,
+      objectValue: "grounded",
+      predicate: "HAS_ATTRIBUTE",
+      statement: "The low score node has grounded evidence.",
+      sourceId,
+      assertedByKind: "user",
+      statedAt: new Date("2025-01-01T00:00:00Z"),
+    });
+
+    const dryRun = await pruneStaleNodesWorkspace(
+      {
+        userId: pruneUserId,
+        limit: 1,
+        sampleLimit: 10,
+        minIdleDays: 30,
+        minScore: 0.5,
+      },
+      database,
+    );
+    expect(dryRun.scannedCount).toBe(3);
+    expect(dryRun.candidateCount).toBe(2);
+    expect(dryRun.deletedCount).toBe(0);
+    expect(dryRun.hasMore).toBe(true);
+    expect(dryRun.candidates.map((node) => node.id)).toEqual([highId]);
+
+    const applied = await pruneStaleNodesWorkspace(
+      {
+        userId: pruneUserId,
+        dryRun: false,
+        limit: 1,
+        sampleLimit: 10,
+        minIdleDays: 30,
+        minScore: 0.5,
+      },
+      database,
+    );
+    expect(applied.deletedCount).toBe(1);
+    expect(applied.candidates.map((node) => node.id)).toEqual([highId]);
+    const remaining = await database
+      .select({ id: nodes.id })
+      .from(nodes)
+      .where(eq(nodes.userId, pruneUserId));
+    expect(remaining.map((node) => node.id)).toEqual(
+      expect.arrayContaining([lowId, selfId, inactiveId]),
+    );
+    expect(remaining.map((node) => node.id)).not.toContain(highId);
+    expect(remaining.map((node) => node.id)).not.toContain(foreignId);
+  });
+
+  it("reads mixed legacy and active stale rows but rejects a legacy mutation", async () => {
+    const mixedUserId = "workspace-stale-mixed";
+    const mixedPartition = contextPartitionKeySchema.parse("workspace:mixed");
+    const activeId = newTypeId("node");
+    const legacyId = newTypeId("node");
+    await database.insert(users).values({ id: mixedUserId });
+    await database.insert(memoryPartitions).values({
+      userId: mixedUserId,
+      partitionKey: mixedPartition,
+      status: "active",
+    });
+    await database.insert(partitionMigrationState).values({
+      userId: mixedUserId,
+      state: "migrating",
+    });
+    await client.query(`ALTER TABLE "nodes" DISABLE TRIGGER USER`);
+    try {
+      await database.insert(nodes).values([
+        {
+          id: activeId,
+          userId: mixedUserId,
+          partitionKey: mixedPartition,
+          nodeType: "Concept",
+          createdAt: new Date("2025-01-01T00:00:00Z"),
+        },
+        {
+          id: legacyId,
+          userId: mixedUserId,
+          nodeType: "Concept",
+          createdAt: new Date("2025-01-01T00:00:00Z"),
+        },
+      ]);
+    } finally {
+      await client.query(`ALTER TABLE "nodes" ENABLE TRIGGER USER`);
+    }
+    await database.insert(nodeMetadata).values([
+      { nodeId: activeId, label: "Active" },
+      { nodeId: legacyId, label: "Legacy" },
+    ]);
+
+    const dryRun = await pruneStaleNodesWorkspace(
+      {
+        userId: mixedUserId,
+        minIdleDays: 30,
+        minScore: 0.5,
+        sampleLimit: 10,
+      },
+      database,
+    );
+    expect(dryRun.scannedCount).toBe(2);
+    expect(dryRun.candidateCount).toBe(2);
+    expect(dryRun.deletedCount).toBe(0);
+
+    await expect(
+      pruneStaleNodesWorkspace(
+        {
+          userId: mixedUserId,
+          dryRun: false,
+          minIdleDays: 30,
+          minScore: 0.5,
+        },
+        database,
+      ),
+    ).rejects.toMatchObject({ code: "PARTITION_REQUIRED" });
+    const remaining = await database
+      .select({ id: nodes.id })
+      .from(nodes)
+      .where(eq(nodes.userId, mixedUserId));
+    expect(remaining.map((node) => node.id).sort()).toEqual(
+      [activeId, legacyId].sort(),
+    );
   });
 });

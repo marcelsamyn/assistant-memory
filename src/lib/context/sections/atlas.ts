@@ -30,9 +30,9 @@ export async function assembleAtlasSection(
   accessScope?: MemoryAccessScope | undefined,
 ): Promise<ContextSectionAtlas | null> {
   if (accessScope === "workspace" && partitionKey === undefined) {
-    // The workspace helper applies one bounded, active-partition query and
-    // returns partition labels so descriptions from separate rooms stay
-    // distinguishable in the combined section.
+    // The workspace helper reads active partitions in one ownership-bounded
+    // query and returns partition labels so descriptions from separate rooms
+    // stay distinguishable in the combined section.
     const { user } = await getWorkspaceAtlasEntries(db, userId, "");
     const content = user
       .filter((row) => row.description?.trim())

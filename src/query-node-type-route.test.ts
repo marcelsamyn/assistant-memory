@@ -189,4 +189,63 @@ describe("POST /query/node-type", () => {
     );
     expect(response.nodes.map((node) => node.id)).toEqual([personA, personB]);
   });
+
+  it("forwards every workspace day node when more than 64 partitions are active", async () => {
+    const userId = "user_node_type_many_partitions";
+    const dayNodeIds = Array.from({ length: 65 }, () => newTypeId("node"));
+    const personNodeId = newTypeId("node");
+    const statedAt = new Date("2026-05-02T12:00:00.000Z");
+
+    requestAccessMocks.getRequestAccessScope.mockReturnValue("workspace");
+    vi.stubGlobal("readBody", async () => ({
+      userId,
+      date: "2026-05-02",
+      types: ["Person"],
+      includeFormattedResult: false,
+    }));
+    graphMocks.findDayNodes.mockResolvedValue(dayNodeIds);
+    graphMocks.findOneHopNodes.mockResolvedValue([
+      {
+        id: personNodeId,
+        type: "Person",
+        timestamp: statedAt,
+        label: "Late partition person",
+        description: null,
+        claimId: newTypeId("claim"),
+        claimSubjectId: personNodeId,
+        claimObjectId: dayNodeIds.at(-1)!,
+        predicate: "OCCURRED_ON",
+        statement: "Late partition person occurred on 2026-05-02.",
+        scope: "personal",
+        assertedByKind: "user",
+        subjectLabel: "Late partition person",
+        objectLabel: "2026-05-02",
+      },
+    ] satisfies OneHopNode[]);
+
+    const response = queryNodeTypeResponseSchema.parse(
+      await handler({} as H3Event),
+    );
+
+    expect(graphMocks.findDayNodes).toHaveBeenCalledWith(
+      expect.anything(),
+      userId,
+      "2026-05-02",
+      undefined,
+      "workspace",
+    );
+    expect(graphMocks.findOneHopNodes).toHaveBeenCalledWith(
+      expect.anything(),
+      userId,
+      dayNodeIds,
+      { accessScope: "workspace" },
+    );
+    expect(response.nodes).toEqual([
+      {
+        id: personNodeId,
+        nodeType: "Person",
+        metadata: { label: "Late partition person" },
+      },
+    ]);
+  });
 });

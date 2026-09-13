@@ -18,6 +18,7 @@ import {
   assertPartitionReadAllowed,
   partitionAccessCondition,
 } from "~/lib/partition-access";
+import { claimEndpointOwnershipCondition } from "~/lib/query/claim-endpoint-access";
 import type { MemoryAccessScope } from "~/lib/schemas/partition";
 import {
   type ChangeKind,
@@ -132,7 +133,7 @@ export async function queryRecentChanges(
   // EXISTS rather than a second join on `nodes` — a `nodes` self-join defeats
   // Drizzle's result-type inference and collapses the row type to `never`.
   const objectMeta = aliasedTable(nodeMetadata, "object_meta");
-  const objectNode = aliasedTable(nodes, "object_node");
+  const claimTypeObjectNode = aliasedTable(nodes, "claim_type_object_node");
 
   // Claims are kept when their subject or object node matches `nodeTypes`.
   const claimTypeFilter =
@@ -142,18 +143,18 @@ export async function queryRecentChanges(
           exists(
             db
               .select({ one: sql`1` })
-              .from(objectNode)
+              .from(claimTypeObjectNode)
               .where(
                 and(
-                  eq(objectNode.id, claims.objectNodeId),
-                  eq(objectNode.userId, userId),
+                  eq(claimTypeObjectNode.id, claims.objectNodeId),
+                  eq(claimTypeObjectNode.userId, userId),
                   partitionAccessCondition(
-                    objectNode.partitionKey,
+                    claimTypeObjectNode.partitionKey,
                     userId,
                     partitionKey,
                     accessScope,
                   ),
-                  inArray(objectNode.nodeType, nodeTypes),
+                  inArray(claimTypeObjectNode.nodeType, nodeTypes),
                 ),
               ),
           ),
@@ -187,7 +188,16 @@ export async function queryRecentChanges(
       and(
         eq(claims.userId, userId),
         claimPartitionFilter,
-        eq(nodes.userId, userId),
+        claimEndpointOwnershipCondition(
+          {
+            claimUserId: claims.userId,
+            claimPartitionKey: claims.partitionKey,
+            subjectUserId: nodes.userId,
+            subjectPartitionKey: nodes.partitionKey,
+            objectNodeId: claims.objectNodeId,
+          },
+          userId,
+        ),
         partitionAccessCondition(
           nodes.partitionKey,
           userId,

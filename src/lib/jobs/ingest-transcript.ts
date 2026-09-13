@@ -40,8 +40,10 @@ import {
   type SegmentedUtterance,
   type SegmentTranscriptClient,
 } from "~/lib/transcript/segment-transcript";
-import { getUserSelfAliases } from "~/lib/user-profile";
-import { ensureUserSelfIdentity } from "~/lib/user-self-identity";
+import {
+  ensureUserSelfIdentity,
+  ensureUserSelfIdentityFromProfile,
+} from "~/lib/user-self-identity";
 import { NodeTypeEnum, ScopeEnum } from "~/types/graph";
 import { typeIdSchema, type TypeId } from "~/types/typeid";
 
@@ -141,14 +143,18 @@ export async function ingestTranscript(
     throw new Error("Transcript ingestion produced zero utterances");
   }
 
-  const userSelfAliases =
-    userSelfAliasesOverride ?? (await getUserSelfAliases(db, userId));
-
   // WhatsApp (and other transcript hosts) send `userSelfAliasesOverride` per
   // request and never call /user/self-aliases, so the stored list may be
   // empty. Use the EFFECTIVE list so the self node still gets a distinguishing
   // label + aliases on the real ingestion path.
-  await ensureUserSelfIdentity(db, userId, userSelfAliases, partitionKey);
+  const userSelfAliases =
+    userSelfAliasesOverride === undefined
+      ? (await ensureUserSelfIdentityFromProfile(db, userId, partitionKey))
+          .aliases
+      : userSelfAliasesOverride;
+  if (userSelfAliasesOverride !== undefined) {
+    await ensureUserSelfIdentity(db, userId, userSelfAliases, partitionKey);
+  }
 
   const speakerLabels = utterances.map((u) => u.speakerLabel);
   const speakerMap = await resolveSpeakers({

@@ -941,8 +941,13 @@ describeIfServer("getConversationBootstrapContext", () => {
       const userId = "user_window";
       const sourceId = newTypeId("source");
       const subjectId = newTypeId("node");
+      const foreignObjectId = newTypeId("node");
+      const foreignSubjectId = newTypeId("node");
 
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [
+        "user_window_foreign",
+      ]);
       await client.query(
         `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "scope", "status")
            VALUES ($1, $2, 'conversation_message', 'msg_win', 'personal', 'completed')`,
@@ -955,6 +960,18 @@ describeIfServer("getConversationBootstrapContext", () => {
       await client.query(
         `INSERT INTO "node_metadata" ("id", "node_id", "label") VALUES ($1, $2, 'WinSubject')`,
         [newTypeId("node_metadata"), subjectId],
+      );
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Person')`,
+        [foreignObjectId, "user_window_foreign"],
+      );
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Person')`,
+        [foreignSubjectId, "user_window_foreign"],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label") VALUES ($1, $2, 'Foreign subject')`,
+        [newTypeId("node_metadata"), foreignSubjectId],
       );
 
       const asOf = new Date("2026-04-28T12:00:00.000Z");
@@ -1000,6 +1017,42 @@ describeIfServer("getConversationBootstrapContext", () => {
         `UPDATE "claims" SET "updated_at" = $1 WHERE "id" = $2`,
         [recentUpdated, recentId],
       );
+      await client.query(`ALTER TABLE "claims" DISABLE TRIGGER USER`);
+      try {
+        await client.query(
+          `INSERT INTO "claims" (
+             "id", "user_id", "subject_node_id", "object_node_id", "scope",
+             "predicate", "statement", "source_id", "asserted_by_kind",
+             "stated_at", "status", "updated_at"
+           ) VALUES ($1, $2, $3, $4, 'personal', 'HAS_STATUS',
+                     'Foreign supersession endpoint.', $5, 'user', $6, 'superseded', $6)`,
+          [
+            newTypeId("claim"),
+            userId,
+            subjectId,
+            foreignObjectId,
+            sourceId,
+            recentUpdated,
+          ],
+        );
+        await client.query(
+          `INSERT INTO "claims" (
+             "id", "user_id", "subject_node_id", "object_value", "scope",
+             "predicate", "statement", "source_id", "asserted_by_kind",
+             "stated_at", "status", "updated_at"
+           ) VALUES ($1, $2, $3, 'foreign subject value', 'personal', 'HAS_STATUS',
+                     'Foreign subject supersession.', $4, 'user', $5, 'superseded', $5)`,
+          [
+            newTypeId("claim"),
+            userId,
+            foreignSubjectId,
+            sourceId,
+            recentUpdated,
+          ],
+        );
+      } finally {
+        await client.query(`ALTER TABLE "claims" ENABLE TRIGGER USER`);
+      }
 
       const fakeRedis = createFakeRedis();
       vi.resetModules();
@@ -1020,6 +1073,8 @@ describeIfServer("getConversationBootstrapContext", () => {
         expect(recent).toBeDefined();
         expect(recent?.content).toContain("Inside window.");
         expect(recent?.content).not.toContain("Outside window.");
+        expect(recent?.content).not.toContain("Foreign supersession endpoint");
+        expect(recent?.content).not.toContain("Foreign subject");
       } finally {
         vi.doUnmock("~/utils/db");
         vi.doUnmock("../queues");
@@ -1123,7 +1178,12 @@ describeIfServer("getConversationBootstrapContext", () => {
       const sourceB = newTypeId("source");
       const personA = newTypeId("node");
       const personB = newTypeId("node");
+      const foreignObject = newTypeId("node");
+      const foreignSubject = newTypeId("node");
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [
+        "user_partitioned_preferences_foreign",
+      ]);
       await client.query(
         `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "partition_key")
          VALUES ($1, $2, 'conversation_message', 'prefs-a', $3),
@@ -1135,6 +1195,52 @@ describeIfServer("getConversationBootstrapContext", () => {
          VALUES ($1, $2, 'Person', $3), ($4, $2, 'Person', $5)`,
         [personA, userId, partitionA, personB, partitionB],
       );
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type", "partition_key")
+         VALUES ($1, $2, 'Person', $3)`,
+        [foreignObject, "user_partitioned_preferences_foreign", partitionA],
+      );
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type", "partition_key")
+         VALUES ($1, $2, 'Person', $3)`,
+        [foreignSubject, "user_partitioned_preferences_foreign", partitionA],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label") VALUES ($1, $2, 'Foreign subject')`,
+        [newTypeId("node_metadata"), foreignSubject],
+      );
+      const foreignObjectClaimId = newTypeId("claim");
+      const foreignSubjectClaimId = newTypeId("claim");
+      await client.query(`ALTER TABLE "claims" DISABLE TRIGGER USER`);
+      try {
+        await client.query(
+          `INSERT INTO "claims" (
+             "id", "user_id", "partition_key", "subject_node_id", "object_node_id",
+             "scope", "predicate", "object_value", "statement", "source_id",
+             "asserted_by_kind", "stated_at", "status"
+           ) VALUES ($1, $2, $3, $4, $5, 'personal', 'HAS_PREFERENCE', NULL,
+                     'Foreign preference endpoint.', $6, 'user', now(), 'active')`,
+          [
+            foreignObjectClaimId,
+            userId,
+            partitionA,
+            personA,
+            foreignObject,
+            sourceA,
+          ],
+        );
+        await client.query(
+          `INSERT INTO "claims" (
+             "id", "user_id", "partition_key", "subject_node_id", "object_value",
+             "scope", "predicate", "statement", "source_id", "asserted_by_kind",
+             "stated_at", "status"
+           ) VALUES ($1, $2, $3, $4, 'foreign subject value', 'personal',
+                     'HAS_PREFERENCE', 'Foreign subject preference.', $5, 'user', now(), 'active')`,
+          [foreignSubjectClaimId, userId, partitionA, foreignSubject, sourceA],
+        );
+      } finally {
+        await client.query(`ALTER TABLE "claims" ENABLE TRIGGER USER`);
+      }
       await database.insert(schema.claims).values([
         {
           id: newTypeId("claim"),
@@ -1172,6 +1278,12 @@ describeIfServer("getConversationBootstrapContext", () => {
       );
       expect(section?.content).toContain("room-a-only");
       expect(section?.content).not.toContain("room-b-only");
+      expect(section?.content).not.toContain("Foreign preference endpoint");
+      expect(section?.content).not.toContain("Foreign subject");
+      const evidenceClaimIds =
+        section?.evidence?.map((evidence) => evidence.claimId) ?? [];
+      expect(evidenceClaimIds).not.toContain(foreignObjectClaimId);
+      expect(evidenceClaimIds).not.toContain(foreignSubjectClaimId);
     });
   });
 });

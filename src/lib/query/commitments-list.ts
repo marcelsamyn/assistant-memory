@@ -32,6 +32,7 @@ import {
   assertPartitionReadAllowed,
   partitionAccessCondition,
 } from "~/lib/partition-access";
+import { claimEndpointOwnershipCondition } from "~/lib/query/claim-endpoint-access";
 import { commitmentRequestEvidenceSchema } from "~/lib/schemas/commitment-request-evidence";
 import type {
   CommitmentListItem,
@@ -193,7 +194,6 @@ export async function listCommitments(
   const ownerMetadata = aliasedTable(nodeMetadata, "ownerMetadata");
   const dueClaim = aliasedTable(claims, "dueClaim");
   const dueMetadata = aliasedTable(nodeMetadata, "dueMetadata");
-
   // Map each sort key onto its underlying column for both ORDER BY and keyset.
   // Wrap each in `sql` so the record collapses to a single `SQL` value type
   // regardless of the heterogeneous source columns.
@@ -218,6 +218,16 @@ export async function listCommitments(
     eq(claims.status, "active"),
     eq(claims.scope, "personal"),
     statusProvenanceFilter(claims.assertedByKind, provenance),
+    claimEndpointOwnershipCondition(
+      {
+        claimUserId: claims.userId,
+        claimPartitionKey: claims.partitionKey,
+        subjectUserId: nodes.userId,
+        subjectPartitionKey: nodes.partitionKey,
+        objectNodeId: claims.objectNodeId,
+      },
+      userId,
+    ),
     statuses === undefined || statuses.length === 0
       ? undefined
       : inArray(claims.objectValue, statuses),
@@ -306,6 +316,16 @@ export async function listCommitments(
         partitionFilter(ownerClaim.partitionKey),
         subJoinProvenanceFilter(ownerClaim.assertedByKind, provenance),
         isNotNull(ownerClaim.objectNodeId),
+        claimEndpointOwnershipCondition(
+          {
+            claimUserId: ownerClaim.userId,
+            claimPartitionKey: ownerClaim.partitionKey,
+            subjectUserId: nodes.userId,
+            subjectPartitionKey: nodes.partitionKey,
+            objectNodeId: ownerClaim.objectNodeId,
+          },
+          userId,
+        ),
       ),
     )
     .leftJoin(ownerMetadata, eq(ownerMetadata.nodeId, ownerClaim.objectNodeId))
@@ -320,6 +340,16 @@ export async function listCommitments(
         partitionFilter(dueClaim.partitionKey),
         subJoinProvenanceFilter(dueClaim.assertedByKind, provenance),
         isNotNull(dueClaim.objectNodeId),
+        claimEndpointOwnershipCondition(
+          {
+            claimUserId: dueClaim.userId,
+            claimPartitionKey: dueClaim.partitionKey,
+            subjectUserId: nodes.userId,
+            subjectPartitionKey: nodes.partitionKey,
+            objectNodeId: dueClaim.objectNodeId,
+          },
+          userId,
+        ),
       ),
     )
     .leftJoin(dueMetadata, eq(dueMetadata.nodeId, dueClaim.objectNodeId))

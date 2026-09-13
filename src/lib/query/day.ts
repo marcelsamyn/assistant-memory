@@ -85,9 +85,7 @@ export async function queryDayMemories(
     );
 
   const connectedNodes = workspaceAggregate
-    ? await connectedNodesQuery
-        .orderBy(asc(nodes.id), asc(claims.id))
-        .limit(200)
+    ? await connectedNodesQuery.orderBy(asc(nodes.id), asc(claims.id))
     : await connectedNodesQuery;
 
   const uniqueNodesMap = new Map<string, (typeof connectedNodes)[number]>();

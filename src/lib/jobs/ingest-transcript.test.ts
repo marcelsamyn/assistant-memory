@@ -257,7 +257,7 @@ describeIfServer("ingestTranscript", () => {
     };
   }
 
-  function applyCommonMocks(database: ReturnType<typeof drizzle>) {
+  async function applyCommonMocks(database: ReturnType<typeof drizzle>) {
     vi.resetModules();
     vi.doMock("~/utils/db", () => ({
       useDatabase: async () => database,
@@ -301,6 +301,8 @@ describeIfServer("ingestTranscript", () => {
     vi.doMock("../queues", () => ({
       batchQueue: { add: async () => undefined },
     }));
+    const { setSkipJobEnqueue } = await import("~/utils/test-overrides");
+    setSkipJobEnqueue(true);
   }
 
   function unmockCommon() {
@@ -325,7 +327,7 @@ describeIfServer("ingestTranscript", () => {
     await client.connect();
     const database = drizzle(client, { schema, casing: "snake_case" });
 
-    applyCommonMocks(database);
+    await applyCommonMocks(database);
     vi.doMock("../ai", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../ai")>()),
       createCompletionClient: async () => ({
@@ -641,7 +643,7 @@ describeIfServer("ingestTranscript", () => {
     await client.connect();
     const database = drizzle(client, { schema, casing: "snake_case" });
 
-    applyCommonMocks(database);
+    await applyCommonMocks(database);
     vi.doMock("../ai", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../ai")>()),
       createCompletionClient: async () => ({
@@ -717,7 +719,7 @@ describeIfServer("ingestTranscript", () => {
     await client.connect();
     const database = drizzle(client, { schema, casing: "snake_case" });
 
-    applyCommonMocks(database);
+    await applyCommonMocks(database);
     vi.doMock("../ai", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../ai")>()),
       createCompletionClient: async () => ({
@@ -815,7 +817,7 @@ describeIfServer("ingestTranscript", () => {
     // Captured so the LLM stub can emit the real self node id as subjectId.
     let selfNodeIdForStub = "";
 
-    applyCommonMocks(database);
+    await applyCommonMocks(database);
     vi.doMock("../ai", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../ai")>()),
       createCompletionClient: async () => ({

@@ -6,9 +6,14 @@
  * user-self speaker; the host calls `setUserSelfAliases` once per
  * configuration change.
  */
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
-import { userProfiles } from "~/db/schema";
+import {
+  memoryPartitions,
+  nodeMetadata,
+  nodes,
+  userProfiles,
+} from "~/db/schema";
 import type {
   ContextPartitionKey,
   MemoryAccessScope,
@@ -17,7 +22,10 @@ import {
   userProfileMetadataSchema,
   type UserProfileMetadata,
 } from "~/lib/schemas/user-profile-metadata";
-import { ensureUserSelfIdentity } from "~/lib/user-self-identity";
+import {
+  ensureUserSelfIdentity,
+  lockUserSelfIdentity,
+} from "~/lib/user-self-identity";
 import { newTypeId } from "~/types/typeid";
 
 /** Read `metadata` and parse with the schema. Empty/absent row → empty default. */
@@ -71,6 +79,7 @@ export async function setUserSelfAliases(
   // the requested partition is no longer active); committing the profile
   // first would leave configuration and the self node out of sync.
   await db.transaction(async (tx) => {
+    await lockUserSelfIdentity(tx, userId);
     const existing = await readMetadata(tx, userId);
     if (existing === null) {
       await tx.insert(userProfiles).values({
@@ -91,13 +100,59 @@ export async function setUserSelfAliases(
         .where(eq(userProfiles.userId, userId));
     }
 
-    await ensureUserSelfIdentity(
-      tx,
-      userId,
-      nextAliases,
-      partitionKey,
-      accessScope,
-    );
+    if (accessScope === "workspace" && partitionKey === undefined) {
+      const activeSelfRows = await tx
+        .select({ id: nodes.id, partitionKey: nodes.partitionKey })
+        .from(nodes)
+        .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
+        .where(
+          and(
+            eq(nodes.userId, userId),
+            eq(nodes.nodeType, "Person"),
+            sql`${nodes.partitionKey} IS NOT NULL`,
+            sql`${nodeMetadata.additionalData}->>'isUserSelf' = 'true'`,
+            sql`EXISTS (
+              SELECT 1
+              FROM ${memoryPartitions} AS active_partition
+              WHERE active_partition.user_id = ${userId}
+                AND active_partition.partition_key = ${nodes.partitionKey}
+                AND active_partition.status = 'active'
+            )`,
+          ),
+        )
+        .orderBy(nodes.partitionKey, nodes.id);
+
+      if (activeSelfRows.length > 0) {
+        for (const row of activeSelfRows) {
+          await ensureUserSelfIdentity(
+            tx,
+            userId,
+            nextAliases,
+            row.partitionKey ?? undefined,
+            "partition",
+            row.id,
+          );
+        }
+      } else {
+        // Preserve the legacy path before migration and let the existing
+        // helper create only memory:personal after migration.
+        await ensureUserSelfIdentity(
+          tx,
+          userId,
+          nextAliases,
+          undefined,
+          "workspace",
+        );
+      }
+    } else {
+      await ensureUserSelfIdentity(
+        tx,
+        userId,
+        nextAliases,
+        partitionKey,
+        accessScope,
+      );
+    }
   });
 
   return { aliases: nextAliases };

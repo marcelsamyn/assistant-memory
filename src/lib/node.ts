@@ -14,6 +14,7 @@ import {
   claims,
   sourceLinks,
   sources,
+  users,
 } from "~/db/schema";
 import { listAliasesForNodeIds } from "~/lib/alias";
 import { createClaim } from "~/lib/claim";
@@ -38,7 +39,9 @@ import {
   ensurePersonalPartition,
   partitionAccessCondition,
   preparePartitionWrite,
+  PartitionAccessError,
 } from "~/lib/partition-access";
+import { claimEndpointOwnershipCondition } from "~/lib/query/claim-endpoint-access";
 import type {
   ContextPartitionKey,
   MemoryAccessScope,
@@ -138,6 +141,16 @@ export async function getNodeById(
   // Fetch all active claims touching this node (subject or object).
   const srcMeta = aliasedTable(nodeMetadata, "srcMeta");
   const tgtMeta = aliasedTable(nodeMetadata, "tgtMeta");
+  const subjectUserId = sql`(
+    SELECT subject_endpoint.user_id
+      FROM "nodes" AS subject_endpoint
+     WHERE subject_endpoint.id = ${claims.subjectNodeId}
+  )`;
+  const subjectPartitionKey = sql`(
+    SELECT subject_endpoint.partition_key
+      FROM "nodes" AS subject_endpoint
+     WHERE subject_endpoint.id = ${claims.subjectNodeId}
+  )`;
 
   const predicateFilter =
     claimFilter?.predicates && claimFilter.predicates.length > 0
@@ -185,6 +198,16 @@ export async function getNodeById(
         statusFilter,
         predicateFilter,
         or(eq(claims.subjectNodeId, nodeId), eq(claims.objectNodeId, nodeId)),
+        claimEndpointOwnershipCondition(
+          {
+            claimUserId: claims.userId,
+            claimPartitionKey: claims.partitionKey,
+            subjectUserId,
+            subjectPartitionKey,
+            objectNodeId: claims.objectNodeId,
+          },
+          userId,
+        ),
       ),
     );
 
@@ -1137,8 +1160,17 @@ export async function batchDeleteNodes(
   const uniqueNodeIds = [...new Set(nodeIds)];
   await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
   return db.transaction(async (tx) => {
+    // Coordinate with migration transitions before observing any target
+    // partition. Both operations use the user's row as their transaction
+    // boundary, so a batch cannot validate legacy data and delete it after
+    // migration has started (or vice versa).
+    await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, userId))
+      .for("no key update");
     const existing = await tx
-      .select({ id: nodes.id })
+      .select({ id: nodes.id, partitionKey: nodes.partitionKey })
       .from(nodes)
       .where(
         and(
@@ -1157,6 +1189,16 @@ export async function batchDeleteNodes(
     // all-or-nothing contract for foreign, inactive, or missing targets.
     if (existing.length !== uniqueNodeIds.length) return 0;
 
+    // Workspace reads may select both legacy NULL rows and partitioned rows
+    // while migration is in progress. Validate every actual scope before the
+    // first delete so a mixed batch cannot partially mutate the graph.
+    const actualPartitions = new Set<ContextPartitionKey | undefined>(
+      existing.map((row) => row.partitionKey ?? undefined),
+    );
+    for (const actualPartitionKey of actualPartitions) {
+      await preparePartitionWrite(tx, userId, actualPartitionKey);
+    }
+
     const result = await tx
       .delete(nodes)
       .where(
@@ -1172,6 +1214,12 @@ export async function batchDeleteNodes(
         ),
       )
       .returning({ id: nodes.id });
+    if (result.length !== existing.length) {
+      throw new PartitionAccessError(
+        "PARTITION_UNAUTHORIZED",
+        `Node batch delete lost ownership or active partition access for user ${userId}`,
+      );
+    }
     return result.length;
   });
 }

@@ -11,6 +11,7 @@ import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "~/db/schema";
+import { getUserSelfAliases, setUserSelfAliases } from "~/lib/user-profile";
 import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId, type TypeId } from "~/types/typeid";
 
@@ -431,5 +432,279 @@ describeIfServer("pruneStaleNodes", () => {
     expect(result.candidates.map((node) => node.id).sort()).toEqual(
       [staleId, strongId].sort(),
     );
+  });
+
+  it("protects a self marker even when no self alias exists", async () => {
+    const markerSelfId = newTypeId("node");
+    await seedNode(rootClient, {
+      id: markerSelfId,
+      nodeType: "Person",
+      label: "Self without alias",
+      createdAt: daysAgo(400),
+    });
+    await rootClient.query(
+      `UPDATE "node_metadata" SET "additional_data" = '{"isUserSelf":true}'::jsonb WHERE "node_id" = $1`,
+      [markerSelfId],
+    );
+
+    const { pruneStaleNodes } = await import("./prune-stale-nodes");
+    const result = await pruneStaleNodes({ userId: USER_ID }, database);
+
+    expect(result.candidates.map((node) => node.id)).toEqual([]);
+    expect(
+      await rootClient.query(
+        `SELECT COUNT(*)::text AS count FROM "nodes" WHERE "id" = $1`,
+        [markerSelfId],
+      ),
+    ).toMatchObject({ rows: [{ count: "1" }] });
+  });
+
+  it("rechecks selected rows after concurrent claim, task, self, and profile changes", async () => {
+    const { pruneStaleNodes } = await import("./prune-stale-nodes");
+
+    async function waitForNodeLockWaiter(
+      inspector: Client,
+      prunerPid: number,
+    ): Promise<void> {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const waiting = await inspector.query(
+          `SELECT 1
+             FROM pg_stat_activity
+            WHERE pid = $1
+              AND wait_event_type = 'Lock'
+              AND query ILIKE '%for update%'
+            LIMIT 1`,
+          [prunerPid],
+        );
+        if (waiting.rows.length > 0) return;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error("stale-node row-lock waiter did not reach the barrier");
+    }
+
+    async function runRace(args: {
+      nodeType: string;
+      label: string;
+      prepare?: (nodeId: TypeId<"node">) => Promise<void>;
+      lock?: (locker: Client, nodeId: TypeId<"node">) => Promise<void>;
+      mutate: (locker: Client, nodeId: TypeId<"node">) => Promise<void>;
+    }): Promise<{ deletedCount: number; nodeId: TypeId<"node"> }> {
+      const nodeId = newTypeId("node");
+      await seedNode(rootClient, {
+        id: nodeId,
+        nodeType: args.nodeType,
+        label: args.label,
+        createdAt: daysAgo(400),
+      });
+      await args.prepare?.(nodeId);
+      const locker = new Client({ connectionString: dsnFor(dbName) });
+      const pruner = new Client({ connectionString: dsnFor(dbName) });
+      await locker.connect();
+      await pruner.connect();
+      const prunerDb = drizzle(pruner, { schema, casing: "snake_case" });
+      try {
+        await locker.query("BEGIN");
+        if (args.lock) {
+          await args.lock(locker, nodeId);
+        } else {
+          await locker.query(
+            `SELECT "id" FROM "nodes" WHERE "id" = $1 FOR UPDATE`,
+            [nodeId],
+          );
+        }
+        const pidResult = await pruner.query<{ pid: string }>(
+          "SELECT pg_backend_pid() AS pid",
+        );
+        const prunerPid = Number(pidResult.rows[0]?.pid);
+        const prunePromise = pruneStaleNodes(
+          {
+            userId: USER_ID,
+            dryRun: false,
+            minIdleDays: 0,
+            minScore: 0.9,
+            limit: 1,
+          },
+          prunerDb,
+        );
+        await waitForNodeLockWaiter(rootClient, prunerPid);
+        await args.mutate(locker, nodeId);
+        await locker.query("COMMIT");
+        const result = await prunePromise;
+        return { deletedCount: result.deletedCount, nodeId };
+      } finally {
+        await locker.query("ROLLBACK").catch(() => undefined);
+        await locker.end();
+        await pruner.end();
+      }
+    }
+
+    const resetFixture = async (): Promise<void> => {
+      await rootClient.query(
+        `TRUNCATE "aliases", "claims", "source_links", "user_profiles",
+                  "node_metadata", "nodes", "sources", "users" CASCADE`,
+      );
+      sharedSourceId = null;
+    };
+
+    sharedSourceId = null;
+    const sourceId = await seedSourceOnce(rootClient);
+    const claimRace = await runRace({
+      nodeType: "Concept",
+      label: "claim arrives",
+      mutate: async (locker, nodeId) => {
+        await locker.query(
+          `INSERT INTO "claims" (
+             "id", "user_id", "subject_node_id", "object_value", "predicate",
+             "statement", "source_id", "scope", "asserted_by_kind", "stated_at"
+           ) VALUES ($1, $2, $3, 'value', 'RELATED_TO', 'new evidence', $4, 'personal', 'user', now())`,
+          [newTypeId("claim"), USER_ID, nodeId, sourceId],
+        );
+      },
+    });
+    expect(claimRace.deletedCount).toBe(0);
+    await expect(
+      rootClient.query(
+        `SELECT COUNT(*)::text AS count FROM "nodes" WHERE "id" = $1`,
+        [claimRace.nodeId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: "1" }] });
+    await expect(
+      rootClient.query(
+        `SELECT COUNT(*)::text AS count FROM "claims" WHERE "subject_node_id" = $1`,
+        [claimRace.nodeId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: "1" }] });
+
+    await resetFixture();
+    const taskSourceId = await seedSourceOnce(rootClient);
+    let taskClaimId: TypeId<"claim"> | null = null;
+    const taskRace = await runRace({
+      nodeType: "Task",
+      label: "task becomes open",
+      prepare: async (nodeId) => {
+        taskClaimId = newTypeId("claim");
+        await rootClient.query(
+          `INSERT INTO "claims" (
+             "id", "user_id", "subject_node_id", "object_value", "predicate",
+             "statement", "source_id", "scope", "asserted_by_kind", "stated_at", "status"
+           ) VALUES ($1, $2, $3, 'pending', 'HAS_TASK_STATUS', 'task was previously closed', $4, 'personal', 'user', $5, 'superseded')`,
+          [taskClaimId, USER_ID, nodeId, taskSourceId, daysAgo(400)],
+        );
+      },
+      lock: async (locker) => {
+        if (!taskClaimId) throw new Error("task claim fixture was not seeded");
+        await locker.query(
+          `SELECT "id" FROM "claims" WHERE "id" = $1 FOR UPDATE`,
+          [taskClaimId],
+        );
+      },
+      mutate: async (locker, nodeId) => {
+        await locker.query(
+          `UPDATE "claims"
+              SET "status" = 'active', "object_value" = 'pending'
+            WHERE "subject_node_id" = $1
+              AND "predicate" = 'HAS_TASK_STATUS'`,
+          [nodeId],
+        );
+      },
+    });
+    expect(taskRace.deletedCount).toBe(0);
+    await expect(
+      rootClient.query<{ status: string; object_value: string }>(
+        `SELECT "status", "object_value" FROM "claims" WHERE "subject_node_id" = $1`,
+        [taskRace.nodeId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [{ status: "active", object_value: "pending" }],
+    });
+
+    await resetFixture();
+    const selfRace = await runRace({
+      nodeType: "Person",
+      label: "self marker arrives",
+      mutate: async (locker, nodeId) => {
+        await locker.query(
+          `UPDATE "node_metadata"
+              SET "additional_data" = '{"isUserSelf":true}'::jsonb
+            WHERE "node_id" = $1`,
+          [nodeId],
+        );
+      },
+    });
+    expect(selfRace.deletedCount).toBe(0);
+    await expect(
+      rootClient.query<{ additional_data: Record<string, unknown> }>(
+        `SELECT "additional_data" FROM "node_metadata" WHERE "node_id" = $1`,
+        [selfRace.nodeId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [{ additional_data: { isUserSelf: true } }],
+    });
+
+    await resetFixture();
+    const profileClient = new Client({ connectionString: dsnFor(dbName) });
+    await profileClient.connect();
+    const profileDb = drizzle(profileClient, { schema, casing: "snake_case" });
+    try {
+      const profileNode = newTypeId("node");
+      await seedNode(rootClient, {
+        id: profileNode,
+        nodeType: "Concept",
+        label: "profile changes",
+        createdAt: daysAgo(400),
+      });
+      const locker = new Client({ connectionString: dsnFor(dbName) });
+      const pruner = new Client({ connectionString: dsnFor(dbName) });
+      await locker.connect();
+      await pruner.connect();
+      const prunerDb = drizzle(pruner, { schema, casing: "snake_case" });
+      try {
+        await locker.query("BEGIN");
+        await locker.query(
+          `SELECT "id" FROM "nodes" WHERE "id" = $1 FOR UPDATE`,
+          [profileNode],
+        );
+        const pidResult = await pruner.query<{ pid: string }>(
+          "SELECT pg_backend_pid() AS pid",
+        );
+        const prunePromise = pruneStaleNodes(
+          {
+            userId: USER_ID,
+            dryRun: false,
+            minIdleDays: 0,
+            minScore: 0.9,
+            limit: 1,
+          },
+          prunerDb,
+        );
+        await waitForNodeLockWaiter(rootClient, Number(pidResult.rows[0]?.pid));
+        const savePromise = setUserSelfAliases(profileDb, USER_ID, [
+          "Marcel New Profile",
+        ]);
+        await locker.query("COMMIT");
+        const result = await prunePromise;
+        await savePromise;
+        expect(result.deletedCount).toBe(1);
+      } finally {
+        await locker.query("ROLLBACK").catch(() => undefined);
+        await locker.end();
+        await pruner.end();
+      }
+      expect(await getUserSelfAliases(database, USER_ID)).toEqual([
+        "Marcel New Profile",
+      ]);
+      await expect(
+        rootClient.query<{ label: string }>(
+          `SELECT m."label"
+             FROM "nodes" n
+             INNER JOIN "node_metadata" m ON m."node_id" = n."id"
+            WHERE n."user_id" = $1
+              AND m."additional_data"->>'isUserSelf' = 'true'`,
+          [USER_ID],
+        ),
+      ).resolves.toMatchObject({ rows: [{ label: "Marcel New Profile" }] });
+    } finally {
+      await profileClient.end();
+    }
   });
 });

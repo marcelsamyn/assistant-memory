@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   pruneStaleNodes: vi.fn(),
+  pruneStaleNodesWorkspace: vi.fn(),
   pruneOrphanNodes: vi.fn(),
+  pruneOrphanNodesWorkspace: vi.fn(),
   getRequestAccessScope: vi.fn(() => "workspace"),
   resolveWorkspacePartitions: vi.fn(),
   assertPartitionReadAllowed: vi.fn(),
@@ -11,9 +13,11 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("~/lib/jobs/prune-stale-nodes", () => ({
   pruneStaleNodes: mocks.pruneStaleNodes,
+  pruneStaleNodesWorkspace: mocks.pruneStaleNodesWorkspace,
 }));
 vi.mock("~/lib/jobs/prune-orphan-nodes", () => ({
   pruneOrphanNodes: mocks.pruneOrphanNodes,
+  pruneOrphanNodesWorkspace: mocks.pruneOrphanNodesWorkspace,
 }));
 vi.mock("~/lib/partition-access", () => ({
   assertPartitionReadAllowed: mocks.assertPartitionReadAllowed,
@@ -73,8 +77,14 @@ describe("workspace deterministic prune routes", () => {
     mocks.pruneStaleNodes.mockImplementation(async (params) =>
       staleResult(params.partitionKey, params.limit === 3 ? 3 : 0),
     );
+    mocks.pruneStaleNodesWorkspace.mockImplementation(async (params) =>
+      staleResult("workspace", params.limit === 3 ? 3 : 0),
+    );
     mocks.pruneOrphanNodes.mockImplementation(async (params) =>
       orphanResult(params.partitionKey, params.limit === 3 ? 3 : 0),
+    );
+    mocks.pruneOrphanNodesWorkspace.mockImplementation(async (params) =>
+      orphanResult("workspace", params.limit === 3 ? 3 : 0),
     );
   });
 
@@ -86,12 +96,11 @@ describe("workspace deterministic prune routes", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(mocks.pruneStaleNodes).toHaveBeenCalledTimes(1);
-    expect(mocks.pruneStaleNodes).toHaveBeenCalledWith(
-      expect.objectContaining({ partitionKey: "room:one", limit: 3 }),
+    expect(mocks.pruneStaleNodesWorkspace).toHaveBeenCalledTimes(1);
+    expect(mocks.pruneStaleNodesWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 3 }),
       expect.anything(),
     );
-    expect(mocks.assertPartitionReadAllowed).toHaveBeenCalledTimes(2);
   });
 
   it("keeps orphan pruning under one total limit and stops at zero", async () => {
@@ -102,9 +111,9 @@ describe("workspace deterministic prune routes", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(mocks.pruneOrphanNodes).toHaveBeenCalledTimes(1);
-    expect(mocks.pruneOrphanNodes).toHaveBeenCalledWith(
-      expect.objectContaining({ partitionKey: "room:one", limit: 3 }),
+    expect(mocks.pruneOrphanNodesWorkspace).toHaveBeenCalledTimes(1);
+    expect(mocks.pruneOrphanNodesWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 3 }),
       expect.anything(),
     );
   });

@@ -16,6 +16,7 @@ import {
   assertPartitionReadAllowed,
   partitionAccessCondition,
 } from "~/lib/partition-access";
+import { claimEndpointOwnershipCondition } from "~/lib/query/claim-endpoint-access";
 import {
   type OpenCommitment,
   type OpenCommitmentsRequest,
@@ -179,6 +180,16 @@ async function queryCommitments(
         partitionFilter(ownerClaim.partitionKey),
         subJoinProvenanceFilter(ownerClaim.assertedByKind, provenance),
         isNotNull(ownerClaim.objectNodeId),
+        claimEndpointOwnershipCondition(
+          {
+            claimUserId: ownerClaim.userId,
+            claimPartitionKey: ownerClaim.partitionKey,
+            subjectUserId: nodes.userId,
+            subjectPartitionKey: nodes.partitionKey,
+            objectNodeId: ownerClaim.objectNodeId,
+          },
+          userId,
+        ),
       ),
     )
     .leftJoin(ownerMetadata, eq(ownerMetadata.nodeId, ownerClaim.objectNodeId))
@@ -193,6 +204,16 @@ async function queryCommitments(
         partitionFilter(dueClaim.partitionKey),
         subJoinProvenanceFilter(dueClaim.assertedByKind, provenance),
         isNotNull(dueClaim.objectNodeId),
+        claimEndpointOwnershipCondition(
+          {
+            claimUserId: dueClaim.userId,
+            claimPartitionKey: dueClaim.partitionKey,
+            subjectUserId: nodes.userId,
+            subjectPartitionKey: nodes.partitionKey,
+            objectNodeId: dueClaim.objectNodeId,
+          },
+          userId,
+        ),
       ),
     )
     .leftJoin(dueMetadata, eq(dueMetadata.nodeId, dueClaim.objectNodeId))
@@ -205,6 +226,16 @@ async function queryCommitments(
         eq(claims.scope, "personal"),
         provenanceFilter(claims.assertedByKind, provenance),
         inArray(claims.objectValue, OPEN_TASK_STATUSES),
+        claimEndpointOwnershipCondition(
+          {
+            claimUserId: claims.userId,
+            claimPartitionKey: claims.partitionKey,
+            subjectUserId: nodes.userId,
+            subjectPartitionKey: nodes.partitionKey,
+            objectNodeId: claims.objectNodeId,
+          },
+          userId,
+        ),
         ownedBy === undefined
           ? undefined
           : eq(ownerClaim.objectNodeId, ownedBy),

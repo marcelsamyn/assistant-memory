@@ -45,6 +45,14 @@ const describeIfServer = SERVER_AVAILABLE ? describe : describe.skip;
 async function createSpeakerTables(client: Client): Promise<void> {
   await client.query(`
     CREATE TABLE IF NOT EXISTS "users" ("id" text PRIMARY KEY NOT NULL);
+    CREATE TABLE IF NOT EXISTS "user_profiles" (
+      "id" text PRIMARY KEY NOT NULL,
+      "user_id" text NOT NULL REFERENCES "users"("id"),
+      "content" text NOT NULL,
+      "metadata" jsonb DEFAULT '{}'::jsonb NOT NULL,
+      "last_updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+      "created_at" timestamp with time zone DEFAULT now() NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS "nodes" (
       "id" text PRIMARY KEY NOT NULL,
       "user_id" text NOT NULL REFERENCES "users"("id"),

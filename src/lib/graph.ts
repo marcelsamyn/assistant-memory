@@ -31,6 +31,7 @@ import {
   assertPartitionReadAllowed,
   partitionAccessCondition,
 } from "~/lib/partition-access";
+import { claimEndpointOwnershipCondition } from "~/lib/query/claim-endpoint-access";
 import type {
   ContextPartitionKey,
   MemoryAccessScope,
@@ -387,6 +388,8 @@ export async function findSimilarClaims(
 
   const subjectNodeMetadata = aliasedTable(nodeMetadata, "subjectNodeMetadata");
   const objectNodeMetadata = aliasedTable(nodeMetadata, "objectNodeMetadata");
+  const subjectNode = aliasedTable(nodes, "similarClaimSubjectNode");
+  const objectNode = aliasedTable(nodes, "similarClaimObjectNode");
 
   return db
     .select({
@@ -410,6 +413,8 @@ export async function findSimilarClaims(
     })
     .from(claimEmbeddings)
     .innerJoin(claims, eq(claimEmbeddings.claimId, claims.id))
+    .innerJoin(subjectNode, eq(subjectNode.id, claims.subjectNodeId))
+    .leftJoin(objectNode, eq(objectNode.id, claims.objectNodeId))
     .leftJoin(
       subjectNodeMetadata,
       eq(subjectNodeMetadata.nodeId, claims.subjectNodeId),
@@ -418,7 +423,23 @@ export async function findSimilarClaims(
       objectNodeMetadata,
       eq(objectNodeMetadata.nodeId, claims.objectNodeId),
     )
-    .where(whereCondition)
+    .where(
+      and(
+        whereCondition,
+        claimEndpointOwnershipCondition(
+          {
+            claimUserId: claims.userId,
+            claimPartitionKey: claims.partitionKey,
+            subjectUserId: subjectNode.userId,
+            subjectPartitionKey: subjectNode.partitionKey,
+            objectNodeId: claims.objectNodeId,
+            objectUserId: objectNode.userId,
+            objectPartitionKey: objectNode.partitionKey,
+          },
+          userId,
+        ),
+      ),
+    )
     .orderBy(desc(similarity))
     .limit(limit);
 }
@@ -506,6 +527,8 @@ async function findSimilarClaimsViaSubstring(
 
   const subjectNodeMetadata = aliasedTable(nodeMetadata, "subjectNodeMetadata");
   const objectNodeMetadata = aliasedTable(nodeMetadata, "objectNodeMetadata");
+  const subjectNode = aliasedTable(nodes, "substringClaimSubjectNode");
+  const objectNode = aliasedTable(nodes, "substringClaimObjectNode");
 
   const where = and(
     eq(claims.userId, userId),
@@ -546,8 +569,11 @@ async function findSimilarClaimsViaSubstring(
       status: claims.status,
       statedAt: claims.statedAt,
       timestamp: claims.createdAt,
+      similarity: sql<number>`1`,
     })
     .from(claims)
+    .innerJoin(subjectNode, eq(subjectNode.id, claims.subjectNodeId))
+    .leftJoin(objectNode, eq(objectNode.id, claims.objectNodeId))
     .leftJoin(
       subjectNodeMetadata,
       eq(subjectNodeMetadata.nodeId, claims.subjectNodeId),
@@ -556,11 +582,27 @@ async function findSimilarClaimsViaSubstring(
       objectNodeMetadata,
       eq(objectNodeMetadata.nodeId, claims.objectNodeId),
     )
-    .where(where)
+    .where(
+      and(
+        where!,
+        claimEndpointOwnershipCondition(
+          {
+            claimUserId: claims.userId,
+            claimPartitionKey: claims.partitionKey,
+            subjectUserId: subjectNode.userId,
+            subjectPartitionKey: subjectNode.partitionKey,
+            objectNodeId: claims.objectNodeId,
+            objectUserId: objectNode.userId,
+            objectPartitionKey: objectNode.partitionKey,
+          },
+          userId,
+        ),
+      ),
+    )
     .orderBy(claims.id)
     .limit(limit);
 
-  return rows.map((row) => ({ ...row, similarity: 1 }));
+  return rows;
 }
 
 /** One-hop neighbor lookup */
@@ -737,7 +779,7 @@ export async function findDayNode(
 }
 
 /**
- * Fetch all Temporal day nodes for a date in one bounded workspace query.
+ * Fetch all Temporal day nodes for a date in one workspace query.
  * Strict callers keep the legacy single-node helper above.
  */
 export async function findDayNodes(
@@ -765,8 +807,7 @@ export async function findDayNodes(
         eq(nodeMetadata.label, date),
       ),
     )
-    .orderBy(asc(nodes.id))
-    .limit(64);
+    .orderBy(asc(nodes.id));
   return days.map((day) => day.id);
 }
 
@@ -1003,6 +1044,8 @@ export async function findClaimsByLexical(
 
   const subjectNodeMetadata = aliasedTable(nodeMetadata, "subjectNodeMetadata");
   const objectNodeMetadata = aliasedTable(nodeMetadata, "objectNodeMetadata");
+  const subjectNode = aliasedTable(nodes, "lexicalClaimSubjectNode");
+  const objectNode = aliasedTable(nodes, "lexicalClaimObjectNode");
 
   let where = and(
     eq(claims.userId, userId),
@@ -1050,9 +1093,12 @@ export async function findClaimsByLexical(
         statedAt: claims.statedAt,
         timestamp: claims.createdAt,
         rank,
+        similarity: rank,
         highlight,
       })
       .from(claims)
+      .innerJoin(subjectNode, eq(subjectNode.id, claims.subjectNodeId))
+      .leftJoin(objectNode, eq(objectNode.id, claims.objectNodeId))
       .leftJoin(
         subjectNodeMetadata,
         eq(subjectNodeMetadata.nodeId, claims.subjectNodeId),
@@ -1061,9 +1107,25 @@ export async function findClaimsByLexical(
         objectNodeMetadata,
         eq(objectNodeMetadata.nodeId, claims.objectNodeId),
       )
-      .where(where)
+      .where(
+        and(
+          where!,
+          claimEndpointOwnershipCondition(
+            {
+              claimUserId: claims.userId,
+              claimPartitionKey: claims.partitionKey,
+              subjectUserId: subjectNode.userId,
+              subjectPartitionKey: subjectNode.partitionKey,
+              objectNodeId: claims.objectNodeId,
+              objectUserId: objectNode.userId,
+              objectPartitionKey: objectNode.partitionKey,
+            },
+            userId,
+          ),
+        ),
+      )
       .orderBy(desc(rank))
       .limit(limit);
-    return rows.map((r) => ({ ...r, similarity: r.rank }));
+    return rows;
   });
 }

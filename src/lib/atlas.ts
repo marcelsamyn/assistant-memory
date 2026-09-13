@@ -1,6 +1,6 @@
 import { ensureUser } from "./ingestion/ensure-user";
 import { ensureSystemSource } from "./sources";
-import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
+import { aliasedTable, and, asc, eq, isNull, or, sql } from "drizzle-orm";
 import { DrizzleDB } from "~/db";
 import { nodes, nodeMetadata, claims, sourceLinks } from "~/db/schema";
 import {
@@ -10,9 +10,6 @@ import {
 import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { NodeTypeEnum } from "~/types/graph";
 import { type TypeId } from "~/types/typeid";
-
-const WORKSPACE_ATLAS_LIMIT = 32;
-const WORKSPACE_ATLAS_CLAIM_LIMIT = 500;
 
 export interface WorkspaceAtlasEntry {
   nodeId: TypeId<"node">;
@@ -50,8 +47,7 @@ export async function getWorkspaceAtlasEntries(
           ),
         ),
       )
-      .orderBy(asc(nodes.partitionKey), asc(nodes.id))
-      .limit(WORKSPACE_ATLAS_LIMIT),
+      .orderBy(asc(nodes.partitionKey), asc(nodes.id)),
     db
       .select({
         nodeId: nodes.id,
@@ -74,15 +70,14 @@ export async function getWorkspaceAtlasEntries(
           ),
         ),
       )
-      .orderBy(asc(nodes.partitionKey), asc(nodes.id))
-      .limit(WORKSPACE_ATLAS_LIMIT),
+      .orderBy(asc(nodes.partitionKey), asc(nodes.id)),
   ]);
   return { user, assistant };
 }
 
 /**
  * Returns nodes linked to assistant atlases in active workspace partitions.
- * Claims and endpoints are checked in one bounded query each so malformed
+ * Claims and endpoints are checked in one ownership-bounded query so malformed
  * cross-partition edges never become workspace results.
  */
 export async function getWorkspaceAssistantAtlasNodeIds(
@@ -90,40 +85,41 @@ export async function getWorkspaceAssistantAtlasNodeIds(
   userId: string,
   assistantId: string,
 ): Promise<TypeId<"node">[]> {
-  const atlasRows = await db
-    .select({ nodeId: nodes.id, partitionKey: nodes.partitionKey })
-    .from(nodes)
-    .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-    .where(
-      and(
-        eq(nodes.userId, userId),
-        eq(nodes.nodeType, NodeTypeEnum.enum.Atlas),
-        eq(nodeMetadata.label, assistantId),
-        partitionAccessCondition(
-          nodes.partitionKey,
-          userId,
-          undefined,
-          "workspace",
-        ),
+  const atlasNodes = aliasedTable(nodes, "workspace_assistant_atlas");
+  const atlasMetadata = aliasedTable(
+    nodeMetadata,
+    "workspace_assistant_atlas_metadata",
+  );
+  const endpointNodes = aliasedTable(nodes, "workspace_assistant_endpoint");
+  const endpointNodeId = sql`
+    CASE
+      WHEN ${claims.subjectNodeId} = ${atlasNodes.id}
+        THEN ${claims.objectNodeId}
+      ELSE ${claims.subjectNodeId}
+    END
+  `;
+
+  // Keep atlas, claim, and endpoint ownership in the same SQL predicate. This
+  // avoids a capped atlas/claim candidate list and rejects malformed edges
+  // before they can enter the workspace result.
+  const rows = await db
+    .selectDistinct({ nodeId: endpointNodes.id })
+    .from(claims)
+    .innerJoin(
+      atlasNodes,
+      or(
+        eq(atlasNodes.id, claims.subjectNodeId),
+        eq(atlasNodes.id, claims.objectNodeId),
       ),
     )
-    .orderBy(asc(nodes.partitionKey), asc(nodes.id))
-    .limit(WORKSPACE_ATLAS_LIMIT);
-  if (atlasRows.length === 0) return [];
-
-  const atlasPartitionById = new Map(
-    atlasRows.map((row) => [row.nodeId, row.partitionKey]),
-  );
-  const atlasIds = atlasRows.map((row) => row.nodeId);
-  const claimRows = await db
-    .select({
-      partitionKey: claims.partitionKey,
-      subjectNodeId: claims.subjectNodeId,
-      objectNodeId: claims.objectNodeId,
-      statedAt: claims.statedAt,
-      id: claims.id,
-    })
-    .from(claims)
+    .innerJoin(
+      atlasMetadata,
+      and(
+        eq(atlasMetadata.nodeId, atlasNodes.id),
+        eq(atlasMetadata.label, assistantId),
+      ),
+    )
+    .innerJoin(endpointNodes, eq(endpointNodes.id, endpointNodeId))
     .where(
       and(
         eq(claims.userId, userId),
@@ -134,68 +130,28 @@ export async function getWorkspaceAssistantAtlasNodeIds(
           undefined,
           "workspace",
         ),
-        or(
-          inArray(claims.subjectNodeId, atlasIds),
-          inArray(claims.objectNodeId, atlasIds),
-        ),
-      ),
-    )
-    .orderBy(desc(claims.statedAt), desc(claims.id))
-    .limit(WORKSPACE_ATLAS_CLAIM_LIMIT);
-  const relatedIds = new Set<TypeId<"node">>();
-  const candidateIds = new Set<TypeId<"node">>();
-  for (const row of claimRows) {
-    const atlasId = atlasPartitionById.has(row.subjectNodeId)
-      ? row.subjectNodeId
-      : row.objectNodeId && atlasPartitionById.has(row.objectNodeId)
-        ? row.objectNodeId
-        : undefined;
-    if (!atlasId) continue;
-    const atlasPartition = atlasPartitionById.get(atlasId);
-    if ((row.partitionKey ?? null) !== atlasPartition) continue;
-    const relatedId =
-      row.subjectNodeId === atlasId ? row.objectNodeId : row.subjectNodeId;
-    if (relatedId) candidateIds.add(relatedId);
-  }
-  if (candidateIds.size === 0) return [];
-
-  const endpointRows = await db
-    .select({ nodeId: nodes.id, partitionKey: nodes.partitionKey })
-    .from(nodes)
-    .where(
-      and(
-        eq(nodes.userId, userId),
-        inArray(nodes.id, [...candidateIds]),
+        eq(atlasNodes.userId, userId),
+        eq(atlasNodes.nodeType, NodeTypeEnum.enum.Atlas),
         partitionAccessCondition(
-          nodes.partitionKey,
+          atlasNodes.partitionKey,
           userId,
           undefined,
           "workspace",
         ),
+        eq(endpointNodes.userId, userId),
+        partitionAccessCondition(
+          endpointNodes.partitionKey,
+          userId,
+          undefined,
+          "workspace",
+        ),
+        sql`${claims.partitionKey} IS NOT DISTINCT FROM ${atlasNodes.partitionKey}`,
+        sql`${claims.partitionKey} IS NOT DISTINCT FROM ${endpointNodes.partitionKey}`,
       ),
-    );
-  const allowedEndpointIds = new Set(
-    endpointRows.map((row) => `${row.nodeId}:${row.partitionKey ?? ""}`),
-  );
-  for (const row of claimRows) {
-    const atlasId = atlasPartitionById.has(row.subjectNodeId)
-      ? row.subjectNodeId
-      : row.objectNodeId && atlasPartitionById.has(row.objectNodeId)
-        ? row.objectNodeId
-        : undefined;
-    if (
-      !atlasId ||
-      (row.partitionKey ?? null) !== atlasPartitionById.get(atlasId)
     )
-      continue;
-    const relatedId =
-      row.subjectNodeId === atlasId ? row.objectNodeId : row.subjectNodeId;
-    if (!relatedId) continue;
-    if (allowedEndpointIds.has(`${relatedId}:${row.partitionKey ?? ""}`)) {
-      relatedIds.add(relatedId);
-    }
-  }
-  return [...relatedIds];
+    .orderBy(asc(endpointNodes.id));
+
+  return rows.map((row) => row.nodeId);
 }
 
 /**

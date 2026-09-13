@@ -137,6 +137,7 @@ describeIfServer("listCommitments query", () => {
     // Owner nodes
     const ownerAliceId = newTypeId("node");
     const ownerBobId = newTypeId("node");
+    const foreignOwnerId = newTypeId("node");
 
     // Due date (Temporal) nodes
     const dateEarlyId = newTypeId("node"); // 2026-01-10
@@ -223,6 +224,9 @@ describeIfServer("listCommitments query", () => {
       await installPartitionCompatibilityFixture(client);
 
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [
+        "user_list_commitments_foreign",
+      ]);
 
       // Sources
       await client.query(
@@ -282,6 +286,14 @@ describeIfServer("listCommitments query", () => {
           [newTypeId("node_metadata"), nodeId, label, canonical],
         );
       }
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Person')`,
+        [foreignOwnerId, "user_list_commitments_foreign"],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label") VALUES ($1, $2, 'Foreign owner', 'foreign owner')`,
+        [newTypeId("node_metadata"), foreignOwnerId],
+      );
 
       // Status claims
       const statusClaims = [
@@ -390,6 +402,24 @@ describeIfServer("listCommitments query", () => {
           dateLateId,
         ],
       );
+      // Historical malformed relationships must not replace valid owner/due
+      // metadata or a valid status row for the task.
+      await client.query(
+        `INSERT INTO "claims" ("id", "user_id", "subject_node_id", "object_node_id", "predicate", "statement", "source_id", "scope", "asserted_by_kind", "stated_at", "status")
+         VALUES
+           ($1, $2, $3, $4, 'HAS_TASK_STATUS', 'Foreign status endpoint.', $5, 'personal', 'user', '2026-01-01T11:00:00Z', 'active'),
+           ($6, $2, $3, $4, 'ASSIGNED_TO', 'Foreign owner endpoint.', $5, 'personal', 'user', '2026-01-01T11:01:00Z', 'active'),
+           ($7, $2, $3, $4, 'DUE_ON', 'Foreign due endpoint.', $5, 'personal', 'user', '2026-01-01T11:02:00Z', 'active')`,
+        [
+          newTypeId("claim"),
+          userId,
+          taskPendingId,
+          foreignOwnerId,
+          personalSourceId,
+          newTypeId("claim"),
+          newTypeId("claim"),
+        ],
+      );
 
       const { listCommitments } = await import("./commitments-list");
 
@@ -407,6 +437,22 @@ describeIfServer("listCommitments query", () => {
         (statuses: string[]) => statuses.every((s) => s === "pending"),
       );
       expect(pendingOnly.commitments).toHaveLength(3);
+      expect(
+        pendingOnly.commitments.find((item) => item.taskId === taskPendingId),
+      ).toMatchObject({
+        owner: { nodeId: ownerAliceId, label: "Alice" },
+        dueOn: "2026-01-10",
+      });
+      await expect(
+        listCommitments({
+          userId,
+          ownedBy: foreignOwnerId,
+          provenance: "all",
+          sort: "createdAt",
+          order: "asc",
+          limit: 50,
+        }),
+      ).resolves.toMatchObject({ commitments: [] });
 
       const doneOrAbandoned = await listCommitments({
         userId,

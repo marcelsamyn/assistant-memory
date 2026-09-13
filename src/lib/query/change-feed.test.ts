@@ -2651,4 +2651,94 @@ describeIfServer("lossless lifecycle change feed", () => {
       ]),
     );
   });
+
+  it("filters malformed claim endpoints when fetching source nodes", async () => {
+    const userId = "source-nodes-endpoint-owner";
+    const foreignUserId = "source-nodes-endpoint-foreign";
+    const sourceId = newTypeId("source");
+    const subjectNodeId = newTypeId("node");
+    const foreignObjectNodeId = newTypeId("node");
+    const validClaimId = newTypeId("claim");
+    await database
+      .insert(users)
+      .values([{ id: userId }, { id: foreignUserId }]);
+    await database.insert(sources).values({
+      id: sourceId,
+      userId,
+      type: "manual",
+      externalId: "source-nodes-endpoint",
+      scope: "personal",
+    });
+    await database.insert(nodes).values([
+      { id: subjectNodeId, userId, nodeType: "Object" },
+      { id: foreignObjectNodeId, userId: foreignUserId, nodeType: "Person" },
+    ]);
+    await database.insert(nodeMetadata).values([
+      {
+        id: newTypeId("node_metadata"),
+        nodeId: subjectNodeId,
+        label: "Owned subject",
+        canonicalLabel: "owned subject",
+      },
+      {
+        id: newTypeId("node_metadata"),
+        nodeId: foreignObjectNodeId,
+        label: "Foreign object",
+        canonicalLabel: "foreign object",
+      },
+    ]);
+    await database.insert(sourceLinks).values({
+      id: newTypeId("source_link"),
+      sourceId,
+      nodeId: subjectNodeId,
+    });
+    await database.insert(claims).values({
+      id: validClaimId,
+      userId,
+      subjectNodeId,
+      objectValue: "literal value",
+      predicate: "HAS_ATTRIBUTE",
+      statement: "Owned subject has a literal value.",
+      sourceId,
+      scope: "personal",
+      assertedByKind: "user",
+      statedAt: new Date("2026-09-01T00:00:00Z"),
+      status: "active",
+    });
+    await client.query(`ALTER TABLE "claims" DISABLE TRIGGER USER`);
+    try {
+      await client.query(
+        `INSERT INTO "claims" (
+           "id", "user_id", "subject_node_id", "object_node_id", "predicate",
+           "statement", "source_id", "scope", "asserted_by_kind", "stated_at", "status"
+         ) VALUES ($1, $2, $3, $4, 'RELATED_TO',
+                   'Owned subject points to a foreign object.', $5, 'personal', 'user', $6, 'active')`,
+        [
+          newTypeId("claim"),
+          userId,
+          subjectNodeId,
+          foreignObjectNodeId,
+          sourceId,
+          new Date("2026-09-01T00:00:00Z"),
+        ],
+      );
+    } finally {
+      await client.query(`ALTER TABLE "claims" ENABLE TRIGGER USER`);
+    }
+
+    const result = await fetchNodesBySource({
+      db: database,
+      userId,
+      sourceIds: [sourceId],
+      nodeTypes: undefined,
+      includeClaims: true,
+      limit: 10,
+      cursor: undefined,
+    });
+    expect(result.nodes.map((node) => node.id)).toEqual([subjectNodeId]);
+    expect(result.claims.map((claim) => claim.id)).toEqual([validClaimId]);
+    expect(
+      result.claims.some((claim) => claim.objectNodeId === foreignObjectNodeId),
+    ).toBe(false);
+  });
 });
