@@ -137,6 +137,7 @@ describeIfServer("open commitments query", () => {
     const laterNodeId = newTypeId("node");
     const personalSourceId = newTypeId("source");
     const referenceSourceId = newTypeId("source");
+    const foreignOwnerNodeId = newTypeId("node");
 
     const client = new Client({ connectionString: dsnFor(dbName) });
     await client.connect();
@@ -197,6 +198,17 @@ describeIfServer("open commitments query", () => {
       await installPartitionCompatibilityFixture(client);
 
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [
+        "user_open_commitments_foreign",
+      ]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Person')`,
+        [foreignOwnerNodeId, "user_open_commitments_foreign"],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label") VALUES ($1, $2, 'Foreign owner', 'foreign owner')`,
+        [newTypeId("node_metadata"), foreignOwnerNodeId],
+      );
       await client.query(
         `
           INSERT INTO "sources" ("id", "user_id", "type", "external_id", "scope", "status")
@@ -349,6 +361,32 @@ describeIfServer("open commitments query", () => {
           personalSourceId,
         ],
       );
+      await client.query(
+        `INSERT INTO "claims" (
+           "id", "user_id", "subject_node_id", "object_node_id", "predicate",
+           "statement", "source_id", "scope", "asserted_by_kind", "stated_at", "status"
+         ) VALUES ($1, $2, $3, $4, 'ASSIGNED_TO', 'Foreign owner should be ignored.', $5, 'personal', 'user', now(), 'active')`,
+        [
+          newTypeId("claim"),
+          userId,
+          openTaskNodeId,
+          foreignOwnerNodeId,
+          personalSourceId,
+        ],
+      );
+      await client.query(
+        `INSERT INTO "claims" (
+           "id", "user_id", "subject_node_id", "object_node_id", "predicate",
+           "statement", "source_id", "scope", "asserted_by_kind", "stated_at", "status"
+         ) VALUES ($1, $2, $3, $4, 'DUE_ON', 'Foreign due data should be ignored.', $5, 'personal', 'user', now(), 'active')`,
+        [
+          newTypeId("claim"),
+          userId,
+          openTaskNodeId,
+          foreignOwnerNodeId,
+          personalSourceId,
+        ],
+      );
 
       const { getOpenCommitments } = await import("./open-commitments");
       const commitments = await getOpenCommitments({ userId });
@@ -372,6 +410,9 @@ describeIfServer("open commitments query", () => {
         { taskId: futureTaskNodeId },
         { taskId: openTaskNodeId },
       ]);
+      await expect(
+        getOpenCommitments({ userId, ownedBy: foreignOwnerNodeId }),
+      ).resolves.toEqual([]);
       await expect(
         getOpenCommitments({ userId, dueBefore: "2026-04-30" }),
       ).resolves.toMatchObject([

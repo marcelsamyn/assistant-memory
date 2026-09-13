@@ -1,39 +1,51 @@
-import { eq, isNull, sql, type SQL } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { metricDefinitions, metricObservations, sources } from "~/db/schema";
-import { assertPartitionReadAllowed } from "~/lib/partition-access";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import {
+  assertPartitionReadAllowed,
+  partitionAccessCondition,
+} from "~/lib/partition-access";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 
 export async function assertMetricPartitionRead(
   db: DrizzleDB,
   userId: string,
   partitionKey: ContextPartitionKey | undefined,
+  accessScope?: MemoryAccessScope | undefined,
 ): Promise<void> {
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
 }
 
 export function metricObservationPartitionCondition(
   userId: string,
   partitionKey: ContextPartitionKey | undefined,
+  accessScope?: MemoryAccessScope | undefined,
 ): SQL {
-  const sourcePartition =
-    partitionKey === undefined
-      ? isNull(sources.partitionKey)
-      : eq(sources.partitionKey, partitionKey);
   return sql`EXISTS (
     SELECT 1 FROM ${sources}
     WHERE ${sources.id} = ${metricObservations.sourceId}
       AND ${sources.userId} = ${userId}
       AND ${sources.deletedAt} IS NULL
-      AND ${sourcePartition}
+      AND ${partitionAccessCondition(
+        sources.partitionKey,
+        userId,
+        partitionKey,
+        accessScope,
+      )}
   )`;
 }
 
 export function metricDefinitionPartitionCondition(
   userId: string,
   partitionKey: ContextPartitionKey | undefined,
+  accessScope?: MemoryAccessScope | undefined,
 ): SQL | undefined {
-  if (partitionKey === undefined) return undefined;
+  if (partitionKey === undefined && accessScope !== "workspace") {
+    return undefined;
+  }
   return sql`EXISTS (
     SELECT 1 FROM ${metricObservations}
     JOIN ${sources} ON ${sources.id} = ${metricObservations.sourceId}
@@ -41,6 +53,11 @@ export function metricDefinitionPartitionCondition(
       AND ${metricObservations.userId} = ${userId}
       AND ${sources.userId} = ${userId}
       AND ${sources.deletedAt} IS NULL
-      AND ${sources.partitionKey} = ${partitionKey}
+      AND ${partitionAccessCondition(
+        sources.partitionKey,
+        userId,
+        partitionKey,
+        accessScope,
+      )}
   )`;
 }

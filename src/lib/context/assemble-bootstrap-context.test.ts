@@ -419,6 +419,103 @@ describeIfServer("getConversationBootstrapContext", () => {
     });
   });
 
+  it("workspace bootstrap combines active Atlas entries without crossing users or inactive partitions", async () => {
+    await withFreshSchema(async (client, database) => {
+      const userId = "user_workspace_atlas";
+      const foreignUserId = "user_workspace_atlas_foreign";
+      const partitionA = contextPartitionKeySchema.parse("opaque:atlas-a");
+      const partitionB = contextPartitionKeySchema.parse("opaque:atlas-b");
+      const inactivePartition = contextPartitionKeySchema.parse(
+        "opaque:atlas-inactive",
+      );
+      const foreignPartition = contextPartitionKeySchema.parse(
+        "opaque:atlas-foreign",
+      );
+      const atlasA = newTypeId("node");
+      const atlasB = newTypeId("node");
+      const atlasInactive = newTypeId("node");
+      const atlasForeign = newTypeId("node");
+
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1), ($2)`, [
+        userId,
+        foreignUserId,
+      ]);
+      await database.insert(schema.memoryPartitions).values([
+        { userId, partitionKey: partitionA, status: "active" },
+        { userId, partitionKey: partitionB, status: "active" },
+        { userId, partitionKey: inactivePartition, status: "quarantined" },
+        {
+          userId: foreignUserId,
+          partitionKey: foreignPartition,
+          status: "active",
+        },
+      ]);
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type", "partition_key")
+         VALUES ($1, $5, 'Atlas', $7),
+                ($2, $5, 'Atlas', $8),
+                ($3, $5, 'Atlas', $9),
+                ($4, $6, 'Atlas', $10)`,
+        [
+          atlasA,
+          atlasB,
+          atlasInactive,
+          atlasForeign,
+          userId,
+          foreignUserId,
+          partitionA,
+          partitionB,
+          inactivePartition,
+          foreignPartition,
+        ],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "description")
+         VALUES ($1, $5, 'Atlas', 'Atlas from room A'),
+                ($2, $6, 'Atlas', 'Atlas from room B'),
+                ($3, $7, 'Atlas', 'Atlas from inactive room'),
+                ($4, $8, 'Atlas', 'Atlas from another user')`,
+        [
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          newTypeId("node_metadata"),
+          atlasA,
+          atlasB,
+          atlasInactive,
+          atlasForeign,
+        ],
+      );
+
+      const fakeRedis = createFakeRedis();
+      vi.resetModules();
+      vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+      vi.doMock("../queues", () => ({ redisConnection: fakeRedis }));
+
+      try {
+        const { getConversationBootstrapContext } = await import(
+          "./assemble-bootstrap-context"
+        );
+        const bundle = await getConversationBootstrapContext({
+          userId,
+          accessScope: "workspace",
+          options: { forceRefresh: true },
+        });
+        const atlas = bundle.sections.find(
+          (section) => section.kind === "atlas",
+        );
+        expect(atlas?.content).toContain("Atlas from room A");
+        expect(atlas?.content).toContain("Atlas from room B");
+        expect(atlas?.content).not.toContain("Atlas from inactive room");
+        expect(atlas?.content).not.toContain("Atlas from another user");
+      } finally {
+        vi.doUnmock("~/utils/db");
+        vi.doUnmock("../queues");
+        vi.resetModules();
+      }
+    });
+  });
+
   it("skips empty sections: pinned + open_commitments only when atlas/preferences/supersessions are absent", async () => {
     await withFreshSchema(async (client, database) => {
       const userId = "user_sparse";
@@ -526,15 +623,17 @@ describeIfServer("getConversationBootstrapContext", () => {
       vi.doMock("../queues", () => ({ redisConnection: fakeRedis }));
       // Spy on the underlying cheap section query — wrap the real impl so we
       // confirm zero calls on the cached read.
-      const realModule = await import("../query/open-commitments");
+      const realModule = await vi.importActual<
+        typeof import("../query/open-commitments")
+      >("../query/open-commitments");
       vi.doMock("../query/open-commitments", () => ({
+        ...realModule,
         getOpenCommitments: async (
           ...args: Parameters<typeof realModule.getOpenCommitments>
         ) => {
           openCommitmentsCalls += 1;
           return realModule.getOpenCommitments(...args);
         },
-        getCandidateCommitments: realModule.getCandidateCommitments,
       }));
 
       try {
@@ -629,7 +728,25 @@ describeIfServer("getConversationBootstrapContext", () => {
           ],
           assembledAt: new Date(),
         });
+        await setCachedBundle(
+          userId,
+          {
+            sections: [
+              {
+                kind: "pinned",
+                content: "workspace primed",
+                usage: "workspace primed",
+              },
+            ],
+            assembledAt: new Date(),
+          },
+          undefined,
+          "workspace",
+        );
         expect(await getCachedBundle(userId)).not.toBeNull();
+        expect(
+          await getCachedBundle(userId, undefined, "workspace"),
+        ).not.toBeNull();
 
         // Drive supersession + the invalidation hook.
         const { applyClaimLifecycle } = await import("../claims/lifecycle");
@@ -648,6 +765,9 @@ describeIfServer("getConversationBootstrapContext", () => {
         expect(triggered).toBe(true);
 
         expect(await getCachedBundle(userId)).toBeNull();
+        expect(
+          await getCachedBundle(userId, undefined, "workspace"),
+        ).toBeNull();
       } finally {
         vi.doUnmock("~/utils/db");
         vi.doUnmock("../queues");
@@ -725,13 +845,109 @@ describeIfServer("getConversationBootstrapContext", () => {
     }
   });
 
+  it("keeps workspace bundles distinct from strict bundles", async () => {
+    const fakeRedis = createFakeRedis();
+    vi.resetModules();
+    vi.doMock("../queues", () => ({ redisConnection: fakeRedis }));
+
+    try {
+      const { getCachedBundle, setCachedBundle } = await import("./cache");
+      await setCachedBundle(
+        "cache-user-workspace",
+        {
+          sections: [{ kind: "pinned", content: "strict", usage: "strict" }],
+          assembledAt: new Date(),
+        },
+        undefined,
+        "partition",
+      );
+      await setCachedBundle(
+        "cache-user-workspace",
+        {
+          sections: [
+            { kind: "pinned", content: "workspace", usage: "workspace" },
+          ],
+          assembledAt: new Date(),
+        },
+        undefined,
+        "workspace",
+      );
+
+      expect(
+        (await getCachedBundle("cache-user-workspace"))?.sections[0]?.content,
+      ).toBe("strict");
+      expect(
+        (await getCachedBundle("cache-user-workspace", undefined, "workspace"))
+          ?.sections[0]?.content,
+      ).toBe("workspace");
+    } finally {
+      vi.doUnmock("../queues");
+      vi.resetModules();
+    }
+  });
+
+  it("invalidates the aggregate workspace bundle for a partition supersession", async () => {
+    const fakeRedis = createFakeRedis();
+    const partitionA = contextPartitionKeySchema.parse("cache:partition-a");
+    const partitionB = contextPartitionKeySchema.parse("cache:partition-b");
+    vi.resetModules();
+    vi.doMock("../queues", () => ({ redisConnection: fakeRedis }));
+
+    try {
+      const { getCachedBundle, invalidateCachedBundle, setCachedBundle } =
+        await import("./cache");
+      const bundle = (content: string) => ({
+        sections: [{ kind: "pinned" as const, content, usage: content }],
+        assembledAt: new Date(),
+      });
+      await setCachedBundle(
+        "cache-invalidation",
+        bundle("partition-a"),
+        partitionA,
+      );
+      await setCachedBundle(
+        "cache-invalidation",
+        bundle("partition-b"),
+        partitionB,
+      );
+      await setCachedBundle(
+        "cache-invalidation",
+        bundle("workspace"),
+        undefined,
+        "workspace",
+      );
+
+      await invalidateCachedBundle("cache-invalidation", partitionA);
+
+      await expect(
+        getCachedBundle("cache-invalidation", partitionA),
+      ).resolves.toBeNull();
+      await expect(
+        getCachedBundle("cache-invalidation", undefined, "workspace"),
+      ).resolves.toBeNull();
+      await expect(
+        getCachedBundle("cache-invalidation", partitionB),
+      ).resolves.toMatchObject({
+        sections: [{ content: "partition-b" }],
+      });
+    } finally {
+      vi.doUnmock("../queues");
+      vi.resetModules();
+    }
+  });
+
   it("recent supersessions window: 25h-old excluded, 1h-old included", async () => {
     await withFreshSchema(async (client, database) => {
       const userId = "user_window";
       const sourceId = newTypeId("source");
       const subjectId = newTypeId("node");
+      const foreignObjectId = newTypeId("node");
+      const foreignSubjectId = newTypeId("node");
 
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [
+        "user_window_foreign",
+      ]);
       await client.query(
         `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "scope", "status")
            VALUES ($1, $2, 'conversation_message', 'msg_win', 'personal', 'completed')`,
@@ -744,6 +960,18 @@ describeIfServer("getConversationBootstrapContext", () => {
       await client.query(
         `INSERT INTO "node_metadata" ("id", "node_id", "label") VALUES ($1, $2, 'WinSubject')`,
         [newTypeId("node_metadata"), subjectId],
+      );
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Person')`,
+        [foreignObjectId, "user_window_foreign"],
+      );
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Person')`,
+        [foreignSubjectId, "user_window_foreign"],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label") VALUES ($1, $2, 'Foreign subject')`,
+        [newTypeId("node_metadata"), foreignSubjectId],
       );
 
       const asOf = new Date("2026-04-28T12:00:00.000Z");
@@ -789,6 +1017,42 @@ describeIfServer("getConversationBootstrapContext", () => {
         `UPDATE "claims" SET "updated_at" = $1 WHERE "id" = $2`,
         [recentUpdated, recentId],
       );
+      await client.query(`ALTER TABLE "claims" DISABLE TRIGGER USER`);
+      try {
+        await client.query(
+          `INSERT INTO "claims" (
+             "id", "user_id", "subject_node_id", "object_node_id", "scope",
+             "predicate", "statement", "source_id", "asserted_by_kind",
+             "stated_at", "status", "updated_at"
+           ) VALUES ($1, $2, $3, $4, 'personal', 'HAS_STATUS',
+                     'Foreign supersession endpoint.', $5, 'user', $6, 'superseded', $6)`,
+          [
+            newTypeId("claim"),
+            userId,
+            subjectId,
+            foreignObjectId,
+            sourceId,
+            recentUpdated,
+          ],
+        );
+        await client.query(
+          `INSERT INTO "claims" (
+             "id", "user_id", "subject_node_id", "object_value", "scope",
+             "predicate", "statement", "source_id", "asserted_by_kind",
+             "stated_at", "status", "updated_at"
+           ) VALUES ($1, $2, $3, 'foreign subject value', 'personal', 'HAS_STATUS',
+                     'Foreign subject supersession.', $4, 'user', $5, 'superseded', $5)`,
+          [
+            newTypeId("claim"),
+            userId,
+            foreignSubjectId,
+            sourceId,
+            recentUpdated,
+          ],
+        );
+      } finally {
+        await client.query(`ALTER TABLE "claims" ENABLE TRIGGER USER`);
+      }
 
       const fakeRedis = createFakeRedis();
       vi.resetModules();
@@ -809,6 +1073,8 @@ describeIfServer("getConversationBootstrapContext", () => {
         expect(recent).toBeDefined();
         expect(recent?.content).toContain("Inside window.");
         expect(recent?.content).not.toContain("Outside window.");
+        expect(recent?.content).not.toContain("Foreign supersession endpoint");
+        expect(recent?.content).not.toContain("Foreign subject");
       } finally {
         vi.doUnmock("~/utils/db");
         vi.doUnmock("../queues");
@@ -912,7 +1178,12 @@ describeIfServer("getConversationBootstrapContext", () => {
       const sourceB = newTypeId("source");
       const personA = newTypeId("node");
       const personB = newTypeId("node");
+      const foreignObject = newTypeId("node");
+      const foreignSubject = newTypeId("node");
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [
+        "user_partitioned_preferences_foreign",
+      ]);
       await client.query(
         `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "partition_key")
          VALUES ($1, $2, 'conversation_message', 'prefs-a', $3),
@@ -924,6 +1195,52 @@ describeIfServer("getConversationBootstrapContext", () => {
          VALUES ($1, $2, 'Person', $3), ($4, $2, 'Person', $5)`,
         [personA, userId, partitionA, personB, partitionB],
       );
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type", "partition_key")
+         VALUES ($1, $2, 'Person', $3)`,
+        [foreignObject, "user_partitioned_preferences_foreign", partitionA],
+      );
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type", "partition_key")
+         VALUES ($1, $2, 'Person', $3)`,
+        [foreignSubject, "user_partitioned_preferences_foreign", partitionA],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label") VALUES ($1, $2, 'Foreign subject')`,
+        [newTypeId("node_metadata"), foreignSubject],
+      );
+      const foreignObjectClaimId = newTypeId("claim");
+      const foreignSubjectClaimId = newTypeId("claim");
+      await client.query(`ALTER TABLE "claims" DISABLE TRIGGER USER`);
+      try {
+        await client.query(
+          `INSERT INTO "claims" (
+             "id", "user_id", "partition_key", "subject_node_id", "object_node_id",
+             "scope", "predicate", "object_value", "statement", "source_id",
+             "asserted_by_kind", "stated_at", "status"
+           ) VALUES ($1, $2, $3, $4, $5, 'personal', 'HAS_PREFERENCE', NULL,
+                     'Foreign preference endpoint.', $6, 'user', now(), 'active')`,
+          [
+            foreignObjectClaimId,
+            userId,
+            partitionA,
+            personA,
+            foreignObject,
+            sourceA,
+          ],
+        );
+        await client.query(
+          `INSERT INTO "claims" (
+             "id", "user_id", "partition_key", "subject_node_id", "object_value",
+             "scope", "predicate", "statement", "source_id", "asserted_by_kind",
+             "stated_at", "status"
+           ) VALUES ($1, $2, $3, $4, 'foreign subject value', 'personal',
+                     'HAS_PREFERENCE', 'Foreign subject preference.', $5, 'user', now(), 'active')`,
+          [foreignSubjectClaimId, userId, partitionA, foreignSubject, sourceA],
+        );
+      } finally {
+        await client.query(`ALTER TABLE "claims" ENABLE TRIGGER USER`);
+      }
       await database.insert(schema.claims).values([
         {
           id: newTypeId("claim"),
@@ -961,6 +1278,12 @@ describeIfServer("getConversationBootstrapContext", () => {
       );
       expect(section?.content).toContain("room-a-only");
       expect(section?.content).not.toContain("room-b-only");
+      expect(section?.content).not.toContain("Foreign preference endpoint");
+      expect(section?.content).not.toContain("Foreign subject");
+      const evidenceClaimIds =
+        section?.evidence?.map((evidence) => evidence.claimId) ?? [];
+      expect(evidenceClaimIds).not.toContain(foreignObjectClaimId);
+      expect(evidenceClaimIds).not.toContain(foreignSubjectClaimId);
     });
   });
 });

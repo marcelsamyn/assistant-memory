@@ -1,5 +1,6 @@
 import { defineEventHandler } from "h3";
 import { queryTimeline } from "~/lib/query/timeline";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   queryTimelineRequestSchema,
   queryTimelineResponseSchema,
@@ -7,5 +8,10 @@ import {
 
 export default defineEventHandler(async (event) => {
   const params = queryTimelineRequestSchema.parse(await readBody(event));
-  return queryTimelineResponseSchema.parse(await queryTimeline(params));
+  return queryTimelineResponseSchema.parse(
+    await queryTimeline({
+      ...params,
+      accessScope: getRequestAccessScope(event),
+    }),
+  );
 });

@@ -30,9 +30,13 @@ import db from "~/db";
 import { sourceTombstones, sources } from "~/db/schema";
 import {
   PartitionAccessError,
+  ensurePersonalPartition,
   preparePartitionWrite,
 } from "~/lib/partition-access";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import type { SourceProcessing } from "~/lib/schemas/source-processing";
 import {
   applySourceLifecycleCommand,
@@ -45,24 +49,30 @@ import type { TypeId } from "~/types/typeid";
  * Queue a document ingestion job.
  */
 export async function saveMemory(
-  req: IngestDocumentRequest,
+  req: IngestDocumentRequest & { accessScope?: MemoryAccessScope },
 ): Promise<IngestDocumentResponse> {
-  const { userId, document, updateExisting = false } = req;
-  const externalId = contextualSourceExternalId({
+  const {
+    userId,
+    document,
+    updateExisting = false,
+    partitionKey: requestedPartitionKey,
+    accessScope = "partition",
+  } = req;
+  let partitionKey: ContextPartitionKey | undefined = requestedPartitionKey;
+  let externalId = contextualSourceExternalId({
     externalId: document.id,
     ...(document.sourceContext !== undefined
       ? {
           accountId: document.sourceContext.accountId,
-          ...(req.partitionKey !== undefined
-            ? { partitionKey: req.partitionKey }
-            : {}),
+          ...(partitionKey !== undefined ? { partitionKey } : {}),
         }
       : {}),
   });
 
   if (
     document.sourceContext?.parentPartitionKey !== undefined &&
-    document.sourceContext.parentPartitionKey !== req.partitionKey
+    (accessScope !== "workspace" || requestedPartitionKey !== undefined) &&
+    document.sourceContext.parentPartitionKey !== partitionKey
   ) {
     throw createError({
       statusCode: 403,
@@ -71,7 +81,64 @@ export async function saveMemory(
   }
 
   await ensureUser(db, userId);
-  await preparePartitionWrite(db, userId, req.partitionKey);
+  if (accessScope === "workspace") {
+    if (document.sourceContext?.parentSourceId !== undefined) {
+      const [parent] = await db
+        .select({ partitionKey: sources.partitionKey })
+        .from(sources)
+        .where(
+          and(
+            eq(sources.userId, userId),
+            eq(sources.id, document.sourceContext.parentSourceId),
+            isNull(sources.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!parent) {
+        throw new PartitionAccessError(
+          "PARTITION_UNAUTHORIZED",
+          "Source parent does not exist in the requested workspace",
+        );
+      }
+      const parentPartitionKey = parent.partitionKey ?? undefined;
+      if (
+        (partitionKey !== undefined && partitionKey !== parentPartitionKey) ||
+        (document.sourceContext.parentPartitionKey !== undefined &&
+          document.sourceContext.parentPartitionKey !== parentPartitionKey)
+      ) {
+        throw new PartitionAccessError(
+          "PARTITION_UNAUTHORIZED",
+          "Source parent does not belong to the requested partition",
+        );
+      }
+      partitionKey = parentPartitionKey;
+    } else if (partitionKey === undefined) {
+      const [existingRoot] = await db
+        .select({ partitionKey: sources.partitionKey })
+        .from(sources)
+        .where(
+          and(
+            eq(sources.userId, userId),
+            eq(sources.type, "document"),
+            eq(sources.externalId, document.id),
+          ),
+        )
+        .limit(1);
+      partitionKey =
+        existingRoot?.partitionKey ??
+        (await ensurePersonalPartition(db, userId));
+    }
+  }
+  await preparePartitionWrite(db, userId, partitionKey);
+  externalId = contextualSourceExternalId({
+    externalId: document.id,
+    ...(document.sourceContext !== undefined
+      ? {
+          accountId: document.sourceContext.accountId,
+          ...(partitionKey !== undefined ? { partitionKey } : {}),
+        }
+      : {}),
+  });
 
   if (updateExisting && document.sourceContext === undefined) {
     const existingDocuments = await db
@@ -84,9 +151,9 @@ export async function saveMemory(
       .where(
         and(
           eq(sources.userId, userId),
-          req.partitionKey === undefined
+          partitionKey === undefined
             ? isNull(sources.partitionKey)
-            : eq(sources.partitionKey, req.partitionKey),
+            : eq(sources.partitionKey, partitionKey),
           eq(sources.type, "document"),
           eq(sources.externalId, externalId),
         ),
@@ -97,7 +164,7 @@ export async function saveMemory(
         userId,
         sourceId: existing.id,
         sourceVersion: existing.version,
-        partitionKey: req.partitionKey ?? null,
+        partitionKey: partitionKey ?? null,
         alreadyTombstoned: existing.deletedAt !== null,
       });
     }
@@ -123,16 +190,15 @@ export async function saveMemory(
     revisionHash: contentHash,
   } = await sourceService.insertIngestionSource({
     userId,
-    ...(req.partitionKey !== undefined
-      ? { partitionKey: req.partitionKey }
-      : {}),
+    accessScope,
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
     sourceType: "document",
     externalId,
     ...(document.sourceContext?.parentSourceId !== undefined
       ? {
           parentId: document.sourceContext.parentSourceId,
-          ...(req.partitionKey !== undefined
-            ? { parentPartitionKey: req.partitionKey }
+          ...(partitionKey !== undefined
+            ? { parentPartitionKey: partitionKey }
             : {}),
         }
       : {}),
@@ -196,7 +262,7 @@ export async function saveMemory(
         }`,
       });
     }
-    if (existing.partitionKey !== (req.partitionKey ?? null)) {
+    if (existing.partitionKey !== (partitionKey ?? null)) {
       throw createError({
         statusCode: 409,
         statusMessage:
@@ -207,9 +273,7 @@ export async function saveMemory(
     existingProcessing = await findSourceIngestionOperation({
       db,
       userId,
-      ...(req.partitionKey !== undefined
-        ? { partitionKey: req.partitionKey }
-        : {}),
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
       sourceId: existing.id,
       contentHash,
     });
@@ -230,7 +294,7 @@ export async function saveMemory(
       const revision = {
         userId,
         sourceId: existing.id,
-        partitionKey: req.partitionKey,
+        partitionKey,
         metadata,
         ...(document.sourceContext?.parentSourceId !== undefined
           ? { parentId: document.sourceContext.parentSourceId }
@@ -240,6 +304,7 @@ export async function saveMemory(
       if (existingProcessing) {
         const updatedVersion = await sourceService.updateIngestionMetadata({
           ...revision,
+          accessScope,
           ...(document.timestamp !== undefined
             ? { timestamp: document.timestamp }
             : {}),
@@ -247,9 +312,7 @@ export async function saveMemory(
         existingProcessing = await findSourceIngestionOperation({
           db,
           userId,
-          ...(req.partitionKey !== undefined
-            ? { partitionKey: req.partitionKey }
-            : {}),
+          ...(partitionKey !== undefined ? { partitionKey } : {}),
           sourceId: existing.id,
           contentHash,
         });
@@ -270,6 +333,7 @@ export async function saveMemory(
       ) {
         sourceVersion = await sourceService.replaceInlineContent({
           ...revision,
+          accessScope,
           content: document.content,
           contentHash,
           timestamp,
@@ -298,9 +362,7 @@ export async function saveMemory(
     (await createSourceIngestionOperation({
       db,
       userId,
-      ...(req.partitionKey !== undefined
-        ? { partitionKey: req.partitionKey }
-        : {}),
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
       sourceId,
       externalId,
       contentHash,
@@ -313,7 +375,7 @@ export async function saveMemory(
     "ingest-document",
     {
       userId,
-      partitionKey: req.partitionKey,
+      partitionKey,
       sourceId,
       expectedSourceVersion: processing.sourceVersion,
       documentId: document.id,

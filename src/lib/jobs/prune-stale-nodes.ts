@@ -17,19 +17,34 @@
  * Common aliases: prune stale nodes, memory garbage collection, graph GC,
  * weed old nodes, staleness sweep, low-quality node cleanup.
  */
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNull,
+  or,
+  sql,
+  type SQL,
+  type SQLWrapper,
+} from "drizzle-orm";
+import { z } from "zod";
 import type { DrizzleDB } from "~/db";
 import {
   aliases,
   claims,
+  memoryPartitions,
   nodeMetadata,
   nodes,
   sourceLinks,
+  users,
   userProfiles,
 } from "~/db/schema";
 import { logEvent } from "~/lib/observability/log";
 import {
   assertPartitionReadAllowed,
+  PartitionAccessError,
+  partitionAccessCondition,
   preparePartitionWrite,
 } from "~/lib/partition-access";
 import type { ContextPartitionKey } from "~/lib/schemas/partition";
@@ -40,9 +55,87 @@ import {
   type StaleNodeCandidate,
 } from "~/lib/schemas/prune-stale-nodes";
 import { userProfileMetadataSchema } from "~/lib/schemas/user-profile-metadata";
+import { lockUserSelfIdentity } from "~/lib/user-self-identity";
+import { resolveWorkspacePartitions } from "~/lib/workspace-partitions";
 import type { NodeType } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
+
+type PruneDatabase = DrizzleDB;
+
+function partitionScopeCondition(
+  column: SQLWrapper,
+  userId: string,
+  partitionKeys: readonly (ContextPartitionKey | undefined)[],
+): SQL<unknown> {
+  if (partitionKeys.length === 1) {
+    const [partitionKey] = partitionKeys;
+    return partitionKey === undefined
+      ? isNull(column)
+      : eq(column, partitionKey);
+  }
+  const conditions: SQL<unknown>[] = [];
+  const activePartitionKeys = partitionKeys.filter(
+    (partitionKey): partitionKey is ContextPartitionKey =>
+      partitionKey !== undefined,
+  );
+  if (activePartitionKeys.length > 0) {
+    conditions.push(
+      and(
+        inArray(column, activePartitionKeys),
+        partitionAccessCondition(column, userId, undefined, "workspace"),
+      )!,
+    );
+  }
+  if (partitionKeys.some((partitionKey) => partitionKey === undefined)) {
+    conditions.push(
+      partitionAccessCondition(column, userId, undefined, "workspace"),
+    );
+  }
+  if (conditions.length === 0) return sql`false`;
+  return conditions.length === 1 ? conditions[0]! : or(...conditions)!;
+}
+
+async function lockUserForPrune(
+  db: PruneDatabase,
+  userId: string,
+): Promise<void> {
+  await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, userId))
+    .for("no key update");
+}
+
+async function assertActivePartitionOwnership(
+  db: PruneDatabase,
+  userId: string,
+  partitionKeys: readonly (ContextPartitionKey | undefined)[],
+): Promise<void> {
+  const requiredKeys = partitionKeys.filter(
+    (partitionKey): partitionKey is ContextPartitionKey =>
+      partitionKey !== undefined,
+  );
+  if (requiredKeys.length === 0) return;
+  const rows = await db
+    .select({ partitionKey: memoryPartitions.partitionKey })
+    .from(memoryPartitions)
+    .where(
+      and(
+        eq(memoryPartitions.userId, userId),
+        eq(memoryPartitions.status, "active"),
+        inArray(memoryPartitions.partitionKey, requiredKeys),
+      ),
+    );
+  if (
+    new Set(rows.map((row) => row.partitionKey)).size !== requiredKeys.length
+  ) {
+    throw new PartitionAccessError(
+      "PARTITION_UNAUTHORIZED",
+      `Memory partition ownership changed while pruning for user ${userId}`,
+    );
+  }
+}
 
 const DEFAULT_PRUNABLE_NODE_TYPES = [
   "Person",
@@ -90,14 +183,15 @@ interface ScoredNodeRow {
  * inflating claim counts via row fan-out.
  */
 async function scoreNodeRows(
-  db: DrizzleDB,
+  db: PruneDatabase,
   params: {
     userId: string;
-    partitionKey?: ContextPartitionKey;
+    partitionKeys: readonly (ContextPartitionKey | undefined)[];
     nodeTypes: readonly NodeType[];
+    nodeIds?: readonly TypeId<"node">[];
   },
 ): Promise<ScoredNodeRow[]> {
-  if (params.nodeTypes.length === 0) return [];
+  if (params.nodeTypes.length === 0 || params.nodeIds?.length === 0) return [];
 
   const rows = await db
     .select({
@@ -144,9 +238,11 @@ async function scoreNodeRows(
       claims,
       and(
         eq(claims.userId, params.userId),
-        params.partitionKey === undefined
-          ? isNull(claims.partitionKey)
-          : eq(claims.partitionKey, params.partitionKey),
+        partitionScopeCondition(
+          claims.partitionKey,
+          params.userId,
+          params.partitionKeys,
+        ),
         sql`(${claims.subjectNodeId} = ${nodes.id} or ${claims.objectNodeId} = ${nodes.id})`,
       ),
     )
@@ -154,9 +250,11 @@ async function scoreNodeRows(
       aliases,
       and(
         eq(aliases.userId, params.userId),
-        params.partitionKey === undefined
-          ? isNull(aliases.partitionKey)
-          : eq(aliases.partitionKey, params.partitionKey),
+        partitionScopeCondition(
+          aliases.partitionKey,
+          params.userId,
+          params.partitionKeys,
+        ),
         eq(aliases.canonicalNodeId, nodes.id),
       ),
     )
@@ -164,10 +262,13 @@ async function scoreNodeRows(
     .where(
       and(
         eq(nodes.userId, params.userId),
-        params.partitionKey === undefined
-          ? isNull(nodes.partitionKey)
-          : eq(nodes.partitionKey, params.partitionKey),
+        partitionScopeCondition(
+          nodes.partitionKey,
+          params.userId,
+          params.partitionKeys,
+        ),
         inArray(nodes.nodeType, [...params.nodeTypes]),
+        ...(params.nodeIds ? [inArray(nodes.id, [...params.nodeIds])] : []),
       ),
     )
     .groupBy(nodes.id, nodes.nodeType, nodeMetadata.label, nodes.createdAt);
@@ -178,14 +279,76 @@ async function scoreNodeRows(
   }));
 }
 
+async function lockSelectedStaleEvidence(
+  db: PruneDatabase,
+  userId: string,
+  partitionKeys: readonly (ContextPartitionKey | undefined)[],
+  nodeIds: readonly TypeId<"node">[],
+): Promise<void> {
+  if (nodeIds.length === 0) return;
+
+  const lockedNodes = await db
+    .select({ id: nodes.id })
+    .from(nodes)
+    .where(
+      and(
+        eq(nodes.userId, userId),
+        partitionScopeCondition(nodes.partitionKey, userId, partitionKeys),
+        inArray(nodes.id, [...nodeIds]),
+      ),
+    )
+    .orderBy(asc(nodes.id))
+    .for("update");
+  const lockedNodeIds = lockedNodes.map((node) => node.id);
+  if (lockedNodeIds.length === 0) return;
+
+  // Lock dependent rows in stable id order. A claim update does not need to
+  // take a key-share lock on the referenced node, so the child locks close
+  // that otherwise-unprotected evidence race.
+  await db
+    .select({ id: claims.id })
+    .from(claims)
+    .where(
+      and(
+        eq(claims.userId, userId),
+        partitionScopeCondition(claims.partitionKey, userId, partitionKeys),
+        or(
+          inArray(claims.subjectNodeId, lockedNodeIds),
+          inArray(claims.objectNodeId, lockedNodeIds),
+          inArray(claims.assertedByNodeId, lockedNodeIds),
+        ),
+      ),
+    )
+    .orderBy(asc(claims.id))
+    .for("update");
+  await db
+    .select({ id: nodeMetadata.id })
+    .from(nodeMetadata)
+    .where(inArray(nodeMetadata.nodeId, lockedNodeIds))
+    .orderBy(asc(nodeMetadata.id))
+    .for("update");
+  await db
+    .select({ id: aliases.id })
+    .from(aliases)
+    .where(
+      and(
+        eq(aliases.userId, userId),
+        partitionScopeCondition(aliases.partitionKey, userId, partitionKeys),
+        inArray(aliases.canonicalNodeId, lockedNodeIds),
+      ),
+    )
+    .orderBy(asc(aliases.id))
+    .for("update");
+}
+
 /**
  * Node ids that must never be pruned regardless of score: subjects of a
  * currently-open task status, and the user's self-identity node(s).
  */
 async function collectProtectedNodeIds(
-  db: DrizzleDB,
+  db: PruneDatabase,
   userId: string,
-  partitionKey?: ContextPartitionKey,
+  partitionKeys: readonly (ContextPartitionKey | undefined)[],
 ): Promise<Set<TypeId<"node">>> {
   const protectedIds = new Set<TypeId<"node">>();
 
@@ -195,15 +358,27 @@ async function collectProtectedNodeIds(
     .where(
       and(
         eq(claims.userId, userId),
-        partitionKey === undefined
-          ? isNull(claims.partitionKey)
-          : eq(claims.partitionKey, partitionKey),
+        partitionScopeCondition(claims.partitionKey, userId, partitionKeys),
         eq(claims.predicate, "HAS_TASK_STATUS"),
         eq(claims.status, "active"),
         inArray(claims.objectValue, [...OPEN_TASK_STATUSES]),
       ),
     );
   for (const row of openTaskRows) protectedIds.add(row.nodeId);
+
+  const selfMarkerRows = await db
+    .select({ nodeId: nodes.id })
+    .from(nodes)
+    .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
+    .where(
+      and(
+        eq(nodes.userId, userId),
+        eq(nodes.nodeType, "Person"),
+        partitionScopeCondition(nodes.partitionKey, userId, partitionKeys),
+        sql`${nodeMetadata.additionalData}->>'isUserSelf' = 'true'`,
+      ),
+    );
+  for (const row of selfMarkerRows) protectedIds.add(row.nodeId);
 
   const [profile] = await db
     .select({ metadata: userProfiles.metadata })
@@ -227,9 +402,7 @@ async function collectProtectedNodeIds(
       .where(
         and(
           eq(aliases.userId, userId),
-          partitionKey === undefined
-            ? isNull(aliases.partitionKey)
-            : eq(aliases.partitionKey, partitionKey),
+          partitionScopeCondition(aliases.partitionKey, userId, partitionKeys),
           inArray(aliases.normalizedAliasText, normalizedSelfAliases),
         ),
       );
@@ -322,9 +495,9 @@ function scoreNode(
 }
 
 async function deleteNodes(
-  db: DrizzleDB,
+  db: PruneDatabase,
   userId: string,
-  partitionKey: ContextPartitionKey | undefined,
+  partitionKeys: readonly (ContextPartitionKey | undefined)[],
   nodeIds: TypeId<"node">[],
 ): Promise<number> {
   if (nodeIds.length === 0) return 0;
@@ -333,9 +506,7 @@ async function deleteNodes(
     .where(
       and(
         eq(nodes.userId, userId),
-        partitionKey === undefined
-          ? isNull(nodes.partitionKey)
-          : eq(nodes.partitionKey, partitionKey),
+        partitionScopeCondition(nodes.partitionKey, userId, partitionKeys),
         inArray(nodes.id, nodeIds),
       ),
     )
@@ -343,35 +514,29 @@ async function deleteNodes(
   return deleted.length;
 }
 
-/**
- * Score and (optionally) prune stale/low-value nodes. Dry-run returns the
- * ranked candidate set with reasons; destructive mode deletes up to `limit`
- * of the highest-scoring candidates.
- */
-export async function pruneStaleNodes(
-  rawInput: PruneStaleNodesRequest,
-  dbOverride?: DrizzleDB,
+async function pruneStaleNodesInScope(
+  db: PruneDatabase,
+  input: z.output<typeof pruneStaleNodesRequestSchema>,
+  partitionKeys: readonly (ContextPartitionKey | undefined)[],
 ): Promise<PruneStaleNodesResponse> {
-  const input = pruneStaleNodesRequestSchema.parse(rawInput);
-  const db = dbOverride ?? (await useDatabase());
-  if (input.dryRun) {
-    await assertPartitionReadAllowed(db, input.userId, input.partitionKey);
-  } else {
-    await preparePartitionWrite(db, input.userId, input.partitionKey);
-  }
   const nodeTypes = input.nodeTypes ?? [...DEFAULT_PRUNABLE_NODE_TYPES];
   const threshold = input.minScore ?? 1 - input.aggressiveness;
   const now = Date.now();
 
+  if (!input.dryRun) {
+    // Profile alias changes and self-node creation use this same transaction
+    // gate. Hold it before scoring and protection reads so READ COMMITTED
+    // statements observe one current identity boundary after waiting.
+    await lockUserSelfIdentity(db, input.userId);
+  }
+
   const [rows, protectedIds] = await Promise.all([
     scoreNodeRows(db, {
       userId: input.userId,
-      ...(input.partitionKey !== undefined
-        ? { partitionKey: input.partitionKey }
-        : {}),
+      partitionKeys,
       nodeTypes,
     }),
-    collectProtectedNodeIds(db, input.userId, input.partitionKey),
+    collectProtectedNodeIds(db, input.userId, partitionKeys),
   ]);
 
   const candidates = rows
@@ -394,14 +559,50 @@ export async function pruneStaleNodes(
   const hasMore = candidates.length > input.limit;
   const toDelete = candidates.slice(0, input.limit);
 
-  const deletedCount = input.dryRun
-    ? 0
-    : await deleteNodes(
-        db,
-        input.userId,
-        input.partitionKey,
-        toDelete.map((candidate) => candidate.id),
-      );
+  let deletedCount = 0;
+  if (!input.dryRun && toDelete.length > 0) {
+    await lockSelectedStaleEvidence(
+      db,
+      input.userId,
+      partitionKeys,
+      toDelete.map((candidate) => candidate.id),
+    );
+    const [freshRows, freshProtectedIds] = await Promise.all([
+      scoreNodeRows(db, {
+        userId: input.userId,
+        partitionKeys,
+        nodeTypes,
+        nodeIds: toDelete.map((candidate) => candidate.id),
+      }),
+      collectProtectedNodeIds(db, input.userId, partitionKeys),
+    ]);
+    const freshCandidates = freshRows
+      .map((row) =>
+        scoreNode(row, {
+          now: Date.now(),
+          stalenessHorizonDays: input.stalenessHorizonDays,
+        }),
+      )
+      .filter(({ candidate, isReference }) => {
+        if (freshProtectedIds.has(candidate.id)) return false;
+        if (candidate.idleDays < input.minIdleDays) return false;
+        if (isReference && !input.includeReference) return false;
+        return candidate.score >= threshold;
+      });
+    const freshEligibleIds = new Set(
+      freshCandidates.map(({ candidate }) => candidate.id),
+    );
+    // Never refill from candidates beyond the original global budget. A
+    // concurrent evidence change may only reduce the deletion set.
+    deletedCount = await deleteNodes(
+      db,
+      input.userId,
+      partitionKeys,
+      toDelete
+        .map((candidate) => candidate.id)
+        .filter((nodeId) => freshEligibleIds.has(nodeId)),
+    );
+  }
 
   const sample: StaleNodeCandidate[] = toDelete.slice(0, input.sampleLimit);
 
@@ -426,4 +627,70 @@ export async function pruneStaleNodes(
     scannedNodeTypes: nodeTypes,
     candidates: sample,
   };
+}
+
+async function prepareWorkspaceWrite(
+  db: PruneDatabase,
+  userId: string,
+  partitionKeys: readonly (ContextPartitionKey | undefined)[],
+): Promise<void> {
+  for (const partitionKey of partitionKeys) {
+    await preparePartitionWrite(db, userId, partitionKey);
+  }
+  await assertActivePartitionOwnership(db, userId, partitionKeys);
+}
+
+/**
+ * Score and (optionally) prune stale/low-value nodes. Dry-run returns the
+ * ranked candidate set with reasons; destructive mode deletes up to `limit`
+ * of the highest-scoring candidates.
+ */
+export async function pruneStaleNodes(
+  rawInput: PruneStaleNodesRequest,
+  dbOverride?: DrizzleDB,
+): Promise<PruneStaleNodesResponse> {
+  const input = pruneStaleNodesRequestSchema.parse(rawInput);
+  const db = dbOverride ?? (await useDatabase());
+  if (input.dryRun) {
+    await assertPartitionReadAllowed(db, input.userId, input.partitionKey);
+    return pruneStaleNodesInScope(db, input, [input.partitionKey]);
+  }
+  return db.transaction(async (tx) => {
+    await lockUserForPrune(tx, input.userId);
+    await prepareWorkspaceWrite(tx, input.userId, [input.partitionKey]);
+    return pruneStaleNodesInScope(tx, input, [input.partitionKey]);
+  });
+}
+
+/** Runs one deterministic workspace-wide stale sweep under one total limit. */
+export async function pruneStaleNodesWorkspace(
+  rawInput: PruneStaleNodesRequest,
+  dbOverride?: DrizzleDB,
+): Promise<PruneStaleNodesResponse> {
+  const input = pruneStaleNodesRequestSchema.parse(rawInput);
+  const db = dbOverride ?? (await useDatabase());
+  if (input.partitionKey !== undefined) {
+    return pruneStaleNodes(input, db);
+  }
+  if (input.dryRun) {
+    const partitionKeys = await resolveWorkspacePartitions(
+      db,
+      input.userId,
+      undefined,
+      "workspace",
+    );
+    await assertPartitionReadAllowed(db, input.userId, undefined, "workspace");
+    return pruneStaleNodesInScope(db, input, partitionKeys);
+  }
+  return db.transaction(async (tx) => {
+    await lockUserForPrune(tx, input.userId);
+    const partitionKeys = await resolveWorkspacePartitions(
+      tx,
+      input.userId,
+      undefined,
+      "workspace",
+    );
+    await prepareWorkspaceWrite(tx, input.userId, partitionKeys);
+    return pruneStaleNodesInScope(tx, input, partitionKeys);
+  });
 }

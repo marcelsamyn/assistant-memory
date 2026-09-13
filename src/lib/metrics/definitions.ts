@@ -8,6 +8,7 @@ import {
 import { generateEmbeddings } from "~/lib/embeddings";
 import { HIGH_SIMILARITY, MID_SIMILARITY } from "~/lib/metrics/constants";
 import { createNode } from "~/lib/node";
+import { assertPartitionReadAllowed } from "~/lib/partition-access";
 import {
   type MetricDefinition,
   type ProposedMetricDefinition,
@@ -15,6 +16,7 @@ import {
   proposedMetricDefinitionSchema,
 } from "~/lib/schemas/metric-definition";
 import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import type { MemoryAccessScope } from "~/lib/schemas/partition";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 import { shouldSkipEmbeddingPersistence } from "~/utils/test-overrides";
@@ -286,6 +288,16 @@ export class MetricDefinitionValidationError extends Error {
   }
 }
 
+/** A definition delete would cascade observations from more than one partition. */
+export class MetricDefinitionPartitionUnsupportedError extends Error {
+  constructor() {
+    super(
+      "Deleting a metric definition with partitioned observations requires an explicit partition cleanup",
+    );
+    this.name = "MetricDefinitionPartitionUnsupportedError";
+  }
+}
+
 /**
  * Patch a metric definition. When label/description change, regenerates the
  * embedding too — the new embedding is computed up-front, then the row update
@@ -425,8 +437,13 @@ function validateUpdatedRange(
 export async function deleteMetricDefinition(
   userId: string,
   metricDefinitionId: TypeId<"metric_definition">,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<{ deletedObservationCount: number }> {
+  if (accessScope === "workspace") {
+    throw new MetricDefinitionPartitionUnsupportedError();
+  }
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, undefined, accessScope);
 
   const [observationCountRow] = await db
     .select({ value: sql<number>`count(*)::int` })

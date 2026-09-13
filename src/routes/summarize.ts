@@ -1,20 +1,42 @@
 import { defineEventHandler, readBody } from "h3";
 import { batchQueue, SUMMARIZE_JOB_OPTIONS } from "~/lib/queues";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   summarizeRequestSchema,
   summarizeResponseSchema,
 } from "~/lib/schemas/summarize";
+import {
+  assertWorkspaceOperationReady,
+  resolveWorkspacePartitions,
+} from "~/lib/workspace-partitions";
+import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
   const { userId, partitionKey } = summarizeRequestSchema.parse(
     await readBody(event),
   );
-
-  await batchQueue.add(
-    "summarize",
-    { userId, ...(partitionKey !== undefined ? { partitionKey } : {}) },
-    SUMMARIZE_JOB_OPTIONS,
+  const db = await useDatabase();
+  const accessScope = getRequestAccessScope(event);
+  const partitions = await resolveWorkspacePartitions(
+    db,
+    userId,
+    partitionKey,
+    accessScope,
   );
+  await assertWorkspaceOperationReady(db, userId, partitions, accessScope);
+
+  for (const strictPartitionKey of partitions) {
+    await batchQueue.add(
+      "summarize",
+      {
+        userId,
+        ...(strictPartitionKey !== undefined
+          ? { partitionKey: strictPartitionKey }
+          : {}),
+      },
+      SUMMARIZE_JOB_OPTIONS,
+    );
+  }
 
   console.log(`Enqueued 'summarize' job for user: ${userId}`);
 

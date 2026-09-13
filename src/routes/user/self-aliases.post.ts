@@ -1,4 +1,5 @@
 import { defineEventHandler } from "h3";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   setUserSelfAliasesRequestSchema,
   setUserSelfAliasesResponseSchema,
@@ -10,6 +11,12 @@ export default defineEventHandler(async (event) => {
   const { userId, partitionKey, aliases } =
     setUserSelfAliasesRequestSchema.parse(await readBody(event));
   const db = await useDatabase();
-  const result = await setUserSelfAliases(db, userId, aliases, partitionKey);
+  const result = await setUserSelfAliases(
+    db,
+    userId,
+    aliases,
+    partitionKey,
+    getRequestAccessScope(event),
+  );
   return setUserSelfAliasesResponseSchema.parse(result);
 });

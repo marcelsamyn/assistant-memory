@@ -14,7 +14,13 @@ import {
   vi,
 } from "vitest";
 import * as schema from "~/db/schema";
-import { sourceIngestionOperations, sources, users } from "~/db/schema";
+import {
+  memoryPartitions,
+  partitionMigrationState,
+  sourceIngestionOperations,
+  sources,
+  users,
+} from "~/db/schema";
 import {
   completeSourceIngestionOperation,
   createSourceIngestionOperation,
@@ -22,6 +28,8 @@ import {
   getSourceIngestionOperationById,
   markSourceIngestionProcessing,
 } from "~/lib/ingestion/source-processing";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
+import { newTypeId } from "~/types/typeid";
 import { setTestDatabase } from "~/utils/db";
 
 const host = process.env["TEST_PG_HOST"] ?? "localhost";
@@ -446,5 +454,110 @@ describeIfPostgres("retained processing retry", () => {
     } finally {
       await activeWorker.close();
     }
+  });
+
+  it("rejects a workspace retry of a legacy receipt during migration before queue access", async () => {
+    const userId = "retry-workspace-legacy-migrating";
+    const sourceId = newTypeId("source");
+    const operationId = `legacy-migrating-${Date.now()}`;
+    await database.insert(users).values({ id: userId });
+    // Legacy NULL rows are created before the migration fence is installed.
+    await database.insert(sources).values({
+      id: sourceId,
+      userId,
+      type: "document",
+      externalId: "legacy-migrating",
+      status: "pending",
+    });
+    await database.insert(sourceIngestionOperations).values({
+      operationId,
+      userId,
+      sourceId,
+      externalId: "legacy-migrating",
+      sourceVersion: 0,
+      status: "queued",
+      stage: "content",
+    });
+    await database.insert(partitionMigrationState).values({
+      userId,
+      state: "migrating",
+      version: 1,
+    });
+    const getJob = vi.spyOn(queue, "getJob");
+    const add = vi.spyOn(queue, "add");
+
+    await expect(
+      retrySourceProcessing({
+        userId,
+        operationId,
+        accessScope: "workspace",
+      }),
+    ).rejects.toMatchObject({ code: "PARTITION_REQUIRED" });
+    expect(getJob).not.toHaveBeenCalled();
+    expect(add).not.toHaveBeenCalled();
+    await expect(
+      database
+        .select({ version: sources.version })
+        .from(sources)
+        .where(eq(sources.id, sourceId)),
+    ).resolves.toEqual([{ version: 0 }]);
+  });
+
+  it("does not retry an operation in an inactive workspace partition", async () => {
+    const userId = "retry-workspace-inactive";
+    const partitionKey = contextPartitionKeySchema.parse(
+      "retry:inactive-partition",
+    );
+    const sourceId = newTypeId("source");
+    const operationId = `inactive-${Date.now()}`;
+    await database.insert(users).values({ id: userId });
+    await database.insert(partitionMigrationState).values({
+      userId,
+      state: "migrated",
+      version: 1,
+    });
+    await database.insert(memoryPartitions).values({
+      userId,
+      partitionKey,
+      status: "quarantined",
+    });
+    // The source-partition trigger blocks creating new rows in quarantine.
+    // Seed the retained historical operation behind a test-only trigger
+    // bypass, then verify retry still refuses it before touching BullMQ.
+    await client.query(`ALTER TABLE "sources" DISABLE TRIGGER USER`);
+    try {
+      await database.insert(sources).values({
+        id: sourceId,
+        userId,
+        partitionKey,
+        type: "document",
+        externalId: "inactive-partition",
+        status: "pending",
+      });
+    } finally {
+      await client.query(`ALTER TABLE "sources" ENABLE TRIGGER USER`);
+    }
+    await database.insert(sourceIngestionOperations).values({
+      operationId,
+      userId,
+      sourceId,
+      partitionKey,
+      externalId: "inactive-partition",
+      sourceVersion: 0,
+      status: "queued",
+      stage: "content",
+    });
+    const getJob = vi.spyOn(queue, "getJob");
+    const add = vi.spyOn(queue, "add");
+
+    await expect(
+      retrySourceProcessing({
+        userId,
+        operationId,
+        accessScope: "workspace",
+      }),
+    ).rejects.toMatchObject({ code: "PARTITION_UNAUTHORIZED" });
+    expect(getJob).not.toHaveBeenCalled();
+    expect(add).not.toHaveBeenCalled();
   });
 });

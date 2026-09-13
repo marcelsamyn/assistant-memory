@@ -114,6 +114,14 @@ export async function setPartitionMigrationState(
       .insert(users)
       .values({ id: request.userId })
       .onConflictDoNothing({ target: users.id });
+    // Migration transitions and batch graph deletions share the user row as their
+    // transaction boundary. Acquire it before reading state and hold it
+    // through the complete transition, including legacy cleanup.
+    await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, request.userId))
+      .for("no key update");
     const current = await loadMigrationState(tx, request.userId);
     if (
       current.state !== request.expectedState ||

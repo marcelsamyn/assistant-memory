@@ -8,11 +8,15 @@ import { CrossScopeMergeError } from "~/lib/node";
 import { getEffectiveNodeScopes } from "~/lib/node-scope";
 import { logEvent } from "~/lib/observability/log";
 import {
+  assertPartitionReadAllowed,
   assertSourcePartition,
   preparePartitionWrite,
   withSourceWriteFence,
 } from "~/lib/partition-access";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import { ensureSystemSource } from "~/lib/sources";
 import {
   AttributePredicateEnum,
@@ -30,6 +34,35 @@ import { useDatabase } from "~/utils/db";
 import { shouldSkipEmbeddingPersistence } from "~/utils/test-overrides";
 
 type Database = Awaited<ReturnType<typeof useDatabase>>;
+
+export interface ClaimPartitionResolution {
+  found: boolean;
+  partitionKey: ContextPartitionKey | undefined;
+}
+
+/** Resolve an existing claim's concrete partition before a strict mutation. */
+export async function resolveClaimPartition(
+  db: Database,
+  userId: string,
+  claimId: TypeId<"claim">,
+  partitionKey: ContextPartitionKey | undefined,
+  accessScope: MemoryAccessScope = "partition",
+): Promise<ClaimPartitionResolution> {
+  if (accessScope !== "workspace" || partitionKey !== undefined) {
+    return { found: true, partitionKey };
+  }
+
+  const [claim] = await db
+    .select({ partitionKey: claims.partitionKey })
+    .from(claims)
+    .where(and(eq(claims.userId, userId), eq(claims.id, claimId)))
+    .limit(1);
+  if (!claim) return { found: false, partitionKey: undefined };
+  if (claim.partitionKey !== null) {
+    await assertPartitionReadAllowed(db, userId, claim.partitionKey);
+  }
+  return { found: true, partitionKey: claim.partitionKey ?? undefined };
+}
 
 export type ClaimSelect = typeof claims.$inferSelect;
 
@@ -267,6 +300,7 @@ export async function createClaim(
     [
       input.subjectNodeId,
       ...(input.objectNodeId !== undefined ? [input.objectNodeId] : []),
+      ...(input.assertedByNodeId !== undefined ? [input.assertedByNodeId] : []),
     ],
     input.partitionKey,
   );
@@ -295,7 +329,11 @@ export async function createClaim(
 
   const [inserted] = await withSourceWriteFence(
     db,
-    { userId: input.userId, sources: [{ sourceId }] },
+    {
+      userId: input.userId,
+      partitionKey: input.partitionKey,
+      sources: [{ sourceId }],
+    },
     (tx) =>
       tx
         .insert(claims)
@@ -493,6 +531,28 @@ export async function reattributeClaim(
     );
   }
 
+  // Reattribution must never copy a malformed cross-partition claim into a
+  // new partition. Validate every existing endpoint and its provenance source
+  // against the concrete partition resolved by the route.
+  await fetchOwnedNodes(
+    db,
+    input.userId,
+    [
+      original.subjectNodeId,
+      ...(original.objectNodeId !== null ? [original.objectNodeId] : []),
+      ...(original.assertedByNodeId !== null
+        ? [original.assertedByNodeId]
+        : []),
+    ],
+    input.partitionKey,
+  );
+  await assertSourcePartition({
+    db,
+    userId: input.userId,
+    sourceId: original.sourceId,
+    partitionKey: input.partitionKey,
+  });
+
   // Validate the new endpoint node exists and is owned by the user. Reuse the
   // same ownership check createClaim uses so the error surface is identical.
   await fetchOwnedNodes(
@@ -525,41 +585,83 @@ export async function reattributeClaim(
   // duplicated assertion.
   const inserted = await withSourceWriteFence(
     db,
-    { userId: input.userId, sources: [{ sourceId: original.sourceId }] },
+    {
+      userId: input.userId,
+      partitionKey: input.partitionKey,
+      sources: [{ sourceId: original.sourceId }],
+    },
     async (tx) => {
+      // The status check above is only an early rejection. Lock and re-check
+      // the original inside the write transaction so a concurrent retract
+      // cannot be followed by a replacement that resurrects dead history.
+      const [lockedOriginal] = await tx
+        .select()
+        .from(claims)
+        .where(
+          and(
+            eq(claims.id, original.id),
+            eq(claims.userId, input.userId),
+            input.partitionKey === undefined
+              ? isNull(claims.partitionKey)
+              : eq(claims.partitionKey, input.partitionKey),
+          ),
+        )
+        .for("update")
+        .limit(1);
+      if (!lockedOriginal) {
+        throw new InactiveClaimReattributionError(original.id, "retracted");
+      }
+      if (lockedOriginal.status !== "active") {
+        throw new InactiveClaimReattributionError(
+          lockedOriginal.id,
+          lockedOriginal.status,
+        );
+      }
+
+      const lockedNextSubjectNodeId =
+        input.replace === "subject"
+          ? input.newNodeId
+          : lockedOriginal.subjectNodeId;
+      const lockedNextObjectNodeId =
+        input.replace === "object"
+          ? input.newNodeId
+          : lockedOriginal.objectNodeId;
       await tx
         .update(claims)
         .set({ status: "retracted", updatedAt: new Date() })
         .where(
-          and(eq(claims.id, original.id), eq(claims.userId, input.userId)),
+          and(
+            eq(claims.id, lockedOriginal.id),
+            eq(claims.userId, input.userId),
+          ),
         );
 
       const [created] = await tx
         .insert(claims)
         .values({
-          userId: original.userId,
-          partitionKey: original.partitionKey,
-          subjectNodeId: nextSubjectNodeId,
-          objectNodeId: nextObjectNodeId,
-          objectValue: original.objectValue,
-          predicate: original.predicate,
-          statement: original.statement,
-          description: original.description,
-          metadata: original.metadata,
-          objectInstant: original.objectInstant,
-          sourceId: original.sourceId,
-          scope: original.scope,
+          userId: lockedOriginal.userId,
+          partitionKey: lockedOriginal.partitionKey,
+          subjectNodeId: lockedNextSubjectNodeId,
+          objectNodeId: lockedNextObjectNodeId,
+          objectValue: lockedOriginal.objectValue,
+          predicate: lockedOriginal.predicate,
+          statement: lockedOriginal.statement,
+          description: lockedOriginal.description,
+          metadata: lockedOriginal.metadata,
+          objectInstant: lockedOriginal.objectInstant,
+          sourceId: lockedOriginal.sourceId,
+          scope: lockedOriginal.scope,
           assertedByKind: "user_confirmed",
           // When the subject is replaced, anchor provenance to the new subject —
           // mirrors how merge rewires subject-side attribution. When the object
           // is replaced the subject (and thus its provenance anchor) is unchanged.
           assertedByNodeId:
             input.replace === "subject"
-              ? nextSubjectNodeId
-              : original.assertedByNodeId,
-          statedAt: original.statedAt,
-          validFrom: original.validFrom,
-          validTo: original.validTo,
+              ? lockedNextSubjectNodeId
+              : lockedOriginal.assertedByNodeId,
+          statedAt: lockedOriginal.statedAt,
+          validFrom: lockedOriginal.validFrom,
+          validTo: lockedOriginal.validTo,
           status: "active",
         })
         .returning();

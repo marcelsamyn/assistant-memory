@@ -85,6 +85,23 @@ describeIfServer("recent changes query", () => {
     const claimSuperseded = newTypeId("claim");
     const claimReference = newTypeId("claim");
     const claimOld = newTypeId("claim");
+    const claimForeignSubject = newTypeId("claim");
+    const claimForeignObject = newTypeId("claim");
+    const claimWorkspaceValid = newTypeId("claim");
+    const claimWorkspaceCrossPartition = newTypeId("claim");
+    const claimWorkspaceInactive = newTypeId("claim");
+    const foreignUserId = "user_recent_foreign";
+    const foreignSubjectNode = newTypeId("node");
+    const foreignObjectNode = newTypeId("node");
+    const workspacePartitionA = "recent:a";
+    const workspacePartitionB = "recent:b";
+    const workspaceInactivePartition = "recent:inactive";
+    const workspaceSubjectNode = newTypeId("node");
+    const workspaceValidObjectNode = newTypeId("node");
+    const workspaceCrossObjectNode = newTypeId("node");
+    const workspaceInactiveSubjectNode = newTypeId("node");
+    const workspaceInactiveObjectNode = newTypeId("node");
+    const workspaceSource = newTypeId("source");
 
     const client = new Client({ connectionString: dsnFor(dbName) });
     await client.connect();
@@ -419,6 +436,174 @@ describeIfServer("recent changes query", () => {
           limit: 100,
         }),
       ).resolves.toEqual({ claims: [], nodes: [], sources: [] });
+
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [
+        foreignUserId,
+      ]);
+      await client.query(
+        `
+          INSERT INTO "nodes" ("id", "user_id", "node_type")
+          VALUES ($1, $2, 'Person'), ($3, $2, 'Object')
+        `,
+        [foreignSubjectNode, foreignUserId, foreignObjectNode],
+      );
+      await client.query(
+        `
+          INSERT INTO "nodes" ("id", "user_id", "node_type", "partition_key", "created_at")
+          VALUES
+            ($1, $2, 'Concept', $3, '2026-01-01T00:00:00Z'),
+            ($4, $2, 'Object', $3, '2026-01-01T00:00:00Z'),
+            ($5, $2, 'Object', $6, '2026-01-01T00:00:00Z'),
+            ($7, $2, 'Concept', $8, '2026-01-01T00:00:00Z'),
+            ($9, $2, 'Object', $8, '2026-01-01T00:00:00Z')
+        `,
+        [
+          workspaceSubjectNode,
+          userId,
+          workspacePartitionA,
+          workspaceValidObjectNode,
+          workspaceCrossObjectNode,
+          workspacePartitionB,
+          workspaceInactiveSubjectNode,
+          workspaceInactivePartition,
+          workspaceInactiveObjectNode,
+        ],
+      );
+      await client.query(
+        `
+          INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label")
+          VALUES
+            ($1, $2, 'Foreign subject', 'foreign subject'),
+            ($3, $4, 'Foreign object', 'foreign object'),
+            ($5, $6, 'Workspace valid subject', 'workspace valid subject'),
+            ($7, $8, 'Workspace valid object', 'workspace valid object'),
+            ($9, $10, 'Workspace cross object', 'workspace cross object'),
+            ($11, $12, 'Workspace inactive subject', 'workspace inactive subject'),
+            ($13, $14, 'Workspace inactive object', 'workspace inactive object')
+        `,
+        [
+          newTypeId("node_metadata"),
+          foreignSubjectNode,
+          newTypeId("node_metadata"),
+          foreignObjectNode,
+          newTypeId("node_metadata"),
+          workspaceSubjectNode,
+          newTypeId("node_metadata"),
+          workspaceValidObjectNode,
+          newTypeId("node_metadata"),
+          workspaceCrossObjectNode,
+          newTypeId("node_metadata"),
+          workspaceInactiveSubjectNode,
+          newTypeId("node_metadata"),
+          workspaceInactiveObjectNode,
+        ],
+      );
+      await client.query(
+        `
+          INSERT INTO "memory_partitions" ("user_id", "partition_key", "status")
+          VALUES
+            ($1, $2, 'active'),
+            ($1, $3, 'active'),
+            ($1, $4, 'quarantined')
+        `,
+        [
+          userId,
+          workspacePartitionA,
+          workspacePartitionB,
+          workspaceInactivePartition,
+        ],
+      );
+      await client.query(
+        `
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "scope", "status", "partition_key")
+          VALUES ($1, $2, 'manual', 'workspace-recent', 'personal', 'completed', $3)
+        `,
+        [workspaceSource, userId, workspacePartitionA],
+      );
+      await client.query(
+        `
+          INSERT INTO "claims" (
+            "id", "user_id", "subject_node_id", "object_node_id", "predicate",
+            "statement", "source_id", "scope", "asserted_by_kind", "stated_at",
+            "status", "created_at", "updated_at", "partition_key"
+          )
+          VALUES
+            ($1, $2, $3, $4, 'RELATED_TO', 'Foreign subject must be hidden.', $5, 'personal', 'user', '2026-05-28T12:00:00Z', 'active', '2026-05-28T12:00:00Z', '2026-05-28T12:00:00Z', NULL),
+            ($6, $2, $7, $8, 'RELATED_TO', 'Foreign object must be hidden.', $5, 'personal', 'user', '2026-05-28T12:01:00Z', 'active', '2026-05-28T12:01:00Z', '2026-05-28T12:01:00Z', NULL),
+            ($9, $2, $10, $11, 'RELATED_TO', 'Workspace valid endpoint.', $12, 'personal', 'user', '2026-05-28T12:02:00Z', 'active', '2026-05-28T12:02:00Z', '2026-05-28T12:02:00Z', $13),
+            ($14, $2, $10, $15, 'RELATED_TO', 'Workspace cross partition must be hidden.', $12, 'personal', 'user', '2026-05-28T12:03:00Z', 'active', '2026-05-28T12:03:00Z', '2026-05-28T12:03:00Z', $13),
+            ($16, $2, $17, $18, 'RELATED_TO', 'Workspace inactive endpoint must be hidden.', $12, 'personal', 'user', '2026-05-28T12:04:00Z', 'active', '2026-05-28T12:04:00Z', '2026-05-28T12:04:00Z', $19)
+        `,
+        [
+          claimForeignSubject,
+          userId,
+          foreignSubjectNode,
+          projectBook,
+          srcConv,
+          claimForeignObject,
+          goalNode,
+          foreignObjectNode,
+          claimWorkspaceValid,
+          workspaceSubjectNode,
+          workspaceValidObjectNode,
+          workspaceSource,
+          workspacePartitionA,
+          claimWorkspaceCrossPartition,
+          workspaceCrossObjectNode,
+          claimWorkspaceInactive,
+          workspaceInactiveSubjectNode,
+          workspaceInactiveObjectNode,
+          workspaceInactivePartition,
+        ],
+      );
+
+      const legacyFiltered = queryRecentChangesResponseSchema.parse(
+        await queryRecentChanges({
+          userId,
+          since: SINCE,
+          until: UNTIL,
+          limit: 100,
+        }),
+      );
+      expect(legacyFiltered.claims.map((claim) => claim.id)).toEqual(
+        expect.arrayContaining([claimAdded, claimUpdated]),
+      );
+      expect(legacyFiltered.claims.map((claim) => claim.id)).not.toEqual(
+        expect.arrayContaining([claimForeignSubject, claimForeignObject]),
+      );
+
+      const workspaceFiltered = queryRecentChangesResponseSchema.parse(
+        await queryRecentChanges({
+          userId,
+          since: SINCE,
+          until: UNTIL,
+          limit: 100,
+          accessScope: "workspace",
+        }),
+      );
+      expect(workspaceFiltered.claims.map((claim) => claim.id)).toEqual(
+        expect.arrayContaining([claimAdded, claimUpdated, claimWorkspaceValid]),
+      );
+      expect(workspaceFiltered.claims.map((claim) => claim.id)).not.toEqual(
+        expect.arrayContaining([
+          claimForeignSubject,
+          claimForeignObject,
+          claimWorkspaceCrossPartition,
+          claimWorkspaceInactive,
+        ]),
+      );
+      expect(workspaceFiltered.nodes.map((node) => node.id)).toContain(
+        workspaceValidObjectNode,
+      );
+      expect(workspaceFiltered.nodes.map((node) => node.id)).not.toEqual(
+        expect.arrayContaining([
+          foreignSubjectNode,
+          foreignObjectNode,
+          workspaceCrossObjectNode,
+          workspaceInactiveSubjectNode,
+          workspaceInactiveObjectNode,
+        ]),
+      );
     } finally {
       vi.doUnmock("~/utils/db");
       vi.resetModules();

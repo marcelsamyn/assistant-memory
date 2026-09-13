@@ -4,13 +4,16 @@ import {
   eq,
   inArray,
   isNotNull,
-  isNull,
   notInArray,
   sql,
 } from "drizzle-orm";
 import { unionAll } from "drizzle-orm/pg-core";
 import { claims, nodeMetadata, nodes } from "~/db/schema";
-import { assertPartitionReadAllowed } from "~/lib/partition-access";
+import {
+  assertPartitionReadAllowed,
+  partitionAccessCondition,
+} from "~/lib/partition-access";
+import type { MemoryAccessScope } from "~/lib/schemas/partition";
 import {
   SampleNodesRequest,
   SampleNodesResponse,
@@ -31,11 +34,13 @@ const POOL_SIZE = 60;
  * so results feel substantive but vary on each call (the UI's "shuffle").
  */
 export async function sampleInterestingNodes(
-  params: SampleNodesRequest,
+  params: SampleNodesRequest & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
 ): Promise<SampleNodesResponse> {
-  const { userId, partitionKey, limit, nodeTypes } = params;
+  const { userId, partitionKey, limit, nodeTypes, accessScope } = params;
   const db = await useDatabase();
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
 
   // A node's "connections" are the active claims it appears in, as subject or
   // object. We unnest both roles via UNION ALL rather than an `OR` join
@@ -49,9 +54,12 @@ export async function sampleInterestingNodes(
       .where(
         and(
           eq(claims.userId, userId),
-          partitionKey === undefined
-            ? isNull(claims.partitionKey)
-            : eq(claims.partitionKey, partitionKey),
+          partitionAccessCondition(
+            claims.partitionKey,
+            userId,
+            partitionKey,
+            accessScope,
+          ),
           eq(claims.status, "active"),
         ),
       ),
@@ -64,9 +72,12 @@ export async function sampleInterestingNodes(
       .where(
         and(
           eq(claims.userId, userId),
-          partitionKey === undefined
-            ? isNull(claims.partitionKey)
-            : eq(claims.partitionKey, partitionKey),
+          partitionAccessCondition(
+            claims.partitionKey,
+            userId,
+            partitionKey,
+            accessScope,
+          ),
           eq(claims.status, "active"),
           isNotNull(claims.objectNodeId),
         ),
@@ -91,9 +102,12 @@ export async function sampleInterestingNodes(
       .where(
         and(
           eq(nodes.userId, userId),
-          partitionKey === undefined
-            ? isNull(nodes.partitionKey)
-            : eq(nodes.partitionKey, partitionKey),
+          partitionAccessCondition(
+            nodes.partitionKey,
+            userId,
+            partitionKey,
+            accessScope,
+          ),
           isNotNull(nodeMetadata.label),
           notInArray(nodes.nodeType, NOISE_NODE_TYPES),
           ...(nodeTypes && nodeTypes.length > 0

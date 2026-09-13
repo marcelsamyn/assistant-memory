@@ -10,6 +10,11 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("~/lib/ingestion/source-processing", () => ({
   getSourceIngestionOperationById: mocks.getSourceIngestionOperationById,
+  resolveSourceProcessingPartition: vi.fn(),
+}));
+
+vi.mock("~/lib/request-access", () => ({
+  getRequestAccessScope: vi.fn(() => "partition"),
 }));
 
 vi.mock("~/utils/db", () => ({

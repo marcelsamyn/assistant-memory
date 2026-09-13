@@ -10,15 +10,19 @@ import {
   QuerySearchRequest,
   QuerySearchResponse,
 } from "../schemas/query-search";
+import type { MemoryAccessScope } from "~/lib/schemas/partition";
 import { useDatabase } from "~/utils/db";
 
 /**
  * Search stored memories based on a query string.
  */
 export async function searchMemory(
-  params: QuerySearchRequest,
+  params: QuerySearchRequest & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
 ): Promise<Pick<QuerySearchResponse, "query" | "searchResults">> {
-  const { userId, partitionKey, query, limit, excludeNodeTypes } = params;
+  const { userId, partitionKey, query, limit, excludeNodeTypes, accessScope } =
+    params;
   const db = await useDatabase();
 
   const embeddingsResponse = await generateEmbeddings({
@@ -38,6 +42,7 @@ export async function searchMemory(
       limit,
       excludeNodeTypes,
       minimumSimilarity: 0.4,
+      accessScope,
     }),
     findSimilarClaims({
       userId,
@@ -45,6 +50,7 @@ export async function searchMemory(
       embedding,
       limit,
       minimumSimilarity: 0.4,
+      accessScope,
     }),
   ]);
 
@@ -59,6 +65,7 @@ export async function searchMemory(
 
   const connections = await findOneHopNodes(db, userId, Array.from(nodeIds), {
     ...(partitionKey !== undefined ? { partitionKey } : {}),
+    accessScope,
   });
 
   // Collect all node IDs to batch-fetch sourceIds
@@ -71,6 +78,7 @@ export async function searchMemory(
     userId,
     allNodeIds,
     partitionKey,
+    accessScope,
   );
 
   // Attach sourceIds to nodes and connections

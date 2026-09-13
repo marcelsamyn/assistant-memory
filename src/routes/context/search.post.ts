@@ -8,18 +8,21 @@
  * reference material is never rendered as a personal fact.
  */
 import { searchMemory, searchReference } from "~/lib/context/search-cards";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   contextSearchRequestSchema,
   contextSearchResponseSchema,
 } from "~/lib/schemas/context-search";
 
 export default defineEventHandler(async (event) => {
+  const accessScope = getRequestAccessScope(event);
   const { userId, partitionKey, query, limit, scope, excludeNodeTypes } =
     contextSearchRequestSchema.parse(await readBody(event));
 
   const fn = scope === "reference" ? searchReference : searchMemory;
   const result = await fn({
     userId,
+    accessScope,
     ...(partitionKey !== undefined ? { partitionKey } : {}),
     query,
     limit,

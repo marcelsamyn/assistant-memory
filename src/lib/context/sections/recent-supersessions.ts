@@ -16,11 +16,16 @@ import type {
   ClaimEvidence,
   ContextSectionRecentSupersessions,
 } from "../types";
-import { and, desc, eq, gte, inArray, isNull } from "drizzle-orm";
+import { aliasedTable, and, desc, eq, gte, inArray } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
-import { claims, nodeMetadata } from "~/db/schema";
+import { claims, nodeMetadata, nodes } from "~/db/schema";
 import { FORCE_REFRESH_PREDICATES } from "~/lib/jobs/atlas-invalidation";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import { partitionAccessCondition } from "~/lib/partition-access";
+import { claimEndpointOwnershipCondition } from "~/lib/query/claim-endpoint-access";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import type { AssertedByKind, ClaimStatus } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 
@@ -59,9 +64,11 @@ export async function assembleRecentSupersessionsSection(
   userId: string,
   asOf: Date,
   partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
 ): Promise<ContextSectionRecentSupersessions | null> {
   if (FORCE_REFRESH_PREDICATES.length === 0) return null;
   const since = new Date(asOf.getTime() - RECENT_WINDOW_MS);
+  const subjectNode = aliasedTable(nodes, "recentSupersessionSubjectNode");
 
   const rows: RecentRow[] = await db
     .select({
@@ -72,18 +79,32 @@ export async function assembleRecentSupersessionsSection(
       subjectLabel: nodeMetadata.label,
     })
     .from(claims)
+    .innerJoin(subjectNode, eq(subjectNode.id, claims.subjectNodeId))
     .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, claims.subjectNodeId))
     .where(
       and(
         eq(claims.userId, userId),
-        partitionKey === undefined
-          ? isNull(claims.partitionKey)
-          : eq(claims.partitionKey, partitionKey),
+        partitionAccessCondition(
+          claims.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
         eq(claims.scope, "personal"),
         inArray(claims.predicate, [...FORCE_REFRESH_PREDICATES]),
         inArray(claims.status, [...RECENT_STATUSES]),
         inArray(claims.assertedByKind, [...TRUSTED_KINDS]),
         gte(claims.updatedAt, since),
+        claimEndpointOwnershipCondition(
+          {
+            claimUserId: claims.userId,
+            claimPartitionKey: claims.partitionKey,
+            subjectUserId: subjectNode.userId,
+            subjectPartitionKey: subjectNode.partitionKey,
+            objectNodeId: claims.objectNodeId,
+          },
+          userId,
+        ),
       ),
     )
     .orderBy(desc(claims.updatedAt))

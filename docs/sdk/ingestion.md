@@ -2,6 +2,39 @@
 
 Memory accepts inline documents and uploaded files from any client. Both paths return a source immediately and process its content in the background. Conversation and transcript ingestion keep their existing speaker-aware contracts.
 
+## Choose a partition access scope
+
+`MemoryClient` is strict by default. Pass an explicit `partitionKey` for
+context-specific content, or derive a separate workspace client when an
+ordinary operation must read the user's active partitions:
+
+```ts
+const workspaceClient = client.withWorkspaceAccess();
+
+await workspaceClient.querySearch({
+  userId,
+  query: "workshop notes",
+});
+```
+
+The workspace client sends `x-memory-access-scope: workspace`. It does not
+need a partition key for user-wide reads. An explicit `partitionKey` on that
+client still limits the request to that partition. The HTTP API accepts the
+same header; the request body does not opt a strict client into workspace
+access.
+
+Workspace reads include only the user's active partitions. During migration,
+legacy rows with a NULL partition remain visible. Inactive partitions and
+other users' rows remain excluded. New root documents and files use Memory's
+`memory:personal` partition after migration. A child source inherits its
+parent's partition. When an existing source is revised, Memory resolves its
+owned partition before applying the strict mutation fence.
+
+Keep preparation, partition-specific evidence, cleanup, and maintenance on a
+strict client. AI graph cleanup is disabled for partitioned data, and the
+admin user-self-identity backfill remains strict-only pending a
+partition-scoped implementation.
+
 ## Source content and derived memory
 
 Memory owns stored source content, file conversion, extraction, citations, and recall. Clients supply material they are authorized to access, stable source IDs, and known provenance. Clients decide whether a remembered request should become a notification, preparation, or external action; these decisions do not belong in Memory's ingestion contract.
@@ -58,7 +91,7 @@ Memory treats this context as application-owned data. It treats the document bod
 ```ts
 const accepted = await client.ingestDocument({
   userId,
-  partitionKey: "global",
+  partitionKey: "radar:mail",
   updateExisting: true,
   document: {
     id: `gmail:${accountId}:${messageId}`,
@@ -94,7 +127,7 @@ const accepted = await client.ingestDocument({
 ```ts
 await client.ingestFile({
   userId,
-  partitionKey: "global",
+  partitionKey: "radar:mail",
   file: attachmentBytes,
   filename: "request.pdf",
   mimeType: "application/pdf",
@@ -109,7 +142,7 @@ await client.ingestFile({
     threadId,
     currentMessageRole: "attachment",
     parentSourceId: accepted.sourceId,
-    parentPartitionKey: "global",
+    parentPartitionKey: "radar:mail",
     sourceReferences: [
       { sourceId: accepted.sourceId, relationship: "attached_to_email" },
     ],
@@ -135,7 +168,7 @@ if (!accepted.ingestionOperationId) {
 
 const { processing } = await client.getSourceProcessing({
   userId,
-  partitionKey: "global",
+  partitionKey: "radar:mail",
   operationId: accepted.ingestionOperationId,
 });
 
@@ -162,14 +195,14 @@ import { contextualSourceExternalId } from "@marcelsamyn/memory/sdk";
 
 const { sources } = await client.sourceIdentityLifecycle({
   userId,
-  partitionKey: "global",
+  partitionKey: "radar:mail",
   identities: [
     {
       type: "document",
       externalId: contextualSourceExternalId({
         externalId: `gmail:${accountId}:${messageId}`,
         accountId,
-        partitionKey: "global",
+        partitionKey: "radar:mail",
       }),
     },
   ],

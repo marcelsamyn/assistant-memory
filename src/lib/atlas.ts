@@ -1,12 +1,158 @@
 import { ensureUser } from "./ingestion/ensure-user";
 import { ensureSystemSource } from "./sources";
-import { and, eq, isNull } from "drizzle-orm";
+import { aliasedTable, and, asc, eq, isNull, or, sql } from "drizzle-orm";
 import { DrizzleDB } from "~/db";
 import { nodes, nodeMetadata, claims, sourceLinks } from "~/db/schema";
-import { preparePartitionWrite } from "~/lib/partition-access";
+import {
+  partitionAccessCondition,
+  preparePartitionWrite,
+} from "~/lib/partition-access";
 import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { NodeTypeEnum } from "~/types/graph";
 import { type TypeId } from "~/types/typeid";
+
+export interface WorkspaceAtlasEntry {
+  nodeId: TypeId<"node">;
+  partitionKey: ContextPartitionKey | null;
+  label: string | null;
+  description: string | null;
+}
+
+/** Reads existing atlas rows across active partitions without creating rows. */
+export async function getWorkspaceAtlasEntries(
+  db: DrizzleDB,
+  userId: string,
+  assistantId: string,
+): Promise<{ user: WorkspaceAtlasEntry[]; assistant: WorkspaceAtlasEntry[] }> {
+  const [user, assistant] = await Promise.all([
+    db
+      .select({
+        nodeId: nodes.id,
+        partitionKey: nodes.partitionKey,
+        label: nodeMetadata.label,
+        description: nodeMetadata.description,
+      })
+      .from(nodes)
+      .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
+      .where(
+        and(
+          eq(nodes.userId, userId),
+          eq(nodes.nodeType, NodeTypeEnum.enum.Atlas),
+          eq(nodeMetadata.label, "Atlas"),
+          partitionAccessCondition(
+            nodes.partitionKey,
+            userId,
+            undefined,
+            "workspace",
+          ),
+        ),
+      )
+      .orderBy(asc(nodes.partitionKey), asc(nodes.id)),
+    db
+      .select({
+        nodeId: nodes.id,
+        partitionKey: nodes.partitionKey,
+        label: nodeMetadata.label,
+        description: nodeMetadata.description,
+      })
+      .from(nodes)
+      .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
+      .where(
+        and(
+          eq(nodes.userId, userId),
+          eq(nodes.nodeType, NodeTypeEnum.enum.Atlas),
+          eq(nodeMetadata.label, assistantId),
+          partitionAccessCondition(
+            nodes.partitionKey,
+            userId,
+            undefined,
+            "workspace",
+          ),
+        ),
+      )
+      .orderBy(asc(nodes.partitionKey), asc(nodes.id)),
+  ]);
+  return { user, assistant };
+}
+
+/**
+ * Returns nodes linked to assistant atlases in active workspace partitions.
+ * Claims and endpoints are checked in one ownership-bounded query so malformed
+ * cross-partition edges never become workspace results.
+ */
+export async function getWorkspaceAssistantAtlasNodeIds(
+  db: DrizzleDB,
+  userId: string,
+  assistantId: string,
+): Promise<TypeId<"node">[]> {
+  const atlasNodes = aliasedTable(nodes, "workspace_assistant_atlas");
+  const atlasMetadata = aliasedTable(
+    nodeMetadata,
+    "workspace_assistant_atlas_metadata",
+  );
+  const endpointNodes = aliasedTable(nodes, "workspace_assistant_endpoint");
+  const endpointNodeId = sql`
+    CASE
+      WHEN ${claims.subjectNodeId} = ${atlasNodes.id}
+        THEN ${claims.objectNodeId}
+      ELSE ${claims.subjectNodeId}
+    END
+  `;
+
+  // Keep atlas, claim, and endpoint ownership in the same SQL predicate. This
+  // avoids a capped atlas/claim candidate list and rejects malformed edges
+  // before they can enter the workspace result.
+  const rows = await db
+    .selectDistinct({ nodeId: endpointNodes.id })
+    .from(claims)
+    .innerJoin(
+      atlasNodes,
+      or(
+        eq(atlasNodes.id, claims.subjectNodeId),
+        eq(atlasNodes.id, claims.objectNodeId),
+      ),
+    )
+    .innerJoin(
+      atlasMetadata,
+      and(
+        eq(atlasMetadata.nodeId, atlasNodes.id),
+        eq(atlasMetadata.label, assistantId),
+      ),
+    )
+    .innerJoin(endpointNodes, eq(endpointNodes.id, endpointNodeId))
+    .where(
+      and(
+        eq(claims.userId, userId),
+        eq(claims.status, "active"),
+        partitionAccessCondition(
+          claims.partitionKey,
+          userId,
+          undefined,
+          "workspace",
+        ),
+        eq(atlasNodes.userId, userId),
+        eq(atlasNodes.nodeType, NodeTypeEnum.enum.Atlas),
+        partitionAccessCondition(
+          atlasNodes.partitionKey,
+          userId,
+          undefined,
+          "workspace",
+        ),
+        eq(endpointNodes.userId, userId),
+        partitionAccessCondition(
+          endpointNodes.partitionKey,
+          userId,
+          undefined,
+          "workspace",
+        ),
+        sql`${claims.partitionKey} IS NOT DISTINCT FROM ${atlasNodes.partitionKey}`,
+        sql`${claims.partitionKey} IS NOT DISTINCT FROM ${endpointNodes.partitionKey}`,
+      ),
+    )
+    .orderBy(asc(endpointNodes.id));
+
+  return rows.map((row) => row.nodeId);
+}
 
 /**
  * Ensures a single Atlas node (and its metadata) exists for the user.

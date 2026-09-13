@@ -1,7 +1,11 @@
 import { and, eq, isNull, or } from "drizzle-orm";
 import { defineEventHandler } from "h3";
 import { claims } from "~/db/schema";
-import { ensureAssistantAtlasNode } from "~/lib/atlas";
+import {
+  ensureAssistantAtlasNode,
+  getWorkspaceAssistantAtlasNodeIds,
+} from "~/lib/atlas";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   queryAtlasNodesRequestSchema,
   queryAtlasNodesResponseSchema,
@@ -11,7 +15,13 @@ import { useDatabase } from "~/utils/db";
 export default defineEventHandler(async (event) => {
   const { userId, partitionKey, assistantId } =
     queryAtlasNodesRequestSchema.parse(await readBody(event));
+  const accessScope = getRequestAccessScope(event);
   const db = await useDatabase();
+  if (partitionKey === undefined && accessScope === "workspace") {
+    return queryAtlasNodesResponseSchema.parse({
+      nodeIds: await getWorkspaceAssistantAtlasNodeIds(db, userId, assistantId),
+    });
+  }
   const atlasNodeId = await ensureAssistantAtlasNode(
     db,
     userId,

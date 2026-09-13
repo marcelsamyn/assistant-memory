@@ -1,12 +1,31 @@
-import { recordMetricObservations } from "~/lib/metrics/observations";
+import {
+  recordMetricObservations,
+  resolveMetricObservationPartition,
+} from "~/lib/metrics/observations";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   recordMetricRequestSchema,
   recordMetricResponseSchema,
 } from "~/lib/schemas/metric-write";
+import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const { userId, partitionKey, metric, value, occurredAt, note } =
-    recordMetricRequestSchema.parse(await readBody(event));
+  const {
+    userId,
+    partitionKey: requestedPartitionKey,
+    metric,
+    value,
+    occurredAt,
+    note,
+  } = recordMetricRequestSchema.parse(await readBody(event));
+  const accessScope = getRequestAccessScope(event);
+  const partitionKey = await resolveMetricObservationPartition(
+    await useDatabase(),
+    userId,
+    requestedPartitionKey,
+    { type: "metric_manual", externalId: `metric_manual:${userId}` },
+    accessScope,
+  );
   const result = await recordMetricObservations({
     userId,
     partitionKey,

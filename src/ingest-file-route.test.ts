@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   findSourceIngestionOperation: vi.fn(),
   limit: vi.fn(),
   add: vi.fn(),
+  assertWorkspaceOperationReady: vi.fn(),
 }));
 
 vi.mock("~/db", () => ({
@@ -30,6 +31,9 @@ vi.mock("~/lib/ingestion/source-processing", async (importOriginal) => ({
   findSourceIngestionOperation: mocks.findSourceIngestionOperation,
 }));
 vi.mock("~/lib/queues", () => ({ batchQueue: { add: mocks.add } }));
+vi.mock("~/lib/workspace-partitions", () => ({
+  assertWorkspaceOperationReady: mocks.assertWorkspaceOperationReady,
+}));
 
 function requestFile(): Request {
   const body = new FormData();
@@ -43,6 +47,21 @@ function requestFile(): Request {
   );
   return new Request("http://memory.test/ingest/file", {
     method: "POST",
+    body,
+  });
+}
+
+function requestWorkspaceFile(): Request {
+  const body = new FormData();
+  body.set("userId", "user_file");
+  body.set(
+    "file",
+    new Blob(["Remember this"], { type: "text/plain" }),
+    "notes.txt",
+  );
+  return new Request("http://memory.test/ingest/file", {
+    method: "POST",
+    headers: { "x-memory-access-scope": "workspace" },
     body,
   });
 }
@@ -148,5 +167,22 @@ describe("POST /ingest/file", () => {
       statusMessage: "missing 'file' part in multipart body",
     });
     expect(mocks.insertIngestionSource).not.toHaveBeenCalled();
+  });
+
+  it("fails a new workspace file before source insertion during migration", async () => {
+    mocks.assertWorkspaceOperationReady.mockRejectedValueOnce(
+      new PartitionAccessError(
+        "PARTITION_REQUIRED",
+        "Workspace operation is unavailable during migration",
+      ),
+    );
+
+    const response = await toWebHandler(createApp().use(handler))(
+      requestWorkspaceFile(),
+    );
+
+    expect(response.status).toBe(409);
+    expect(mocks.insertIngestionSource).not.toHaveBeenCalled();
+    expect(mocks.add).not.toHaveBeenCalled();
   });
 });

@@ -6,6 +6,11 @@ import { createClaim, updateClaim, NodesNotFoundError } from "~/lib/claim";
 import { coerceTaskStatus } from "~/lib/claims/task-status";
 import { createNode, updateNode } from "~/lib/node";
 import type { CreateNodeInitialClaimInput } from "~/lib/node";
+import {
+  assertPartitionReadAllowed,
+  ensurePersonalPartition,
+  partitionAccessCondition,
+} from "~/lib/partition-access";
 import type {
   CommitmentActionRequest,
   ConfirmCommitmentResponse,
@@ -15,7 +20,10 @@ import type {
   CreateCommitmentRequest,
   CreateCommitmentResponse,
 } from "~/lib/schemas/create-commitment";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import type {
   SetCommitmentDueRequest,
   SetCommitmentDueResponse,
@@ -46,6 +54,13 @@ export class TaskNotFoundError extends Error {
   }
 }
 
+export class CrossPartitionCommitmentError extends Error {
+  constructor(message = "Commitment links must stay within one partition") {
+    super(message);
+    this.name = "CrossPartitionCommitmentError";
+  }
+}
+
 /**
  * The Task's active `HAS_TASK_STATUS` carries an objectValue outside the
  * canonical vocabulary and couldn't be coerced — corrupt state that predates
@@ -68,17 +83,25 @@ async function requireOwnedTask(
   userId: string,
   taskId: TypeId<"node">,
   partitionKey?: ContextPartitionKey,
-): Promise<void> {
+  accessScope?: MemoryAccessScope | undefined,
+): Promise<ContextPartitionKey | undefined> {
   const [taskRow] = await db
-    .select({ id: nodes.id, nodeType: nodes.nodeType })
+    .select({
+      id: nodes.id,
+      nodeType: nodes.nodeType,
+      partitionKey: nodes.partitionKey,
+    })
     .from(nodes)
     .where(
       and(
         eq(nodes.id, taskId),
         eq(nodes.userId, userId),
-        partitionKey === undefined
-          ? isNull(nodes.partitionKey)
-          : eq(nodes.partitionKey, partitionKey),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
       ),
     )
     .limit(1);
@@ -86,6 +109,10 @@ async function requireOwnedTask(
   if (!taskRow || taskRow.nodeType !== "Task") {
     throw new TaskNotFoundError(taskId);
   }
+  if (taskRow.partitionKey !== null) {
+    await assertPartitionReadAllowed(db, userId, taskRow.partitionKey);
+  }
+  return taskRow.partitionKey ?? undefined;
 }
 
 /**
@@ -119,7 +146,9 @@ function resolveDueQualifier(
  * cross-user / wrong-type calls throw {@link TaskNotFoundError}.
  */
 export async function setCommitmentDue(
-  input: SetCommitmentDueRequest,
+  input: SetCommitmentDueRequest & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
 ): Promise<SetCommitmentDueResponse> {
   const {
     userId,
@@ -130,10 +159,17 @@ export async function setCommitmentDue(
     timeZone,
     note,
     assertedByKind,
+    accessScope,
   } = input;
   const db = await useDatabase();
 
-  await requireOwnedTask(db, userId, taskId, partitionKey);
+  const resolvedPartitionKey = await requireOwnedTask(
+    db,
+    userId,
+    taskId,
+    partitionKey,
+    accessScope,
+  );
 
   if (dueOn === null) {
     const activeDueClaims = await db
@@ -142,9 +178,9 @@ export async function setCommitmentDue(
       .where(
         and(
           eq(claims.userId, userId),
-          partitionKey === undefined
+          resolvedPartitionKey === undefined
             ? isNull(claims.partitionKey)
-            : eq(claims.partitionKey, partitionKey),
+            : eq(claims.partitionKey, resolvedPartitionKey),
           eq(claims.subjectNodeId, taskId),
           eq(claims.predicate, "DUE_ON"),
           eq(claims.status, "active"),
@@ -157,7 +193,7 @@ export async function setCommitmentDue(
         userId,
         claim.id,
         { status: "retracted" },
-        partitionKey,
+        resolvedPartitionKey,
       );
       if (updated) retractedClaimIds.push(updated.id);
     }
@@ -177,7 +213,12 @@ export async function setCommitmentDue(
   // Parse with `parseISO` so `YYYY-MM-DD` lands at the start of that calendar
   // day in UTC, matching how ingestion-time day nodes are labelled.
   const targetDate = parseISO(dueOn);
-  const dayNodeId = await ensureDayNode(db, userId, targetDate, partitionKey);
+  const dayNodeId = await ensureDayNode(
+    db,
+    userId,
+    targetDate,
+    resolvedPartitionKey,
+  );
 
   const { metadata, objectInstant } = resolveDueQualifier(
     dueOn,
@@ -187,7 +228,7 @@ export async function setCommitmentDue(
 
   const created = await createClaim({
     userId,
-    partitionKey,
+    partitionKey: resolvedPartitionKey,
     subjectNodeId: taskId,
     predicate: "DUE_ON",
     statement: objectInstant
@@ -227,7 +268,9 @@ export async function setCommitmentDue(
  * status or date use `createClaim` / {@link setCommitmentDue} instead.
  */
 export async function createCommitment(
-  input: CreateCommitmentRequest,
+  input: CreateCommitmentRequest & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
 ): Promise<CreateCommitmentResponse> {
   const {
     userId,
@@ -240,8 +283,10 @@ export async function createCommitment(
     timeZone,
     ownedBy,
     assertedByKind,
+    accessScope,
   } = input;
   const db = await useDatabase();
+  let writePartitionKey = partitionKey;
 
   // Resolve the owner up-front: it yields a natural-language ASSIGNED_TO statement
   // and lets the response echo the same `{ nodeId, label }` shape as the
@@ -250,21 +295,41 @@ export async function createCommitment(
   let ownerLabel: string | null = null;
   if (ownedBy !== undefined) {
     const [ownerRow] = await db
-      .select({ label: nodeMetadata.label })
+      .select({ label: nodeMetadata.label, partitionKey: nodes.partitionKey })
       .from(nodes)
       .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
       .where(
         and(
           eq(nodes.id, ownedBy),
           eq(nodes.userId, userId),
-          partitionKey === undefined
-            ? isNull(nodes.partitionKey)
-            : eq(nodes.partitionKey, partitionKey),
+          partitionAccessCondition(
+            nodes.partitionKey,
+            userId,
+            partitionKey,
+            accessScope,
+          ),
         ),
       )
       .limit(1);
     if (!ownerRow) throw new NodesNotFoundError(userId, [ownedBy]);
+    const ownerPartitionKey = ownerRow.partitionKey ?? undefined;
+    if (
+      writePartitionKey !== undefined &&
+      ownerPartitionKey !== writePartitionKey
+    ) {
+      throw new CrossPartitionCommitmentError();
+    }
+    // Existing referenced content determines the mutation partition. This
+    // keeps a workspace request from moving a commitment across rooms.
+    writePartitionKey = ownerPartitionKey;
     ownerLabel = ownerRow.label ?? null;
+  }
+
+  if (writePartitionKey === undefined && ownedBy === undefined) {
+    writePartitionKey =
+      accessScope === "workspace"
+        ? await ensurePersonalPartition(db, userId)
+        : undefined;
   }
 
   // HAS_TASK_STATUS first so its claim id is index 0; DUE_ON and ASSIGNED_TO are
@@ -289,7 +354,7 @@ export async function createCommitment(
       db,
       userId,
       parseISO(dueOn),
-      partitionKey,
+      writePartitionKey,
     );
     dueQualifier = resolveDueQualifier(dueOn, dueTime, timeZone);
     dueIndex =
@@ -324,7 +389,7 @@ export async function createCommitment(
     label,
     description,
     initialClaims,
-    partitionKey,
+    writePartitionKey,
   );
 
   const ids = created.initialClaimIds;
@@ -360,12 +425,20 @@ export async function createCommitment(
  * user, or has no active `HAS_TASK_STATUS` to confirm.
  */
 export async function confirmCommitment(
-  input: CommitmentActionRequest,
+  input: CommitmentActionRequest & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
 ): Promise<ConfirmCommitmentResponse> {
-  const { userId, partitionKey, taskId } = input;
+  const { userId, partitionKey, taskId, accessScope } = input;
   const db = await useDatabase();
 
-  await requireOwnedTask(db, userId, taskId, partitionKey);
+  const resolvedPartitionKey = await requireOwnedTask(
+    db,
+    userId,
+    taskId,
+    partitionKey,
+    accessScope,
+  );
 
   const [statusRow] = await db
     .select({ objectValue: claims.objectValue })
@@ -373,9 +446,9 @@ export async function confirmCommitment(
     .where(
       and(
         eq(claims.userId, userId),
-        partitionKey === undefined
+        resolvedPartitionKey === undefined
           ? isNull(claims.partitionKey)
-          : eq(claims.partitionKey, partitionKey),
+          : eq(claims.partitionKey, resolvedPartitionKey),
         eq(claims.subjectNodeId, taskId),
         eq(claims.predicate, "HAS_TASK_STATUS"),
         eq(claims.status, "active"),
@@ -395,7 +468,7 @@ export async function confirmCommitment(
 
   const created = await createClaim({
     userId,
-    partitionKey,
+    partitionKey: resolvedPartitionKey,
     subjectNodeId: taskId,
     predicate: "HAS_TASK_STATUS",
     statement: `Task confirmed as ${status}.`,
@@ -419,12 +492,20 @@ export async function confirmCommitment(
  * owned by the user.
  */
 export async function dismissCommitment(
-  input: CommitmentActionRequest,
+  input: CommitmentActionRequest & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
 ): Promise<DismissCommitmentResponse> {
-  const { userId, partitionKey, taskId } = input;
+  const { userId, partitionKey, taskId, accessScope } = input;
   const db = await useDatabase();
 
-  await requireOwnedTask(db, userId, taskId, partitionKey);
+  const resolvedPartitionKey = await requireOwnedTask(
+    db,
+    userId,
+    taskId,
+    partitionKey,
+    accessScope,
+  );
 
   const activeStatusClaims = await db
     .select({ id: claims.id })
@@ -432,9 +513,9 @@ export async function dismissCommitment(
     .where(
       and(
         eq(claims.userId, userId),
-        partitionKey === undefined
+        resolvedPartitionKey === undefined
           ? isNull(claims.partitionKey)
-          : eq(claims.partitionKey, partitionKey),
+          : eq(claims.partitionKey, resolvedPartitionKey),
         eq(claims.subjectNodeId, taskId),
         eq(claims.predicate, "HAS_TASK_STATUS"),
         eq(claims.status, "active"),
@@ -447,7 +528,7 @@ export async function dismissCommitment(
       userId,
       claim.id,
       { status: "retracted" },
-      partitionKey,
+      resolvedPartitionKey,
     );
     if (updated) retractedClaimIds.push(updated.id);
   }
@@ -468,12 +549,28 @@ export async function dismissCommitment(
  * {@link TaskNotFoundError} if the subject isn't a Task owned by the user.
  */
 export async function setCommitmentStatus(
-  input: SetCommitmentStatusRequest,
+  input: SetCommitmentStatusRequest & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
 ): Promise<SetCommitmentStatusResponse> {
-  const { userId, partitionKey, taskId, status, note, assertedByKind } = input;
+  const {
+    userId,
+    partitionKey,
+    taskId,
+    status,
+    note,
+    assertedByKind,
+    accessScope,
+  } = input;
   const db = await useDatabase();
 
-  await requireOwnedTask(db, userId, taskId, partitionKey);
+  const resolvedPartitionKey = await requireOwnedTask(
+    db,
+    userId,
+    taskId,
+    partitionKey,
+    accessScope,
+  );
 
   const [previous] = await db
     .select({ id: claims.id, objectValue: claims.objectValue })
@@ -481,9 +578,9 @@ export async function setCommitmentStatus(
     .where(
       and(
         eq(claims.userId, userId),
-        partitionKey === undefined
+        resolvedPartitionKey === undefined
           ? isNull(claims.partitionKey)
-          : eq(claims.partitionKey, partitionKey),
+          : eq(claims.partitionKey, resolvedPartitionKey),
         eq(claims.subjectNodeId, taskId),
         eq(claims.predicate, "HAS_TASK_STATUS"),
         eq(claims.status, "active"),
@@ -503,7 +600,7 @@ export async function setCommitmentStatus(
 
   const created = await createClaim({
     userId,
-    partitionKey,
+    partitionKey: resolvedPartitionKey,
     subjectNodeId: taskId,
     predicate: "HAS_TASK_STATUS",
     statement: `Task marked ${status}.`,
@@ -537,12 +634,28 @@ export async function setCommitmentStatus(
  * user.
  */
 export async function setCommitmentOwner(
-  input: SetCommitmentOwnerRequest,
+  input: SetCommitmentOwnerRequest & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
 ): Promise<SetCommitmentOwnerResponse> {
-  const { userId, partitionKey, taskId, ownedBy, note, assertedByKind } = input;
+  const {
+    userId,
+    partitionKey,
+    taskId,
+    ownedBy,
+    note,
+    assertedByKind,
+    accessScope,
+  } = input;
   const db = await useDatabase();
 
-  await requireOwnedTask(db, userId, taskId, partitionKey);
+  const resolvedPartitionKey = await requireOwnedTask(
+    db,
+    userId,
+    taskId,
+    partitionKey,
+    accessScope,
+  );
 
   if (ownedBy === null) {
     const activeOwnerClaims = await db
@@ -551,9 +664,9 @@ export async function setCommitmentOwner(
       .where(
         and(
           eq(claims.userId, userId),
-          partitionKey === undefined
+          resolvedPartitionKey === undefined
             ? isNull(claims.partitionKey)
-            : eq(claims.partitionKey, partitionKey),
+            : eq(claims.partitionKey, resolvedPartitionKey),
           eq(claims.subjectNodeId, taskId),
           eq(claims.predicate, "ASSIGNED_TO"),
           eq(claims.status, "active"),
@@ -566,7 +679,7 @@ export async function setCommitmentOwner(
         userId,
         claim.id,
         { status: "retracted" },
-        partitionKey,
+        resolvedPartitionKey,
       );
       if (updated) retractedClaimIds.push(updated.id);
     }
@@ -577,25 +690,31 @@ export async function setCommitmentOwner(
   // Resolve the owner up-front: it yields a natural-language statement and lets
   // the response echo the same `{ nodeId, label }` shape as the read models.
   const [ownerRow] = await db
-    .select({ label: nodeMetadata.label })
+    .select({ label: nodeMetadata.label, partitionKey: nodes.partitionKey })
     .from(nodes)
     .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
     .where(
       and(
         eq(nodes.id, ownedBy),
         eq(nodes.userId, userId),
-        partitionKey === undefined
-          ? isNull(nodes.partitionKey)
-          : eq(nodes.partitionKey, partitionKey),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
       ),
     )
     .limit(1);
   if (!ownerRow) throw new NodesNotFoundError(userId, [ownedBy]);
+  if ((ownerRow.partitionKey ?? undefined) !== resolvedPartitionKey) {
+    throw new CrossPartitionCommitmentError();
+  }
   const ownerLabel = ownerRow.label ?? null;
 
   const created = await createClaim({
     userId,
-    partitionKey,
+    partitionKey: resolvedPartitionKey,
     subjectNodeId: taskId,
     predicate: "ASSIGNED_TO",
     statement: ownerLabel
@@ -623,18 +742,27 @@ export async function setCommitmentOwner(
  * Task's user-authored description. Throws {@link TaskNotFoundError} otherwise.
  */
 export async function updateCommitment(
-  input: UpdateCommitmentRequest,
+  input: UpdateCommitmentRequest & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
 ): Promise<UpdateCommitmentResponse> {
-  const { userId, partitionKey, taskId, label, description } = input;
+  const { userId, partitionKey, taskId, label, description, accessScope } =
+    input;
   const db = await useDatabase();
 
-  await requireOwnedTask(db, userId, taskId, partitionKey);
+  const resolvedPartitionKey = await requireOwnedTask(
+    db,
+    userId,
+    taskId,
+    partitionKey,
+    accessScope,
+  );
 
   const result = await updateNode(
     userId,
     taskId,
     { label, description },
-    partitionKey,
+    resolvedPartitionKey,
   );
   if (!result) throw new TaskNotFoundError(taskId);
 

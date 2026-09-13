@@ -97,8 +97,7 @@ export interface DreamJobData {
   assistantDescription: string;
 }
 
-// Create the worker
-// Keep the worker in scope even if not explicitly referenced later.
+// Create the worker. Importing this module starts processing immediately.
 const worker = new Worker<SummarizeJobData | DreamJobData>(
   "batchProcessing",
   async (job) => {
@@ -455,21 +454,38 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
   { connection: redisConnection },
 );
 
+/** Close every BullMQ resource during Nitro shutdown. */
+let closeQueuesPromise: Promise<void> | undefined;
+
+export function closeQueues(): Promise<void> {
+  closeQueuesPromise ??= (async () => {
+    // The worker can still need Redis while it finishes its active job.
+    await worker.close();
+    await Promise.all([flowProducer.close(), batchQueue.close()]);
+    await redisConnection.quit();
+  })();
+  return closeQueuesPromise;
+}
+
 console.log("BullMQ Worker started for batchProcessing queue.");
 
 // Graceful shutdown
-process.on("SIGTERM", async () => {
-  console.log("SIGTERM received, shutting down BullMQ worker...");
-  await worker.close();
-  await redisConnection.quit();
-  console.log("BullMQ shutdown complete.");
-  process.exit(0);
+let shutdownProcessPromise: Promise<void> | undefined;
+
+function handleShutdown(signal: "SIGTERM" | "SIGINT"): Promise<void> {
+  shutdownProcessPromise ??= (async () => {
+    console.log(`${signal} received, shutting down BullMQ worker...`);
+    await closeQueues();
+    console.log("BullMQ shutdown complete.");
+    process.exit(0);
+  })();
+  return shutdownProcessPromise;
+}
+
+process.on("SIGTERM", () => {
+  void handleShutdown("SIGTERM");
 });
 
-process.on("SIGINT", async () => {
-  console.log("SIGINT received, shutting down BullMQ worker...");
-  await worker.close();
-  await redisConnection.quit();
-  console.log("BullMQ shutdown complete.");
-  process.exit(0);
+process.on("SIGINT", () => {
+  void handleShutdown("SIGINT");
 });

@@ -124,6 +124,8 @@ export async function maybeEnqueueAtlasInvalidation(
   if (!triggered) return false;
   await enqueueAtlasUserRefreshOnSupersede(userId, partitionKey);
   const { invalidateCachedBundle } = await import("../context/cache");
-  await invalidateCachedBundle(userId, partitionKey);
+  // Supersession is concrete to this partition. The cache helper also drops
+  // the dependent aggregate workspace bundle without touching other scopes.
+  await invalidateCachedBundle(userId, partitionKey, "partition");
   return true;
 }

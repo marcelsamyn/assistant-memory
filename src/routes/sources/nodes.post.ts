@@ -1,5 +1,6 @@
 import { defineEventHandler } from "h3";
 import { fetchNodesBySource } from "~/lib/nodes-by-source";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   nodesBySourceRequestSchema,
   nodesBySourceResponseSchema,
@@ -17,6 +18,7 @@ export default defineEventHandler(async (event) => {
     cursor,
   } = nodesBySourceRequestSchema.parse(await readBody(event));
   const db = await useDatabase();
+  const accessScope = getRequestAccessScope(event);
   const result = await fetchNodesBySource({
     db,
     userId,
@@ -26,6 +28,7 @@ export default defineEventHandler(async (event) => {
     includeClaims,
     limit,
     cursor,
+    accessScope,
   });
   return nodesBySourceResponseSchema.parse(result);
 });

@@ -264,6 +264,114 @@ describeIfServer("document replacement source lifecycle", () => {
     expect(addIngestionJob).not.toHaveBeenCalled();
   });
 
+  it("uses personal for workspace roots and inherits a parent source partition", async () => {
+    addIngestionJob.mockClear();
+    const userId = "document-workspace-inheritance";
+    await database.insert(users).values({ id: userId });
+    await database.insert(partitionMigrationState).values({
+      userId,
+      state: "migrated",
+    });
+
+    const root = await saveMemory({
+      userId,
+      accessScope: "workspace",
+      updateExisting: false,
+      document: {
+        id: "workspace-root",
+        content: "root content",
+        contentType: "text",
+        scope: "personal",
+      },
+    });
+    const child = await saveMemory({
+      userId,
+      accessScope: "workspace",
+      updateExisting: false,
+      document: {
+        id: "workspace-child",
+        content: "child content",
+        contentType: "text",
+        scope: "personal",
+        sourceContext: {
+          version: 1,
+          sourceKind: "email_attachment",
+          purpose: "Attachment to the workspace root",
+          accountId: "workspace-account",
+          relationship: "recipient",
+          currentMessageRole: "attachment",
+          completeness: "complete",
+          parentSourceId: root.sourceId,
+        },
+      },
+    });
+
+    const rows = await database
+      .select({ id: sources.id, partitionKey: sources.partitionKey })
+      .from(sources)
+      .where(
+        and(
+          eq(sources.userId, userId),
+          sql`${sources.id} IN (${root.sourceId}, ${child.sourceId})`,
+        ),
+      );
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.partitionKey))).toEqual(
+      new Set(["memory:personal"]),
+    );
+  });
+
+  it("replaces an existing workspace root in its owning partition", async () => {
+    addIngestionJob.mockClear();
+    const userId = "document-workspace-existing-root";
+    const partitionKey = contextPartitionKeySchema.parse(
+      "context:existing-root",
+    );
+    const oldSourceId = newTypeId("source");
+    await database.insert(users).values({ id: userId });
+    await database.insert(memoryPartitions).values({ userId, partitionKey });
+    await database.insert(partitionMigrationState).values({
+      userId,
+      state: "migrated",
+    });
+    await database.insert(sources).values({
+      id: oldSourceId,
+      userId,
+      partitionKey,
+      type: "document",
+      externalId: "workspace-existing-root",
+      metadata: { rawContent: "old root" },
+      status: "completed",
+    });
+
+    const replacement = await saveMemory({
+      userId,
+      accessScope: "workspace",
+      updateExisting: true,
+      document: {
+        id: "workspace-existing-root",
+        content: "replacement root",
+        contentType: "text",
+        scope: "personal",
+      },
+    });
+
+    expect(replacement.sourceId).not.toBe(oldSourceId);
+    expect(addIngestionJob).toHaveBeenCalledOnce();
+    await expect(
+      database
+        .select({ partitionKey: sources.partitionKey })
+        .from(sources)
+        .where(eq(sources.id, replacement.sourceId)),
+    ).resolves.toEqual([{ partitionKey }]);
+    await expect(
+      database
+        .select({ state: sourceTombstones.state })
+        .from(sourceTombstones)
+        .where(eq(sourceTombstones.sourceId, oldSourceId)),
+    ).resolves.toEqual([{ state: "restored" }]);
+  });
+
   it("keeps contextual source identity and persists revised ingestion metadata", async () => {
     addIngestionJob.mockClear();
     const userId = "document-contextual-revision";

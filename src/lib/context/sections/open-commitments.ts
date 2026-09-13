@@ -13,7 +13,10 @@
 import type { ContextSectionOpenCommitments } from "../types";
 import { getOpenCommitments } from "~/lib/query/open-commitments";
 import type { OpenCommitment } from "~/lib/schemas/open-commitments";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 
 const MAX_COMMITMENTS = 20;
 const USAGE =
@@ -43,10 +46,12 @@ export function renderLine(commitment: OpenCommitment): string {
 export async function assembleOpenCommitmentsSection(
   userId: string,
   partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
 ): Promise<ContextSectionOpenCommitments | null> {
   const all = await getOpenCommitments({
     userId,
     ...(partitionKey !== undefined ? { partitionKey } : {}),
+    accessScope,
   });
   if (all.length === 0) return null;
 

@@ -10,6 +10,32 @@ has the _what to change_.
 
 ---
 
+## 2.6.0 — user-wide workspace access
+
+Upgrade the Memory server before enabling workspace access in a client.
+`MemoryClient` keeps strict partition access by default. Use
+`client.withWorkspaceAccess()` for ordinary access to the user's complete
+workspace. The derived client sends `x-memory-access-scope: workspace`;
+HTTP clients can send that header directly. No partition key is needed.
+
+Workspace reads include the user's active partitions. Legacy rows with a NULL
+partition remain visible until migration completes. Inactive partitions and
+other users' rows remain excluded. An explicit `partitionKey` still restricts
+the request to that partition, including on a workspace client.
+
+New root content uses the Memory-owned `memory:personal` partition after
+migration. Child sources inherit their parent's partition. Existing-object
+mutations resolve the object's partition and retain strict mutation checks;
+cross-partition merges and edges remain prohibited. This release does not
+move existing data or require a database migration.
+
+Keep partition-limited evidence and automated preparation on the default
+strict client. AI graph cleanup remains disabled for partitioned data until
+its cleanup engine is partition-safe. Scratchpads remain user-global assistant
+workspace, not partitioned evidence.
+
+---
+
 ## 2.5.0 — contextual ingestion and exact processing receipts
 
 This is a general Memory contract, available to HTTP, SDK, and MCP clients. Existing document/file calls can omit `sourceContext`; conversation and transcript input formats are unchanged. There is no mandatory ingestion rewrite.
@@ -72,11 +98,10 @@ See [Ingestion](sdk/ingestion.md) for examples, transport support, and failure h
 
 ## Opaque memory partitions and migration fencing
 
-- Treat every existing n8n ingestion flow as a rollout dependency. Before you
-  start migration for a user, update each n8n Memory request to obtain the
-  caller-owned partition key from its Petals project or room context and send
-  it as `partitionKey`. Keep that user's migration disabled until every active
-  flow does this; after migration starts, an old n8n flow will fail closed.
+- Before migration, update every active ingestion flow to use an explicit
+  `partitionKey` for partition-limited content, or the workspace header for
+  ordinary user-wide content on a 2.6.0 server. Old unscoped requests fail
+  closed after migration starts.
 - Configure a dedicated server credential of at least 32 characters as `PARTITION_MAINTENANCE_TOKEN` in Memory. Construct the operator client with `partitionMaintenanceToken`; the general `apiKey` is deliberately not used for maintenance calls. A missing server credential returns `503`, an invalid credential returns `401`, and the SDK fails locally with `PartitionMaintenanceUnavailableError` when its credential is absent.
 - Add `partitionKey` to partition-aware ingestion, search, context, digest, and commitment requests. The value is an opaque caller-owned identifier; Memory stores and compares it but does not interpret it.
 - Start migration with `setPartitionMigrationState({ expectedState: "unmigrated", expectedVersion: 0, nextState: "migrating" })`. From that point onward, legacy unpartitioned reads and writes for the user fail closed.

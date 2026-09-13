@@ -9,6 +9,10 @@ const recentChangesMocks = vi.hoisted(() => ({
 
 vi.mock("~/lib/query/recent-changes", () => recentChangesMocks);
 
+function testEvent(): H3Event {
+  return { node: { req: { headers: {} } } } as unknown as H3Event;
+}
+
 describe("POST /query/recent-changes", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -60,7 +64,7 @@ describe("POST /query/recent-changes", () => {
       ],
     });
 
-    const response = await handler({} as H3Event);
+    const response = await handler(testEvent());
 
     // The lib receives the parsed request with `limit` defaulted by the schema.
     expect(recentChangesMocks.queryRecentChanges).toHaveBeenCalledWith({
@@ -69,6 +73,7 @@ describe("POST /query/recent-changes", () => {
       until: "2026-05-29T00:00:00.000Z",
       limit: 100,
       nodeTypes: ["Person"],
+      accessScope: "partition",
     });
 
     expect(response.claims[0]).toMatchObject({
@@ -93,7 +98,7 @@ describe("POST /query/recent-changes", () => {
       since: "2026-05-20", // date-only, not an ISO datetime
     }));
 
-    await expect(handler({} as H3Event)).rejects.toThrow();
+    await expect(handler(testEvent())).rejects.toThrow();
     expect(recentChangesMocks.queryRecentChanges).not.toHaveBeenCalled();
   });
 });

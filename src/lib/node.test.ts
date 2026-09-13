@@ -1,7 +1,9 @@
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as schema from "~/db/schema";
+import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId } from "~/types/typeid";
 
@@ -67,6 +69,7 @@ describeIfServer("node operations", () => {
     const userId = "user_A";
     const aliceNodeId = newTypeId("node");
     const laptopNodeId = newTypeId("node");
+    const foreignNodeId = newTypeId("node");
     const sourceId = newTypeId("source");
     const aliasId = newTypeId("alias");
     const sourceLinkId = newTypeId("source_link");
@@ -169,6 +172,9 @@ describeIfServer("node operations", () => {
       await installPartitionCompatibilityFixture(client);
 
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [
+        "user_node_foreign",
+      ]);
       await client.query(
         `
           INSERT INTO "nodes" ("id", "user_id", "node_type")
@@ -191,6 +197,14 @@ describeIfServer("node operations", () => {
           aliceNodeId,
           laptopNodeId,
         ],
+      );
+      await client.query(
+        `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, 'Person')`,
+        [foreignNodeId, "user_node_foreign"],
+      );
+      await client.query(
+        `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label") VALUES ($1, $2, 'Foreign private node', 'foreign private node')`,
+        [newTypeId("node_metadata"), foreignNodeId],
       );
       await client.query(
         `
@@ -232,6 +246,25 @@ describeIfServer("node operations", () => {
           laptopNodeId,
           sourceId,
           userId,
+        ],
+      );
+      await client.query(
+        `
+          INSERT INTO "claims" (
+            "id", "user_id", "subject_node_id", "object_node_id",
+            "predicate", "statement", "source_id", "asserted_by_kind", "stated_at", "status"
+          )
+          VALUES
+            ($1, $4, $2, $3, 'RELATED_TO', 'Alice points to a foreign node.', $5, 'user', now(), 'active'),
+            ($6, $4, $3, $2, 'RELATED_TO', 'A foreign node points to Alice.', $5, 'user', now(), 'active')
+        `,
+        [
+          newTypeId("claim"),
+          aliceNodeId,
+          foreignNodeId,
+          userId,
+          sourceId,
+          newTypeId("claim"),
         ],
       );
 
@@ -1370,6 +1403,306 @@ describeIfServer("node operations", () => {
         "~/utils/test-overrides"
       );
       clear(null);
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("deletes selected nodes across owned workspace partitions atomically", async () => {
+    const userId = "user_workspace_batch_delete";
+    const foreignUserId = "user_workspace_batch_delete_foreign";
+    const partitionA = contextPartitionKeySchema.parse("workspace:batch-a");
+    const partitionB = contextPartitionKeySchema.parse("workspace:batch-b");
+    const inactivePartition = contextPartitionKeySchema.parse(
+      "workspace:batch-inactive",
+    );
+    const ownedA = newTypeId("node");
+    const ownedB = newTypeId("node");
+    const inactive = newTypeId("node");
+    const foreign = newTypeId("node");
+    const duplicateTarget = newTypeId("node");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await ensureMergeTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1), ($2)`, [
+        userId,
+        foreignUserId,
+      ]);
+      await database.insert(schema.partitionMigrationState).values([
+        { userId, state: "migrated" },
+        { userId: foreignUserId, state: "migrated" },
+      ]);
+      await database.insert(schema.memoryPartitions).values([
+        { userId, partitionKey: partitionA, status: "active" as const },
+        { userId, partitionKey: partitionB, status: "active" as const },
+        {
+          userId,
+          partitionKey: inactivePartition,
+          status: "quarantined" as const,
+        },
+        {
+          userId: foreignUserId,
+          partitionKey: partitionA,
+          status: "active" as const,
+        },
+      ]);
+      await database.insert(schema.nodes).values([
+        {
+          id: ownedA,
+          userId,
+          partitionKey: partitionA,
+          nodeType: "Person" as const,
+        },
+        {
+          id: ownedB,
+          userId,
+          partitionKey: partitionB,
+          nodeType: "Person" as const,
+        },
+        {
+          id: inactive,
+          userId,
+          partitionKey: inactivePartition,
+          nodeType: "Person" as const,
+        },
+        {
+          id: foreign,
+          userId: foreignUserId,
+          partitionKey: partitionA,
+          nodeType: "Person" as const,
+        },
+        {
+          id: duplicateTarget,
+          userId,
+          partitionKey: partitionA,
+          nodeType: "Person" as const,
+        },
+      ]);
+
+      const { batchDeleteNodes } = await import("./node");
+      await expect(
+        batchDeleteNodes(userId, [ownedA, ownedB], undefined, "workspace"),
+      ).resolves.toBe(2);
+      await expect(
+        database.$count(schema.nodes, eq(schema.nodes.id, ownedA)),
+      ).resolves.toBe(0);
+      await expect(
+        database.$count(schema.nodes, eq(schema.nodes.id, ownedB)),
+      ).resolves.toBe(0);
+
+      // Preserve the original unique-row count for duplicate selections.
+      await expect(
+        batchDeleteNodes(
+          userId,
+          [duplicateTarget, duplicateTarget],
+          undefined,
+          "workspace",
+        ),
+      ).resolves.toBe(1);
+
+      // A missing/foreign/inactive target aborts the whole batch.
+      await expect(
+        batchDeleteNodes(userId, [inactive, foreign], undefined, "workspace"),
+      ).resolves.toBe(0);
+      await expect(
+        database.$count(schema.nodes, eq(schema.nodes.id, inactive)),
+      ).resolves.toBe(1);
+      await expect(
+        database.$count(schema.nodes, eq(schema.nodes.id, foreign)),
+      ).resolves.toBe(1);
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("rejects a mixed legacy and active batch while migration is in progress", async () => {
+    const migratingUserId = "user_workspace_batch_migrating";
+    const legacyUserId = "user_workspace_batch_unmigrated";
+    const migratedUserId = "user_workspace_batch_migrated";
+    const migratedPartition = contextPartitionKeySchema.parse(
+      "workspace:batch-migrated",
+    );
+    const migratingPartition = contextPartitionKeySchema.parse(
+      "workspace:batch-migrating",
+    );
+    const migratingLegacyNode = newTypeId("node");
+    const migratingActiveNode = newTypeId("node");
+    const legacyNode = newTypeId("node");
+    const migratedNode = newTypeId("node");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await database
+        .insert(schema.users)
+        .values([
+          { id: migratingUserId },
+          { id: legacyUserId },
+          { id: migratedUserId },
+        ]);
+      await database.insert(schema.memoryPartitions).values([
+        {
+          userId: migratingUserId,
+          partitionKey: migratingPartition,
+          status: "active",
+        },
+        {
+          userId: migratedUserId,
+          partitionKey: migratedPartition,
+          status: "active",
+        },
+      ]);
+      // Seed both rows before recording migration so the fixture represents
+      // the legacy data that a real migration must fence.
+      await database.insert(schema.nodes).values([
+        {
+          id: migratingLegacyNode,
+          userId: migratingUserId,
+          nodeType: "Person",
+        },
+        {
+          id: migratingActiveNode,
+          userId: migratingUserId,
+          partitionKey: migratingPartition,
+          nodeType: "Person",
+        },
+        { id: legacyNode, userId: legacyUserId, nodeType: "Person" },
+        {
+          id: migratedNode,
+          userId: migratedUserId,
+          partitionKey: migratedPartition,
+          nodeType: "Person",
+        },
+      ]);
+      await database.insert(schema.partitionMigrationState).values([
+        { userId: migratingUserId, state: "migrating" },
+        { userId: migratedUserId, state: "migrated" },
+      ]);
+
+      const { batchDeleteNodes } = await import("./node");
+      await expect(
+        batchDeleteNodes(
+          migratingUserId,
+          [migratingLegacyNode, migratingActiveNode],
+          undefined,
+          "workspace",
+        ),
+      ).rejects.toMatchObject({ code: "PARTITION_REQUIRED" });
+      await expect(
+        database.$count(schema.nodes, eq(schema.nodes.id, migratingLegacyNode)),
+      ).resolves.toBe(1);
+      await expect(
+        database.$count(schema.nodes, eq(schema.nodes.id, migratingActiveNode)),
+      ).resolves.toBe(1);
+
+      await expect(batchDeleteNodes(legacyUserId, [legacyNode])).resolves.toBe(
+        1,
+      );
+      await expect(
+        batchDeleteNodes(migratedUserId, [migratedNode], migratedPartition),
+      ).resolves.toBe(1);
+    } finally {
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+      await client.end();
+    }
+  });
+
+  it("keeps a legacy workspace neighborhood within its legacy partition", async () => {
+    const userId = "user_workspace_legacy_neighborhood";
+    const focalNodeId = newTypeId("node");
+    const neighborNodeId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const claimId = newTypeId("claim");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+
+    try {
+      await ensureMergeTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await database.insert(schema.partitionMigrationState).values({
+        userId,
+        state: "migrating",
+      });
+      await database.insert(schema.nodes).values([
+        {
+          id: focalNodeId,
+          userId,
+          nodeType: "Person" as const,
+        },
+        {
+          id: neighborNodeId,
+          userId,
+          nodeType: "Organization" as const,
+        },
+      ]);
+      await database.insert(schema.nodeMetadata).values([
+        {
+          id: newTypeId("node_metadata"),
+          nodeId: focalNodeId,
+          label: "Legacy owner",
+          canonicalLabel: "legacy owner",
+        },
+        {
+          id: newTypeId("node_metadata"),
+          nodeId: neighborNodeId,
+          label: "Legacy company",
+          canonicalLabel: "legacy company",
+        },
+      ]);
+      await database.insert(schema.sources).values({
+        id: sourceId,
+        userId,
+        type: "conversation",
+        externalId: "legacy-neighborhood",
+      });
+      await database.insert(schema.sourceLinks).values({
+        sourceId,
+        nodeId: focalNodeId,
+      });
+      await database.insert(schema.claims).values({
+        id: claimId,
+        userId,
+        subjectNodeId: focalNodeId,
+        objectNodeId: neighborNodeId,
+        predicate: "WORKS_AT" as const,
+        statement: "The legacy owner works at the legacy company.",
+        sourceId,
+        scope: "personal" as const,
+        assertedByKind: "participant" as const,
+        statedAt: new Date("2026-01-01T00:00:00.000Z"),
+      });
+
+      const { getNodeNeighborhood } = await import("./node");
+      const result = await getNodeNeighborhood(
+        userId,
+        focalNodeId,
+        1,
+        undefined,
+        "workspace",
+      );
+      expect(result?.nodes.map((node) => node.id)).toEqual(
+        expect.arrayContaining([focalNodeId, neighborNodeId]),
+      );
+      expect(result?.claims.map((claim) => claim.id)).toContain(claimId);
+    } finally {
       vi.doUnmock("~/utils/db");
       vi.resetModules();
       await client.end();

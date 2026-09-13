@@ -1,16 +1,19 @@
 /**
  * Redis-backed cache for the bootstrap `ContextBundle`.
  *
- * Single key per user, JSON-serialised, validated through Zod on read so a
- * corrupted or stale-shape payload triggers a rebuild rather than crashing
- * the request. TTL is 6 hours — atlas refreshes daily, so a missed
+ * One key per user/access scope, JSON-serialised, validated through Zod on
+ * read so a corrupted or stale-shape payload triggers a rebuild rather than
+ * crashing the request. TTL is 6 hours — atlas refreshes daily, so a missed
  * supersession-driven invalidation still expires in well under a day.
  *
  * Mirrors `deep-research-cache.ts` ergonomics. Common aliases: bootstrap
  * cache, context bundle cache, read-model cache.
  */
 import { contextBundleSchema, type ContextBundle } from "./types";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import { shouldSkipJobEnqueue } from "~/utils/test-overrides";
 
 const CONTEXT_BUNDLE_PREFIX = "context-bundle:";
@@ -50,8 +53,16 @@ const inMemoryCacheClient: ContextCacheClient = {
   },
 };
 
-function buildKey(userId: string, partitionKey?: ContextPartitionKey): string {
-  return `${CONTEXT_BUNDLE_PREFIX}${JSON.stringify([userId, partitionKey ?? null])}`;
+function buildKey(
+  userId: string,
+  partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
+): string {
+  return `${CONTEXT_BUNDLE_PREFIX}${JSON.stringify([
+    userId,
+    partitionKey ?? null,
+    accessScope ?? "partition",
+  ])}`;
 }
 
 async function getCacheClient(): Promise<ContextCacheClient> {
@@ -68,15 +79,16 @@ async function getCacheClient(): Promise<ContextCacheClient> {
 export async function getCachedBundle(
   userId: string,
   partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
 ): Promise<ContextBundle | null> {
   try {
     const client = await getCacheClient();
-    const data = await client.get(buildKey(userId, partitionKey));
+    const data = await client.get(buildKey(userId, partitionKey, accessScope));
     if (!data) return null;
     const parsed = contextBundleSchema.safeParse(JSON.parse(data));
     if (!parsed.success) {
       // Stale payload shape — drop it so the next call rebuilds cleanly.
-      await client.del(buildKey(userId, partitionKey));
+      await client.del(buildKey(userId, partitionKey, accessScope));
       return null;
     }
     return parsed.data;
@@ -90,11 +102,12 @@ export async function setCachedBundle(
   userId: string,
   bundle: ContextBundle,
   partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
 ): Promise<void> {
   try {
     const client = await getCacheClient();
     await client.set(
-      buildKey(userId, partitionKey),
+      buildKey(userId, partitionKey, accessScope),
       JSON.stringify(bundle),
       "EX",
       TTL_SECONDS,
@@ -107,10 +120,18 @@ export async function setCachedBundle(
 export async function invalidateCachedBundle(
   userId: string,
   partitionKey?: ContextPartitionKey,
+  accessScope?: MemoryAccessScope | undefined,
 ): Promise<void> {
   try {
     const client = await getCacheClient();
-    await client.del(buildKey(userId, partitionKey));
+    const keys = [buildKey(userId, partitionKey, accessScope)];
+    // A partition supersession changes the aggregate workspace view too. The
+    // workspace key has no partition component by design, so evict it as a
+    // dependent read model without touching unrelated partition bundles.
+    if (accessScope !== "workspace") {
+      keys.push(buildKey(userId, undefined, "workspace"));
+    }
+    await Promise.all(keys.map((key) => client.del(key)));
   } catch (error) {
     console.error("Failed to invalidate cached context bundle:", error);
   }

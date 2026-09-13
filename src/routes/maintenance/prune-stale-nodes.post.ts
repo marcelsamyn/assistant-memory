@@ -1,12 +1,23 @@
 import { defineEventHandler, readBody } from "h3";
-import { pruneStaleNodes } from "~/lib/jobs/prune-stale-nodes";
+import {
+  pruneStaleNodes,
+  pruneStaleNodesWorkspace,
+} from "~/lib/jobs/prune-stale-nodes";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   pruneStaleNodesRequestSchema,
   pruneStaleNodesResponseSchema,
 } from "~/lib/schemas/prune-stale-nodes";
+import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
   const params = pruneStaleNodesRequestSchema.parse(await readBody(event));
-  const result = await pruneStaleNodes(params);
-  return pruneStaleNodesResponseSchema.parse(result);
+  const db = await useDatabase();
+  const accessScope = getRequestAccessScope(event);
+  if (accessScope === "workspace" && params.partitionKey === undefined) {
+    return pruneStaleNodesResponseSchema.parse(
+      await pruneStaleNodesWorkspace(params, db),
+    );
+  }
+  return pruneStaleNodesResponseSchema.parse(await pruneStaleNodes(params, db));
 });

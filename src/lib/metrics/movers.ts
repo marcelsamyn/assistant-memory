@@ -20,6 +20,7 @@ import type {
   GetMetricSummaryResponse,
   MetricDefinitionWithStats,
 } from "~/lib/schemas/metric-read";
+import type { MemoryAccessScope } from "~/lib/schemas/partition";
 
 const BASELINE_WINDOWS: readonly MetricMoverWindow[] = ["7d", "30d", "90d"];
 const FLAT_EPSILON = 0.01;
@@ -86,11 +87,15 @@ export async function getMetricMovers({
   partitionKey,
   metricIds,
   limit,
-}: GetMetricMoversRequest): Promise<MetricMover[]> {
+  accessScope,
+}: GetMetricMoversRequest & {
+  accessScope?: MemoryAccessScope | undefined;
+}): Promise<MetricMover[]> {
   const [{ summaries }, definitions] = await Promise.all([
     getMetricSummaries({
       userId,
       ...(partitionKey !== undefined ? { partitionKey } : {}),
+      accessScope,
       ...(metricIds !== undefined
         ? { metricIds }
         : { filter: { active: true } }),
@@ -98,6 +103,7 @@ export async function getMetricMovers({
     listMetrics({
       userId,
       ...(partitionKey !== undefined ? { partitionKey } : {}),
+      accessScope,
       filter: { active: true },
     }),
   ]);

@@ -11,6 +11,15 @@ import { PartitionAccessError } from "~/lib/partition-access";
 
 const mocks = vi.hoisted(() => ({ retrySourceProcessing: vi.fn() }));
 vi.mock("~/lib/ingestion/retry-source-processing", () => mocks);
+vi.mock("~/lib/ingestion/source-processing", () => ({
+  resolveSourceProcessingPartition: vi.fn(),
+}));
+vi.mock("~/lib/request-access", () => ({
+  getRequestAccessScope: vi.fn(() => "partition"),
+}));
+vi.mock("~/utils/db", () => ({
+  useDatabase: async (): Promise<unknown> => ({}),
+}));
 
 describe("POST /sources/processing/retry", () => {
   afterEach(() => {

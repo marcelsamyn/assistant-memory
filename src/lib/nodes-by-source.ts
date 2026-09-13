@@ -13,19 +13,25 @@ import {
   lt,
   notInArray,
   or,
-  isNull,
   sql,
 } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { claims, nodeMetadata, nodes, sourceLinks, sources } from "~/db/schema";
-import { assertPartitionReadAllowed } from "~/lib/partition-access";
+import {
+  assertPartitionReadAllowed,
+  partitionAccessCondition,
+} from "~/lib/partition-access";
+import { claimEndpointOwnershipCondition } from "~/lib/query/claim-endpoint-access";
 import type { GetNodeResponse } from "~/lib/schemas/node";
 import {
   DEFAULT_EXCLUDED_NODE_TYPES,
   type NodesBySourceResponse,
   type SourceNode,
 } from "~/lib/schemas/nodes-by-source";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import type { NodeType } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 
@@ -58,6 +64,7 @@ interface FetchParams {
   db: DrizzleDB;
   userId: string;
   partitionKey?: ContextPartitionKey;
+  accessScope?: MemoryAccessScope;
   sourceIds: TypeId<"source">[];
   nodeTypes: NodeType[] | undefined;
   includeClaims: boolean;
@@ -72,21 +79,26 @@ export async function fetchNodesBySource(
     db,
     userId,
     partitionKey,
+    accessScope = "partition",
     sourceIds,
     nodeTypes,
     includeClaims,
     limit,
   } = params;
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
   const decoded = params.cursor ? decodeCursor(params.cursor) : null;
-  const partitionFilter =
-    partitionKey === undefined
-      ? isNull(nodes.partitionKey)
-      : eq(nodes.partitionKey, partitionKey);
-  const sourcePartitionFilter =
-    partitionKey === undefined
-      ? isNull(sources.partitionKey)
-      : eq(sources.partitionKey, partitionKey);
+  const partitionFilter = partitionAccessCondition(
+    nodes.partitionKey,
+    userId,
+    partitionKey,
+    accessScope,
+  );
+  const sourcePartitionFilter = partitionAccessCondition(
+    sources.partitionKey,
+    userId,
+    partitionKey,
+    accessScope,
+  );
 
   const whereClauses = [
     eq(nodes.userId, userId),
@@ -148,6 +160,7 @@ export async function fetchNodesBySource(
     .from(nodes)
     .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
     .innerJoin(sourceLinks, eq(sourceLinks.nodeId, nodes.id))
+    .innerJoin(sources, eq(sources.id, sourceLinks.sourceId))
     .where(
       and(
         eq(nodes.userId, userId),
@@ -186,6 +199,16 @@ export async function fetchNodesBySource(
   if (includeClaims) {
     const srcMeta = aliasedTable(nodeMetadata, "srcMeta");
     const tgtMeta = aliasedTable(nodeMetadata, "tgtMeta");
+    const subjectUserId = sql`(
+      SELECT subject_endpoint.user_id
+        FROM "nodes" AS subject_endpoint
+       WHERE subject_endpoint.id = ${claims.subjectNodeId}
+    )`;
+    const subjectPartitionKey = sql`(
+      SELECT subject_endpoint.partition_key
+        FROM "nodes" AS subject_endpoint
+       WHERE subject_endpoint.id = ${claims.subjectNodeId}
+    )`;
 
     claimRows = await db
       .select({
@@ -211,11 +234,24 @@ export async function fetchNodesBySource(
       .where(
         and(
           eq(claims.userId, userId),
-          partitionKey === undefined
-            ? isNull(claims.partitionKey)
-            : eq(claims.partitionKey, partitionKey),
+          partitionAccessCondition(
+            claims.partitionKey,
+            userId,
+            partitionKey,
+            accessScope,
+          ),
           eq(claims.status, "active"),
           inArray(claims.subjectNodeId, pageIds),
+          claimEndpointOwnershipCondition(
+            {
+              claimUserId: claims.userId,
+              claimPartitionKey: claims.partitionKey,
+              subjectUserId,
+              subjectPartitionKey,
+              objectNodeId: claims.objectNodeId,
+            },
+            userId,
+          ),
         ),
       );
   }

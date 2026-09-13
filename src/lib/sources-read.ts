@@ -16,8 +16,14 @@ import {
 } from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import { sourceLinks, sources } from "~/db/schema";
-import { assertPartitionReadAllowed } from "~/lib/partition-access";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import {
+  assertPartitionReadAllowed,
+  partitionAccessCondition,
+} from "~/lib/partition-access";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import { sourceContextSchema } from "~/lib/schemas/source-context";
 import {
   type SourceListableType,
@@ -86,6 +92,7 @@ interface ListParams {
   db: DrizzleDB;
   userId: string;
   partitionKey?: ContextPartitionKey;
+  accessScope?: MemoryAccessScope;
   type: SourceListableType | undefined;
   limit: number;
   cursor: string | undefined;
@@ -96,7 +103,8 @@ export async function listSourcesPage(params: ListParams): Promise<{
   nextCursor: string | null;
 }> {
   const { db, userId, partitionKey, limit } = params;
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  const accessScope = params.accessScope ?? "partition";
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
   const typeFilter = params.type
     ? [params.type]
     : (LISTABLE_TYPES as SourceListableType[]);
@@ -108,9 +116,12 @@ export async function listSourcesPage(params: ListParams): Promise<{
 
   const whereClauses = [
     eq(sources.userId, userId),
-    partitionKey === undefined
-      ? isNull(sources.partitionKey)
-      : eq(sources.partitionKey, partitionKey),
+    partitionAccessCondition(
+      sources.partitionKey,
+      userId,
+      partitionKey,
+      accessScope,
+    ),
     isNull(sources.deletedAt),
     inArray(sources.type, typeFilter),
   ];
@@ -183,8 +194,9 @@ export async function getSourceSummary(
   userId: string,
   sourceId: TypeId<"source">,
   partitionKey?: ContextPartitionKey,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<SourceSummary | null> {
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
   const [row] = await db
     .select({
       id: sources.id,
@@ -204,9 +216,12 @@ export async function getSourceSummary(
       and(
         eq(sources.id, sourceId),
         eq(sources.userId, userId),
-        partitionKey === undefined
-          ? isNull(sources.partitionKey)
-          : eq(sources.partitionKey, partitionKey),
+        partitionAccessCondition(
+          sources.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
         isNull(sources.deletedAt),
       ),
     )

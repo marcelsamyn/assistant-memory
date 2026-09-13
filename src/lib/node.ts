@@ -6,7 +6,7 @@ import type {
   SummarizeNodeResponse,
 } from "./schemas/node";
 import { format } from "date-fns";
-import { and, eq, or, inArray, aliasedTable, sql, isNull } from "drizzle-orm";
+import { and, eq, or, inArray, aliasedTable, sql } from "drizzle-orm";
 import {
   nodes,
   nodeMetadata,
@@ -14,6 +14,7 @@ import {
   claims,
   sourceLinks,
   sources,
+  users,
 } from "~/db/schema";
 import { listAliasesForNodeIds } from "~/lib/alias";
 import { createClaim } from "~/lib/claim";
@@ -35,9 +36,16 @@ import { writeNodeRedirects } from "~/lib/node-redirects";
 import { getEffectiveNodeScopes } from "~/lib/node-scope";
 import {
   assertPartitionReadAllowed,
+  ensurePersonalPartition,
+  partitionAccessCondition,
   preparePartitionWrite,
+  PartitionAccessError,
 } from "~/lib/partition-access";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import { claimEndpointOwnershipCondition } from "~/lib/query/claim-endpoint-access";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import { ensureSystemSource } from "~/lib/sources";
 import { ensureDayNode } from "~/lib/temporal";
 import type { AssertedByKind, NodeType, Predicate, Scope } from "~/types/graph";
@@ -97,13 +105,15 @@ export async function getNodeById(
   nodeId: TypeId<"node">,
   claimFilter?: GetNodeClaimFilter,
   partitionKey?: ContextPartitionKey,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<GetNodeResponse | null> {
   const db = await useDatabase();
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
 
   const [row] = await db
     .select({
       id: nodes.id,
+      partitionKey: nodes.partitionKey,
       nodeType: nodes.nodeType,
       label: nodeMetadata.label,
       description: nodeMetadata.description,
@@ -115,18 +125,32 @@ export async function getNodeById(
       and(
         eq(nodes.id, nodeId),
         eq(nodes.userId, userId),
-        partitionKey === undefined
-          ? isNull(nodes.partitionKey)
-          : eq(nodes.partitionKey, partitionKey),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
       ),
     )
     .limit(1);
 
   if (!row) return null;
+  const objectPartitionKey = row.partitionKey ?? undefined;
 
   // Fetch all active claims touching this node (subject or object).
   const srcMeta = aliasedTable(nodeMetadata, "srcMeta");
   const tgtMeta = aliasedTable(nodeMetadata, "tgtMeta");
+  const subjectUserId = sql`(
+    SELECT subject_endpoint.user_id
+      FROM "nodes" AS subject_endpoint
+     WHERE subject_endpoint.id = ${claims.subjectNodeId}
+  )`;
+  const subjectPartitionKey = sql`(
+    SELECT subject_endpoint.partition_key
+      FROM "nodes" AS subject_endpoint
+     WHERE subject_endpoint.id = ${claims.subjectNodeId}
+  )`;
 
   const predicateFilter =
     claimFilter?.predicates && claimFilter.predicates.length > 0
@@ -166,12 +190,24 @@ export async function getNodeById(
     .where(
       and(
         eq(claims.userId, userId),
-        partitionKey === undefined
-          ? isNull(claims.partitionKey)
-          : eq(claims.partitionKey, partitionKey),
+        partitionAccessCondition(
+          claims.partitionKey,
+          userId,
+          objectPartitionKey,
+        ),
         statusFilter,
         predicateFilter,
         or(eq(claims.subjectNodeId, nodeId), eq(claims.objectNodeId, nodeId)),
+        claimEndpointOwnershipCondition(
+          {
+            claimUserId: claims.userId,
+            claimPartitionKey: claims.partitionKey,
+            subjectUserId,
+            subjectPartitionKey,
+            objectNodeId: claims.objectNodeId,
+          },
+          userId,
+        ),
       ),
     );
 
@@ -179,13 +215,13 @@ export async function getNodeById(
     db,
     userId,
     [nodeId],
-    partitionKey,
+    objectPartitionKey,
   );
   const aliasMap = await listAliasesForNodeIds(
     db,
     userId,
     [nodeId],
-    partitionKey,
+    objectPartitionKey,
   );
 
   return {
@@ -209,26 +245,31 @@ export async function getNodeSources(
   userId: string,
   nodeId: TypeId<"node">,
   partitionKey?: ContextPartitionKey,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<GetNodeSourcesResponse> {
   const db = await useDatabase();
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
 
   // Verify node ownership
   const [nodeRow] = await db
-    .select({ id: nodes.id })
+    .select({ id: nodes.id, partitionKey: nodes.partitionKey })
     .from(nodes)
     .where(
       and(
         eq(nodes.id, nodeId),
         eq(nodes.userId, userId),
-        partitionKey === undefined
-          ? isNull(nodes.partitionKey)
-          : eq(nodes.partitionKey, partitionKey),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
       ),
     )
     .limit(1);
 
   if (!nodeRow) return { sources: [] };
+  const objectPartitionKey = nodeRow.partitionKey ?? undefined;
 
   // Get linked sources
   const linkedSources = await db
@@ -242,9 +283,11 @@ export async function getNodeSources(
     .where(
       and(
         eq(sourceLinks.nodeId, nodeId),
-        partitionKey === undefined
-          ? isNull(sources.partitionKey)
-          : eq(sources.partitionKey, partitionKey),
+        partitionAccessCondition(
+          sources.partitionKey,
+          userId,
+          objectPartitionKey,
+        ),
       ),
     );
 
@@ -330,12 +373,20 @@ export async function summarizeNode({
   userId,
   nodeId,
   partitionKey,
+  accessScope,
 }: {
   userId: string;
   nodeId: TypeId<"node">;
   partitionKey?: ContextPartitionKey;
+  accessScope?: MemoryAccessScope;
 }): Promise<SummarizeNodeResponse | null> {
-  const result = await getNodeById(userId, nodeId, undefined, partitionKey);
+  const result = await getNodeById(
+    userId,
+    nodeId,
+    undefined,
+    partitionKey,
+    accessScope,
+  );
   if (!result) return null;
 
   // `getNodeById` returns only active claims by default — exactly the grounding
@@ -411,6 +462,7 @@ export async function updateNode(
     description?: string | undefined;
   },
   partitionKey?: ContextPartitionKey,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<{
   id: TypeId<"node">;
   nodeType: string;
@@ -418,12 +470,13 @@ export async function updateNode(
   description: string | null;
 } | null> {
   const db = await useDatabase();
-  await preparePartitionWrite(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
 
   // Verify ownership and fetch current state
   const [row] = await db
     .select({
       id: nodes.id,
+      partitionKey: nodes.partitionKey,
       nodeType: nodes.nodeType,
       metaId: nodeMetadata.id,
       label: nodeMetadata.label,
@@ -435,14 +488,20 @@ export async function updateNode(
       and(
         eq(nodes.id, nodeId),
         eq(nodes.userId, userId),
-        partitionKey === undefined
-          ? isNull(nodes.partitionKey)
-          : eq(nodes.partitionKey, partitionKey),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
       ),
     )
     .limit(1);
 
   if (!row) return null;
+
+  const objectPartitionKey = row.partitionKey ?? undefined;
+  await preparePartitionWrite(db, userId, objectPartitionKey);
 
   if (updates.nodeType !== undefined) {
     await db
@@ -536,12 +595,38 @@ export async function deleteNode(
   userId: string,
   nodeId: TypeId<"node">,
   partitionKey?: ContextPartitionKey,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<{
   deleted: boolean;
   affectedClaims: { cascadeDeleted: number; assertedByCleared: number };
 }> {
   const db = await useDatabase();
-  await preparePartitionWrite(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
+
+  const [ownedNode] = await db
+    .select({ partitionKey: nodes.partitionKey })
+    .from(nodes)
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        eq(nodes.userId, userId),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
+      ),
+    )
+    .limit(1);
+  if (!ownedNode) {
+    return {
+      deleted: false,
+      affectedClaims: { cascadeDeleted: 0, assertedByCleared: 0 },
+    };
+  }
+  const objectPartitionKey = ownedNode.partitionKey ?? undefined;
+  await preparePartitionWrite(db, userId, objectPartitionKey);
 
   return db.transaction(async (tx) => {
     // Count affected claims BEFORE the delete so we can report cascade vs
@@ -553,9 +638,11 @@ export async function deleteNode(
       .where(
         and(
           eq(claims.userId, userId),
-          partitionKey === undefined
-            ? isNull(claims.partitionKey)
-            : eq(claims.partitionKey, partitionKey),
+          partitionAccessCondition(
+            claims.partitionKey,
+            userId,
+            objectPartitionKey,
+          ),
           or(eq(claims.subjectNodeId, nodeId), eq(claims.objectNodeId, nodeId)),
         ),
       );
@@ -566,9 +653,11 @@ export async function deleteNode(
       .where(
         and(
           eq(claims.userId, userId),
-          partitionKey === undefined
-            ? isNull(claims.partitionKey)
-            : eq(claims.partitionKey, partitionKey),
+          partitionAccessCondition(
+            claims.partitionKey,
+            userId,
+            objectPartitionKey,
+          ),
           eq(claims.assertedByNodeId, nodeId),
         ),
       );
@@ -579,9 +668,11 @@ export async function deleteNode(
         and(
           eq(nodes.id, nodeId),
           eq(nodes.userId, userId),
-          partitionKey === undefined
-            ? isNull(nodes.partitionKey)
-            : eq(nodes.partitionKey, partitionKey),
+          partitionAccessCondition(
+            nodes.partitionKey,
+            userId,
+            objectPartitionKey,
+          ),
         ),
       )
       .returning({ id: nodes.id });
@@ -634,6 +725,7 @@ export async function createNode(
   description?: string,
   initialClaims?: ReadonlyArray<CreateNodeInitialClaimInput>,
   partitionKey?: ContextPartitionKey,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<{
   id: TypeId<"node">;
   nodeType: NodeType;
@@ -643,11 +735,20 @@ export async function createNode(
 }> {
   const db = await useDatabase();
   await ensureUser(db, userId);
-  await preparePartitionWrite(db, userId, partitionKey);
+  const destinationPartitionKey =
+    partitionKey ??
+    (accessScope === "workspace"
+      ? await ensurePersonalPartition(db, userId)
+      : undefined);
+  await preparePartitionWrite(db, userId, destinationPartitionKey);
 
   const [inserted] = await db
     .insert(nodes)
-    .values({ userId, partitionKey, nodeType })
+    .values({
+      userId,
+      partitionKey: destinationPartitionKey,
+      nodeType,
+    })
     .returning({ id: nodes.id });
 
   if (!inserted) throw new Error("Failed to create node");
@@ -666,7 +767,12 @@ export async function createNode(
     { id: inserted.id, label, description: description ?? null },
   ]);
 
-  const sourceId = await ensureSystemSource(db, userId, "manual", partitionKey);
+  const sourceId = await ensureSystemSource(
+    db,
+    userId,
+    "manual",
+    destinationPartitionKey,
+  );
   await db
     .insert(sourceLinks)
     .values({ sourceId, nodeId: inserted.id })
@@ -676,10 +782,15 @@ export async function createNode(
   // Skip for Temporal nodes themselves to avoid a self-link / cycle.
   if (nodeType !== "Temporal") {
     const now = new Date();
-    const dayNodeId = await ensureDayNode(db, userId, now, partitionKey);
+    const dayNodeId = await ensureDayNode(
+      db,
+      userId,
+      now,
+      destinationPartitionKey,
+    );
     await db.insert(claims).values({
       userId,
-      partitionKey,
+      partitionKey: destinationPartitionKey,
       predicate: "RECORDED_ON",
       subjectNodeId: inserted.id,
       objectNodeId: dayNodeId,
@@ -719,10 +830,36 @@ export async function createNode(
   const initialClaimIds: TypeId<"claim">[] = [];
   if (effectiveInitialClaims && effectiveInitialClaims.length > 0) {
     try {
+      const referencedNodeIds = [
+        ...new Set(
+          effectiveInitialClaims.flatMap((claim) =>
+            [claim.objectNodeId, claim.assertedByNodeId].filter(
+              (id): id is TypeId<"node"> => id !== undefined,
+            ),
+          ),
+        ),
+      ];
+      if (referencedNodeIds.length > 0) {
+        const referencedNodes = await db
+          .select({ id: nodes.id, partitionKey: nodes.partitionKey })
+          .from(nodes)
+          .where(
+            and(eq(nodes.userId, userId), inArray(nodes.id, referencedNodeIds)),
+          );
+        if (
+          referencedNodes.length !== referencedNodeIds.length ||
+          referencedNodes.some(
+            (node) =>
+              (node.partitionKey ?? undefined) !== destinationPartitionKey,
+          )
+        ) {
+          throw new Error("Cross-partition claim reference refused");
+        }
+      }
       for (const claim of effectiveInitialClaims) {
         const created = await createClaim({
           userId,
-          partitionKey,
+          partitionKey: destinationPartitionKey,
           subjectNodeId: inserted.id,
           predicate: claim.predicate,
           statement: claim.statement,
@@ -761,6 +898,7 @@ export async function mergeNodes(
   nodeIds: TypeId<"node">[],
   overrides?: { targetLabel?: string; targetDescription?: string },
   partitionKey?: ContextPartitionKey,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<{
   id: TypeId<"node">;
   nodeType: string;
@@ -768,11 +906,12 @@ export async function mergeNodes(
   description: string | null;
 } | null> {
   const db = await useDatabase();
-  await preparePartitionWrite(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
 
   const foundNodes = await db
     .select({
       id: nodes.id,
+      partitionKey: nodes.partitionKey,
       nodeType: nodes.nodeType,
       label: nodeMetadata.label,
       description: nodeMetadata.description,
@@ -783,14 +922,24 @@ export async function mergeNodes(
     .where(
       and(
         eq(nodes.userId, userId),
-        partitionKey === undefined
-          ? isNull(nodes.partitionKey)
-          : eq(nodes.partitionKey, partitionKey),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
         inArray(nodes.id, nodeIds),
       ),
     );
 
   if (foundNodes.length !== nodeIds.length) return null;
+
+  const partitionKeys = new Set(foundNodes.map((node) => node.partitionKey));
+  if (partitionKeys.size > 1) {
+    throw new Error("Cross-partition merge refused");
+  }
+  const objectPartitionKey = foundNodes[0]?.partitionKey ?? undefined;
+  await preparePartitionWrite(db, userId, objectPartitionKey);
 
   // Refuse cross-scope merges. Same rule as dedup-sweep.
   const scopeMap = await getEffectiveNodeScopes(db, userId, nodeIds);
@@ -829,14 +978,30 @@ export async function mergeNodes(
         .update(claims)
         .set({ subjectNodeId: survivorId, updatedAt: new Date() })
         .where(
-          and(eq(claims.userId, userId), eq(claims.subjectNodeId, consumedId)),
+          and(
+            eq(claims.userId, userId),
+            partitionAccessCondition(
+              claims.partitionKey,
+              userId,
+              objectPartitionKey,
+            ),
+            eq(claims.subjectNodeId, consumedId),
+          ),
         );
 
       await tx
         .update(claims)
         .set({ objectNodeId: survivorId, updatedAt: new Date() })
         .where(
-          and(eq(claims.userId, userId), eq(claims.objectNodeId, consumedId)),
+          and(
+            eq(claims.userId, userId),
+            partitionAccessCondition(
+              claims.partitionKey,
+              userId,
+              objectPartitionKey,
+            ),
+            eq(claims.objectNodeId, consumedId),
+          ),
         );
 
       // Rewire participant provenance pointers BEFORE the consumed node is
@@ -848,6 +1013,11 @@ export async function mergeNodes(
         .where(
           and(
             eq(claims.userId, userId),
+            partitionAccessCondition(
+              claims.partitionKey,
+              userId,
+              objectPartitionKey,
+            ),
             eq(claims.assertedByNodeId, consumedId),
           ),
         );
@@ -855,6 +1025,7 @@ export async function mergeNodes(
       await tx.execute(sql`
         DELETE FROM claims
         WHERE user_id = ${userId}
+          AND partition_key IS NOT DISTINCT FROM ${objectPartitionKey ?? null}
           AND subject_node_id = ${survivorId}
           AND object_node_id = ${survivorId}
       `);
@@ -863,7 +1034,9 @@ export async function mergeNodes(
         DELETE FROM claims c
         USING claims kept
         WHERE c.user_id = ${userId}
+          AND c.partition_key IS NOT DISTINCT FROM ${objectPartitionKey ?? null}
           AND kept.user_id = c.user_id
+          AND kept.partition_key IS NOT DISTINCT FROM c.partition_key
           AND kept.id <> c.id
           AND kept.subject_node_id = c.subject_node_id
           AND kept.predicate = c.predicate
@@ -891,12 +1064,28 @@ export async function mergeNodes(
     }
 
     // Record redirects so stale references (e.g. citations) follow consumed → survivor.
-    await writeNodeRedirects(tx, userId, survivorId, consumedIds, partitionKey);
+    await writeNodeRedirects(
+      tx,
+      userId,
+      survivorId,
+      consumedIds,
+      objectPartitionKey,
+    );
 
     // Delete consumed nodes
     await tx
       .delete(nodes)
-      .where(and(eq(nodes.userId, userId), inArray(nodes.id, consumedIds)));
+      .where(
+        and(
+          eq(nodes.userId, userId),
+          partitionAccessCondition(
+            nodes.partitionKey,
+            userId,
+            objectPartitionKey,
+          ),
+          inArray(nodes.id, consumedIds),
+        ),
+      );
 
     // Update survivor metadata
     await tx
@@ -921,9 +1110,10 @@ export async function mergeNodes(
 
     // Delete self-referencing relationship claims
     await tx.execute(sql`
-      DELETE FROM claims
-      WHERE user_id = ${userId}
-        AND subject_node_id = ${survivorId}
+        DELETE FROM claims
+        WHERE user_id = ${userId}
+          AND partition_key IS NOT DISTINCT FROM ${objectPartitionKey ?? null}
+          AND subject_node_id = ${survivorId}
         AND object_node_id = ${survivorId}
     `);
   });
@@ -963,22 +1153,75 @@ export async function batchDeleteNodes(
   userId: string,
   nodeIds: TypeId<"node">[],
   partitionKey?: ContextPartitionKey,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<number> {
   const db = await useDatabase();
-  await preparePartitionWrite(db, userId, partitionKey);
-  const result = await db
-    .delete(nodes)
-    .where(
-      and(
-        eq(nodes.userId, userId),
-        partitionKey === undefined
-          ? isNull(nodes.partitionKey)
-          : eq(nodes.partitionKey, partitionKey),
-        inArray(nodes.id, nodeIds),
-      ),
-    )
-    .returning({ id: nodes.id });
-  return result.length;
+  if (nodeIds.length === 0) return 0;
+  const uniqueNodeIds = [...new Set(nodeIds)];
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
+  return db.transaction(async (tx) => {
+    // Coordinate with migration transitions before observing any target
+    // partition. Both operations use the user's row as their transaction
+    // boundary, so a batch cannot validate legacy data and delete it after
+    // migration has started (or vice versa).
+    await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.id, userId))
+      .for("no key update");
+    const existing = await tx
+      .select({ id: nodes.id, partitionKey: nodes.partitionKey })
+      .from(nodes)
+      .where(
+        and(
+          eq(nodes.userId, userId),
+          partitionAccessCondition(
+            nodes.partitionKey,
+            userId,
+            partitionKey,
+            accessScope,
+          ),
+          inArray(nodes.id, uniqueNodeIds),
+        ),
+      )
+      .for("update");
+    // Validate every target before deleting any row. This preserves the
+    // all-or-nothing contract for foreign, inactive, or missing targets.
+    if (existing.length !== uniqueNodeIds.length) return 0;
+
+    // Workspace reads may select both legacy NULL rows and partitioned rows
+    // while migration is in progress. Validate every actual scope before the
+    // first delete so a mixed batch cannot partially mutate the graph.
+    const actualPartitions = new Set<ContextPartitionKey | undefined>(
+      existing.map((row) => row.partitionKey ?? undefined),
+    );
+    for (const actualPartitionKey of actualPartitions) {
+      await preparePartitionWrite(tx, userId, actualPartitionKey);
+    }
+
+    const result = await tx
+      .delete(nodes)
+      .where(
+        and(
+          eq(nodes.userId, userId),
+          partitionAccessCondition(
+            nodes.partitionKey,
+            userId,
+            partitionKey,
+            accessScope,
+          ),
+          inArray(nodes.id, uniqueNodeIds),
+        ),
+      )
+      .returning({ id: nodes.id });
+    if (result.length !== existing.length) {
+      throw new PartitionAccessError(
+        "PARTITION_UNAUTHORIZED",
+        `Node batch delete lost ownership or active partition access for user ${userId}`,
+      );
+    }
+    return result.length;
+  });
 }
 
 /** Get ego-graph neighborhood around a focal node. */
@@ -987,6 +1230,7 @@ export async function getNodeNeighborhood(
   nodeId: TypeId<"node">,
   depth: 1 | 2 = 1,
   partitionKey?: ContextPartitionKey,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<{
   nodes: {
     id: TypeId<"node">;
@@ -1010,11 +1254,12 @@ export async function getNodeNeighborhood(
   }[];
 } | null> {
   const db = await useDatabase();
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
 
   const [focal] = await db
     .select({
       id: nodes.id,
+      partitionKey: nodes.partitionKey,
       nodeType: nodes.nodeType,
       label: nodeMetadata.label,
       description: nodeMetadata.description,
@@ -1025,14 +1270,22 @@ export async function getNodeNeighborhood(
       and(
         eq(nodes.id, nodeId),
         eq(nodes.userId, userId),
-        partitionKey === undefined
-          ? isNull(nodes.partitionKey)
-          : eq(nodes.partitionKey, partitionKey),
+        partitionAccessCondition(
+          nodes.partitionKey,
+          userId,
+          partitionKey,
+          accessScope,
+        ),
       ),
     )
     .limit(1);
 
   if (!focal) return null;
+  const objectPartitionKey = focal.partitionKey ?? undefined;
+  // An active focal node already identifies its strict partition. Only a
+  // legacy NULL focal may legitimately use the caller's workspace scope.
+  const nestedAccessScope =
+    objectPartitionKey === undefined ? accessScope : "partition";
 
   const allNodeIds = new Set<TypeId<"node">>([nodeId]);
   const nodeMap = new Map<
@@ -1052,7 +1305,10 @@ export async function getNodeNeighborhood(
   });
 
   const hop1 = await findOneHopNodes(db, userId, [nodeId], {
-    ...(partitionKey !== undefined ? { partitionKey } : {}),
+    ...(objectPartitionKey !== undefined
+      ? { partitionKey: objectPartitionKey }
+      : {}),
+    accessScope: nestedAccessScope,
   });
   for (const n of hop1) {
     if (!allNodeIds.has(n.id)) {
@@ -1070,7 +1326,10 @@ export async function getNodeNeighborhood(
     const hop1Ids = hop1.map((n) => n.id).filter((id) => id !== nodeId);
     if (hop1Ids.length > 0) {
       const hop2 = await findOneHopNodes(db, userId, hop1Ids, {
-        ...(partitionKey !== undefined ? { partitionKey } : {}),
+        ...(objectPartitionKey !== undefined
+          ? { partitionKey: objectPartitionKey }
+          : {}),
+        accessScope: nestedAccessScope,
       });
       for (const n of hop2) {
         if (!allNodeIds.has(n.id)) {
@@ -1088,8 +1347,20 @@ export async function getNodeNeighborhood(
 
   const ids = Array.from(allNodeIds);
   const [claimRows, sourceIdMap] = await Promise.all([
-    fetchClaimsBetweenNodeIds(db, userId, ids, partitionKey),
-    fetchSourceIdsForNodes(db, userId, ids, partitionKey),
+    fetchClaimsBetweenNodeIds(
+      db,
+      userId,
+      ids,
+      objectPartitionKey,
+      nestedAccessScope,
+    ),
+    fetchSourceIdsForNodes(
+      db,
+      userId,
+      ids,
+      objectPartitionKey,
+      nestedAccessScope,
+    ),
   ]);
 
   return {

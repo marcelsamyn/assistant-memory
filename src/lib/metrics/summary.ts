@@ -13,6 +13,7 @@ import {
   type GetMetricSummaryResponse,
 } from "~/lib/schemas/metric-read";
 import type { MetricAggregationHint } from "~/lib/schemas/metric-write";
+import type { MemoryAccessScope } from "~/lib/schemas/partition";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -100,9 +101,12 @@ export async function getMetricSummary({
   userId,
   partitionKey,
   metricId,
-}: GetMetricSummaryRequest): Promise<GetMetricSummaryResponse> {
+  accessScope,
+}: GetMetricSummaryRequest & {
+  accessScope?: MemoryAccessScope | undefined;
+}): Promise<GetMetricSummaryResponse> {
   const db = await useDatabase();
-  await assertMetricPartitionRead(db, userId, partitionKey);
+  await assertMetricPartitionRead(db, userId, partitionKey, accessScope);
   const [definition] = await db
     .select({
       id: metricDefinitions.id,
@@ -113,6 +117,7 @@ export async function getMetricSummary({
       and(
         eq(metricDefinitions.userId, userId),
         eq(metricDefinitions.id, metricId),
+        metricDefinitionPartitionCondition(userId, partitionKey, accessScope),
       ),
     )
     .limit(1);
@@ -130,7 +135,7 @@ export async function getMetricSummary({
     .where(
       and(
         eq(metricObservations.userId, userId),
-        metricObservationPartitionCondition(userId, partitionKey),
+        metricObservationPartitionCondition(userId, partitionKey, accessScope),
         eq(metricObservations.metricDefinitionId, metricId),
       ),
     )
@@ -152,7 +157,11 @@ export async function getMetricSummary({
       .where(
         and(
           eq(metricObservations.userId, userId),
-          metricObservationPartitionCondition(userId, partitionKey),
+          metricObservationPartitionCondition(
+            userId,
+            partitionKey,
+            accessScope,
+          ),
           eq(metricObservations.metricDefinitionId, metricId),
           sql`${metricObservations.occurredAt} >= ${since}`,
         ),
@@ -212,9 +221,12 @@ export async function getMetricSummaries({
   partitionKey,
   metricIds,
   filter,
-}: GetMetricSummariesRequest): Promise<GetMetricSummariesResponse> {
+  accessScope,
+}: GetMetricSummariesRequest & {
+  accessScope?: MemoryAccessScope | undefined;
+}): Promise<GetMetricSummariesResponse> {
   const db = await useDatabase();
-  await assertMetricPartitionRead(db, userId, partitionKey);
+  await assertMetricPartitionRead(db, userId, partitionKey, accessScope);
 
   const definitions = await db
     .select({
@@ -225,8 +237,14 @@ export async function getMetricSummaries({
     .where(
       and(
         eq(metricDefinitions.userId, userId),
-        metricIds === undefined
-          ? metricDefinitionPartitionCondition(userId, partitionKey)
+        metricIds === undefined ||
+          partitionKey !== undefined ||
+          accessScope === "workspace"
+          ? metricDefinitionPartitionCondition(
+              userId,
+              partitionKey,
+              accessScope,
+            )
           : undefined,
         metricIds === undefined
           ? undefined
@@ -274,7 +292,7 @@ export async function getMetricSummaries({
     .where(
       and(
         eq(metricObservations.userId, userId),
-        metricObservationPartitionCondition(userId, partitionKey),
+        metricObservationPartitionCondition(userId, partitionKey, accessScope),
         definitionScope,
       ),
     )
@@ -299,7 +317,11 @@ export async function getMetricSummaries({
       .where(
         and(
           eq(metricObservations.userId, userId),
-          metricObservationPartitionCondition(userId, partitionKey),
+          metricObservationPartitionCondition(
+            userId,
+            partitionKey,
+            accessScope,
+          ),
           definitionScope,
           sql`${metricObservations.occurredAt} >= ${since}`,
         ),

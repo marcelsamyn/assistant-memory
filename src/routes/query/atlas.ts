@@ -1,5 +1,10 @@
 import { defineEventHandler } from "h3";
-import { getAtlas, getAssistantAtlas } from "~/lib/atlas";
+import {
+  getAtlas,
+  getAssistantAtlas,
+  getWorkspaceAtlasEntries,
+} from "~/lib/atlas";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   queryAtlasRequestSchema,
   queryAtlasResponseSchema,
@@ -10,7 +15,41 @@ export default defineEventHandler(async (event) => {
   const { userId, partitionKey, assistantId } = queryAtlasRequestSchema.parse(
     await readBody(event),
   );
+  const accessScope = getRequestAccessScope(event);
   const db = await useDatabase();
+
+  if (partitionKey === undefined && accessScope === "workspace") {
+    const entries = await getWorkspaceAtlasEntries(db, userId, assistantId);
+    const render = (
+      type: "User Atlas" | "Assistant Atlas",
+      about: string,
+      rows: typeof entries.user,
+    ): string =>
+      rows
+        .filter((row) => row.description)
+        .map(
+          (row) =>
+            `<context type="${type}" partition="${row.partitionKey ?? "legacy"}" about="${about}">
+${row.description}
+</context>`,
+        )
+        .join("\n");
+    const combinedWorkspaceAtlas = [
+      render(
+        "User Atlas",
+        "The User Atlas is the central, persistent repository of structured information about the user.",
+        entries.user,
+      ),
+      render(
+        "Assistant Atlas",
+        "The Assistant Atlas is persistent internal memory specific to this assistant instance.",
+        entries.assistant,
+      ),
+    ]
+      .filter(Boolean)
+      .join("\n");
+    return queryAtlasResponseSchema.parse({ atlas: combinedWorkspaceAtlas });
+  }
 
   const { description: userDesc } = await getAtlas(db, userId, partitionKey);
   const { description: assistantDesc } = await getAssistantAtlas(

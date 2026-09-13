@@ -395,13 +395,17 @@ describeIfServer("partition migration upgrade", () => {
               }),
             ]),
           );
-          expect(
-            events.some(
-              (event) =>
-                event["phase"] === "waiting_for_lock" &&
-                Number(event["elapsedMs"]) >= 10_000,
-            ),
-          ).toBe(true);
+          const waitingEvents = events.filter(
+            (event) =>
+              event["event"] === "database.migrations.progress" &&
+              event["phase"] === "waiting_for_lock",
+          );
+          // The initial lock status and a later status prove that the
+          // migration emits a periodic heartbeat while the lock is held.
+          expect(waitingEvents.length).toBeGreaterThanOrEqual(2);
+          expect(Number(waitingEvents[1]?.["elapsedMs"])).toBeGreaterThan(
+            Number(waitingEvents[0]?.["elapsedMs"]),
+          );
         },
         { timeout: 12_000, interval: 100 },
       );

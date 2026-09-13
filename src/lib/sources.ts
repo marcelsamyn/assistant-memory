@@ -21,6 +21,7 @@ import {
   PartitionAccessError,
   assertSourceIdentitiesActive,
   assertLiveSourceParents,
+  ensurePersonalPartition,
   lockSourceIdentityGates,
   lockSourceParentAttachmentGates,
   preparePartitionWrite,
@@ -28,7 +29,10 @@ import {
   type SourceIdentity,
   withSourceWriteFence,
 } from "~/lib/partition-access";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import { sourceContextSchema } from "~/lib/schemas/source-context";
 import {
   putSourceBlob,
@@ -155,6 +159,7 @@ export type RawResult =
 export interface SourceCreateInput {
   userId: string;
   partitionKey?: ContextPartitionKey;
+  accessScope?: MemoryAccessScope;
   sourceType: SourceType;
   externalId: string;
   parentId?: TypeId<"source">;
@@ -289,6 +294,10 @@ export class SourceService {
     successes: TypeId<"source">[];
     failures: Array<{ sourceId?: TypeId<"source">; reason: string }>;
   }> {
+    const accessScope = inputs[0]?.accessScope ?? "partition";
+    inputs = await Promise.all(
+      inputs.map((input) => this.resolveCreatePartition(input, accessScope)),
+    );
     const successes: TypeId<"source">[] = [];
     const failures: Array<{ sourceId?: TypeId<"source">; reason: string }> = [];
 
@@ -502,6 +511,58 @@ export class SourceService {
     return { successes, failures };
   }
 
+  private async resolveCreatePartition(
+    input: SourceCreateInput,
+    accessScope: MemoryAccessScope,
+  ): Promise<SourceCreateInput> {
+    if (accessScope !== "workspace") return input;
+
+    let partitionKey = input.partitionKey;
+    if (input.parentId !== undefined) {
+      const [parent] = await this.db
+        .select({ partitionKey: sources.partitionKey })
+        .from(sources)
+        .where(
+          and(
+            eq(sources.userId, input.userId),
+            eq(sources.id, input.parentId),
+            isNull(sources.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!parent) {
+        throw new PartitionAccessError(
+          "PARTITION_UNAUTHORIZED",
+          "Source parent does not exist in the requested workspace",
+        );
+      }
+      const parentPartitionKey = parent.partitionKey ?? undefined;
+      if (
+        input.parentPartitionKey !== undefined &&
+        input.parentPartitionKey !== parentPartitionKey
+      ) {
+        throw new PartitionAccessError(
+          "PARTITION_UNAUTHORIZED",
+          "Source parent does not belong to the requested partition",
+        );
+      }
+      if (partitionKey !== undefined && partitionKey !== parentPartitionKey) {
+        throw new PartitionAccessError(
+          "PARTITION_UNAUTHORIZED",
+          "A child source must use its parent source partition",
+        );
+      }
+      partitionKey = parentPartitionKey;
+    } else if (partitionKey === undefined) {
+      partitionKey = await ensurePersonalPartition(this.db, input.userId);
+    }
+
+    return {
+      ...input,
+      ...(partitionKey === undefined ? {} : { partitionKey }),
+    };
+  }
+
   /** Updates one inline revision while retaining the stable source identity. */
   async replaceInlineContent(input: {
     userId: string;
@@ -515,7 +576,17 @@ export class SourceService {
     timestamp: Date;
     replaceDerivedLinks?: boolean;
     status?: SourcesInsert["status"];
+    accessScope?: MemoryAccessScope;
   }): Promise<number> {
+    input = {
+      ...input,
+      partitionKey: await this.resolveExistingPartition(
+        input.userId,
+        input.sourceId,
+        input.partitionKey,
+        input.accessScope ?? "partition",
+      ),
+    };
     const parentAttachments = input.parentId
       ? [
           {
@@ -607,7 +678,17 @@ export class SourceService {
     parentId?: TypeId<"source">;
     scope: Scope;
     timestamp?: Date;
+    accessScope?: MemoryAccessScope;
   }): Promise<number> {
+    input = {
+      ...input,
+      partitionKey: await this.resolveExistingPartition(
+        input.userId,
+        input.sourceId,
+        input.partitionKey,
+        input.accessScope ?? "partition",
+      ),
+    };
     const parentAttachments = input.parentId
       ? [
           {
@@ -722,7 +803,17 @@ export class SourceService {
     parentId?: TypeId<"source">;
     scope: Scope;
     timestamp: Date;
+    accessScope?: MemoryAccessScope;
   }): Promise<number> {
+    input = {
+      ...input,
+      partitionKey: await this.resolveExistingPartition(
+        input.userId,
+        input.sourceId,
+        input.partitionKey,
+        input.accessScope ?? "partition",
+      ),
+    };
     await this.ensureBucket();
     const [source] = await this.db
       .select()
@@ -818,6 +909,29 @@ export class SourceService {
     if (!updated)
       throw new Error(`Source ${input.sourceId} disappeared after upload`);
     return updated.version;
+  }
+
+  private async resolveExistingPartition(
+    userId: string,
+    sourceId: TypeId<"source">,
+    partitionKey: ContextPartitionKey | undefined,
+    accessScope: MemoryAccessScope,
+  ): Promise<ContextPartitionKey | undefined> {
+    if (accessScope !== "workspace" || partitionKey !== undefined) {
+      return partitionKey;
+    }
+    const [source] = await this.db
+      .select({ partitionKey: sources.partitionKey })
+      .from(sources)
+      .where(and(eq(sources.userId, userId), eq(sources.id, sourceId)))
+      .limit(1);
+    if (!source) {
+      throw new PartitionAccessError(
+        "PARTITION_UNAUTHORIZED",
+        "Source does not exist in the requested workspace",
+      );
+    }
+    return source.partitionKey ?? undefined;
   }
 
   /**

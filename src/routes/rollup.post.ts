@@ -10,39 +10,91 @@
 // (same as src/routes/digest.post.ts), which is what lets the route test
 // stub it via vi.stubGlobal.
 import { defineEventHandler } from "h3";
-import { batchQueue, ROLLUP_JOB_OPTIONS } from "~/lib/queues";
+import { batchQueue, redisConnection, ROLLUP_JOB_OPTIONS } from "~/lib/queues";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   rollupRequestSchema,
   rollupResponseSchema,
 } from "~/lib/schemas/rollup";
+import {
+  assertWorkspaceOperationReady,
+  resolveWorkspacePartitions,
+} from "~/lib/workspace-partitions";
+import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
   const params = rollupRequestSchema.parse(await readBody(event));
-  const jobId =
-    params.partitionKey === undefined
-      ? `rollup:${params.userId}`
-      : `rollup:${params.userId}:${params.partitionKey}`;
-
-  const existing = await batchQueue.getJob(jobId);
-  if (existing) {
-    const state = await existing.getState();
-    if (state === "active" || state === "waiting" || state === "delayed") {
-      return rollupResponseSchema.parse({
-        message: `Rollup already queued for user ${params.userId}.`,
-        enqueued: false,
-      });
-    }
-    // Completed/failed leftovers block re-use of the deterministic jobId.
-    await existing.remove();
+  const db = await useDatabase();
+  const accessScope = getRequestAccessScope(event);
+  const resolvedPartitions = await resolveWorkspacePartitions(
+    db,
+    params.userId,
+    params.partitionKey,
+    accessScope,
+  );
+  await assertWorkspaceOperationReady(
+    db,
+    params.userId,
+    resolvedPartitions,
+    accessScope,
+  );
+  let partitions = resolvedPartitions;
+  if (
+    accessScope === "workspace" &&
+    params.partitionKey === undefined &&
+    partitions.length > 1 &&
+    params.maxLlmCalls > 0
+  ) {
+    const cursor = await redisConnection.incr(
+      batchQueue.toKey(`rollup-fair-cursor:${params.userId}`),
+    );
+    const offset = (cursor - 1) % partitions.length;
+    partitions = partitions.map(
+      (_, index) => partitions[(index + offset) % partitions.length]!,
+    );
   }
-
-  // The getState/remove/add sequence above is not atomic, but BullMQ's add
-  // is: a concurrent add with the same jobId is dropped as a duplicate.
-  await batchQueue.add("rollup", params, { ...ROLLUP_JOB_OPTIONS, jobId });
+  const baseBudget =
+    partitions.length === 0
+      ? 0
+      : Math.floor(params.maxLlmCalls / partitions.length);
+  const remainder =
+    partitions.length === 0 ? 0 : params.maxLlmCalls % partitions.length;
+  let enqueued = false;
+  for (const [index, strictPartitionKey] of partitions.entries()) {
+    const budget = baseBudget + (index < remainder ? 1 : 0);
+    if (budget === 0) continue;
+    const jobId =
+      strictPartitionKey === undefined
+        ? `rollup:${params.userId}`
+        : `rollup:${params.userId}:${strictPartitionKey}`;
+    const existing = await batchQueue.getJob(jobId);
+    if (existing) {
+      const state = await existing.getState();
+      if (state === "active" || state === "waiting" || state === "delayed") {
+        continue;
+      }
+      // Completed/failed leftovers block re-use of the deterministic jobId.
+      await existing.remove();
+    }
+    const jobParams = {
+      ...params,
+      maxLlmCalls: budget,
+      ...(strictPartitionKey === undefined
+        ? {}
+        : { partitionKey: strictPartitionKey }),
+    };
+    // The getState/remove/add sequence above is not atomic, but BullMQ's add
+    // is: a concurrent add with the same jobId is dropped as a duplicate.
+    await batchQueue.add("rollup", jobParams, {
+      ...ROLLUP_JOB_OPTIONS,
+      jobId,
+    });
+    enqueued = true;
+  }
   console.log(`Enqueued 'rollup' job for user: ${params.userId}`);
 
   return rollupResponseSchema.parse({
     message: `Rollup job for user ${params.userId} enqueued successfully.`,
-    enqueued: true,
+    enqueued,
   });
 });

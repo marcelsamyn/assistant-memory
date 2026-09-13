@@ -6,9 +6,11 @@ import {
   fetchClaimsBetweenNodeIds,
 } from "../graph";
 import { assertPartitionReadAllowed } from "../partition-access";
+import { partitionAccessCondition } from "../partition-access";
 import { QueryGraphRequest, QueryGraphResponse } from "../schemas/query-graph";
-import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
 import { nodes, nodeMetadata } from "~/db/schema";
+import type { MemoryAccessScope } from "~/lib/schemas/partition";
 import type { NodeType } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
@@ -21,19 +23,24 @@ interface GraphNodeResult {
 }
 
 export async function queryKnowledgeGraph(
-  params: QueryGraphRequest,
+  params: QueryGraphRequest & {
+    accessScope?: MemoryAccessScope | undefined;
+  },
 ): Promise<QueryGraphResponse> {
-  const { userId, partitionKey, query, maxNodes } = params;
+  const { userId, partitionKey, query, maxNodes, accessScope } = params;
   const db = await useDatabase();
-  await assertPartitionReadAllowed(db, userId, partitionKey);
+  await assertPartitionReadAllowed(db, userId, partitionKey, accessScope);
 
   // Start with a stable, bounded selection; callers can expand neighborhoods.
   if (!query) {
     let whereCondition = and(
       eq(nodes.userId, userId),
-      partitionKey === undefined
-        ? isNull(nodes.partitionKey)
-        : eq(nodes.partitionKey, partitionKey),
+      partitionAccessCondition(
+        nodes.partitionKey,
+        userId,
+        partitionKey,
+        accessScope,
+      ),
       isNotNull(nodeMetadata.label),
     );
     if (params.nodeTypes && params.nodeTypes.length > 0) {
@@ -67,8 +74,8 @@ export async function queryKnowledgeGraph(
     }
 
     const [claimRows, sourceIdMap] = await Promise.all([
-      fetchClaimsBetweenNodeIds(db, userId, nodeIds, partitionKey),
-      fetchSourceIdsForNodes(db, userId, nodeIds, partitionKey),
+      fetchClaimsBetweenNodeIds(db, userId, nodeIds, partitionKey, accessScope),
+      fetchSourceIdsForNodes(db, userId, nodeIds, partitionKey, accessScope),
     ]);
 
     return {
@@ -97,6 +104,7 @@ export async function queryKnowledgeGraph(
       limit: Math.min(maxNodes, 5),
       minimumSimilarity: 0.4,
       ...(partitionKey !== undefined ? { partitionKey } : {}),
+      accessScope,
     })
   ).filter((n) => n.label);
 
@@ -119,6 +127,7 @@ export async function queryKnowledgeGraph(
   while (nodeMap.size < maxNodes && currentIds.length) {
     const rawConns = await findOneHopNodes(db, userId, currentIds, {
       ...(partitionKey !== undefined ? { partitionKey } : {}),
+      accessScope,
     });
     const conns = params.nodeTypes?.length
       ? rawConns.filter((c) => params.nodeTypes!.includes(c.type))
@@ -144,8 +153,8 @@ export async function queryKnowledgeGraph(
   }
 
   const [claimRows, sourceIdMap] = await Promise.all([
-    fetchClaimsBetweenNodeIds(db, userId, nodeIds, partitionKey),
-    fetchSourceIdsForNodes(db, userId, nodeIds, partitionKey),
+    fetchClaimsBetweenNodeIds(db, userId, nodeIds, partitionKey, accessScope),
+    fetchSourceIdsForNodes(db, userId, nodeIds, partitionKey, accessScope),
   ]);
 
   return {

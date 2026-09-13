@@ -2,10 +2,14 @@ import { and, eq } from "drizzle-orm";
 import { DrizzleDB } from "~/db";
 import { sources } from "~/db/schema";
 import {
+  ensurePersonalPartition,
   preparePartitionWrite,
   withSourceWriteFence,
 } from "~/lib/partition-access";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import type {
+  ContextPartitionKey,
+  MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import { sourceService, type SourceCreateInput } from "~/lib/sources";
 import { Scope, SourceType } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
@@ -33,6 +37,7 @@ export async function insertNewSources(params: {
   db: DrizzleDB;
   userId: string;
   partitionKey?: ContextPartitionKey;
+  accessScope?: MemoryAccessScope;
   parentSourceType: SourceType;
   parentSourceId: string;
   childSourceType: SourceType;
@@ -51,7 +56,8 @@ export async function insertNewSources(params: {
   const {
     db,
     userId,
-    partitionKey,
+    partitionKey: requestedPartitionKey,
+    accessScope = "partition",
     parentSourceType,
     parentSourceId,
     childSourceType,
@@ -60,6 +66,35 @@ export async function insertNewSources(params: {
     parentWriteFence,
   } = params;
 
+  let partitionKey = requestedPartitionKey;
+  if (accessScope === "workspace") {
+    const [existingParent] = await db
+      .select({ partitionKey: sources.partitionKey })
+      .from(sources)
+      .where(
+        and(
+          eq(sources.userId, userId),
+          eq(sources.type, parentSourceType),
+          eq(sources.externalId, parentSourceId),
+        ),
+      )
+      .limit(1);
+    const existingPartitionKey = existingParent?.partitionKey ?? undefined;
+    if (
+      requestedPartitionKey !== undefined &&
+      existingParent !== undefined &&
+      requestedPartitionKey !== existingPartitionKey
+    ) {
+      throw new Error(
+        "Existing parent source belongs to a different memory partition",
+      );
+    }
+    partitionKey =
+      existingParent !== undefined
+        ? existingPartitionKey
+        : (requestedPartitionKey ??
+          (await ensurePersonalPartition(db, userId)));
+  }
   await preparePartitionWrite(db, userId, partitionKey);
 
   const parentSource = await withSourceWriteFence(
@@ -149,6 +184,7 @@ export async function insertNewSources(params: {
     const input: SourceCreateInput = {
       userId,
       ...(partitionKey !== undefined ? { partitionKey } : {}),
+      accessScope,
       sourceType: childSourceType,
       externalId: cs.externalId,
       parentId: parentSource.id,

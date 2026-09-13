@@ -1,5 +1,6 @@
 import { createError } from "h3";
 import { getSourceIngestionOperation } from "~/lib/ingestion/source-processing";
+import type { MemoryAccessScope } from "~/lib/schemas/partition";
 import {
   type GetSourceRequest,
   type GetSourceResponse,
@@ -15,9 +16,18 @@ export async function getSource({
   partitionKey,
   sourceId,
   includeContent,
-}: GetSourceRequest): Promise<GetSourceResponse> {
+  accessScope = "partition",
+}: GetSourceRequest & {
+  accessScope?: MemoryAccessScope;
+}): Promise<GetSourceResponse> {
   const db = await useDatabase();
-  const source = await getSourceSummary(db, userId, sourceId, partitionKey);
+  const source = await getSourceSummary(
+    db,
+    userId,
+    sourceId,
+    partitionKey,
+    accessScope,
+  );
   if (!source) {
     throw createError({
       statusCode: 404,
@@ -28,8 +38,11 @@ export async function getSource({
   const processing = await getSourceIngestionOperation({
     db,
     userId,
-    ...(partitionKey !== undefined ? { partitionKey } : {}),
+    ...(source.partitionKey !== null
+      ? { partitionKey: source.partitionKey }
+      : {}),
     sourceId,
+    accessScope,
   });
 
   if (!includeContent) {

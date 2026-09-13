@@ -291,6 +291,25 @@ describeIfServer("graph claim operations", () => {
     const personalClaimId = newTypeId("claim");
     const referenceClaimId = newTypeId("claim");
     const inferredClaimId = newTypeId("claim");
+    const literalClaimId = newTypeId("claim");
+    const foreignSubjectClaimId = newTypeId("claim");
+    const foreignObjectClaimId = newTypeId("claim");
+    const workspaceValidClaimId = newTypeId("claim");
+    const workspaceCrossPartitionClaimId = newTypeId("claim");
+    const workspaceInactiveClaimId = newTypeId("claim");
+    const foreignUserId = "user_B_foreign";
+    const workspaceUserId = "user_B_workspace";
+    const workspacePartitionA = "workspace:a";
+    const workspacePartitionB = "workspace:b";
+    const workspaceInactivePartition = "workspace:inactive";
+    const foreignSubjectNodeId = newTypeId("node");
+    const foreignObjectNodeId = newTypeId("node");
+    const workspaceValidSubjectNodeId = newTypeId("node");
+    const workspaceValidObjectNodeId = newTypeId("node");
+    const workspaceCrossObjectNodeId = newTypeId("node");
+    const workspaceInactiveSubjectNodeId = newTypeId("node");
+    const workspaceInactiveObjectNodeId = newTypeId("node");
+    const workspaceSourceId = newTypeId("source");
 
     const client = new Client({ connectionString: dsnFor(dbName) });
     await client.connect();
@@ -447,27 +466,161 @@ describeIfServer("graph claim operations", () => {
         ],
       );
 
+      await client.query(
+        `
+          INSERT INTO "users" ("id")
+          VALUES ($1), ($2)
+          ON CONFLICT DO NOTHING
+        `,
+        [foreignUserId, workspaceUserId],
+      );
+      await client.query(
+        `
+          INSERT INTO "nodes" ("id", "user_id", "node_type", "partition_key")
+          VALUES
+            ($1, $6, 'Person', NULL),
+            ($2, $6, 'Object', NULL),
+            ($3, $7, 'Concept', $8),
+            ($4, $7, 'Object', $8),
+            ($5, $7, 'Object', $9),
+            ($10, $7, 'Concept', $12),
+            ($11, $7, 'Object', $12)
+        `,
+        [
+          foreignSubjectNodeId,
+          foreignObjectNodeId,
+          workspaceValidSubjectNodeId,
+          workspaceValidObjectNodeId,
+          workspaceCrossObjectNodeId,
+          foreignUserId,
+          workspaceUserId,
+          workspacePartitionA,
+          workspacePartitionB,
+          workspaceInactiveSubjectNodeId,
+          workspaceInactiveObjectNodeId,
+          workspaceInactivePartition,
+        ],
+      );
+      await client.query(
+        `
+          INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label")
+          VALUES
+            ($1, $2, 'Foreign subject', 'foreign subject'),
+            ($3, $4, 'Foreign object', 'foreign object'),
+            ($5, $6, 'Workspace valid subject', 'workspace valid subject'),
+            ($7, $8, 'Workspace valid object', 'workspace valid object'),
+            ($9, $10, 'Workspace cross object', 'workspace cross object'),
+            ($11, $12, 'Workspace inactive subject', 'workspace inactive subject'),
+            ($13, $14, 'Workspace inactive object', 'workspace inactive object')
+        `,
+        [
+          newTypeId("node_metadata"),
+          foreignSubjectNodeId,
+          newTypeId("node_metadata"),
+          foreignObjectNodeId,
+          newTypeId("node_metadata"),
+          workspaceValidSubjectNodeId,
+          newTypeId("node_metadata"),
+          workspaceValidObjectNodeId,
+          newTypeId("node_metadata"),
+          workspaceCrossObjectNodeId,
+          newTypeId("node_metadata"),
+          workspaceInactiveSubjectNodeId,
+          newTypeId("node_metadata"),
+          workspaceInactiveObjectNodeId,
+        ],
+      );
+      await client.query(
+        `
+          INSERT INTO "memory_partitions" ("user_id", "partition_key", "status")
+          VALUES
+            ($1, $2, 'active'),
+            ($1, $3, 'active'),
+            ($1, $4, 'quarantined')
+        `,
+        [
+          workspaceUserId,
+          workspacePartitionA,
+          workspacePartitionB,
+          workspaceInactivePartition,
+        ],
+      );
+      await client.query(
+        `
+          INSERT INTO "sources" ("id", "user_id", "type", "external_id", "scope", "status", "partition_key")
+          VALUES ($1, $2, 'manual', 'workspace-search', 'personal', 'completed', $3)
+        `,
+        [workspaceSourceId, workspaceUserId, workspacePartitionA],
+      );
+      await client.query(
+        `
+          INSERT INTO "claims" (
+            "id", "user_id", "subject_node_id", "object_node_id", "object_value",
+            "predicate", "statement", "source_id", "scope", "asserted_by_kind",
+            "stated_at", "status", "partition_key"
+          )
+          VALUES
+            ($1, $2, $3, NULL, 'safe literal', 'HAS_STATUS', 'Safe literal control.', $4, 'personal', 'user', now(), 'active', NULL),
+            ($5, $2, $6, $3, NULL, 'RELATED_TO', 'Malformed foreign subject.', $4, 'personal', 'user', now(), 'active', NULL),
+            ($7, $2, $3, $8, NULL, 'RELATED_TO', 'Malformed foreign object.', $4, 'personal', 'user', now(), 'active', NULL),
+            ($9, $10, $11, $12, NULL, 'RELATED_TO', 'Workspace valid endpoint.', $13, 'personal', 'user', now(), 'active', $14),
+            ($15, $10, $11, $16, NULL, 'RELATED_TO', 'Workspace cross partition.', $13, 'personal', 'user', now(), 'active', $14),
+            ($17, $10, $18, $19, NULL, 'RELATED_TO', 'Workspace inactive endpoint.', $13, 'personal', 'user', now(), 'active', $20)
+        `,
+        [
+          literalClaimId,
+          userId,
+          subjectNodeId,
+          sourceId,
+          foreignSubjectClaimId,
+          foreignSubjectNodeId,
+          foreignObjectClaimId,
+          foreignObjectNodeId,
+          workspaceValidClaimId,
+          workspaceUserId,
+          workspaceValidSubjectNodeId,
+          workspaceValidObjectNodeId,
+          workspaceSourceId,
+          workspacePartitionA,
+          workspaceCrossPartitionClaimId,
+          workspaceCrossObjectNodeId,
+          workspaceInactiveClaimId,
+          workspaceInactiveSubjectNodeId,
+          workspaceInactiveObjectNodeId,
+          workspaceInactivePartition,
+        ],
+      );
+      await client.query(
+        `
+          INSERT INTO "claim_embeddings" ("id", "claim_id", "embedding", "model_name")
+          VALUES
+            ($1, $2, array_prepend(1::real, array_fill(0::real, ARRAY[1023]))::vector, 'test'),
+            ($3, $4, array_prepend(1::real, array_fill(0::real, ARRAY[1023]))::vector, 'test'),
+            ($5, $6, array_prepend(1::real, array_fill(0::real, ARRAY[1023]))::vector, 'test'),
+            ($7, $8, array_prepend(1::real, array_fill(0::real, ARRAY[1023]))::vector, 'test'),
+            ($9, $10, array_prepend(1::real, array_fill(0::real, ARRAY[1023]))::vector, 'test'),
+            ($11, $12, array_prepend(1::real, array_fill(0::real, ARRAY[1023]))::vector, 'test')
+        `,
+        [
+          newTypeId("claim_embedding"),
+          literalClaimId,
+          newTypeId("claim_embedding"),
+          foreignSubjectClaimId,
+          newTypeId("claim_embedding"),
+          foreignObjectClaimId,
+          newTypeId("claim_embedding"),
+          workspaceValidClaimId,
+          newTypeId("claim_embedding"),
+          workspaceCrossPartitionClaimId,
+          newTypeId("claim_embedding"),
+          workspaceInactiveClaimId,
+        ],
+      );
       const { findSimilarClaims } = await import("./graph");
       const embedding = [1, ...Array.from({ length: 1023 }, () => 0)];
 
       await expect(
         findSimilarClaims({ userId, embedding, limit: 10 }),
-      ).resolves.toHaveLength(1);
-      await expect(
-        findSimilarClaims({
-          userId,
-          embedding,
-          limit: 10,
-          includeReference: true,
-        }),
-      ).resolves.toHaveLength(2);
-      await expect(
-        findSimilarClaims({
-          userId,
-          embedding,
-          limit: 10,
-          includeAssistantInferred: true,
-        }),
       ).resolves.toHaveLength(2);
       await expect(
         findSimilarClaims({
@@ -475,9 +628,56 @@ describeIfServer("graph claim operations", () => {
           embedding,
           limit: 10,
           includeReference: true,
+        }),
+      ).resolves.toHaveLength(3);
+      await expect(
+        findSimilarClaims({
+          userId,
+          embedding,
+          limit: 10,
           includeAssistantInferred: true,
         }),
       ).resolves.toHaveLength(3);
+      await expect(
+        findSimilarClaims({
+          userId,
+          embedding,
+          limit: 10,
+          includeReference: true,
+          includeAssistantInferred: true,
+        }),
+      ).resolves.toHaveLength(4);
+
+      const { setSemanticSearchSubstringQuery } = await import(
+        "~/utils/test-overrides"
+      );
+      setSemanticSearchSubstringQuery("malformed");
+      await expect(
+        findSimilarClaims({ userId, text: "ignored", limit: 10 }),
+      ).resolves.toEqual([]);
+      setSemanticSearchSubstringQuery("safe");
+      await expect(
+        findSimilarClaims({ userId, text: "ignored", limit: 10 }),
+      ).resolves.toMatchObject([{ id: literalClaimId }]);
+
+      setSemanticSearchSubstringQuery(null);
+      await expect(
+        findSimilarClaims({
+          userId: workspaceUserId,
+          embedding,
+          accessScope: "workspace",
+          limit: 10,
+        }),
+      ).resolves.toMatchObject([{ id: workspaceValidClaimId }]);
+      setSemanticSearchSubstringQuery("workspace");
+      await expect(
+        findSimilarClaims({
+          userId: workspaceUserId,
+          text: "ignored",
+          accessScope: "workspace",
+          limit: 10,
+        }),
+      ).resolves.toMatchObject([{ id: workspaceValidClaimId }]);
     } finally {
       vi.doUnmock("~/utils/db");
       vi.resetModules();

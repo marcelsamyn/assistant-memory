@@ -19,6 +19,19 @@ export const contextPartitionKeySchema = z
   .brand<"ContextPartitionKey">();
 export type ContextPartitionKey = z.infer<typeof contextPartitionKeySchema>;
 
+/**
+ * Controls how a request resolves memory partitions. The default remains the
+ * legacy strict partition path. `workspace` is only accepted from an
+ * explicitly configured client and is never represented by a partition key.
+ */
+export const memoryAccessScopeSchema = z.enum(["partition", "workspace"]);
+export type MemoryAccessScope = z.infer<typeof memoryAccessScopeSchema>;
+export const MEMORY_ACCESS_SCOPE_HEADER = "x-memory-access-scope";
+
+/** Memory-owned destination for ordinary writes after partition migration. */
+export const MEMORY_PERSONAL_PARTITION_KEY =
+  contextPartitionKeySchema.parse("memory:personal");
+
 export const partitionMigrationStateSchema = z.enum([
   "unmigrated",
   "migrating",

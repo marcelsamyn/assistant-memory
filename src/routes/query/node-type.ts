@@ -1,5 +1,11 @@
 import { defineEventHandler } from "h3";
-import { findDayNode, findOneHopNodes, type OneHopNode } from "~/lib/graph";
+import {
+  findDayNode,
+  findDayNodes,
+  findOneHopNodes,
+  type OneHopNode,
+} from "~/lib/graph";
+import { getRequestAccessScope } from "~/lib/request-access";
 import {
   type QueryNodeTypeResponse,
   queryNodeTypeRequestSchema,
@@ -10,13 +16,19 @@ import { useDatabase } from "~/utils/db";
 type LabeledOneHopNode = OneHopNode & { label: string };
 
 export default defineEventHandler(async (event) => {
+  const accessScope = getRequestAccessScope(event);
   const { userId, partitionKey, types, date, includeFormattedResult } =
     queryNodeTypeRequestSchema.parse(await readBody(event));
   const db = await useDatabase();
 
   // Get the day node ID
-  const dayNodeId = await findDayNode(db, userId, date, partitionKey);
-  if (!dayNodeId) {
+  const dayNodeIds =
+    accessScope === "workspace" && partitionKey === undefined
+      ? await findDayNodes(db, userId, date, partitionKey, accessScope)
+      : [await findDayNode(db, userId, date, partitionKey, accessScope)].filter(
+          (id): id is NonNullable<typeof id> => id !== null,
+        );
+  if (dayNodeIds.length === 0) {
     return queryNodeTypeResponseSchema.parse({
       date,
       types,
@@ -26,8 +38,9 @@ export default defineEventHandler(async (event) => {
   }
 
   // Fetch one-hop connections (only nodes with labels)
-  const connections = await findOneHopNodes(db, userId, [dayNodeId], {
+  const connections = await findOneHopNodes(db, userId, dayNodeIds, {
     ...(partitionKey !== undefined ? { partitionKey } : {}),
+    accessScope,
   });
 
   // Filter by requested types

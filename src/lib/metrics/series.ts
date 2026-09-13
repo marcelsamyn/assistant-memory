@@ -3,6 +3,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { metricDefinitions, metricObservations } from "~/db/schema";
 import {
   assertMetricPartitionRead,
+  metricDefinitionPartitionCondition,
   metricObservationPartitionCondition,
 } from "~/lib/metrics/partition";
 import {
@@ -11,6 +12,7 @@ import {
   type MetricSeriesAggregation,
   type MetricSeriesBucket,
 } from "~/lib/schemas/metric-read";
+import type { MemoryAccessScope } from "~/lib/schemas/partition";
 import type { TypeId } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
 
@@ -57,6 +59,8 @@ function aggregateValue(agg: MetricSeriesAggregation) {
 async function fetchMetricAggregationHints(
   userId: string,
   metricIds: TypeId<"metric_definition">[],
+  partitionKey?: GetMetricSeriesRequest["partitionKey"],
+  accessScope?: MemoryAccessScope | undefined,
 ): Promise<Map<TypeId<"metric_definition">, MetricSeriesAggregation>> {
   const db = await useDatabase();
   const rows = await db
@@ -69,6 +73,7 @@ async function fetchMetricAggregationHints(
       and(
         eq(metricDefinitions.userId, userId),
         inArray(metricDefinitions.id, metricIds),
+        metricDefinitionPartitionCondition(userId, partitionKey, accessScope),
       ),
     );
 
@@ -84,10 +89,18 @@ export async function getMetricSeries({
   to,
   bucket,
   agg,
-}: GetMetricSeriesRequest): Promise<GetMetricSeriesResponse> {
+  accessScope,
+}: GetMetricSeriesRequest & {
+  accessScope?: MemoryAccessScope | undefined;
+}): Promise<GetMetricSeriesResponse> {
   const db = await useDatabase();
-  await assertMetricPartitionRead(db, userId, partitionKey);
-  const aggregationHints = await fetchMetricAggregationHints(userId, metricIds);
+  await assertMetricPartitionRead(db, userId, partitionKey, accessScope);
+  const aggregationHints = await fetchMetricAggregationHints(
+    userId,
+    metricIds,
+    partitionKey,
+    accessScope,
+  );
   const requestedSeries = metricIds.map((metricId) => ({
     metricId,
     points: [],
@@ -109,7 +122,11 @@ export async function getMetricSeries({
           .where(
             and(
               eq(metricObservations.userId, userId),
-              metricObservationPartitionCondition(userId, partitionKey),
+              metricObservationPartitionCondition(
+                userId,
+                partitionKey,
+                accessScope,
+              ),
               eq(metricObservations.metricDefinitionId, metricId),
               sql`${metricObservations.occurredAt} >= ${from}`,
               sql`${metricObservations.occurredAt} <= ${to}`,
@@ -147,7 +164,11 @@ export async function getMetricSeries({
         .where(
           and(
             eq(metricObservations.userId, userId),
-            metricObservationPartitionCondition(userId, partitionKey),
+            metricObservationPartitionCondition(
+              userId,
+              partitionKey,
+              accessScope,
+            ),
             eq(metricObservations.metricDefinitionId, metricId),
             sql`${metricObservations.occurredAt} >= ${from}`,
             sql`${metricObservations.occurredAt} <= ${to}`,
