@@ -8,13 +8,13 @@ import { newTypeId } from "~/types/typeid";
 
 const domain = vi.hoisted(() => ({
   save: vi.fn(),
-  read: vi.fn(),
+  publicStatus: vi.fn(),
   retry: vi.fn(),
   source: vi.fn(),
 }));
 vi.mock("~/lib/ingestion/save-document", () => ({ saveMemory: domain.save }));
 vi.mock("~/lib/ingestion/source-processing", () => ({
-  getSourceIngestionOperationById: domain.read,
+  getPublicSourceProcessing: domain.publicStatus,
 }));
 vi.mock("~/lib/ingestion/retry-source-processing", () => ({
   retrySourceProcessing: domain.retry,
@@ -127,7 +127,7 @@ describe("MCP source ingestion", () => {
       partitionKey: "project:one",
       operationId: "operation-1",
     };
-    domain.read.mockResolvedValue(null);
+    domain.publicStatus.mockResolvedValue(null);
     expect(
       readResult(
         await client.callTool({
@@ -136,7 +136,7 @@ describe("MCP source ingestion", () => {
         }),
       ),
     ).toEqual({ processing: null });
-    expect(domain.read).toHaveBeenCalledWith({ ...input, db: {} });
+    expect(domain.publicStatus).toHaveBeenCalledWith({ ...input, db: {} });
     domain.retry.mockRejectedValue(new Error("Source is purged"));
     const failed = await client.callTool({
       name: "retry_source_processing",
@@ -144,6 +144,47 @@ describe("MCP source ingestion", () => {
     });
     expect(domain.retry).toHaveBeenCalledWith(input);
     expect(failed.isError).toBe(true);
+  });
+
+  it("returns the shared retained-job projection and leaves retry explicit", async () => {
+    const input = {
+      userId: "user-1",
+      partitionKey: "project:one",
+      operationId: "operation-1",
+    };
+    const projected = {
+      operationId: input.operationId,
+      sourceId: newTypeId("source"),
+      partitionKey: input.partitionKey,
+      status: "failed",
+      stage: "extraction",
+      sourceVersion: 3,
+      attempt: 1,
+      errorCode: "PROCESSING_INTERRUPTED",
+      createdAt: new Date("2026-09-11T08:00:00.000Z"),
+      updatedAt: new Date("2026-09-11T08:05:00.000Z"),
+      completedAt: null,
+    };
+    domain.publicStatus.mockResolvedValue(projected);
+    const status = await client.callTool({
+      name: "get_source_processing",
+      arguments: input,
+    });
+    expect(readResult(status)).toEqual({
+      processing: JSON.parse(JSON.stringify(projected)),
+    });
+    expect(domain.publicStatus).toHaveBeenCalledWith({ ...input, db: {} });
+
+    const retried = { ...projected, status: "processing", errorCode: null };
+    domain.retry.mockResolvedValue({ processing: retried });
+    const retry = await client.callTool({
+      name: "retry_source_processing",
+      arguments: input,
+    });
+    expect(readResult(retry)).toEqual({
+      processing: JSON.parse(JSON.stringify(retried)),
+    });
+    expect(domain.retry).toHaveBeenCalledWith(input);
   });
 
   it("lets any MCP client read source text beyond extracted claims", async () => {

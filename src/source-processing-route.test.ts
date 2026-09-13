@@ -5,12 +5,16 @@ import { PartitionAccessError } from "~/lib/partition-access";
 import { newTypeId } from "~/types/typeid";
 
 const mocks = vi.hoisted(() => ({
-  getSourceIngestionOperationById: vi.fn(),
+  getPublicSourceProcessing: vi.fn(),
 }));
 
 vi.mock("~/lib/ingestion/source-processing", () => ({
-  getSourceIngestionOperationById: mocks.getSourceIngestionOperationById,
+  getPublicSourceProcessing: mocks.getPublicSourceProcessing,
   resolveSourceProcessingPartition: vi.fn(),
+}));
+
+vi.mock("~/lib/queues", () => ({
+  batchQueue: { getJob: vi.fn() },
 }));
 
 vi.mock("~/lib/request-access", () => ({
@@ -47,12 +51,12 @@ describe("POST /sources/processing", () => {
       partitionKey: "opaque:project-1",
       operationId: receipt.operationId,
     }));
-    mocks.getSourceIngestionOperationById.mockResolvedValue(receipt);
+    mocks.getPublicSourceProcessing.mockResolvedValue(receipt);
 
     await expect(handler({} as H3Event)).resolves.toEqual({
       processing: receipt,
     });
-    expect(mocks.getSourceIngestionOperationById).toHaveBeenCalledWith({
+    expect(mocks.getPublicSourceProcessing).toHaveBeenCalledWith({
       db: {},
       userId: "user-1",
       partitionKey: "opaque:project-1",
@@ -61,7 +65,7 @@ describe("POST /sources/processing", () => {
   });
 
   it("returns a structured conflict for an unauthorized partition", async () => {
-    mocks.getSourceIngestionOperationById.mockRejectedValueOnce(
+    mocks.getPublicSourceProcessing.mockRejectedValueOnce(
       new PartitionAccessError("PARTITION_UNAUTHORIZED", "Partition denied"),
     );
     vi.stubGlobal("readBody", readBody);

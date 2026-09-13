@@ -186,6 +186,23 @@ switch (processing?.status) {
 }
 ```
 
+HTTP, SDK, and MCP status reads share one queue-interruption projection. When
+the exact retained ingestion job has ended in a terminal failed state while
+the durable receipt still says `queued` or `processing`, the response reports
+`status: "failed"` with `errorCode: "PROCESSING_INTERRUPTED"`. The response
+keeps the receipt's operation ID, source ID, source version, attempt, and
+timestamps. This is a read-only projection: it does not update the receipt or
+retry the job.
+
+The projection does not widen access. Strict reads remain strict by default;
+an explicit `partitionKey` remains limited to that partition; and a workspace
+read still includes only the user's active partitions and legacy NULL rows
+while migration is incomplete. A Redis outage or status-inspection error
+returns an error instead of a failed status. Use the retry endpoint only when
+the retained operation is appropriate to retry and its cause is addressed.
+Retry rechecks the current source and source version, so a source lifecycle
+change can return a conflict. Do not retry every failed status unconditionally.
+
 Do not use the source version as the acceptance-to-completion identity. Memory can update that version for other source metadata and lifecycle changes.
 
 Before disconnecting an external account, retire each stable source identity whose ingestion result is unknown:

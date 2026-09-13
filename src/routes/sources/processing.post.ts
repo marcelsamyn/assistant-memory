@@ -1,6 +1,6 @@
 import { defineEventHandler } from "h3";
 import {
-  getSourceIngestionOperationById,
+  getPublicSourceProcessing,
   resolveSourceProcessingPartition,
 } from "~/lib/ingestion/source-processing";
 import { throwPartitionRouteError } from "~/lib/partition-route-errors";
@@ -30,7 +30,7 @@ export default defineEventHandler(async (event) => {
       }
       resolvedPartitionKey = resolution.partitionKey;
     }
-    const processing = await getSourceIngestionOperationById({
+    const processing = await getPublicSourceProcessing({
       db,
       userId,
       ...(resolvedPartitionKey !== undefined
@@ -39,7 +39,9 @@ export default defineEventHandler(async (event) => {
       operationId,
       ...(accessScope === "workspace" ? { accessScope } : {}),
     });
-    return getSourceProcessingResponseSchema.parse({ processing });
+    return getSourceProcessingResponseSchema.parse({
+      processing,
+    });
   } catch (error) {
     throwPartitionRouteError(error);
   }
