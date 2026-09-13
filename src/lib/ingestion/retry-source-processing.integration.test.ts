@@ -1,3 +1,6 @@
+import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Job, Queue, QueueEvents, Worker } from "bullmq";
 import { eq } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
@@ -15,6 +18,7 @@ import {
   it,
   vi,
 } from "vitest";
+import { z } from "zod";
 import * as schema from "~/db/schema";
 import {
   memoryPartitions,
@@ -32,12 +36,46 @@ import {
   markSourceIngestionExtractionStarted,
   projectInterruptedSourceProcessing,
 } from "~/lib/ingestion/source-processing";
-import * as sourceProcessingModule from "~/lib/ingestion/source-processing";
 import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import { sourceLifecycleCommandRequestSchema } from "~/lib/schemas/source-lifecycle";
 import { applySourceLifecycleCommand } from "~/lib/source-lifecycle";
 import { newTypeId } from "~/types/typeid";
 import { setTestDatabase } from "~/utils/db";
+
+const queueInspectionConfig = vi.hoisted(() => ({
+  redisUrl: undefined as string | undefined,
+  queueName: undefined as string | undefined,
+}));
+vi.mock("~/lib/ingestion/source-processing-queue-inspection", async () => {
+  const actual = await vi.importActual<
+    typeof import("~/lib/ingestion/source-processing-queue-inspection")
+  >("~/lib/ingestion/source-processing-queue-inspection");
+  return {
+    ...actual,
+    inspectSourceProcessingJob: (
+      operationId: string,
+      options: Parameters<typeof actual.inspectSourceProcessingJob>[1],
+    ) =>
+      actual.inspectSourceProcessingJob(operationId, {
+        ...(options ?? {}),
+        ...(queueInspectionConfig.redisUrl !== undefined
+          ? { redisUrl: queueInspectionConfig.redisUrl }
+          : {}),
+        ...(queueInspectionConfig.queueName !== undefined
+          ? { queueName: queueInspectionConfig.queueName }
+          : {}),
+      }),
+  };
+});
+
+const mcpTextResultSchema = z.object({
+  content: z.array(z.object({ type: z.literal("text"), text: z.string() })),
+});
+function readMcpText(value: unknown): string {
+  const text = mcpTextResultSchema.parse(value).content[0]?.text;
+  if (!text) throw new Error("Missing MCP tool result");
+  return text;
+}
 
 const host = process.env["TEST_PG_HOST"] ?? "localhost";
 const port = Number(process.env["TEST_PG_PORT"] ?? 5431);
@@ -63,6 +101,7 @@ describeIfPostgres("retained processing retry", () => {
   const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
   const dbName = `memory_retry_${suffix}`;
   const queueName = `memory-review-retry-${suffix}`;
+  const redisUrl = process.env["REDIS_URL"] ?? "redis://127.0.0.1:56380";
   let client: Client;
   let database: NodePgDatabase<typeof schema>;
   let queue: Queue;
@@ -87,10 +126,11 @@ describeIfPostgres("retained processing retry", () => {
     database = drizzle(client, { schema, casing: "snake_case" });
     await migrate(database, { migrationsFolder: "./drizzle" });
     setTestDatabase(database);
-    const redisUrl = new URL(
-      process.env["REDIS_URL"] ?? "redis://127.0.0.1:56380",
-    );
-    const connection = { host: redisUrl.hostname, port: Number(redisUrl.port) };
+    const redisConnectionUrl = new URL(redisUrl);
+    const connection = {
+      host: redisConnectionUrl.hostname,
+      port: Number(redisConnectionUrl.port),
+    };
     queue = new Queue(queueName, { connection });
     events = new QueueEvents(queueName, { connection });
     await events.waitUntilReady();
@@ -402,34 +442,86 @@ describeIfPostgres("retained processing retry", () => {
       .where(eq(sourceIngestionOperations.operationId, receipt.operationId));
     expect(after).toEqual(before);
 
+    queueInspectionConfig.redisUrl = redisUrl;
+    queueInspectionConfig.queueName = queueName;
     vi.stubGlobal("readBody", readBody);
-    vi.doMock("~/lib/ingestion/source-processing", () => ({
-      ...sourceProcessingModule,
-      projectInterruptedSourceProcessing: (
-        projectorInput: Parameters<
-          typeof projectInterruptedSourceProcessing
-        >[0],
-      ) => projectInterruptedSourceProcessing({ ...projectorInput, queue }),
-    }));
-    const { default: processingRoute } = await import(
-      "~/routes/sources/processing.post"
-    );
-    const statusResponse = await toWebHandler(createApp().use(processingRoute))(
-      new Request("http://memory.test/sources/processing", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ userId, operationId: receipt.operationId }),
-      }),
-    );
-    vi.doUnmock("~/lib/ingestion/source-processing");
-    expect(statusResponse.status).toBe(200);
-    await expect(statusResponse.json()).resolves.toMatchObject({
-      processing: {
-        operationId: receipt.operationId,
-        status: "failed",
-        errorCode: "PROCESSING_INTERRUPTED",
-      },
-    });
+    try {
+      const { default: processingRoute } = await import(
+        "~/routes/sources/processing.post"
+      );
+      const statusResponse = await toWebHandler(
+        createApp().use(processingRoute),
+      )(
+        new Request("http://memory.test/sources/processing", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ userId, operationId: receipt.operationId }),
+        }),
+      );
+      expect(statusResponse.status).toBe(200);
+      await expect(statusResponse.json()).resolves.toMatchObject({
+        processing: {
+          operationId: receipt.operationId,
+          status: "failed",
+          errorCode: "PROCESSING_INTERRUPTED",
+        },
+      });
+
+      const { registerMemoryIngestionTools } = await import(
+        "~/lib/mcp/ingestion-tools"
+      );
+      const mcpServer = new McpServer({
+        name: "memory-retry-test",
+        version: "1",
+      });
+      const mcpClient = new McpClient({
+        name: "memory-retry-client",
+        version: "1",
+      });
+      const [mcpClientTransport, mcpServerTransport] =
+        InMemoryTransport.createLinkedPair();
+      registerMemoryIngestionTools(mcpServer);
+      await mcpServer.connect(mcpServerTransport);
+      await mcpClient.connect(mcpClientTransport);
+      try {
+        const mcpStatus = await mcpClient.callTool({
+          name: "get_source_processing",
+          arguments: { userId, operationId: receipt.operationId },
+        });
+        expect(JSON.parse(readMcpText(mcpStatus))).toMatchObject({
+          processing: {
+            operationId: receipt.operationId,
+            status: "failed",
+            errorCode: "PROCESSING_INTERRUPTED",
+          },
+        });
+        const [unchanged] = await database
+          .select()
+          .from(sourceIngestionOperations)
+          .where(
+            eq(sourceIngestionOperations.operationId, receipt.operationId),
+          );
+        expect(unchanged).toEqual(before);
+
+        const mcpRetry = await mcpClient.callTool({
+          name: "retry_source_processing",
+          arguments: { userId, operationId: receipt.operationId },
+        });
+        expect(JSON.parse(readMcpText(mcpRetry))).toMatchObject({
+          processing: {
+            operationId: receipt.operationId,
+            status: "processing",
+            stage: "extraction",
+          },
+        });
+      } finally {
+        await mcpClient.close();
+        await mcpServer.close();
+      }
+    } finally {
+      queueInspectionConfig.redisUrl = undefined;
+      queueInspectionConfig.queueName = undefined;
+    }
 
     await expect(
       retrySourceProcessing({ userId, operationId: receipt.operationId }),

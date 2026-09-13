@@ -504,6 +504,30 @@ export async function projectInterruptedSourceProcessing(input: {
   };
 }
 
+/** Reads public processing status, including a terminal retained queue job. */
+export async function getPublicSourceProcessing(input: {
+  db: DrizzleDB;
+  userId: string;
+  partitionKey?: ContextPartitionKey;
+  operationId: string;
+  accessScope?: MemoryAccessScope;
+}): Promise<SourceProcessing | null> {
+  const processing = await getSourceIngestionOperationById(input);
+  return processing
+    ? projectInterruptedSourceProcessing({
+        db: input.db,
+        userId: input.userId,
+        operation: processing,
+        ...(input.partitionKey !== undefined
+          ? { partitionKey: input.partitionKey }
+          : {}),
+        ...(input.accessScope !== undefined
+          ? { accessScope: input.accessScope }
+          : {}),
+      })
+    : null;
+}
+
 /**
  * Validates a queued/processing receipt immediately before retrying a failed
  * retained job. Source lifecycle is locked first, then the receipt. No Redis

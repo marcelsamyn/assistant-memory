@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getSource } from "~/lib/get-source";
 import { retrySourceProcessing } from "~/lib/ingestion/retry-source-processing";
 import { saveMemory } from "~/lib/ingestion/save-document";
-import { getSourceIngestionOperationById } from "~/lib/ingestion/source-processing";
+import { getPublicSourceProcessing } from "~/lib/ingestion/source-processing";
 import { ingestDocumentRequestSchema } from "~/lib/schemas/ingest-document-request";
 import {
   getSourceProcessingRequestSchema,
@@ -33,7 +33,7 @@ export function registerMemoryIngestionTools(server: McpServer): void {
     "Read processing status for one accepted ingestionOperationId in its user and partition. Queued or processing means extraction is unfinished; failed or purged must not be reported as remembered successfully. This is read-only.",
     getSourceProcessingRequestSchema.shape,
     async ({ userId, partitionKey, operationId }) => {
-      const processing = await getSourceIngestionOperationById({
+      const processing = await getPublicSourceProcessing({
         db: await useDatabase(),
         userId,
         operationId,
