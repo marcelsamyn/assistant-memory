@@ -189,7 +189,9 @@ import {
   partitionProgressResponseSchema,
   reclassifySourcePartitionResponseSchema,
   setPartitionMigrationStateResponseSchema,
+  MEMORY_ACCESS_SCOPE_HEADER,
 } from "../lib/schemas/partition.js";
+import type { MemoryAccessScope } from "../lib/schemas/partition.js";
 import {
   PruneOrphanNodesRequest,
   PruneOrphanNodesResponse,
@@ -381,10 +383,23 @@ const partitionErrorResponseSchema = z.object({
 });
 
 export class MemoryClient {
-  private options: MemoryClientOptions;
+  private readonly options: MemoryClientOptions;
+  private readonly accessScope: MemoryAccessScope;
 
-  constructor(options: MemoryClientOptions) {
+  constructor(
+    options: MemoryClientOptions,
+    accessScope: MemoryAccessScope = "partition",
+  ) {
     this.options = options;
+    this.accessScope = accessScope;
+  }
+
+  /**
+   * Returns a separately configured client for user-wide workspace reads and
+   * safe ordinary writes. The original client remains strict and unchanged.
+   */
+  withWorkspaceAccess(): MemoryClient {
+    return new MemoryClient(this.options, "workspace");
   }
 
   private async _fetch<S extends z.ZodType>(
@@ -401,6 +416,9 @@ export class MemoryClient {
 
     if (bearerToken) {
       headers["Authorization"] = `Bearer ${bearerToken}`;
+    }
+    if (this.accessScope === "workspace") {
+      headers[MEMORY_ACCESS_SCOPE_HEADER] = "workspace";
     }
 
     const fetchOptions: RequestInit = {
@@ -620,6 +638,9 @@ export class MemoryClient {
     const headers: HeadersInit = {};
     if (this.options.apiKey) {
       headers["Authorization"] = `Bearer ${this.options.apiKey}`;
+    }
+    if (this.accessScope === "workspace") {
+      headers[MEMORY_ACCESS_SCOPE_HEADER] = "workspace";
     }
 
     const response = await fetch(`${this.options.baseUrl}/ingest/file`, {

@@ -1,5 +1,13 @@
 /** Fail-closed compatibility boundary for partitioned memory access. */
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import {
+  and,
+  eq,
+  inArray,
+  isNull,
+  sql,
+  type SQL,
+  type SQLWrapper,
+} from "drizzle-orm";
 import type { DrizzleDB } from "~/db";
 import {
   memoryPartitions,
@@ -7,8 +15,13 @@ import {
   sourceIdentityTombstones,
   sourceTombstones,
   sources,
+  nodes,
 } from "~/db/schema";
-import type { ContextPartitionKey } from "~/lib/schemas/partition";
+import {
+  MEMORY_PERSONAL_PARTITION_KEY,
+  type ContextPartitionKey,
+  type MemoryAccessScope,
+} from "~/lib/schemas/partition";
 import type { TypeId } from "~/types/typeid";
 
 export type PartitionAccessErrorCode =
@@ -30,10 +43,81 @@ export class PartitionAccessError extends Error {
   }
 }
 
+/**
+ * Returns the SQL predicate for one partition-aware table column.
+ *
+ * Strict callers keep the existing null-or-exact-key behavior. Workspace
+ * callers see active partitions owned by this user in one bounded SQL query.
+ * During an unmigrated or migrating user, legacy NULL rows remain visible so
+ * the compatibility path does not lose data. Once migration is complete,
+ * NULL rows are excluded.
+ */
+export function partitionAccessCondition(
+  column: SQLWrapper,
+  userId: string,
+  partitionKey: ContextPartitionKey | undefined,
+  accessScope: MemoryAccessScope = "partition",
+): SQL<unknown> {
+  if (accessScope !== "workspace" || partitionKey !== undefined) {
+    return partitionKey === undefined
+      ? isNull(column)
+      : eq(column, partitionKey);
+  }
+
+  return sql<boolean>`(
+    (
+      ${column} IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM ${memoryPartitions} AS workspace_partition
+        WHERE workspace_partition.user_id = ${userId}
+          AND workspace_partition.partition_key = ${column}
+          AND workspace_partition.status = 'active'
+      )
+    )
+    OR (
+      ${column} IS NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${partitionMigrationState} AS workspace_migration
+        WHERE workspace_migration.user_id = ${userId}
+          AND workspace_migration.state = 'migrated'
+      )
+    )
+  )`;
+}
+
+/** Adds a memory-owned personal destination for a migrated user. */
+export async function ensurePersonalPartition(
+  db: DrizzleDB,
+  userId: string,
+): Promise<ContextPartitionKey | undefined> {
+  const [migration] = await db
+    .select({ state: partitionMigrationState.state })
+    .from(partitionMigrationState)
+    .where(eq(partitionMigrationState.userId, userId))
+    .limit(1);
+  if (!migration || migration.state !== "migrated") return undefined;
+
+  await db
+    .insert(memoryPartitions)
+    .values({
+      userId,
+      partitionKey: MEMORY_PERSONAL_PARTITION_KEY,
+      status: "active",
+    })
+    .onConflictDoNothing({
+      target: [memoryPartitions.userId, memoryPartitions.partitionKey],
+    });
+  await assertPartitionReadAllowed(db, userId, MEMORY_PERSONAL_PARTITION_KEY);
+  return MEMORY_PERSONAL_PARTITION_KEY;
+}
+
 export async function assertPartitionReadAllowed(
   db: DrizzleDB,
   userId: string,
   partitionKey: ContextPartitionKey | undefined,
+  accessScope: MemoryAccessScope = "partition",
 ): Promise<void> {
   const [migration] = await db
     .select({ state: partitionMigrationState.state })
@@ -42,6 +126,7 @@ export async function assertPartitionReadAllowed(
     .limit(1);
 
   if (partitionKey === undefined) {
+    if (accessScope === "workspace") return;
     if (migration) {
       throw new PartitionAccessError(
         "PARTITION_REQUIRED",
@@ -74,6 +159,28 @@ export async function assertPartitionReadAllowed(
       `Memory partition is not registered and active for user ${userId}`,
     );
   }
+}
+
+/** Resolves an existing node's partition before a workspace mutation. */
+export async function resolveNodePartition(
+  db: DrizzleDB,
+  userId: string,
+  nodeId: TypeId<"node">,
+  partitionKey: ContextPartitionKey | undefined,
+  accessScope: MemoryAccessScope = "partition",
+): Promise<ContextPartitionKey | undefined> {
+  if (accessScope !== "workspace" || partitionKey !== undefined) {
+    return partitionKey;
+  }
+  const [node] = await db
+    .select({ partitionKey: nodes.partitionKey })
+    .from(nodes)
+    .where(and(eq(nodes.userId, userId), eq(nodes.id, nodeId)))
+    .limit(1);
+  if (!node) return undefined;
+  if (node.partitionKey === null) return undefined;
+  await assertPartitionReadAllowed(db, userId, node.partitionKey);
+  return node.partitionKey;
 }
 
 export async function preparePartitionWrite(

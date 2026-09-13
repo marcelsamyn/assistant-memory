@@ -45,4 +45,36 @@ describe("MemoryClient.search", () => {
       query: "Boox",
     });
   });
+
+  it("uses an explicit workspace header without changing the strict client", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ query: "Boox", hits: [] }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const strictClient = new MemoryClient({
+      baseUrl: "http://memory.test",
+      apiKey: "secret",
+    });
+    const workspaceClient = strictClient.withWorkspaceAccess();
+
+    await strictClient.search({ userId: "u", query: "Boox" });
+    await workspaceClient.search({
+      userId: "u",
+      partitionKey: "opaque:room-a",
+      query: "Boox",
+    });
+
+    const calls = fetchMock.mock.calls as unknown as Array<
+      [RequestInfo | URL, RequestInit | undefined]
+    >;
+    expect(calls[0]?.[1]?.headers).not.toHaveProperty("x-memory-access-scope");
+    expect(calls[1]?.[1]?.headers).toMatchObject({
+      "x-memory-access-scope": "workspace",
+    });
+    expect(JSON.parse(String(calls[1]?.[1]?.body))).toMatchObject({
+      partitionKey: "opaque:room-a",
+    });
+  });
 });

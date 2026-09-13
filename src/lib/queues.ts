@@ -99,7 +99,7 @@ export interface DreamJobData {
 
 // Create the worker
 // Keep the worker in scope even if not explicitly referenced later.
-const worker = new Worker<SummarizeJobData | DreamJobData>(
+export const worker = new Worker<SummarizeJobData | DreamJobData>(
   "batchProcessing",
   async (job) => {
     const db = await useDatabase();
@@ -454,6 +454,16 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
   },
   { connection: redisConnection },
 );
+
+/** Close every BullMQ resource during Nitro shutdown. */
+export async function closeQueues(): Promise<void> {
+  await Promise.all([
+    worker.close(),
+    flowProducer.close(),
+    batchQueue.close(),
+    redisConnection.quit(),
+  ]);
+}
 
 console.log("BullMQ Worker started for batchProcessing queue.");
 

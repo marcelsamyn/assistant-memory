@@ -85,6 +85,26 @@ See [Ingestion](sdk/ingestion.md) for examples, transport support, and failure h
 - Finish with a compare-and-set transition to `migrated` only after every source and claim is assigned. Supply `unassignedPartitionKey` as the caller-owned destination for evidence-free legacy nodes that have no deterministic source provenance. Rollback is forward repair: issue a newer reclassification command; do not decrement versions or delete the ledger.
 - Temporal rollup state is partition-scoped. Legacy user-global rollups are discarded at migration completion and rebuilt from partitioned evidence; copying them would mix provenance. Scratchpads remain intentionally user-global assistant workspace and are not evidence memory.
 
+### User-wide workspace access
+
+`MemoryClient` keeps strict partition access by default. Use
+`client.withWorkspaceAccess()` only for a component that must read the user's
+whole Memory workspace. The derived client sends the explicit
+`x-memory-access-scope: workspace` header; it does not encode all-access as a
+partition key.
+
+Workspace reads include only that user's active partitions. For users that are
+still unmigrated or migrating, legacy rows with a NULL partition remain
+visible. Inactive partitions and rows owned by another user remain excluded.
+Passing `partitionKey` to a workspace client keeps the request scoped to that
+partition.
+
+Do not use workspace scope for partition-specific Radar or project context.
+Ordinary new Memory content uses the Memory-owned `memory:personal` partition
+after migration. Existing-object mutations resolve the object's partition and
+then use the same strict mutation checks; cross-partition merges and edges are
+rejected. Maintenance cleanup is not a workspace-wide operation.
+
 ---
 
 ## `queryTimeline` bounds renamed to `since` / `until` (breaking)
