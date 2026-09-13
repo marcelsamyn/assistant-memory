@@ -5,7 +5,9 @@ import type { DrizzleDB } from "~/db";
 import { sources } from "~/db/schema";
 import {
   getSourceIngestionOperationById,
+  isSourceProcessingJobForOperation,
   retrySourceIngestionOperation,
+  validateSourceProcessingRetry,
 } from "~/lib/ingestion/source-processing";
 import {
   PartitionAccessError,
@@ -58,6 +60,19 @@ export async function retrySourceProcessing(
     return retrySourceProcessingResponseSchema.parse({ processing: operation });
   }
   const state = await job.getState();
+  if (
+    (state === "failed" || state === "completed" || state === "waiting") &&
+    !isSourceProcessingJobForOperation(job, {
+      userId: input.userId,
+      sourceId: operation.sourceId,
+      operationId: operation.operationId,
+    })
+  ) {
+    throw new PartitionAccessError(
+      "SOURCE_VERSION_CONFLICT",
+      "The retained processing job does not belong to this source operation",
+    );
+  }
   if (state === "active")
     throw createError({
       statusCode: 409,
@@ -81,6 +96,19 @@ export async function retrySourceProcessing(
       statusMessage:
         "Only a failed processing receipt can restart a completed job",
     });
+  if (
+    state === "failed" &&
+    (operation.status === "queued" || operation.status === "processing")
+  ) {
+    const processing = await validateSourceProcessingRetry({
+      db,
+      userId: input.userId,
+      operation,
+      partitionKey: operation.partitionKey ?? undefined,
+    });
+    await job.retry("failed");
+    return retrySourceProcessingResponseSchema.parse({ processing });
+  }
   const processing = await retrySourceIngestionOperation(operationInput);
   if (state === "failed" || state === "completed") await job.retry(state);
   return retrySourceProcessingResponseSchema.parse({ processing });

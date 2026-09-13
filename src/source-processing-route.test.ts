@@ -6,11 +6,19 @@ import { newTypeId } from "~/types/typeid";
 
 const mocks = vi.hoisted(() => ({
   getSourceIngestionOperationById: vi.fn(),
+  projectInterruptedSourceProcessing: vi.fn(
+    (input: { operation: unknown }) => input.operation,
+  ),
 }));
 
 vi.mock("~/lib/ingestion/source-processing", () => ({
   getSourceIngestionOperationById: mocks.getSourceIngestionOperationById,
+  projectInterruptedSourceProcessing: mocks.projectInterruptedSourceProcessing,
   resolveSourceProcessingPartition: vi.fn(),
+}));
+
+vi.mock("~/lib/queues", () => ({
+  batchQueue: { getJob: vi.fn() },
 }));
 
 vi.mock("~/lib/request-access", () => ({

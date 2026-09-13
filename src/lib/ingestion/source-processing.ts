@@ -1,7 +1,9 @@
 import { and, desc, eq, gt, inArray, isNull, ne, or } from "drizzle-orm";
 import { createHash, randomUUID } from "node:crypto";
+import { z } from "zod";
 import type { DrizzleDB } from "~/db";
 import { sourceIngestionOperations, sources } from "~/db/schema";
+import { inspectSourceProcessingJob } from "~/lib/ingestion/source-processing-queue-inspection";
 import {
   PartitionAccessError,
   assertPartitionReadAllowed,
@@ -43,6 +45,29 @@ function toSourceProcessing(
   };
 }
 
+function sameDate(left: Date | null, right: Date | null): boolean {
+  return left?.getTime() === right?.getTime();
+}
+
+function sameProcessingSnapshot(
+  left: SourceProcessing,
+  right: SourceProcessing,
+): boolean {
+  return (
+    left.operationId === right.operationId &&
+    left.sourceId === right.sourceId &&
+    left.partitionKey === right.partitionKey &&
+    left.status === right.status &&
+    left.stage === right.stage &&
+    left.sourceVersion === right.sourceVersion &&
+    left.attempt === right.attempt &&
+    left.errorCode === right.errorCode &&
+    sameDate(left.createdAt, right.createdAt) &&
+    sameDate(left.updatedAt, right.updatedAt) &&
+    sameDate(left.completedAt, right.completedAt)
+  );
+}
+
 function assertSourcePartitionMatches(
   sourcePartitionKey: ContextPartitionKey | null,
   requestedPartitionKey: ContextPartitionKey | undefined,
@@ -53,6 +78,48 @@ function assertSourcePartitionMatches(
       "Source does not belong to the requested memory partition",
     );
   }
+}
+
+/** The small queue surface needed by public processing status and retry. */
+export interface SourceProcessingQueueJob {
+  readonly id?: string | number;
+  readonly name: string;
+  readonly data: unknown;
+  getState(): Promise<string>;
+}
+
+export interface SourceProcessingQueue {
+  getJob(operationId: string): Promise<SourceProcessingQueueJob | undefined>;
+}
+
+const sourceProcessingJobIdentitySchema = z.object({
+  userId: z.string(),
+  sourceId: z.string(),
+  operationId: z.string(),
+});
+
+/** Queue metadata is only an identity check; partition data is never authority. */
+export function isSourceProcessingJobForOperation(
+  job: Pick<SourceProcessingQueueJob, "id" | "name" | "data">,
+  input: {
+    userId: string;
+    sourceId: string;
+    operationId: string;
+  },
+): boolean {
+  if (
+    job.id !== input.operationId ||
+    (job.name !== "ingest-document" && job.name !== "ingest-file")
+  ) {
+    return false;
+  }
+  const identity = sourceProcessingJobIdentitySchema.safeParse(job.data);
+  return (
+    identity.success &&
+    identity.data.userId === input.userId &&
+    identity.data.sourceId === input.sourceId &&
+    identity.data.operationId === input.operationId
+  );
 }
 
 export interface SourceProcessingPartitionResolution {
@@ -335,6 +402,176 @@ export async function getSourceIngestionOperationById(input: {
     )
     .limit(1);
   return operation ? toSourceProcessing(operation) : null;
+}
+
+/**
+ * Projects an exhausted queue job at the public status boundary.
+ *
+ * Stalled BullMQ jobs can become terminal without running the receipt's
+ * failure handler. The receipt remains the durable state machine; this read
+ * only projection makes that queue fact visible without writing the database.
+ */
+export async function projectInterruptedSourceProcessing(input: {
+  db: DrizzleDB;
+  userId: string;
+  operation: SourceProcessing;
+  partitionKey?: ContextPartitionKey;
+  accessScope?: MemoryAccessScope;
+  /** Test-only queue seam; production uses finite isolated inspection. */
+  queue?: SourceProcessingQueue;
+}): Promise<SourceProcessing | null> {
+  if (
+    input.operation.status !== "queued" &&
+    input.operation.status !== "processing"
+  ) {
+    return input.operation;
+  }
+
+  const queuedJob = input.queue
+    ? await input.queue.getJob(input.operation.operationId)
+    : undefined;
+  const inspection = input.queue
+    ? undefined
+    : await inspectSourceProcessingJob(input.operation.operationId);
+  const job = queuedJob ?? inspection?.job;
+  if (
+    !job ||
+    !isSourceProcessingJobForOperation(job, {
+      userId: input.userId,
+      sourceId: input.operation.sourceId,
+      operationId: input.operation.operationId,
+    })
+  ) {
+    return input.operation;
+  }
+  const firstState = input.queue
+    ? await queuedJob!.getState()
+    : inspection!.state;
+  if (firstState !== "failed") {
+    return input.operation;
+  }
+
+  const latest = await getSourceIngestionOperationById({
+    db: input.db,
+    userId: input.userId,
+    operationId: input.operation.operationId,
+    ...(input.partitionKey !== undefined
+      ? { partitionKey: input.partitionKey }
+      : {}),
+    ...(input.accessScope !== undefined
+      ? { accessScope: input.accessScope }
+      : {}),
+  });
+  if (!latest || !sameProcessingSnapshot(input.operation, latest)) {
+    return latest;
+  }
+
+  // BullMQ may have moved the job while the receipt was being re-read. Only
+  // project a still-failed observation paired with the same receipt snapshot.
+  if (input.queue) {
+    const latestJob = await input.queue.getJob(input.operation.operationId);
+    if (
+      !latestJob ||
+      !isSourceProcessingJobForOperation(latestJob, {
+        userId: input.userId,
+        sourceId: input.operation.sourceId,
+        operationId: input.operation.operationId,
+      }) ||
+      (await latestJob.getState()) !== "failed"
+    ) {
+      return latest;
+    }
+  } else {
+    const latestInspection = await inspectSourceProcessingJob(
+      input.operation.operationId,
+    );
+    if (
+      !latestInspection ||
+      !isSourceProcessingJobForOperation(latestInspection.job, {
+        userId: input.userId,
+        sourceId: input.operation.sourceId,
+        operationId: input.operation.operationId,
+      }) ||
+      latestInspection.state !== "failed"
+    ) {
+      return latest;
+    }
+  }
+  return {
+    ...latest,
+    status: "failed",
+    errorCode: "PROCESSING_INTERRUPTED",
+  };
+}
+
+/**
+ * Validates a queued/processing receipt immediately before retrying a failed
+ * retained job. Source lifecycle is locked first, then the receipt. No Redis
+ * call occurs while this short PostgreSQL transaction is open.
+ */
+export async function validateSourceProcessingRetry(input: {
+  db: DrizzleDB;
+  userId: string;
+  operation: SourceProcessing;
+  partitionKey?: ContextPartitionKey | undefined;
+}): Promise<SourceProcessing> {
+  await assertPartitionReadAllowed(input.db, input.userId, input.partitionKey);
+  return withSourceWriteFence(
+    input.db,
+    {
+      userId: input.userId,
+      // Keep this property present for the legacy NULL scope as well. The
+      // fence then rejects a source that moved to another concrete partition.
+      partitionKey: input.partitionKey,
+      sources: [
+        {
+          sourceId: input.operation.sourceId,
+          expectedSourceVersion: input.operation.sourceVersion,
+        },
+      ],
+    },
+    async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(sourceIngestionOperations)
+        .where(
+          and(
+            eq(sourceIngestionOperations.userId, input.userId),
+            eq(
+              sourceIngestionOperations.operationId,
+              input.operation.operationId,
+            ),
+            eq(sourceIngestionOperations.sourceId, input.operation.sourceId),
+          ),
+        )
+        .for("update")
+        .limit(1);
+      if (!current) {
+        throw new PartitionAccessError(
+          "PARTITION_UNAUTHORIZED",
+          "Source ingestion operation was not found",
+        );
+      }
+      const currentProcessing = toSourceProcessing(current);
+      if (
+        current.partitionKey !== (input.partitionKey ?? null) ||
+        !sameProcessingSnapshot(input.operation, currentProcessing) ||
+        (await isSuperseded(tx, current))
+      ) {
+        throw new PartitionAccessError(
+          "SOURCE_VERSION_CONFLICT",
+          "Source processing changed before its failed job could be retried",
+        );
+      }
+      if (current.status !== "queued" && current.status !== "processing") {
+        throw new PartitionAccessError(
+          "SOURCE_VERSION_CONFLICT",
+          "Only a queued or processing source operation can retry its failed job",
+        );
+      }
+      return currentProcessing;
+    },
+  );
 }
 
 /** Reopens one failed operation without changing its canonical source identity. */

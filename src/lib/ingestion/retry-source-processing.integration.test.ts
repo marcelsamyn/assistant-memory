@@ -2,7 +2,9 @@ import { Job, Queue, QueueEvents, Worker } from "bullmq";
 import { eq } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
+import { createApp, readBody, toWebHandler } from "h3";
 import { Client as MinioClient } from "minio";
+import { randomUUID } from "node:crypto";
 import { Client } from "pg";
 import {
   afterAll,
@@ -27,8 +29,13 @@ import {
   failSourceIngestionOperation,
   getSourceIngestionOperationById,
   markSourceIngestionProcessing,
+  markSourceIngestionExtractionStarted,
+  projectInterruptedSourceProcessing,
 } from "~/lib/ingestion/source-processing";
+import * as sourceProcessingModule from "~/lib/ingestion/source-processing";
 import { contextPartitionKeySchema } from "~/lib/schemas/partition";
+import { sourceLifecycleCommandRequestSchema } from "~/lib/schemas/source-lifecycle";
+import { applySourceLifecycleCommand } from "~/lib/source-lifecycle";
 import { newTypeId } from "~/types/typeid";
 import { setTestDatabase } from "~/utils/db";
 
@@ -70,6 +77,7 @@ describeIfPostgres("retained processing retry", () => {
     title: null,
   }));
   beforeAll(async () => {
+    vi.resetModules();
     const admin = new Client({ connectionString: dsn("postgres") });
     await admin.connect();
     await admin.query(`CREATE DATABASE "${dbName}"`);
@@ -132,6 +140,17 @@ describeIfPostgres("retained processing retry", () => {
     await admin.connect();
     await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
     await admin.end();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    for (const moduleId of [
+      "~/db",
+      "~/lib/queues",
+      "~/lib/sources",
+      "~/lib/ingestion/extract-document-graph",
+      "~/lib/converters/markitdown",
+    ])
+      vi.doUnmock(moduleId);
+    vi.resetModules();
   });
 
   it.each(["replay", "retry"] as const)(
@@ -304,6 +323,151 @@ describeIfPostgres("retained processing retry", () => {
     ).toMatchObject({ status: "completed" });
   });
 
+  it("projects a terminal retained job without mutating its receipt and retries it", async () => {
+    const userId = "stalled-receipt-owner";
+    await database.insert(users).values({ id: userId });
+    const [source] = await database
+      .insert(sources)
+      .values({
+        userId,
+        type: "document",
+        externalId: "stalled-document",
+        status: "pending",
+      })
+      .returning();
+    if (!source) throw new Error("Source missing");
+    const receipt = await createSourceIngestionOperation({
+      db: database,
+      userId,
+      sourceId: source.id,
+      externalId: source.externalId,
+      contentHash: "stalled-document-hash",
+    });
+    const input = {
+      db: database,
+      userId,
+      sourceId: source.id,
+      operationId: receipt.operationId,
+    };
+    const processing = await markSourceIngestionProcessing(input);
+    const extraction = await markSourceIngestionExtractionStarted(input);
+    const [before] = await database
+      .select()
+      .from(sourceIngestionOperations)
+      .where(eq(sourceIngestionOperations.operationId, receipt.operationId));
+    if (!before) throw new Error("Receipt missing");
+
+    worker = new Worker(
+      queueName,
+      async (): Promise<void> => {
+        throw new Error("simulated stalled job terminal failure");
+      },
+      { connection: queue.opts.connection },
+    );
+    const job = await queue.add(
+      "ingest-document",
+      {
+        userId,
+        sourceId: source.id,
+        operationId: receipt.operationId,
+      },
+      { jobId: receipt.operationId, attempts: 1 },
+    );
+    await expect(job.waitUntilFinished(events, 10_000)).rejects.toThrow(
+      "simulated stalled job terminal failure",
+    );
+    expect(await job.getState()).toBe("failed");
+    await worker.close();
+    worker = undefined;
+
+    const projected = await projectInterruptedSourceProcessing({
+      db: database,
+      userId,
+      operation: extraction,
+      queue,
+    });
+    expect(projected).toMatchObject({
+      operationId: receipt.operationId,
+      sourceId: source.id,
+      status: "failed",
+      stage: "extraction",
+      sourceVersion: processing.sourceVersion,
+      attempt: processing.attempt,
+      errorCode: "PROCESSING_INTERRUPTED",
+      completedAt: null,
+    });
+    const [after] = await database
+      .select()
+      .from(sourceIngestionOperations)
+      .where(eq(sourceIngestionOperations.operationId, receipt.operationId));
+    expect(after).toEqual(before);
+
+    vi.stubGlobal("readBody", readBody);
+    vi.doMock("~/lib/ingestion/source-processing", () => ({
+      ...sourceProcessingModule,
+      projectInterruptedSourceProcessing: (
+        projectorInput: Parameters<
+          typeof projectInterruptedSourceProcessing
+        >[0],
+      ) => projectInterruptedSourceProcessing({ ...projectorInput, queue }),
+    }));
+    const { default: processingRoute } = await import(
+      "~/routes/sources/processing.post"
+    );
+    const statusResponse = await toWebHandler(createApp().use(processingRoute))(
+      new Request("http://memory.test/sources/processing", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ userId, operationId: receipt.operationId }),
+      }),
+    );
+    vi.doUnmock("~/lib/ingestion/source-processing");
+    expect(statusResponse.status).toBe(200);
+    await expect(statusResponse.json()).resolves.toMatchObject({
+      processing: {
+        operationId: receipt.operationId,
+        status: "failed",
+        errorCode: "PROCESSING_INTERRUPTED",
+      },
+    });
+
+    await expect(
+      retrySourceProcessing({ userId, operationId: receipt.operationId }),
+    ).resolves.toMatchObject({
+      processing: {
+        operationId: receipt.operationId,
+        status: "processing",
+        stage: "extraction",
+      },
+    });
+    expect(await job.getState()).toBe("waiting");
+
+    worker = new Worker(
+      queueName,
+      async () => {
+        const current = await getSourceIngestionOperationById({
+          db: database,
+          userId,
+          operationId: receipt.operationId,
+        });
+        if (!current) throw new Error("Receipt missing during retry");
+        await completeSourceIngestionOperation({
+          ...input,
+          expectedSourceVersion: current.sourceVersion,
+        });
+      },
+      { connection: queue.opts.connection },
+    );
+    await job.waitUntilFinished(events, 10_000);
+    expect(
+      await getSourceIngestionOperationById({
+        db: database,
+        userId,
+        operationId: receipt.operationId,
+      }),
+    ).toMatchObject({ status: "completed" });
+  });
+
   it("retries a completed unreadable job and recovers a queue retry failure without relaxing ownership", async () => {
     const userId = "retry-owner";
     await database.insert(users).values([{ id: userId }, { id: "other-user" }]);
@@ -353,7 +517,11 @@ describeIfPostgres("retained processing retry", () => {
     );
     const job = await queue.add(
       "ingest-file",
-      {},
+      {
+        userId,
+        sourceId: accepted.sourceId,
+        operationId: accepted.operationId,
+      },
       { jobId: accepted.operationId },
     );
     await job.waitUntilFinished(events, 10_000);
@@ -393,6 +561,413 @@ describeIfPostgres("retained processing retry", () => {
       retrySourceProcessing({ userId, operationId: accepted.operationId }),
     ).rejects.toMatchObject({ statusCode: 409 });
     expect(runs).toBe(2);
+  });
+
+  it("returns the changed receipt when it changes during queue observation", async () => {
+    const userId = "stalled-receipt-changed";
+    await database.insert(users).values({ id: userId });
+    const [source] = await database
+      .insert(sources)
+      .values({
+        userId,
+        type: "document",
+        externalId: "changed-document",
+        status: "pending",
+      })
+      .returning();
+    if (!source) throw new Error("Source missing");
+    const receipt = await createSourceIngestionOperation({
+      db: database,
+      userId,
+      sourceId: source.id,
+      externalId: source.externalId,
+      contentHash: "changed-document-hash",
+    });
+    const input = {
+      db: database,
+      userId,
+      sourceId: source.id,
+      operationId: receipt.operationId,
+    };
+    const processing = await markSourceIngestionProcessing(input);
+    let stateReads = 0;
+    const getState = vi.fn(async () => {
+      stateReads += 1;
+      if (stateReads === 1) {
+        await completeSourceIngestionOperation({
+          ...input,
+          expectedSourceVersion: processing.sourceVersion,
+        });
+      }
+      return "failed";
+    });
+    const job = {
+      id: receipt.operationId,
+      name: "ingest-document",
+      data: { userId, sourceId: source.id, operationId: receipt.operationId },
+      getState,
+    };
+
+    const changed = await projectInterruptedSourceProcessing({
+      db: database,
+      userId,
+      operation: processing,
+      queue: { getJob: async () => job },
+    });
+    expect(changed).toMatchObject({
+      operationId: receipt.operationId,
+      status: "completed",
+    });
+    expect(job.getState).toHaveBeenCalledOnce();
+  });
+
+  it("propagates queue state errors without changing the receipt", async () => {
+    const userId = "stalled-receipt-state-error";
+    await database.insert(users).values({ id: userId });
+    const [source] = await database
+      .insert(sources)
+      .values({
+        userId,
+        type: "document",
+        externalId: "state-error-document",
+        status: "pending",
+      })
+      .returning();
+    if (!source) throw new Error("Source missing");
+    const receipt = await createSourceIngestionOperation({
+      db: database,
+      userId,
+      sourceId: source.id,
+      externalId: source.externalId,
+      contentHash: "state-error-document-hash",
+    });
+    const processing = await markSourceIngestionProcessing({
+      db: database,
+      userId,
+      sourceId: source.id,
+      operationId: receipt.operationId,
+    });
+    const [before] = await database
+      .select()
+      .from(sourceIngestionOperations)
+      .where(eq(sourceIngestionOperations.operationId, receipt.operationId));
+    if (!before) throw new Error("Receipt missing");
+    const queueError = new Error("Redis state inspection failed");
+    const getState = vi.fn().mockRejectedValue(queueError);
+
+    await expect(
+      projectInterruptedSourceProcessing({
+        db: database,
+        userId,
+        operation: processing,
+        queue: {
+          getJob: async () => ({
+            id: receipt.operationId,
+            name: "ingest-document",
+            data: {
+              userId,
+              sourceId: source.id,
+              operationId: receipt.operationId,
+            },
+            getState,
+          }),
+        },
+      }),
+    ).rejects.toThrow(queueError);
+
+    const [after] = await database
+      .select()
+      .from(sourceIngestionOperations)
+      .where(eq(sourceIngestionOperations.operationId, receipt.operationId));
+    expect(after).toEqual(before);
+    expect(getState).toHaveBeenCalledOnce();
+  });
+
+  it.each(["waiting", "active", "delayed"])(
+    "does not project a nonterminal retained job in %s state",
+    async (state) => {
+      const userId = `stalled-receipt-${state}`;
+      await database.insert(users).values({ id: userId });
+      const [source] = await database
+        .insert(sources)
+        .values({
+          userId,
+          type: "document",
+          externalId: `${state}-document`,
+          status: "pending",
+        })
+        .returning();
+      if (!source) throw new Error("Source missing");
+      const receipt = await createSourceIngestionOperation({
+        db: database,
+        userId,
+        sourceId: source.id,
+        externalId: source.externalId,
+        contentHash: `${state}-document-hash`,
+      });
+      const processing = await markSourceIngestionProcessing({
+        db: database,
+        userId,
+        sourceId: source.id,
+        operationId: receipt.operationId,
+      });
+      const getState = vi.fn(async () => state);
+      const projected = await projectInterruptedSourceProcessing({
+        db: database,
+        userId,
+        operation: processing,
+        queue: {
+          getJob: async () => ({
+            id: receipt.operationId,
+            name: "ingest-document",
+            data: {
+              userId,
+              sourceId: source.id,
+              operationId: receipt.operationId,
+            },
+            getState,
+          }),
+        },
+      });
+      expect(projected).toEqual(processing);
+      expect(getState).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("ignores a failed job whose retained identity does not match the receipt", async () => {
+    const userId = "stalled-receipt-wrong-job";
+    await database.insert(users).values({ id: userId });
+    const [source] = await database
+      .insert(sources)
+      .values({
+        userId,
+        type: "document",
+        externalId: "wrong-job-document",
+        status: "pending",
+      })
+      .returning();
+    if (!source) throw new Error("Source missing");
+    const receipt = await createSourceIngestionOperation({
+      db: database,
+      userId,
+      sourceId: source.id,
+      externalId: source.externalId,
+      contentHash: "wrong-job-document-hash",
+    });
+    const processing = await markSourceIngestionProcessing({
+      db: database,
+      userId,
+      sourceId: source.id,
+      operationId: receipt.operationId,
+    });
+    const getState = vi.fn(async () => "failed");
+    const projected = await projectInterruptedSourceProcessing({
+      db: database,
+      userId,
+      operation: processing,
+      queue: {
+        getJob: async () => ({
+          id: receipt.operationId,
+          name: "ingest-document",
+          data: {
+            userId: "another-user",
+            sourceId: source.id,
+            operationId: receipt.operationId,
+          },
+          getState,
+        }),
+      },
+    });
+    expect(projected).toEqual(processing);
+    expect(getState).not.toHaveBeenCalled();
+  });
+
+  it.each(["queued", "processing"] as const)(
+    "does not change a %s receipt when Redis rejects the supported retry",
+    async (status) => {
+      const userId = `retry-redis-failure-${status}`;
+      await database.insert(users).values({ id: userId });
+      const [source] = await database
+        .insert(sources)
+        .values({
+          userId,
+          type: "document",
+          externalId: `${status}-redis-document`,
+          status: "pending",
+        })
+        .returning();
+      if (!source) throw new Error("Source missing");
+      const receipt = await createSourceIngestionOperation({
+        db: database,
+        userId,
+        sourceId: source.id,
+        externalId: source.externalId,
+        contentHash: `${status}-redis-document-hash`,
+      });
+      const processing =
+        status === "processing"
+          ? await markSourceIngestionProcessing({
+              db: database,
+              userId,
+              sourceId: source.id,
+              operationId: receipt.operationId,
+            })
+          : receipt;
+      worker = new Worker(
+        queueName,
+        async (): Promise<void> => {
+          throw new Error("simulated Redis retry prerequisite failure");
+        },
+        { connection: queue.opts.connection },
+      );
+      const job = await queue.add(
+        "ingest-document",
+        {
+          userId,
+          sourceId: source.id,
+          operationId: receipt.operationId,
+        },
+        { jobId: receipt.operationId, attempts: 1 },
+      );
+      await expect(job.waitUntilFinished(events, 10_000)).rejects.toThrow(
+        "simulated Redis retry prerequisite failure",
+      );
+      await worker.close();
+      worker = undefined;
+      const [before] = await database
+        .select()
+        .from(sourceIngestionOperations)
+        .where(eq(sourceIngestionOperations.operationId, receipt.operationId));
+      if (!before) throw new Error("Receipt missing");
+      const queueLookup = vi.spyOn(queue, "getJob").mockResolvedValueOnce(job);
+      const retry = vi
+        .spyOn(job, "retry")
+        .mockRejectedValueOnce(new Error("Redis unavailable"));
+      try {
+        await expect(
+          retrySourceProcessing({ userId, operationId: receipt.operationId }),
+        ).rejects.toThrow("Redis unavailable");
+      } finally {
+        retry.mockRestore();
+        queueLookup.mockRestore();
+      }
+      const [after] = await database
+        .select()
+        .from(sourceIngestionOperations)
+        .where(eq(sourceIngestionOperations.operationId, receipt.operationId));
+      expect(after).toEqual(before);
+      expect(await job.getState()).toBe("failed");
+      expect(processing.status).toBe(status);
+    },
+  );
+
+  it("keeps the worker fence after retry preflight wins the Redis handoff", async () => {
+    const userId = "retry-worker-fence-owner";
+    await database.insert(users).values({ id: userId });
+    const [source] = await database
+      .insert(sources)
+      .values({
+        userId,
+        type: "document",
+        externalId: "worker-fence-document",
+        status: "pending",
+        metadata: { rawContent: "Current request" },
+      })
+      .returning();
+    if (!source) throw new Error("Source missing");
+    const receipt = await createSourceIngestionOperation({
+      db: database,
+      userId,
+      sourceId: source.id,
+      externalId: source.externalId,
+      contentHash: "worker-fence-document-hash",
+    });
+    const input = {
+      db: database,
+      userId,
+      sourceId: source.id,
+      operationId: receipt.operationId,
+    };
+    await markSourceIngestionProcessing(input);
+    const extraction = await markSourceIngestionExtractionStarted(input);
+    worker = new Worker(
+      queueName,
+      async (): Promise<void> => {
+        throw new Error("simulated worker handoff failure");
+      },
+      { connection: queue.opts.connection },
+    );
+    const job = await queue.add(
+      "ingest-document",
+      {
+        userId,
+        sourceId: source.id,
+        operationId: receipt.operationId,
+        expectedSourceVersion: extraction.sourceVersion,
+        documentId: "worker-fence-document",
+        contentType: "text",
+        timestamp: "2026-09-10T10:00:00.000Z",
+      },
+      { jobId: receipt.operationId, attempts: 1 },
+    );
+    await expect(job.waitUntilFinished(events, 10_000)).rejects.toThrow(
+      "simulated worker handoff failure",
+    );
+    await worker.close();
+    worker = undefined;
+
+    const originalRetry = job.retry.bind(job);
+    const queueLookup = vi.spyOn(queue, "getJob").mockResolvedValueOnce(job);
+    const retry = vi.spyOn(job, "retry").mockImplementation(async (state) => {
+      await applySourceLifecycleCommand(
+        database,
+        sourceLifecycleCommandRequestSchema.parse({
+          userId,
+          sourceId: source.id,
+          expectedPartitionKey: null,
+          expectedSourceVersion: extraction.sourceVersion,
+          commandId: randomUUID(),
+          action: "tombstone",
+        }),
+      );
+      return originalRetry(state);
+    });
+    try {
+      await expect(
+        retrySourceProcessing({ userId, operationId: receipt.operationId }),
+      ).resolves.toMatchObject({
+        processing: { status: "processing" },
+      });
+    } finally {
+      retry.mockRestore();
+      queueLookup.mockRestore();
+    }
+    expect(await job.getState()).toBe("waiting");
+
+    const { IngestDocumentJobInputSchema } = await import(
+      "~/lib/jobs/ingest-document"
+    );
+    worker = new Worker(
+      queueName,
+      async (queued) => {
+        await ingestDocument({
+          db: database,
+          ...IngestDocumentJobInputSchema.parse(queued.data),
+        });
+      },
+      { connection: queue.opts.connection },
+    );
+    await expect(job.waitUntilFinished(events, 10_000)).rejects.toThrow(
+      "A source was tombstoned before its derived write could be committed",
+    );
+    expect(extractDocumentGraph).not.toHaveBeenCalled();
+    expect(
+      await getSourceIngestionOperationById({
+        db: database,
+        userId,
+        operationId: receipt.operationId,
+      }),
+    ).toMatchObject({ status: "processing", stage: "extraction" });
   });
 
   it("does not reopen a failed receipt while its retained job is active", async () => {
