@@ -7,6 +7,7 @@ const cleanupSinceSchema = z
 
 export const cleanupRequestSchema = z.object({
   userId: z.string(),
+  partitionKey: contextPartitionKeySchema.optional(),
   since: cleanupSinceSchema,
   entryNodeLimit: z.number().int().positive().default(5),
   semanticNeighborLimit: z.number().int().positive().default(15),

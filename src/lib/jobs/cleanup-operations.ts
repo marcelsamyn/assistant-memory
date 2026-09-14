@@ -33,6 +33,12 @@ import {
 import type { GraphNode } from "~/lib/jobs/cleanup-graph";
 import { normalizeLabel } from "~/lib/label";
 import { logEvent } from "~/lib/observability/log";
+import {
+  assertPartitionReadAllowed,
+  PartitionAccessError,
+  partitionAccessCondition,
+} from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import type { TemporaryIdMapper } from "~/lib/temporary-id-mapper";
 import {
   AttributePredicateEnum,
@@ -164,6 +170,10 @@ type DbOrTx = DrizzleDB;
 /** A live tempId → real id map maintained across an op sequence. */
 type TempIdResolver = (tempId: string) => TypeId<"node"> | undefined;
 
+export interface CleanupOperationScope {
+  partitionKey?: ContextPartitionKey | undefined;
+}
+
 const RETRACTABLE_KINDS = new Set<ClaimSelect["assertedByKind"]>([
   "assistant_inferred",
 ]);
@@ -234,6 +244,7 @@ async function isShapeInvalidRelationshipClaim(
   database: DbOrTx,
   userId: string,
   claim: ClaimSelect,
+  partitionKey?: ContextPartitionKey,
 ): Promise<boolean> {
   const predicate = relationshipPredicateFrom(claim.predicate);
   if (predicate === null) return false;
@@ -245,6 +256,7 @@ async function isShapeInvalidRelationshipClaim(
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionAccessCondition(nodes.partitionKey, userId, partitionKey),
         inArray(nodes.id, [claim.subjectNodeId, claim.objectNodeId]),
       ),
     );
@@ -276,11 +288,18 @@ export async function retractClaim(
   database: DbOrTx,
   userId: string,
   op: RetractClaimOp,
+  partitionKey?: ContextPartitionKey,
 ): Promise<ClaimSelect | null> {
   const [claim] = await database
     .select()
     .from(claims)
-    .where(and(eq(claims.id, op.claimId), eq(claims.userId, userId)))
+    .where(
+      and(
+        eq(claims.id, op.claimId),
+        eq(claims.userId, userId),
+        partitionAccessCondition(claims.partitionKey, userId, partitionKey),
+      ),
+    )
     .limit(1);
 
   if (!claim) return null;
@@ -288,15 +307,23 @@ export async function retractClaim(
     database,
     userId,
     claim,
+    partitionKey,
   );
   if (!RETRACTABLE_KINDS.has(claim.assertedByKind) && !shapeInvalid) {
     throw new RetractionNotAllowedError(claim);
   }
 
+  const lifecycleStartedAt = new Date();
   const [updated] = await database
     .update(claims)
     .set({ status: "retracted", updatedAt: new Date() })
-    .where(and(eq(claims.id, op.claimId), eq(claims.userId, userId)))
+    .where(
+      and(
+        eq(claims.id, op.claimId),
+        eq(claims.userId, userId),
+        partitionAccessCondition(claims.partitionKey, userId, partitionKey),
+      ),
+    )
     .returning();
 
   if (!updated) return null;
@@ -308,6 +335,15 @@ export async function retractClaim(
   });
 
   await applyClaimLifecycle(database, [updated]);
+  const { maybeEnqueueAtlasInvalidation } = await import(
+    "~/lib/jobs/atlas-invalidation"
+  );
+  await maybeEnqueueAtlasInvalidation(
+    database,
+    userId,
+    lifecycleStartedAt,
+    partitionKey,
+  );
   return updated;
 }
 
@@ -324,6 +360,7 @@ export async function contradictClaim(
   database: DbOrTx,
   userId: string,
   op: ContradictClaimOp,
+  partitionKey?: ContextPartitionKey,
 ): Promise<ClaimSelect | null> {
   if (op.claimId === op.contradictedByClaimId) {
     throw new ContradictionNotAllowedError(
@@ -336,7 +373,13 @@ export async function contradictClaim(
   const [target] = await database
     .select()
     .from(claims)
-    .where(and(eq(claims.id, op.claimId), eq(claims.userId, userId)))
+    .where(
+      and(
+        eq(claims.id, op.claimId),
+        eq(claims.userId, userId),
+        partitionAccessCondition(claims.partitionKey, userId, partitionKey),
+      ),
+    )
     .limit(1);
   if (!target) return null;
 
@@ -344,7 +387,11 @@ export async function contradictClaim(
     .select()
     .from(claims)
     .where(
-      and(eq(claims.id, op.contradictedByClaimId), eq(claims.userId, userId)),
+      and(
+        eq(claims.id, op.contradictedByClaimId),
+        eq(claims.userId, userId),
+        partitionAccessCondition(claims.partitionKey, userId, partitionKey),
+      ),
     )
     .limit(1);
   if (!citing) {
@@ -374,6 +421,7 @@ export async function contradictClaim(
     );
   }
 
+  const lifecycleStartedAt = new Date();
   const [updated] = await database
     .update(claims)
     .set({
@@ -381,7 +429,13 @@ export async function contradictClaim(
       contradictedByClaimId: op.contradictedByClaimId,
       updatedAt: new Date(),
     })
-    .where(and(eq(claims.id, op.claimId), eq(claims.userId, userId)))
+    .where(
+      and(
+        eq(claims.id, op.claimId),
+        eq(claims.userId, userId),
+        partitionAccessCondition(claims.partitionKey, userId, partitionKey),
+      ),
+    )
     .returning();
 
   if (!updated) return null;
@@ -394,6 +448,15 @@ export async function contradictClaim(
   });
 
   await applyClaimLifecycle(database, [updated]);
+  const { maybeEnqueueAtlasInvalidation } = await import(
+    "~/lib/jobs/atlas-invalidation"
+  );
+  await maybeEnqueueAtlasInvalidation(
+    database,
+    userId,
+    lifecycleStartedAt,
+    partitionKey,
+  );
   return updated;
 }
 
@@ -402,6 +465,7 @@ async function resolveAddClaimScope(
   database: DbOrTx,
   userId: string,
   sourceClaimId: TypeId<"claim"> | null,
+  partitionKey?: ContextPartitionKey,
 ): Promise<{ scope: "personal" | "reference"; sourceId?: TypeId<"source"> }> {
   if (sourceClaimId === null) return { scope: "personal" };
 
@@ -409,7 +473,14 @@ async function resolveAddClaimScope(
     .select({ sourceId: claims.sourceId, scope: sources.scope })
     .from(claims)
     .innerJoin(sources, eq(sources.id, claims.sourceId))
-    .where(and(eq(claims.id, sourceClaimId), eq(claims.userId, userId)))
+    .where(
+      and(
+        eq(claims.id, sourceClaimId),
+        eq(claims.userId, userId),
+        partitionAccessCondition(claims.partitionKey, userId, partitionKey),
+        partitionAccessCondition(sources.partitionKey, userId, partitionKey),
+      ),
+    )
     .limit(1);
 
   if (!row) {
@@ -432,6 +503,7 @@ export async function addClaim(
   userId: string,
   op: AddClaimOp,
   resolveTempId: TempIdResolver,
+  partitionKey?: ContextPartitionKey,
 ): Promise<ClaimSelect | null> {
   const subjectNodeId = resolveTempId(op.subjectTempId);
   if (!subjectNodeId) {
@@ -456,12 +528,14 @@ export async function addClaim(
     database,
     userId,
     op.sourceClaimId,
+    partitionKey,
   );
 
   // createClaim runs its own lifecycle pipeline + embeddings; it accepts the
   // overrides we widened it with (assertedByKind/scope/sourceId).
   return createClaim({
     userId,
+    partitionKey,
     subjectNodeId,
     predicate: op.predicate,
     statement: op.statement,
@@ -480,6 +554,7 @@ export async function addAlias(
   userId: string,
   op: AddAliasOp,
   resolveTempId: TempIdResolver,
+  partitionKey?: ContextPartitionKey,
 ): Promise<boolean> {
   const canonicalNodeId = resolveTempId(op.nodeTempId);
   if (!canonicalNodeId) {
@@ -492,6 +567,7 @@ export async function addAlias(
     userId,
     canonicalNodeId,
     aliasText: op.aliasText,
+    partitionKey,
   });
   return true;
 }
@@ -502,6 +578,7 @@ export async function removeAlias(
   userId: string,
   op: RemoveAliasOp,
   resolveTempId: TempIdResolver,
+  partitionKey?: ContextPartitionKey,
 ): Promise<boolean> {
   const canonicalNodeId = resolveTempId(op.nodeTempId);
   if (!canonicalNodeId) {
@@ -510,7 +587,13 @@ export async function removeAlias(
     );
     return false;
   }
-  return deleteAliasByText(database, userId, canonicalNodeId, op.aliasText);
+  return deleteAliasByText(
+    database,
+    userId,
+    canonicalNodeId,
+    op.aliasText,
+    partitionKey,
+  );
 }
 
 /**
@@ -523,6 +606,7 @@ export async function mergeNodesOp(
   userId: string,
   op: MergeNodesOp,
   resolveTempId: TempIdResolver,
+  partitionKey?: ContextPartitionKey,
 ): Promise<{ survivorId: TypeId<"node">; mergedIds: TypeId<"node">[] } | null> {
   const keepId = resolveTempId(op.keepTempId);
   if (!keepId) {
@@ -563,7 +647,16 @@ export async function mergeNodesOp(
   const typeRows = await db
     .select({ id: nodes.id, nodeType: nodes.nodeType })
     .from(nodes)
-    .where(and(eq(nodes.userId, userId), inArray(nodes.id, involvedIds)));
+    .where(
+      and(
+        eq(nodes.userId, userId),
+        partitionAccessCondition(nodes.partitionKey, userId, partitionKey),
+        inArray(nodes.id, involvedIds),
+      ),
+    );
+  if (typeRows.length !== involvedIds.length) {
+    throw new Error("merge_nodes target is outside the authorized partition");
+  }
   const protectedTypes = [
     ...new Set(
       typeRows
@@ -580,7 +673,7 @@ export async function mergeNodesOp(
   }
 
   // mergeNodes' first arg is the survivor.
-  await mergeNodes(userId, [keepId, ...removeIds]);
+  await mergeNodes(userId, [keepId, ...removeIds], undefined, partitionKey);
   return { survivorId: keepId, mergedIds: removeIds };
 }
 
@@ -590,6 +683,7 @@ export async function deleteNodeOp(
   userId: string,
   op: DeleteNodeOp,
   resolveTempId: TempIdResolver,
+  partitionKey?: ContextPartitionKey,
 ): Promise<boolean> {
   const nodeId = resolveTempId(op.tempId);
   if (!nodeId) {
@@ -597,11 +691,17 @@ export async function deleteNodeOp(
     return false;
   }
 
-  await assertNodeCanBeHardDeleted(database, userId, nodeId);
+  await assertNodeCanBeHardDeleted(database, userId, nodeId, partitionKey);
 
   const deleted = await database
     .delete(nodes)
-    .where(and(eq(nodes.id, nodeId), eq(nodes.userId, userId)))
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        eq(nodes.userId, userId),
+        partitionAccessCondition(nodes.partitionKey, userId, partitionKey),
+      ),
+    )
     .returning({ id: nodes.id });
   return deleted.length > 0;
 }
@@ -610,6 +710,7 @@ async function assertNodeCanBeHardDeleted(
   database: DbOrTx,
   userId: string,
   nodeId: TypeId<"node">,
+  partitionKey?: ContextPartitionKey,
 ): Promise<void> {
   const [claimRow, sourceLinkRow, aliasRow] = await Promise.all([
     database
@@ -618,6 +719,7 @@ async function assertNodeCanBeHardDeleted(
       .where(
         and(
           eq(claims.userId, userId),
+          partitionAccessCondition(claims.partitionKey, userId, partitionKey),
           or(
             eq(claims.subjectNodeId, nodeId),
             eq(claims.objectNodeId, nodeId),
@@ -633,7 +735,11 @@ async function assertNodeCanBeHardDeleted(
       .select({ count: sql<number>`count(*)::int` })
       .from(aliases)
       .where(
-        and(eq(aliases.userId, userId), eq(aliases.canonicalNodeId, nodeId)),
+        and(
+          eq(aliases.userId, userId),
+          eq(aliases.canonicalNodeId, nodeId),
+          partitionAccessCondition(aliases.partitionKey, userId, partitionKey),
+        ),
       ),
   ]);
 
@@ -652,10 +758,11 @@ export async function createNodeOp(
   database: DbOrTx,
   userId: string,
   op: CreateNodeOp,
+  partitionKey?: ContextPartitionKey,
 ): Promise<TypeId<"node"> | null> {
   const [inserted] = await database
     .insert(nodes)
-    .values({ userId, nodeType: op.type })
+    .values({ userId, partitionKey, nodeType: op.type })
     .returning({ id: nodes.id });
 
   if (!inserted) return null;
@@ -695,11 +802,18 @@ export async function promoteAssertion(
   database: DbOrTx,
   userId: string,
   op: PromoteAssertionOp,
+  partitionKey?: ContextPartitionKey,
 ): Promise<ClaimSelect> {
   const [original] = await database
     .select()
     .from(claims)
-    .where(and(eq(claims.id, op.claimId), eq(claims.userId, userId)))
+    .where(
+      and(
+        eq(claims.id, op.claimId),
+        eq(claims.userId, userId),
+        partitionAccessCondition(claims.partitionKey, userId, partitionKey),
+      ),
+    )
     .limit(1);
 
   if (!original) {
@@ -719,7 +833,11 @@ export async function promoteAssertion(
     .select({ id: sources.id, scope: sources.scope })
     .from(sources)
     .where(
-      and(eq(sources.id, op.corroboratingSourceId), eq(sources.userId, userId)),
+      and(
+        eq(sources.id, op.corroboratingSourceId),
+        eq(sources.userId, userId),
+        partitionAccessCondition(sources.partitionKey, userId, partitionKey),
+      ),
     )
     .limit(1);
 
@@ -737,6 +855,7 @@ export async function promoteAssertion(
   // default) to make the supersession contract above legible at the call site.
   return createClaim({
     userId,
+    partitionKey,
     subjectNodeId: original.subjectNodeId,
     predicate: original.predicate,
     statement: original.statement,
@@ -771,10 +890,12 @@ export interface ApplyCleanupOperationsResult {
  * upstream merges can rewrite tempIds before downstream `add_claim` /
  * `add_alias` ops resolve them.
  *
- * `merge_nodes` runs outside the dispatcher's transaction because
- * {@link mergeNodes} manages its own. All other operations share a single
- * transaction. `CrossScopeMergeError` is caught and logged (no row changes
- * for that op); other errors propagate.
+ * Each operation uses its underlying helper's atomic write boundary.
+ * `merge_nodes` uses {@link mergeNodes}' transaction. The sequence is
+ * best-effort: one rejected operation is recorded without undoing earlier
+ * successful operations. The fail-closed request and worker guards remain in
+ * place because this sequence is not replay-safe. `CrossScopeMergeError` is
+ * caught and logged with no row changes for that operation.
  *
  * `allowedClaimIds` (optional) bounds claim-targeting operations
  * (`retract_claim`, `contradict_claim`, `promote_assertion`) to the set of
@@ -791,8 +912,10 @@ export async function applyCleanupOperations(
   operations: CleanupOperation[],
   idMapper: TemporaryIdMapper<GraphNode, string>,
   allowedClaimIds?: ReadonlySet<TypeId<"claim">>,
+  scope: CleanupOperationScope = {},
 ): Promise<ApplyCleanupOperationsResult> {
   const database = databaseOverride ?? (await useDatabase());
+  await assertPartitionReadAllowed(database, userId, scope.partitionKey);
 
   // tempId → real node id map. Seeded from the mapper, augmented as ops run.
   const tempIdToNodeId = new Map<string, TypeId<"node">>();
@@ -810,6 +933,7 @@ export async function applyCleanupOperations(
   };
 
   for (const op of operations) {
+    await assertPartitionReadAllowed(database, userId, scope.partitionKey);
     const guardError = checkAllowedClaimIds(op, allowedClaimIds);
     if (guardError) {
       console.warn(
@@ -828,10 +952,14 @@ export async function applyCleanupOperations(
           tempIdToNodeId.set(tempId, realId);
         },
         (nodeId) => affectedNodeIds.add(nodeId),
+        scope.partitionKey,
       );
       if (ok) result.applied += 1;
       else result.skipped += 1;
     } catch (err) {
+      if (err instanceof PartitionAccessError) {
+        throw err;
+      }
       if (err instanceof CrossScopeMergeError) {
         console.warn(
           `[cleanup-ops] cross_scope_merge_refused user=${userId} kind=${op.kind} ` +
@@ -894,10 +1022,16 @@ async function runOne(
   resolveTempId: TempIdResolver,
   registerTempId: (tempId: string, realId: TypeId<"node">) => void,
   trackAffected: (nodeId: TypeId<"node">) => void,
+  partitionKey?: ContextPartitionKey,
 ): Promise<boolean> {
   switch (op.kind) {
     case "merge_nodes": {
-      const merged = await mergeNodesOp(userId, op, resolveTempId);
+      const merged = await mergeNodesOp(
+        userId,
+        op,
+        resolveTempId,
+        partitionKey,
+      );
       if (!merged) return false;
       // After merge, removed temp ids should resolve to the survivor.
       for (const removeTempId of op.removeTempIds) {
@@ -907,13 +1041,13 @@ async function runOne(
       return true;
     }
     case "delete_node":
-      return deleteNodeOp(database, userId, op, resolveTempId);
+      return deleteNodeOp(database, userId, op, resolveTempId, partitionKey);
     case "retract_claim": {
-      const updated = await retractClaim(database, userId, op);
+      const updated = await retractClaim(database, userId, op, partitionKey);
       return updated !== null;
     }
     case "contradict_claim": {
-      const updated = await contradictClaim(database, userId, op);
+      const updated = await contradictClaim(database, userId, op, partitionKey);
       return updated !== null;
     }
     case "add_claim": {
@@ -924,22 +1058,28 @@ async function runOne(
           "add_claim: exactly one of objectTempId or objectValue is required",
         );
       }
-      const created = await addClaim(database, userId, op, resolveTempId);
+      const created = await addClaim(
+        database,
+        userId,
+        op,
+        resolveTempId,
+        partitionKey,
+      );
       if (created === null) return false;
       trackAffected(created.subjectNodeId);
       if (created.objectNodeId) trackAffected(created.objectNodeId);
       return true;
     }
     case "add_alias":
-      return addAlias(database, userId, op, resolveTempId);
+      return addAlias(database, userId, op, resolveTempId, partitionKey);
     case "remove_alias":
-      return removeAlias(database, userId, op, resolveTempId);
+      return removeAlias(database, userId, op, resolveTempId, partitionKey);
     case "promote_assertion": {
-      await promoteAssertion(database, userId, op);
+      await promoteAssertion(database, userId, op, partitionKey);
       return true;
     }
     case "create_node": {
-      const newId = await createNodeOp(database, userId, op);
+      const newId = await createNodeOp(database, userId, op, partitionKey);
       if (!newId) return false;
       registerTempId(op.tempId, newId);
       trackAffected(newId);

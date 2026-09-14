@@ -182,12 +182,11 @@ export async function seedClaimsCleanupForPlaceholders(
 ): Promise<SeedCleanupResult | null> {
   const { userId, partitionKey, olderThanDays } =
     cleanupPlaceholdersInputSchema.parse(rawInput);
-  const seedIds = result.placeholders.map((p) => p.id);
-  if (seedIds.length === 0) return null;
   if (partitionKey !== undefined) {
     throw new PartitionedCleanupGraphUnsupportedError();
   }
-
+  const seedIds = result.placeholders.map((p) => p.id);
+  if (seedIds.length === 0) return null;
   const job = await batchQueue.add("cleanup-graph", {
     userId,
     // `since` bounds the entry-node fetch in the cleanup pipeline. We pass

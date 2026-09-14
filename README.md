@@ -33,7 +33,11 @@ parent partition, and existing-object mutations resolve the actual owned
 partition before applying strict write checks.
 
 Use strict access for preparation, partition-specific evidence, cleanup, and
-maintenance. AI graph cleanup is disabled for partitioned data. The admin
+maintenance. The AI graph cleanup engine now keeps every read, model context,
+and mutation in one active owned partition. Partitioned and workspace cleanup
+remain disabled at the request and worker boundaries. Enable or run cleanup in
+production only after the partition-isolation checks pass in the deployed
+environment and the owner gives explicit approval. The admin
 user-self-identity backfill remains strict-only pending a partition-scoped
 implementation.
 

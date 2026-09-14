@@ -30,9 +30,12 @@ cross-partition merges and edges remain prohibited. This release does not
 move existing data or require a database migration.
 
 Keep partition-limited evidence and automated preparation on the default
-strict client. AI graph cleanup remains disabled for partitioned data until
-its cleanup engine is partition-safe. Scratchpads remain user-global assistant
-workspace, not partitioned evidence.
+strict client. The AI graph cleanup engine now confines its reads, model
+context, and writes to one active `partitionKey`. Partitioned and workspace
+cleanup remain disabled at the request and worker boundaries. Do not enable or
+run cleanup in production until the deployed partition-isolation checks pass
+and the owner gives explicit approval. Scratchpads remain user-global
+assistant workspace, not partitioned evidence.
 
 Processing status reads use the same public projection through HTTP, SDK 2.6,
 and MCP. If the exact retained queue job is terminally failed while its

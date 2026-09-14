@@ -9,7 +9,10 @@ import {
 
 export default defineEventHandler(async (event) => {
   const params = cleanupRequestSchema.parse(await readBody(event));
-  if (getRequestAccessScope(event) === "workspace") {
+  if (
+    getRequestAccessScope(event) === "workspace" ||
+    params.partitionKey !== undefined
+  ) {
     throw new PartitionedCleanupGraphUnsupportedError();
   }
 

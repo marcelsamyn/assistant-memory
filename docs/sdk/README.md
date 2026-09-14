@@ -27,9 +27,12 @@ sources inherit their parent's partition, and existing-object mutations
 resolve the object's partition before applying strict mutation checks.
 
 Use a strict client for preparation, partition-specific evidence, cleanup, and
-maintenance. AI graph cleanup is disabled for partitioned data, and the admin
-user-self-identity backfill remains strict-only pending a partition-scoped
-implementation.
+maintenance. The AI graph cleanup engine now confines its reads, model context,
+and writes to one active `partitionKey`. Partitioned and workspace cleanup
+remain disabled at the request and worker boundaries. Enable or run cleanup in
+production only after the deployed partition-isolation checks pass and the
+owner gives explicit approval. The admin user-self-identity backfill remains
+strict-only pending a partition-scoped implementation.
 
 The SDK, HTTP API, and MCP tools are clients of the same Memory service. Source context and processing receipts are general ingestion capabilities; they do not require Radar or Petals. See [consumer migration notes](../sdk-consumer-migration.md) before upgrading an existing client.
 

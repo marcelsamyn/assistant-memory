@@ -58,13 +58,17 @@ export async function runIterativeCleanup(
     iterations = 3,
     seedsPerIteration = entryNodeLimit,
     dynamicFollowups = true,
+    partitionKey,
   } = params;
 
   const seedCount = seedsPerIteration * iterations;
   const db = await useDatabase();
   const [entrySeeds, invalidShapeAudit] = await Promise.all([
-    fetchEntryNodes(userId, since, seedCount),
-    auditInvalidRelationshipPredicateShapes(db, userId, { exampleLimit: 0 }),
+    fetchEntryNodes(userId, since, seedCount, partitionKey),
+    auditInvalidRelationshipPredicateShapes(db, userId, {
+      exampleLimit: 0,
+      partitionKey,
+    }),
   ]);
   const invalidShapeSeeds = invalidShapeAudit.seedNodeIds.slice(0, seedCount);
   let seedPool = Array.from(new Set([...invalidShapeSeeds, ...entrySeeds]));

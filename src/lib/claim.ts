@@ -376,7 +376,12 @@ export async function createClaim(
   const { maybeEnqueueAtlasInvalidation } = await import(
     "./jobs/atlas-invalidation"
   );
-  await maybeEnqueueAtlasInvalidation(db, input.userId, lifecycleStartedAt);
+  await maybeEnqueueAtlasInvalidation(
+    db,
+    input.userId,
+    lifecycleStartedAt,
+    input.partitionKey,
+  );
   const [finalized] = await fetchClaimsByIds(db, [inserted.id]);
   if (!finalized) throw new Error("Failed to fetch created claim");
 

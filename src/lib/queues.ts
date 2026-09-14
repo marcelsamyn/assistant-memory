@@ -373,6 +373,14 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
           );
           throw new PartitionedCleanupGraphUnsupportedError();
         }
+        const { assertPartitionReadAllowed } = await import(
+          "./partition-access"
+        );
+        await assertPartitionReadAllowed(
+          await useDatabase(),
+          data.userId,
+          data.partitionKey,
+        );
         console.log(
           `Starting cleanup-graph job for user ${data.userId}, since ${data.since.toISOString()}`,
         );
@@ -388,6 +396,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
           );
           const recoverResult = await recoverStatuslessCommitments({
             userId: data.userId,
+            partitionKey: data.partitionKey,
             dryRun: false,
           });
           console.log(
@@ -401,6 +410,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
           );
           const pruneResult = await pruneOrphanNodes({
             userId: data.userId,
+            partitionKey: data.partitionKey,
             dryRun: false,
             olderThanDays: data.orphanPruneOlderThanDays,
             limit: data.orphanPruneLimit,
@@ -417,8 +427,8 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
 
         console.log("Running basic cleanup operations...");
         const [truncateResult, embeddingsResult] = await Promise.all([
-          truncateLongLabels(data.userId),
-          generateMissingNodeEmbeddings(data.userId),
+          truncateLongLabels(data.userId, data.partitionKey),
+          generateMissingNodeEmbeddings(data.userId, data.partitionKey),
         ]);
 
         console.log(
@@ -429,7 +439,7 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
         const { runDedupSweep: runCleanupDedupSweep } = await import(
           "./jobs/dedup-sweep"
         );
-        await runCleanupDedupSweep(data.userId);
+        await runCleanupDedupSweep(data.userId, undefined, data.partitionKey);
 
         // Then run the iterative graph cleanup
         const { runIterativeCleanup } = await import(
