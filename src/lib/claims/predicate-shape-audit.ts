@@ -11,6 +11,8 @@ import {
   isInvalidRelationshipPredicateClaimShape,
   relationshipPredicateFrom,
 } from "~/lib/claims/predicate-shapes";
+import { partitionAccessCondition } from "~/lib/partition-access";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import {
   RelationshipPredicateEnum,
   type AssertedByKind,
@@ -50,6 +52,7 @@ export interface InvalidRelationshipPredicateShapeAudit {
 
 export interface AuditInvalidRelationshipPredicateShapesOptions {
   exampleLimit: number;
+  partitionKey?: ContextPartitionKey | undefined;
 }
 
 export interface DeprecatedRelationshipPredicateCount {
@@ -117,6 +120,11 @@ export async function auditInvalidRelationshipPredicateShapes(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionAccessCondition(
+          claims.partitionKey,
+          userId,
+          options.partitionKey,
+        ),
         eq(claims.status, "active"),
         inArray(claims.predicate, RelationshipPredicateEnum.options),
       ),

@@ -22,6 +22,7 @@ import {
 } from "vitest";
 import * as schema from "~/db/schema";
 import type { GraphNode } from "~/lib/jobs/cleanup-graph";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { installPartitionCompatibilityFixture } from "~/test/postgres/partition-compatibility-fixture";
 import { newTypeId, type TypeId } from "~/types/typeid";
 
@@ -36,6 +37,8 @@ const adminDsn = () =>
 
 const dsnFor = (dbName: string) =>
   `postgres://${TEST_DB_USER}:${TEST_DB_PASSWORD}@${TEST_DB_HOST}:${TEST_DB_PORT}/${dbName}`;
+
+const atlasInvalidationPartitions: Array<ContextPartitionKey | undefined> = [];
 
 process.env["DATABASE_URL"] ??= adminDsn();
 process.env["JINA_API_KEY"] ??= "test";
@@ -155,6 +158,7 @@ async function seedUserAndNodes(
     id: TypeId<"node">;
     nodeType: string;
     label: string;
+    partitionKey?: ContextPartitionKey;
   }>,
 ): Promise<void> {
   await client.query(
@@ -163,8 +167,8 @@ async function seedUserAndNodes(
   );
   for (const spec of nodeSpecs) {
     await client.query(
-      `INSERT INTO "nodes" ("id", "user_id", "node_type") VALUES ($1, $2, $3)`,
-      [spec.id, userId, spec.nodeType],
+      `INSERT INTO "nodes" ("id", "user_id", "node_type", "partition_key") VALUES ($1, $2, $3, $4)`,
+      [spec.id, userId, spec.nodeType, spec.partitionKey ?? null],
     );
     await client.query(
       `INSERT INTO "node_metadata" ("id", "node_id", "label", "canonical_label")
@@ -182,12 +186,20 @@ async function seedSource(
     type: string;
     externalId: string;
     scope: "personal" | "reference";
+    partitionKey?: ContextPartitionKey;
   },
 ): Promise<void> {
   await client.query(
-    `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "scope", "status")
-     VALUES ($1, $2, $3, $4, $5, 'completed')`,
-    [args.sourceId, args.userId, args.type, args.externalId, args.scope],
+    `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "scope", "status", "partition_key")
+     VALUES ($1, $2, $3, $4, $5, 'completed', $6)`,
+    [
+      args.sourceId,
+      args.userId,
+      args.type,
+      args.externalId,
+      args.scope,
+      args.partitionKey ?? null,
+    ],
   );
 }
 
@@ -205,6 +217,7 @@ interface InsertClaimArgs {
   assertedByNodeId?: TypeId<"node"> | null;
   status?: string;
   statedAt?: Date;
+  partitionKey?: ContextPartitionKey;
 }
 
 async function seedClaim(client: Client, args: InsertClaimArgs): Promise<void> {
@@ -212,8 +225,8 @@ async function seedClaim(client: Client, args: InsertClaimArgs): Promise<void> {
     `INSERT INTO "claims" (
        "id", "user_id", "subject_node_id", "object_node_id", "object_value",
        "predicate", "statement", "source_id", "scope", "asserted_by_kind",
-       "asserted_by_node_id", "stated_at", "status"
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+       "asserted_by_node_id", "stated_at", "status", "partition_key"
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
     [
       args.id,
       args.userId,
@@ -228,6 +241,7 @@ async function seedClaim(client: Client, args: InsertClaimArgs): Promise<void> {
       args.assertedByNodeId ?? null,
       args.statedAt ?? new Date(),
       args.status ?? "active",
+      args.partitionKey ?? null,
     ],
   );
 }
@@ -278,7 +292,15 @@ describeIfServer("cleanup operation helpers", () => {
       }),
     }));
     vi.doMock("~/lib/jobs/atlas-invalidation", () => ({
-      maybeEnqueueAtlasInvalidation: async () => false,
+      maybeEnqueueAtlasInvalidation: async (
+        _database: unknown,
+        _userId: string,
+        _since: Date,
+        partitionKey?: ContextPartitionKey,
+      ) => {
+        atlasInvalidationPartitions.push(partitionKey);
+        return false;
+      },
     }));
   });
 
@@ -301,6 +323,7 @@ describeIfServer("cleanup operation helpers", () => {
   });
 
   afterEach(async () => {
+    atlasInvalidationPartitions.length = 0;
     // Truncate user-scoped data so tests don't bleed.
     await rootClient.query(
       `TRUNCATE "node_redirects", "aliases", "claims", "source_links",
@@ -1788,5 +1811,179 @@ describeIfServer("cleanup operation helpers", () => {
     );
     expect(sameRow.rows[0]?.status).toBe("superseded");
     expect(sameRow.rows[0]?.superseded_by_claim_id).not.toBeNull();
+  });
+
+  it("applies operations only inside the requested active partition", async () => {
+    const userId = "user_partitioned_cleanup";
+    const otherUserId = "user_other_partitioned_cleanup";
+    const partitionA = "workspace:a" as ContextPartitionKey;
+    const partitionB = "workspace:b" as ContextPartitionKey;
+    const inactivePartition = "workspace:inactive" as ContextPartitionKey;
+    const nodeA = newTypeId("node");
+    const nodeB = newTypeId("node");
+    const otherUserNode = newTypeId("node");
+    const sourceA = newTypeId("source");
+    const sourceB = newTypeId("source");
+    const claimA = newTypeId("claim");
+    const claimB = newTypeId("claim");
+
+    await seedUserAndNodes(rootClient, userId, [
+      {
+        id: nodeA,
+        nodeType: "Concept",
+        label: "alpha",
+        partitionKey: partitionA,
+      },
+      {
+        id: nodeB,
+        nodeType: "Concept",
+        label: "beta",
+        partitionKey: partitionB,
+      },
+    ]);
+    await seedUserAndNodes(rootClient, otherUserId, [
+      {
+        id: otherUserNode,
+        nodeType: "Concept",
+        label: "foreign",
+        partitionKey: partitionA,
+      },
+    ]);
+    await rootClient.query(
+      `INSERT INTO "partition_migration_state" ("user_id", "state") VALUES ($1, 'migrated'), ($2, 'migrated')`,
+      [userId, otherUserId],
+    );
+    await rootClient.query(
+      `INSERT INTO "memory_partitions" ("user_id", "partition_key", "status")
+       VALUES ($1, $2, 'active'), ($1, $3, 'active'), ($1, $4, 'quarantined'), ($5, $2, 'active')`,
+      [userId, partitionA, partitionB, inactivePartition, otherUserId],
+    );
+    await seedSource(rootClient, {
+      sourceId: sourceA,
+      userId,
+      type: "manual",
+      externalId: "manual:partition-a",
+      scope: "personal",
+      partitionKey: partitionA,
+    });
+    await seedSource(rootClient, {
+      sourceId: sourceB,
+      userId,
+      type: "manual",
+      externalId: "manual:partition-b",
+      scope: "personal",
+      partitionKey: partitionB,
+    });
+    await seedClaim(rootClient, {
+      id: claimA,
+      userId,
+      subjectNodeId: nodeA,
+      predicate: "HAS_STATUS",
+      statement: "Alpha is active.",
+      sourceId: sourceA,
+      objectValue: "active",
+      assertedByKind: "assistant_inferred",
+      partitionKey: partitionA,
+    });
+    await seedClaim(rootClient, {
+      id: claimB,
+      userId,
+      subjectNodeId: nodeB,
+      predicate: "HAS_STATUS",
+      statement: "Beta is active.",
+      sourceId: sourceB,
+      objectValue: "active",
+      assertedByKind: "assistant_inferred",
+      partitionKey: partitionB,
+    });
+
+    const { applyCleanupOperations } = await import("./cleanup-operations");
+    const result = await applyCleanupOperations(
+      database,
+      userId,
+      [
+        { kind: "add_alias", nodeTempId: "node_a", aliasText: "allowed" },
+        {
+          kind: "add_claim",
+          subjectTempId: "node_a",
+          objectTempId: null,
+          objectValue: "candidate",
+          predicate: "HAS_STATUS",
+          statement: "Alpha is a candidate.",
+          sourceClaimId: claimA,
+        },
+        {
+          kind: "retract_claim",
+          claimId: claimA,
+          reason: "remove stale inferred status",
+        },
+        { kind: "add_alias", nodeTempId: "node_b", aliasText: "blocked" },
+        {
+          kind: "add_alias",
+          nodeTempId: "other_user_node",
+          aliasText: "blocked foreign",
+        },
+        { kind: "retract_claim", claimId: claimB, reason: "wrong partition" },
+      ],
+      buildMapper([
+        {
+          id: nodeA,
+          type: "Concept",
+          label: "alpha",
+          description: "",
+          tempId: "node_a",
+        },
+        {
+          id: nodeB,
+          type: "Concept",
+          label: "beta",
+          description: "",
+          tempId: "node_b",
+        },
+        {
+          id: otherUserNode,
+          type: "Concept",
+          label: "foreign",
+          description: "",
+          tempId: "other_user_node",
+        },
+      ]),
+      new Set([claimA, claimB]),
+      { partitionKey: partitionA },
+    );
+
+    expect(result.applied).toBe(3);
+    expect(result.skipped).toBe(1);
+    expect(result.errors).toHaveLength(2);
+    expect(atlasInvalidationPartitions).toEqual([partitionA, partitionA]);
+    const aliasRows = await rootClient.query<{
+      alias_text: string;
+      canonical_node_id: string;
+      partition_key: string | null;
+    }>(
+      `SELECT "alias_text", "canonical_node_id", "partition_key" FROM "aliases" ORDER BY "alias_text"`,
+    );
+    expect(aliasRows.rows).toEqual([
+      {
+        alias_text: "allowed",
+        canonical_node_id: nodeA,
+        partition_key: partitionA,
+      },
+    ]);
+    const claimRows = await rootClient.query<{ id: string; status: string }>(
+      `SELECT "id", "status" FROM "claims" ORDER BY "id"`,
+    );
+    expect(claimRows.rows).toEqual(
+      expect.arrayContaining([
+        { id: claimA, status: "retracted" },
+        { id: claimB, status: "active" },
+      ]),
+    );
+
+    await expect(
+      applyCleanupOperations(database, userId, [], buildMapper([]), undefined, {
+        partitionKey: inactivePartition,
+      }),
+    ).rejects.toMatchObject({ code: "PARTITION_UNAUTHORIZED" });
   });
 });

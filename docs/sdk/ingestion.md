@@ -31,9 +31,12 @@ parent's partition. When an existing source is revised, Memory resolves its
 owned partition before applying the strict mutation fence.
 
 Keep preparation, partition-specific evidence, cleanup, and maintenance on a
-strict client. AI graph cleanup is disabled for partitioned data, and the
-admin user-self-identity backfill remains strict-only pending a
-partition-scoped implementation.
+strict client. The AI graph cleanup engine now confines its reads, model
+context, and writes to one active `partitionKey`. Partitioned and workspace
+cleanup remain disabled at the request and worker boundaries. Enable or run
+cleanup in production only after the deployed partition-isolation checks pass
+and the owner gives explicit approval. The admin user-self-identity backfill
+remains strict-only pending a partition-scoped implementation.
 
 ## Source content and derived memory
 

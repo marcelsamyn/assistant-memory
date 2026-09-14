@@ -197,14 +197,15 @@ async function mergeGroup(
   tx: DrizzleDB,
   userId: string,
   group: DuplicateGroup,
+  partitionKey?: ContextPartitionKey,
 ): Promise<number> {
   const [keepId, ...removeIds] = group.nodeIds;
   if (!keepId || removeIds.length === 0) return 0;
 
   for (const removeId of removeIds) {
-    await rewireNodeClaims(tx, removeId, keepId, userId);
-    await rewireSourceLinks(tx, removeId, keepId);
-    await deleteNode(tx, removeId, userId);
+    await rewireNodeClaims(tx, removeId, keepId, userId, partitionKey);
+    await rewireSourceLinks(tx, removeId, keepId, userId, partitionKey);
+    await deleteNode(tx, removeId, userId, partitionKey);
   }
 
   return removeIds.length;
@@ -264,7 +265,7 @@ export async function runDedupSweep(
 
   await db.transaction(async (tx) => {
     for (const group of groups) {
-      const merged = await mergeGroup(tx, userId, group);
+      const merged = await mergeGroup(tx, userId, group, partitionKey);
       totalMerged += merged;
       console.log(
         `[dedup-sweep] Merged ${merged} duplicates of "${group.canonicalLabel}" (${group.nodeType}, scope=${group.effectiveScope})`,

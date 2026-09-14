@@ -342,7 +342,10 @@ describeIfServer("cleanupPlaceholders", () => {
         createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
       });
 
-      const addCalls: Array<{ name: string; data: unknown }> = [];
+      const addCalls: Array<{
+        name: string;
+        data: unknown;
+      }> = [];
       vi.resetModules();
       vi.doMock("~/utils/db", () => ({
         useDatabase: async () => database,
@@ -387,6 +390,32 @@ describeIfServer("cleanupPlaceholders", () => {
       } finally {
         unmockDb();
       }
+    });
+  });
+
+  it("keeps partitioned placeholder cleanup fail-closed", async () => {
+    const { seedClaimsCleanupForPlaceholders } = await import(
+      "./cleanup-placeholders"
+    );
+
+    await expect(
+      seedClaimsCleanupForPlaceholders(
+        {
+          userId: "user_partitioned_placeholder",
+          partitionKey: "workspace:blocked",
+        },
+        {
+          placeholders: [
+            {
+              id: newTypeId("node"),
+              label: "Alex",
+              candidates: [],
+            },
+          ],
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: "PARTITIONED_CLEANUP_GRAPH_UNSUPPORTED",
     });
   });
 });

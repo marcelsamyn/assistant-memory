@@ -32,6 +32,26 @@ describe("POST /cleanup", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           userId: "user_cleanup",
+          partitionKey: "workspace:blocked",
+          since: "2026-01-01T00:00:00.000Z",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(500);
+    expect(mocks.add).not.toHaveBeenCalled();
+  });
+
+  it("keeps strict partition cleanup fail-closed", async () => {
+    mocks.getRequestAccessScope.mockReturnValue("partition");
+
+    const response = await routeFetch(
+      new Request("http://memory.test/cleanup", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          userId: "user_cleanup",
+          partitionKey: "workspace:allowed",
           since: "2026-01-01T00:00:00.000Z",
         }),
       }),

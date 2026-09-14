@@ -36,8 +36,14 @@ import {
   nodeMetadata,
   nodeEmbeddings,
   sourceLinks,
+  sources,
 } from "~/db/schema";
+import {
+  assertPartitionReadAllowed,
+  partitionAccessCondition,
+} from "~/lib/partition-access";
 import { contextPartitionKeySchema } from "~/lib/schemas/partition";
+import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import type { AssertedByKind, NodeType, Predicate, Scope } from "~/types/graph";
 import { TypeId, typeIdSchema } from "~/types/typeid";
 import { useDatabase } from "~/utils/db";
@@ -66,13 +72,13 @@ export const CleanupGraphJobInputSchema = z.object({
     .describe("Optional manual seed node IDs"),
 });
 
-/** Partitioned cleanup is fenced until every legacy dispatcher operation is scoped. */
+/** AI cleanup stays fenced until the partition-safe path is approved for rollout. */
 export class PartitionedCleanupGraphUnsupportedError extends Error {
   readonly code = "PARTITIONED_CLEANUP_GRAPH_UNSUPPORTED" as const;
 
   constructor() {
     super(
-      "Partitioned graph cleanup is not available until the legacy cleanup dispatcher is partition-scoped",
+      "Partitioned and workspace graph cleanup are disabled pending explicit rollout approval",
     );
     this.name = "PartitionedCleanupGraphUnsupportedError";
   }
@@ -181,8 +187,11 @@ export async function cleanupGraphIteration(
     maxSubgraphNodes,
     maxSubgraphClaims,
     llmModelId,
+    partitionKey,
     minSubgraphNodes = 5,
   } = params;
+  const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
   // 1. build subgraph from provided seeds
   const sub = await buildSubgraph(
     userId,
@@ -191,6 +200,7 @@ export async function cleanupGraphIteration(
     graphHopDepth,
     maxSubgraphNodes,
     maxSubgraphClaims,
+    partitionKey,
   );
   if (sub.nodes.length < minSubgraphNodes) {
     console.debug(
@@ -205,11 +215,11 @@ export async function cleanupGraphIteration(
     userId,
     tempSubgraph,
     llmModelId,
+    partitionKey,
   );
   // 4. apply operations to DB. The allowed-claim-id set bounds the dispatcher
   // to claims actually rendered into the prompt; the LLM cannot reference
   // out-of-subgraph claim ids it hallucinated or recalled from earlier turns.
-  const db = await useDatabase();
   const allowedClaimIds = new Set<TypeId<"claim">>(sub.claims.map((c) => c.id));
   const applyResult = await applyCleanupOperations(
     db,
@@ -217,6 +227,7 @@ export async function cleanupGraphIteration(
     operations,
     mapper,
     allowedClaimIds,
+    { partitionKey },
   );
   const result: CleanupGraphResult = {
     applied: applyResult.applied,
@@ -236,16 +247,24 @@ export async function fetchEntryNodes(
   userId: string,
   since: Date,
   limit: number,
+  partitionKey?: ContextPartitionKey,
 ): Promise<TypeId<"node">[]> {
   // Select nodes with highest edge count since given date
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
   const rows = await db
     .select({
       nodeId: claims.subjectNodeId,
       count: sql<number>`COUNT(*)`.as("count"),
     })
     .from(claims)
-    .where(and(eq(claims.userId, userId), gte(claims.createdAt, since)))
+    .where(
+      and(
+        eq(claims.userId, userId),
+        partitionAccessCondition(claims.partitionKey, userId, partitionKey),
+        gte(claims.createdAt, since),
+      ),
+    )
     .groupBy(claims.subjectNodeId)
     .orderBy(desc(sql`count`))
     .limit(limit);
@@ -284,6 +303,7 @@ async function fetchNodeEvidenceCounts(
   db: DrizzleDB,
   userId: string,
   nodeIds: readonly TypeId<"node">[],
+  partitionKey?: ContextPartitionKey,
 ): Promise<
   Map<
     TypeId<"node">,
@@ -310,6 +330,7 @@ async function fetchNodeEvidenceCounts(
       .where(
         and(
           eq(claims.userId, userId),
+          partitionAccessCondition(claims.partitionKey, userId, partitionKey),
           or(
             inArray(claims.subjectNodeId, uniqueNodeIds),
             inArray(claims.objectNodeId, uniqueNodeIds),
@@ -320,13 +341,21 @@ async function fetchNodeEvidenceCounts(
     db
       .select({ nodeId: sourceLinks.nodeId })
       .from(sourceLinks)
-      .where(inArray(sourceLinks.nodeId, uniqueNodeIds)),
+      .innerJoin(sources, eq(sources.id, sourceLinks.sourceId))
+      .where(
+        and(
+          eq(sources.userId, userId),
+          partitionAccessCondition(sources.partitionKey, userId, partitionKey),
+          inArray(sourceLinks.nodeId, uniqueNodeIds),
+        ),
+      ),
     db
       .select({ nodeId: aliases.canonicalNodeId })
       .from(aliases)
       .where(
         and(
           eq(aliases.userId, userId),
+          partitionAccessCondition(aliases.partitionKey, userId, partitionKey),
           inArray(aliases.canonicalNodeId, uniqueNodeIds),
         ),
       ),
@@ -361,6 +390,7 @@ async function fetchSubgraphClaims(
   userId: string,
   graphNodes: readonly GraphNode[],
   limit: number,
+  partitionKey?: ContextPartitionKey,
 ): Promise<GraphClaim[]> {
   const uniqueNodeIds = [...new Set(graphNodes.map((node) => node.id))];
   if (uniqueNodeIds.length === 0) return [];
@@ -381,6 +411,7 @@ async function fetchSubgraphClaims(
     .where(
       and(
         eq(claims.userId, userId),
+        partitionAccessCondition(claims.partitionKey, userId, partitionKey),
         eq(claims.status, "active"),
         inArray(claims.subjectNodeId, uniqueNodeIds),
         or(
@@ -429,6 +460,7 @@ async function buildSubgraph(
   hopDepth: number,
   maxNodes: number,
   maxClaims: number,
+  partitionKey?: ContextPartitionKey,
 ): Promise<Subgraph> {
   const db = await useDatabase();
   // load seed metadata
@@ -441,7 +473,13 @@ async function buildSubgraph(
     })
     .from(nodes)
     .innerJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
-    .where(inArray(nodes.id, seedIds));
+    .where(
+      and(
+        eq(nodes.userId, userId),
+        partitionAccessCondition(nodes.partitionKey, userId, partitionKey),
+        inArray(nodes.id, seedIds),
+      ),
+    );
   // store nodes in insertion order
   const nodeMap = new Map<TypeId<"node">, GraphNode>();
   for (const r of seedMetaRows) {
@@ -456,6 +494,7 @@ async function buildSubgraph(
         text: `${seed.label}: ${seed.description}`,
         limit: semanticLimit,
         minimumSimilarity: 0.5,
+        ...(partitionKey !== undefined ? { partitionKey } : {}),
       }),
     ),
   );
@@ -479,6 +518,7 @@ async function buildSubgraph(
   for (let hop = 1; hop <= hopDepth; hop++) {
     const conns = await findOneHopNodes(db, userId, currentIds, {
       includeAssistantInferred: true,
+      ...(partitionKey !== undefined ? { partitionKey } : {}),
     });
     const nextIds: typeof currentIds = [];
     for (const c of conns) {
@@ -503,6 +543,7 @@ async function buildSubgraph(
     db,
     userId,
     baseNodesArr.map((node) => node.id),
+    partitionKey,
   );
   const nodesArr = baseNodesArr.map((node) => {
     const counts = evidenceCounts.get(node.id) ?? emptyEvidenceCounts();
@@ -515,7 +556,13 @@ async function buildSubgraph(
         counts.aliasCount === 0,
     };
   });
-  const claimsArr = await fetchSubgraphClaims(db, userId, nodesArr, maxClaims);
+  const claimsArr = await fetchSubgraphClaims(
+    db,
+    userId,
+    nodesArr,
+    maxClaims,
+    partitionKey,
+  );
   return { nodes: nodesArr, claims: claimsArr };
 }
 
@@ -681,6 +728,7 @@ export async function proposeGraphCleanup(
   userId: string,
   temp: TempSubgraph,
   modelId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<CleanupOperations> {
   const client = await createCompletionClient(userId, {
     task: "graph_cleanup",
@@ -689,9 +737,23 @@ export async function proposeGraphCleanup(
   // Bundle is the structured equivalent of the legacy "user atlas" string —
   // five sections (pinned, atlas, open_commitments, recent_supersessions,
   // preferences) with usage hints + evidence refs.
-  const bundle = await getConversationBootstrapContext({ userId });
+  const bundle = await getConversationBootstrapContext({
+    userId,
+    ...(partitionKey !== undefined ? { partitionKey } : {}),
+  });
+  const cleanupBundle =
+    partitionKey === undefined
+      ? bundle
+      : {
+          ...bundle,
+          // Pinned profile text is user-global. Do not expose it to a model
+          // that was authorized for one strict evidence partition.
+          sections: bundle.sections.filter(
+            (section) => section.kind !== "pinned",
+          ),
+        };
 
-  const prompt = buildCleanupPrompt(temp, bundle);
+  const prompt = buildCleanupPrompt(temp, cleanupBundle);
 
   const completion = await parseStructuredCompletion(
     client,
@@ -721,16 +783,29 @@ export async function rewireNodeClaims(
   removeId: TypeId<"node">,
   keepId: TypeId<"node">,
   userId: string,
+  partitionKey?: ContextPartitionKey,
 ) {
   await tx
     .update(claims)
     .set({ subjectNodeId: keepId, updatedAt: new Date() })
-    .where(and(eq(claims.subjectNodeId, removeId), eq(claims.userId, userId)));
+    .where(
+      and(
+        eq(claims.subjectNodeId, removeId),
+        eq(claims.userId, userId),
+        partitionAccessCondition(claims.partitionKey, userId, partitionKey),
+      ),
+    );
 
   await tx
     .update(claims)
     .set({ objectNodeId: keepId, updatedAt: new Date() })
-    .where(and(eq(claims.objectNodeId, removeId), eq(claims.userId, userId)));
+    .where(
+      and(
+        eq(claims.objectNodeId, removeId),
+        eq(claims.userId, userId),
+        partitionAccessCondition(claims.partitionKey, userId, partitionKey),
+      ),
+    );
 
   // Rewire participant provenance BEFORE deletion. The FK uses ON DELETE SET
   // NULL, so without this update historical participant claims would silently
@@ -739,12 +814,17 @@ export async function rewireNodeClaims(
     .update(claims)
     .set({ assertedByNodeId: keepId, updatedAt: new Date() })
     .where(
-      and(eq(claims.assertedByNodeId, removeId), eq(claims.userId, userId)),
+      and(
+        eq(claims.assertedByNodeId, removeId),
+        eq(claims.userId, userId),
+        partitionAccessCondition(claims.partitionKey, userId, partitionKey),
+      ),
     );
 
   await tx.execute(sql`
     DELETE FROM claims
     WHERE user_id = ${userId}
+      AND partition_key IS NOT DISTINCT FROM ${partitionKey ?? null}
       AND subject_node_id = ${keepId}
       AND object_node_id = ${keepId}
   `);
@@ -753,7 +833,9 @@ export async function rewireNodeClaims(
     DELETE FROM claims c
     USING claims kept
     WHERE c.user_id = ${userId}
+      AND c.partition_key IS NOT DISTINCT FROM ${partitionKey ?? null}
       AND kept.user_id = c.user_id
+      AND kept.partition_key IS NOT DISTINCT FROM c.partition_key
       AND kept.id <> c.id
       AND kept.subject_node_id = c.subject_node_id
       AND kept.predicate = c.predicate
@@ -775,12 +857,21 @@ export async function rewireSourceLinks(
   tx: DrizzleDB,
   removeId: TypeId<"node">,
   keepId: TypeId<"node">,
+  userId: string,
+  partitionKey?: ContextPartitionKey,
 ) {
   const links = await tx
-    .select()
+    .select({ link: sourceLinks })
     .from(sourceLinks)
-    .where(eq(sourceLinks.nodeId, removeId));
-  for (const link of links) {
+    .innerJoin(sources, eq(sources.id, sourceLinks.sourceId))
+    .where(
+      and(
+        eq(sourceLinks.nodeId, removeId),
+        eq(sources.userId, userId),
+        partitionAccessCondition(sources.partitionKey, userId, partitionKey),
+      ),
+    );
+  for (const { link } of links) {
     await tx
       .insert(sourceLinks)
       .values({ ...link, id: undefined, nodeId: keepId })
@@ -788,7 +879,14 @@ export async function rewireSourceLinks(
         target: [sourceLinks.sourceId, sourceLinks.nodeId],
       });
   }
-  await tx.delete(sourceLinks).where(eq(sourceLinks.nodeId, removeId));
+  if (links.length > 0) {
+    await tx.delete(sourceLinks).where(
+      inArray(
+        sourceLinks.id,
+        links.map(({ link }) => link.id),
+      ),
+    );
+  }
 }
 
 /**
@@ -799,10 +897,17 @@ export async function deleteNode(
   tx: DrizzleDB,
   nodeId: TypeId<"node">,
   userId: string,
+  partitionKey?: ContextPartitionKey,
 ) {
   await tx
     .delete(nodes)
-    .where(and(eq(nodes.id, nodeId), eq(nodes.userId, userId)));
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        eq(nodes.userId, userId),
+        partitionAccessCondition(nodes.partitionKey, userId, partitionKey),
+      ),
+    );
 }
 
 /**
@@ -825,8 +930,10 @@ function logCleanupSummary(
  */
 export async function truncateLongLabels(
   userId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<{ updatedCount: number }> {
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
 
   // Find all nodeMetadata records with labels longer than 255 characters for this user
   const longLabelNodes = await db
@@ -840,6 +947,7 @@ export async function truncateLongLabels(
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionAccessCondition(nodes.partitionKey, userId, partitionKey),
         sql`${nodeMetadata.label} IS NOT NULL`,
         sql`length(${nodeMetadata.label}) > 255`,
       ),
@@ -880,8 +988,10 @@ export async function truncateLongLabels(
  */
 export async function generateMissingNodeEmbeddings(
   userId: string,
+  partitionKey?: ContextPartitionKey,
 ): Promise<{ generatedCount: number }> {
   const db = await useDatabase();
+  await assertPartitionReadAllowed(db, userId, partitionKey);
 
   // Find nodes that have labels but no embeddings for this user
   const nodesWithoutEmbeddings = await db
@@ -896,6 +1006,7 @@ export async function generateMissingNodeEmbeddings(
     .where(
       and(
         eq(nodes.userId, userId),
+        partitionAccessCondition(nodes.partitionKey, userId, partitionKey),
         sql`${nodeMetadata.label} IS NOT NULL`,
         sql`trim(${nodeMetadata.label}) != ''`,
         sql`${nodeEmbeddings.nodeId} IS NULL`,
