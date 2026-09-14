@@ -200,7 +200,9 @@ This is the integration that works with the current code.
    }
    ```
 
-   `ownedBy` is an optional Person node ID. `dueBefore` is an optional inclusive `YYYY-MM-DD` cutoff; when present, undated tasks are excluded. The response is:
+   `ownedBy` is an optional Person node ID. `dueBefore` is an optional inclusive `YYYY-MM-DD` cutoff; when present, undated tasks are excluded.
+
+   `owner` is `null` for an assignment to the user's explicitly marked self Person node, as well as for no visible assignment. Stored self assignments and `ownedBy` filters remain intact. See [self assignment](docs/sdk/commitments.md#self-assignment). The response is:
 
    ```json
    {

@@ -34,7 +34,7 @@ import {
   contextPartitionKeySchema,
   MEMORY_PERSONAL_PARTITION_KEY,
 } from "~/lib/schemas/partition";
-import { newTypeId } from "~/types/typeid";
+import { newTypeId, type TypeId } from "~/types/typeid";
 
 const TEST_DB_HOST = process.env["TEST_PG_HOST"] ?? "localhost";
 const TEST_DB_PORT = Number(process.env["TEST_PG_PORT"] ?? 5431);
@@ -146,6 +146,292 @@ describeIfServer("workspace partition access", () => {
     );
     await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
     await admin.end();
+  });
+
+  it("classifies explicit self assignments as own work across active partitions without rewriting claims", async () => {
+    const selfUserId = "workspace-self-commitments";
+    await database.insert(users).values({ id: selfUserId });
+    await database.insert(memoryPartitions).values([
+      { userId: selfUserId, partitionKey: partitionA, status: "active" },
+      { userId: selfUserId, partitionKey: partitionB, status: "active" },
+    ]);
+    await database.insert(partitionMigrationState).values({
+      userId: selfUserId,
+      state: "migrated",
+    });
+    vi.resetModules();
+    vi.doMock("~/utils/db", () => ({ useDatabase: async () => database }));
+    const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
+      "~/utils/test-overrides"
+    );
+    setSkipEmbeddingPersistence(true);
+    try {
+      const { createCommitment, setCommitmentOwner } = await import(
+        "./commitments"
+      );
+      const { createCommitmentRequestSchema } = await import(
+        "./schemas/create-commitment"
+      );
+      const { setCommitmentOwnerRequestSchema } = await import(
+        "./schemas/set-commitment-owner"
+      );
+      const { listCommitmentsRequestSchema } = await import(
+        "./schemas/list-commitments"
+      );
+      const { getOpenCommitments, getCandidateCommitments } = await import(
+        "./query/open-commitments"
+      );
+      const { listCommitments } = await import("./query/commitments-list");
+      const { getCommitment } = await import("./query/commitment-detail");
+
+      const taskIds: TypeId<"node">[] = [];
+      for (const [partitionKey, label] of [
+        [partitionA, "Marcel Samyn"],
+        [partitionB, "Marcel (User)"],
+      ] as const) {
+        const selfId = newTypeId("node");
+        const contactId = newTypeId("node");
+        await database.insert(nodes).values([
+          { id: selfId, userId: selfUserId, partitionKey, nodeType: "Person" },
+          {
+            id: contactId,
+            userId: selfUserId,
+            partitionKey,
+            nodeType: "Person",
+          },
+        ]);
+        await database.insert(nodeMetadata).values([
+          { nodeId: selfId, label, additionalData: { isUserSelf: true } },
+          { nodeId: contactId, label },
+        ]);
+        const created = await createCommitment({
+          ...createCommitmentRequestSchema.parse({
+            userId: selfUserId,
+            label: `Own work ${partitionKey}`,
+            ownedBy: selfId,
+          }),
+          accessScope: "workspace",
+        });
+        taskIds.push(created.taskId);
+        expect.soft(created.owner).toBeNull();
+        expect(created.ownerClaimId).not.toBeNull();
+
+        const scope = { userId: selfUserId, partitionKey };
+        const readList = () =>
+          listCommitments(listCommitmentsRequestSchema.parse(scope));
+        expect.soft((await getOpenCommitments(scope))[0]?.owner).toBeNull();
+        expect.soft((await readList()).commitments[0]?.owner).toBeNull();
+        const detail = await getCommitment({
+          ...scope,
+          taskId: created.taskId,
+          includeHistory: true,
+          includeSources: true,
+        });
+        expect.soft(detail.owner).toBeNull();
+        expect(detail.history).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              claimId: created.ownerClaimId,
+              predicate: "ASSIGNED_TO",
+              objectNodeId: selfId,
+              status: "active",
+            }),
+          ]),
+        );
+        // Filtering still describes stored assignments, independently of display classification.
+        expect(
+          (await getOpenCommitments({ ...scope, ownedBy: selfId })).map(
+            (task) => task.taskId,
+          ),
+        ).toEqual([created.taskId]);
+        expect(
+          (
+            await listCommitments(
+              listCommitmentsRequestSchema.parse({ ...scope, ownedBy: selfId }),
+            )
+          ).commitments.map((task) => task.taskId),
+        ).toEqual([created.taskId]);
+        expect(
+          (
+            await listCommitments(
+              listCommitmentsRequestSchema.parse({ ...scope, unowned: true }),
+            )
+          ).commitments,
+        ).toEqual([]);
+
+        const assigned = await setCommitmentOwner({
+          ...setCommitmentOwnerRequestSchema.parse({
+            userId: selfUserId,
+            taskId: created.taskId,
+            ownedBy: contactId,
+          }),
+          accessScope: "workspace",
+        });
+        const externalOwner = { nodeId: contactId, label };
+        expect(assigned.owner).toEqual(externalOwner);
+        expect((await getOpenCommitments(scope))[0]?.owner).toEqual(
+          externalOwner,
+        );
+        expect((await readList()).commitments[0]?.owner).toEqual(externalOwner);
+
+        await database
+          .update(nodeMetadata)
+          .set({ additionalData: { isUserSelf: "true" } })
+          .where(eq(nodeMetadata.nodeId, contactId));
+        expect((await getOpenCommitments(scope))[0]?.owner).toEqual(
+          externalOwner,
+        );
+        expect((await readList()).commitments[0]?.owner).toEqual(externalOwner);
+
+        const reassigned = await setCommitmentOwner({
+          ...setCommitmentOwnerRequestSchema.parse({
+            userId: selfUserId,
+            taskId: created.taskId,
+            ownedBy: selfId,
+          }),
+          accessScope: "workspace",
+        });
+        expect.soft(reassigned.owner).toBeNull();
+        expect(reassigned.claimId).not.toBeNull();
+        expect.soft((await getOpenCommitments(scope))[0]?.owner).toBeNull();
+        expect.soft((await readList()).commitments[0]?.owner).toBeNull();
+        expect
+          .soft(
+            (
+              await getCommitment({
+                ...scope,
+                taskId: created.taskId,
+                includeHistory: false,
+                includeSources: false,
+              })
+            ).owner,
+          )
+          .toBeNull();
+        if (reassigned.claimId === null)
+          throw new Error("Self assignment must retain its claim");
+        const [stored] = await database
+          .select()
+          .from(claims)
+          .where(eq(claims.id, reassigned.claimId));
+        expect(stored).toMatchObject({
+          objectNodeId: selfId,
+          status: "active",
+          partitionKey,
+        });
+
+        // Existing inferred assignments use the same projection as trusted work.
+        await database
+          .update(claims)
+          .set({ assertedByKind: "assistant_inferred" })
+          .where(eq(claims.id, created.statusClaimId));
+        expect
+          .soft((await getCandidateCommitments(scope))[0]?.owner)
+          .toBeNull();
+        expect
+          .soft(
+            (
+              await listCommitments(
+                listCommitmentsRequestSchema.parse({
+                  ...scope,
+                  provenance: "candidate",
+                }),
+              )
+            ).commitments[0]?.owner,
+          )
+          .toBeNull();
+        await database
+          .update(claims)
+          .set({ assertedByKind: "user" })
+          .where(eq(claims.id, created.statusClaimId));
+      }
+      const workspace = await getOpenCommitments({
+        userId: selfUserId,
+        accessScope: "workspace",
+      });
+      expect(workspace.map((task) => task.taskId).sort()).toEqual(
+        [...taskIds].sort(),
+      );
+      expect.soft(workspace.every((task) => task.owner === null)).toBe(true);
+      await expect(
+        getOpenCommitments({ userId: selfUserId }),
+      ).rejects.toMatchObject({ code: "PARTITION_REQUIRED" });
+      expect(
+        await getOpenCommitments({
+          userId: otherUserId,
+          accessScope: "workspace",
+        }),
+      ).toEqual([]);
+      // Model historical inactive rows; current writes prohibit quarantining in-use partitions.
+      await client.query(
+        'ALTER TABLE "memory_partitions" DISABLE TRIGGER USER',
+      );
+      try {
+        await database
+          .update(memoryPartitions)
+          .set({ status: "quarantined" })
+          .where(
+            and(
+              eq(memoryPartitions.userId, selfUserId),
+              eq(memoryPartitions.partitionKey, partitionB),
+            ),
+          );
+      } finally {
+        await client.query(
+          'ALTER TABLE "memory_partitions" ENABLE TRIGGER USER',
+        );
+      }
+      expect(
+        (
+          await getOpenCommitments({
+            userId: selfUserId,
+            accessScope: "workspace",
+          })
+        ).map((task) => task.taskId),
+      ).toEqual([taskIds[0]]);
+
+      const firstTaskId = taskIds[0];
+      if (firstTaskId === undefined) throw new Error("Expected an active task");
+      const [taskSource] = await database
+        .select({ id: sources.id, version: sources.version })
+        .from(claims)
+        .innerJoin(sources, eq(sources.id, claims.sourceId))
+        .where(
+          and(
+            eq(claims.subjectNodeId, firstTaskId),
+            eq(claims.predicate, "HAS_TASK_STATUS"),
+          ),
+        );
+      if (!taskSource) throw new Error("Expected the task's source");
+      const { applySourceLifecycleCommand } = await import(
+        "./source-lifecycle"
+      );
+      await applySourceLifecycleCommand(database, {
+        userId: selfUserId,
+        sourceId: taskSource.id,
+        expectedPartitionKey: partitionA,
+        expectedSourceVersion: taskSource.version,
+        commandId: "68c4e9db-cd50-4911-8e9a-e2abbd00a491",
+        action: "tombstone",
+      });
+      expect(
+        await getOpenCommitments({
+          userId: selfUserId,
+          accessScope: "workspace",
+        }),
+      ).toEqual([]);
+      expect(
+        (
+          await listCommitments({
+            ...listCommitmentsRequestSchema.parse({ userId: selfUserId }),
+            accessScope: "workspace",
+          })
+        ).commitments,
+      ).toEqual([]);
+    } finally {
+      resetTestOverrides();
+      vi.doUnmock("~/utils/db");
+      vi.resetModules();
+    }
   });
 
   it("returns only active partitions for the requested user", async () => {

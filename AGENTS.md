@@ -1,5 +1,9 @@
 # Project Instructions
 
+## Commitment ownership
+
+Commitment responses use `owner: null` for owned Person nodes explicitly marked with boolean `additionalData.isUserSelf`. Apply the shared `commitmentOwnerIsSelf` check after endpoint access checks. Preserve stored assignments, claim IDs, history, and assignment filters; never infer self identity from labels. Keep create, owner-change, open, candidate, list, and detail responses consistent.
+
 ## Nitro Route Tree
 
 - Never put tests, fixtures, mocks, or any Vitest imports under `src/routes`.

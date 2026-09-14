@@ -1,10 +1,11 @@
 /** Detail read model for a single commitment (current state + history + sources). */
 import { readDueQualifier, type DueQualifierFields } from "./due-qualifier";
 import { and, eq, inArray, isNull } from "drizzle-orm";
-import { claims, sources } from "~/db/schema";
+import { claims, nodes, sources } from "~/db/schema";
 import { coerceTaskStatus } from "~/lib/claims/task-status";
 import { TaskNotFoundError } from "~/lib/commitments";
 import { getNodeById } from "~/lib/node";
+import { commitmentOwnerIsSelf } from "~/lib/query/commitment-owner";
 import { commitmentRequestEvidenceSchema } from "~/lib/schemas/commitment-request-evidence";
 import type {
   CommitmentSource,
@@ -46,9 +47,8 @@ function deriveSourceTitle(metadata: unknown): string | null {
 }
 
 /**
- * Read a single commitment's detail model in (at most) two queries:
- * `getNodeById` for the node + full lifecycle slice of the three task
- * predicates, then one batched `inArray` over `sources` for evidence.
+ * Read the node and lifecycle claims, then resolve self ownership,
+ * deadline metadata, and source evidence.
  *
  * Derives the current `status`/`owner`/`dueOn` from the `active` claims and
  * (when `includeHistory`) maps the rest into `history` sorted `statedAt` desc.
@@ -100,7 +100,7 @@ export async function getCommitment(
     ? coerceTaskStatus(activeStatus.objectValue)
     : null;
 
-  const owner =
+  let owner =
     activeOwner && activeOwner.objectNodeId !== null
       ? {
           nodeId: activeOwner.objectNodeId,
@@ -108,6 +108,20 @@ export async function getCommitment(
           claimId: activeOwner.id,
         }
       : null;
+
+  if (owner !== null) {
+    const [selfOwner] = await db
+      .select({ id: nodes.id })
+      .from(nodes)
+      .where(
+        and(
+          eq(nodes.id, owner.nodeId),
+          commitmentOwnerIsSelf(nodes.id, userId),
+        ),
+      )
+      .limit(1);
+    if (selfOwner) owner = null;
+  }
 
   const history: TaskLifecycleEntry[] = includeHistory
     ? taskClaims
