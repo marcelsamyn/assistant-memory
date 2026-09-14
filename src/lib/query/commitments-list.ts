@@ -33,6 +33,7 @@ import {
   partitionAccessCondition,
 } from "~/lib/partition-access";
 import { claimEndpointOwnershipCondition } from "~/lib/query/claim-endpoint-access";
+import { commitmentOwnerIsSelf } from "~/lib/query/commitment-owner";
 import { commitmentRequestEvidenceSchema } from "~/lib/schemas/commitment-request-evidence";
 import type {
   CommitmentListItem,
@@ -54,6 +55,7 @@ interface ListRow {
   status: string | null;
   ownerNodeId: TypeId<"node"> | null;
   ownerLabel: string | null;
+  ownerIsSelf: boolean;
   dueOn: string | null;
   dueMetadata: unknown;
   dueInstant: Date | null;
@@ -274,6 +276,7 @@ export async function listCommitments(
       status: claims.objectValue,
       ownerNodeId: ownerClaim.objectNodeId,
       ownerLabel: ownerMetadata.label,
+      ownerIsSelf: commitmentOwnerIsSelf(ownerClaim.objectNodeId, userId),
       dueOn: dueMetadata.label,
       dueMetadata: dueClaim.metadata,
       dueInstant: dueClaim.objectInstant,
@@ -400,7 +403,7 @@ export async function listCommitments(
       label: row.label,
       status,
       owner:
-        row.ownerNodeId === null
+        row.ownerNodeId === null || row.ownerIsSelf
           ? null
           : { nodeId: row.ownerNodeId, label: row.ownerLabel },
       dueOn: row.dueOn,

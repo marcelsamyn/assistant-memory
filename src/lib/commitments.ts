@@ -11,6 +11,7 @@ import {
   ensurePersonalPartition,
   partitionAccessCondition,
 } from "~/lib/partition-access";
+import { commitmentOwnerIsSelf } from "~/lib/query/commitment-owner";
 import type {
   CommitmentActionRequest,
   ConfirmCommitmentResponse,
@@ -293,9 +294,14 @@ export async function createCommitment(
   // open-commitments view. Existence is enforced here (createClaim re-checks)
   // so a bad owner fails before any node is written.
   let ownerLabel: string | null = null;
+  let ownerIsSelf = false;
   if (ownedBy !== undefined) {
     const [ownerRow] = await db
-      .select({ label: nodeMetadata.label, partitionKey: nodes.partitionKey })
+      .select({
+        label: nodeMetadata.label,
+        partitionKey: nodes.partitionKey,
+        isSelf: commitmentOwnerIsSelf(nodes.id, userId),
+      })
       .from(nodes)
       .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
       .where(
@@ -323,6 +329,7 @@ export async function createCommitment(
     // keeps a workspace request from moving a commitment across rooms.
     writePartitionKey = ownerPartitionKey;
     ownerLabel = ownerRow.label ?? null;
+    ownerIsSelf = ownerRow.isSelf;
   }
 
   if (writePartitionKey === undefined && ownedBy === undefined) {
@@ -407,7 +414,9 @@ export async function createCommitment(
     timeZone: timeZone ?? null,
     dueAt: dueQualifier.objectInstant ?? null,
     owner:
-      ownedBy !== undefined ? { nodeId: ownedBy, label: ownerLabel } : null,
+      ownedBy !== undefined && !ownerIsSelf
+        ? { nodeId: ownedBy, label: ownerLabel }
+        : null,
     statusClaimId,
     dueClaimId: dueIndex === null ? null : (ids[dueIndex] ?? null),
     ownerClaimId: ownerIndex === null ? null : (ids[ownerIndex] ?? null),
@@ -690,7 +699,11 @@ export async function setCommitmentOwner(
   // Resolve the owner up-front: it yields a natural-language statement and lets
   // the response echo the same `{ nodeId, label }` shape as the read models.
   const [ownerRow] = await db
-    .select({ label: nodeMetadata.label, partitionKey: nodes.partitionKey })
+    .select({
+      label: nodeMetadata.label,
+      partitionKey: nodes.partitionKey,
+      isSelf: commitmentOwnerIsSelf(nodes.id, userId),
+    })
     .from(nodes)
     .leftJoin(nodeMetadata, eq(nodeMetadata.nodeId, nodes.id))
     .where(
@@ -728,7 +741,7 @@ export async function setCommitmentOwner(
 
   return {
     taskId,
-    owner: { nodeId: ownedBy, label: ownerLabel },
+    owner: ownerRow.isSelf ? null : { nodeId: ownedBy, label: ownerLabel },
     claimId: created.id,
     retractedClaimIds: [],
   };

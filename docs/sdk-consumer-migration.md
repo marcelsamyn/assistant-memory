@@ -10,6 +10,16 @@ has the _what to change_.
 
 ---
 
+## Commitment self assignment
+
+Commitment create, owner-change, open, candidate, list, and detail responses now return `owner: null` for assignments to owned Person nodes explicitly marked with `isUserSelf: true`. Treat this as the user's work. A contact with the same label remains an external owner unless it has that marker.
+
+Render ownership from the response, including mutation confirmations. Do not infer an external owner from the submitted `ownedBy` ID. A self assignment still creates an `ASSIGNED_TO` claim; a null response does not mean the claim was cleared. Claim IDs, detail history, and graph reads preserve it. `ownedBy` and `unowned` filters retain their stored-assignment meaning.
+
+This server fix also covers existing assignments without a data migration or SDK shape change. Deploy the server to activate it. See [self assignment](sdk/commitments.md#self-assignment).
+
+---
+
 ## 2.6.0 — user-wide workspace access
 
 Upgrade the Memory server before enabling workspace access in a client.

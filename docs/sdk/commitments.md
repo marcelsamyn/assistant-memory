@@ -14,6 +14,14 @@ Email-derived requests and promises stay tentative. Their `requestEvidence` desc
 
 This is a derived view of stored sources, not the purpose of every source. See [Ingestion](./ingestion.md) for the source-context contract and current email extraction limits.
 
+### Self assignment
+
+The `owner` response field identifies another assignee. It is `null` when a task has no visible assignment or is assigned to an owned `Person` whose `node_metadata.additionalData.isUserSelf` is the boolean `true`. Names and labels do not establish self identity. Each self node in an accessible partition is recognized independently.
+
+You can pass a self node ID to `createCommitment` or `setCommitmentOwner`. Memory stores the `ASSIGNED_TO` claim and returns its claim ID, but returns `owner: null`. Open, candidate, list, and detail reads apply the same rule to existing assignments. Detail history and graph reads retain the original assignment. No historical claims are rewritten.
+
+Filters continue to describe stored assignments: `ownedBy: selfNodeId` matches that node's assignments; `unowned: true` matches only tasks with no visible active `ASSIGNED_TO` claim. To clear a stored assignment, call `setCommitmentOwner` with `ownedBy: null`.
+
 ---
 
 ## Creating and editing
@@ -179,7 +187,7 @@ Assign, reassign, or clear a Task's owner. A structural twin of `setCommitmentDu
 | Field               | Type                        | Notes                                                                                                                                  |
 | ------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `taskId`            | `nodeId`                    |                                                                                                                                        |
-| `owner`             | `{ nodeId, label } \| null` | The new owner, or `null` after a clear.                                                                                                |
+| `owner`             | `{ nodeId, label } \| null` | External owner, or `null` for self assignment or a clear.                                                                              |
 | `claimId`           | `claimId \| null`           | The new `ASSIGNED_TO` claim. `null` on the clear path.                                                                                 |
 | `retractedClaimIds` | `claimId[]`                 | Prior claims retracted. Populated only on the clear path (`ownedBy: null`); empty when assigning (lifecycle supersedes automatically). |
 
@@ -392,24 +400,24 @@ Detailed read model for a single Task: current state (status, owner, due date) p
 
 **Response**
 
-| Field                  | Type                                 | Notes                                                                 |
-| ---------------------- | ------------------------------------ | --------------------------------------------------------------------- |
-| `taskId`               | `nodeId`                             |                                                                       |
-| `label`                | `string \| null`                     |                                                                       |
-| `description`          | `string \| null`                     |                                                                       |
-| `createdAt`            | `Date`                               |                                                                       |
-| `status`               | `TaskStatus \| null`                 | Active status value; `null` if no active status (e.g. after dismiss). |
-| `statusClaimId`        | `claimId \| null`                    |                                                                       |
-| `statusStatedAt`       | `Date \| null`                       |                                                                       |
-| `statusAssertedByKind` | `AssertedByKind \| null`             |                                                                       |
-| `owner`                | `{ nodeId, label, claimId } \| null` | Includes the active `ASSIGNED_TO` claim id.                           |
-| `dueOn`                | `string \| null`                     |                                                                       |
-| `dueTime`              | `string \| null`                     | `HH:mm` wall-clock time, or `null` for date-only.                     |
-| `timeZone`             | `string \| null`                     | IANA timezone, or `null` for date-only.                               |
-| `dueAt`                | `Date \| null`                       | Resolved UTC instant, or `null` for date-only or undated tasks.       |
-| `dueClaimId`           | `claimId \| null`                    |                                                                       |
-| `sources`              | `CommitmentSource[]`                 | Empty when `includeSources: false`.                                   |
-| `history`              | `TaskLifecycleEntry[]`               | Sorted `statedAt` desc; empty when `includeHistory: false`.           |
+| Field                  | Type                                 | Notes                                                                       |
+| ---------------------- | ------------------------------------ | --------------------------------------------------------------------------- |
+| `taskId`               | `nodeId`                             |                                                                             |
+| `label`                | `string \| null`                     |                                                                             |
+| `description`          | `string \| null`                     |                                                                             |
+| `createdAt`            | `Date`                               |                                                                             |
+| `status`               | `TaskStatus \| null`                 | Active status value; `null` if no active status (e.g. after dismiss).       |
+| `statusClaimId`        | `claimId \| null`                    |                                                                             |
+| `statusStatedAt`       | `Date \| null`                       |                                                                             |
+| `statusAssertedByKind` | `AssertedByKind \| null`             |                                                                             |
+| `owner`                | `{ nodeId, label, claimId } \| null` | External owner and its active claim ID; self assignments remain in history. |
+| `dueOn`                | `string \| null`                     |                                                                             |
+| `dueTime`              | `string \| null`                     | `HH:mm` wall-clock time, or `null` for date-only.                           |
+| `timeZone`             | `string \| null`                     | IANA timezone, or `null` for date-only.                                     |
+| `dueAt`                | `Date \| null`                       | Resolved UTC instant, or `null` for date-only or undated tasks.             |
+| `dueClaimId`           | `claimId \| null`                    |                                                                             |
+| `sources`              | `CommitmentSource[]`                 | Empty when `includeSources: false`.                                         |
+| `history`              | `TaskLifecycleEntry[]`               | Sorted `statedAt` desc; empty when `includeHistory: false`.                 |
 
 Each `CommitmentSource`:
 

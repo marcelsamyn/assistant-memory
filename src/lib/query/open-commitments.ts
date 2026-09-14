@@ -17,6 +17,7 @@ import {
   partitionAccessCondition,
 } from "~/lib/partition-access";
 import { claimEndpointOwnershipCondition } from "~/lib/query/claim-endpoint-access";
+import { commitmentOwnerIsSelf } from "~/lib/query/commitment-owner";
 import {
   type OpenCommitment,
   type OpenCommitmentsRequest,
@@ -39,6 +40,7 @@ interface OpenCommitmentRow {
   status: string | null;
   ownerNodeId: TypeId<"node"> | null;
   ownerLabel: string | null;
+  ownerIsSelf: boolean;
   dueOn: string | null;
   dueMetadata: unknown;
   dueInstant: Date | null;
@@ -147,6 +149,7 @@ async function queryCommitments(
       status: claims.objectValue,
       ownerNodeId: ownerClaim.objectNodeId,
       ownerLabel: ownerMetadata.label,
+      ownerIsSelf: commitmentOwnerIsSelf(ownerClaim.objectNodeId, userId),
       dueOn: dueMetadata.label,
       dueMetadata: dueClaim.metadata,
       dueInstant: dueClaim.objectInstant,
@@ -290,7 +293,7 @@ async function queryCommitments(
       label: row.label,
       status,
       owner:
-        row.ownerNodeId === null
+        row.ownerNodeId === null || row.ownerIsSelf
           ? null
           : { nodeId: row.ownerNodeId, label: row.ownerLabel },
       dueOn: row.dueOn,
