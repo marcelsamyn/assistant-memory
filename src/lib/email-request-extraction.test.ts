@@ -4,6 +4,7 @@ import {
   formatTrustedSourceContext,
   isActionableEmailStatusClaim,
   isAllowedEmailExtractionNode,
+  sameParticipant,
   resolveTaskStatusProvenance,
 } from "./email-request-extraction";
 import { getCommitmentResponseSchema } from "./schemas/get-commitment";
@@ -146,6 +147,15 @@ describe("email request extraction", () => {
       lifecycleEvidence: "current_message_direct_request",
     });
     expect(isActionableEmailStatusClaim(context, claim)).toBe(true);
+    expect(
+      isActionableEmailStatusClaim(
+        {
+          ...context,
+          recipients: [{ providerId: "slack:owner", recipientRole: "cc" }],
+        },
+        claim,
+      ),
+    ).toBe(false);
   });
 
   it("labels an AE2 CC-only assignment to another person as non-actionable", () => {
@@ -167,6 +177,66 @@ describe("email request extraction", () => {
     expect(isActionableEmailStatusClaim(context, makeStatusClaim())).toBe(
       false,
     );
+  });
+
+  it("extracts an incoming message with provider identities", () => {
+    const context = makeContext({
+      sourceKind: "message",
+      authenticatedUser: { providerId: "slack:owner", name: "Marcel" },
+      sender: { providerId: "slack:lena", name: "Lena" },
+      recipients: [{ providerId: "slack:owner" }],
+    });
+    const claim = makeStatusClaim();
+    expect(isActionableEmailStatusClaim(context, claim)).toBe(true);
+    expect(
+      buildCommitmentRequestEvidence({
+        context,
+        claim,
+        claimSourceId: messageSourceId,
+        sourceIdsByRef: new Map(),
+      }),
+    ).toMatchObject({
+      kind: "direct_request",
+      requester: "slack:lena",
+      intendedResponder: "slack:owner",
+      lifecycleEvidence: "current_message_direct_request",
+    });
+    expect(
+      isActionableEmailStatusClaim(
+        { ...context, direction: "outgoing" },
+        claim,
+      ),
+    ).toBe(false);
+  });
+
+  it("requires the same provider identity when either participant has one", () => {
+    expect(
+      sameParticipant(
+        { providerId: "slack:owner", email: "owner@example.com" },
+        { email: "owner@example.com" },
+      ),
+    ).toBe(false);
+  });
+
+  it("extracts an outgoing message promise and rejects automated messages", () => {
+    const context = makeContext({
+      sourceKind: "message",
+      authenticatedUser: { providerId: "slack:owner" },
+      sender: { providerId: "slack:owner" },
+      recipients: [{ providerId: "slack:lena" }],
+      direction: "outgoing",
+    });
+    expect(
+      isActionableEmailStatusClaim(context, makeStatusClaim("user_promise")),
+    ).toBe(true);
+    for (const deliveryKind of ["newsletter", "auto_reply"] as const) {
+      expect(
+        isActionableEmailStatusClaim(
+          { ...context, deliveryKind },
+          makeStatusClaim("user_promise"),
+        ),
+      ).toBe(false);
+    }
   });
 
   it("labels an explicit outgoing user promise while keeping it tentative", () => {

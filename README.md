@@ -41,7 +41,7 @@ environment and the owner gives explicit approval. The admin
 user-self-identity backfill remains strict-only pending a partition-scoped
 implementation.
 
-Documents and files can carry optional `sourceContext`: facts supplied by the host about origin, authorship, relationships, chronology, and completeness. Existing notes, conversations, and transcript integrations keep their input formats. No client needs to turn its content into email or identify tasks before storing it.
+Documents and files can carry optional `sourceContext`: facts supplied by the host about origin, authorship, relationships, chronology, and completeness. Person messages can use `sourceKind: "message"` with `messageId`, `threadId`, `authoredAt`, and participants identified by email or a stable `providerId`. Transcript ingestion accepts an optional `sourceKind` for the parent source's origin. No client needs to turn its content into email or identify tasks before storing it.
 
 If a processing receipt was saved but its queue job was not, resubmit the same ingestion request with the source-preserving defaults to restore the job. Legacy `updateExisting: true` replacement requests intentionally tombstone and recreate the source; use the processing retry endpoint when retained conversion settings are available.
 

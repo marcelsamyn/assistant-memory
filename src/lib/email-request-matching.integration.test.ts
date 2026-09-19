@@ -795,6 +795,49 @@ describeWithDatabase("email request extraction with PostgreSQL", () => {
     expect(active).toHaveLength(1);
   });
 
+  it("removes an inferred deadline when a message revises the request", async () => {
+    const userId = "message-remove-deadline";
+    const { message, previous } = await seedDatedRequest(userId);
+    await database
+      .update(schema.sources)
+      .set({
+        metadata: {
+          sourceContext: { ...message.context, sourceKind: "message" },
+          rawContent: message.params.content,
+        },
+      })
+      .where(eq(schema.sources.id, message.sourceId));
+    const text =
+      "Please review the revised contract. There is no deadline now.";
+    const next = await createMessage(
+      userId,
+      "message-removal",
+      "2026-09-10T10:00:00.000Z",
+      text,
+    );
+    await database
+      .update(schema.sources)
+      .set({
+        metadata: {
+          sourceContext: { ...next.context, sourceKind: "message" },
+          rawContent: text,
+        },
+      })
+      .where(eq(schema.sources.id, next.sourceId));
+    output(next.sourceId, [text], "revision", previous);
+    await extractGraph(next.params);
+    const [deadline] = await database
+      .select({ status: schema.claims.status })
+      .from(schema.claims)
+      .where(
+        and(
+          eq(schema.claims.userId, userId),
+          eq(schema.claims.predicate, "DUE_ON"),
+        ),
+      );
+    expect(deadline?.status).toBe("superseded");
+  });
+
   it.each([
     ["ambiguous absence", "Please review the revised contract.", "revision"],
     [

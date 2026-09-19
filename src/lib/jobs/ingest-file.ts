@@ -285,6 +285,9 @@ export async function ingestFile({
         logLabel: filename,
         title: documentTitle,
         ...(explicitAuthor !== undefined && { author: explicitAuthor }),
+        emailContent:
+          existingMeta.sourceContext?.sourceKind === "email" ||
+          existingMeta.sourceContext?.sourceKind === "message",
       });
     }
 

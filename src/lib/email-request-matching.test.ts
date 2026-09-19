@@ -118,6 +118,38 @@ function resolveUpdate(
 }
 
 describe("email request matching and evolution", () => {
+  it("keeps provider IDs case-sensitive when matching message updates", () => {
+    const messageContext: SourceContext = {
+      ...context,
+      sourceKind: "message",
+      authenticatedUser: { providerId: "Owner" },
+      sender: { providerId: "UserA" },
+      recipients: [{ providerId: "Owner" }],
+    };
+    const initial = resolveEmailRequest({
+      context: messageContext,
+      claim: claim(initialText),
+      sourceId,
+      content: initialText,
+      candidates: [],
+    });
+    if (!initial) throw new Error("Expected initial message request");
+    const previous = candidate(initial);
+    expect(
+      resolveEmailRequest({
+        context: {
+          ...messageContext,
+          messageId: "message-2",
+          sender: { providerId: "usera" },
+        },
+        claim: claim("The review is complete.", "completion", previous),
+        sourceId: newTypeId("source"),
+        content: "The review is complete.",
+        candidates: [previous],
+      }),
+    ).toBeNull();
+  });
+
   it("bounds serialized history and keeps current and dismissed evidence ahead of old rows", () => {
     const original = initialRequest();
     const history = Array.from({ length: 600 }, (_, index) => ({

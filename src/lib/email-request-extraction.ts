@@ -9,6 +9,7 @@ import type {
 import {
   sourceContextSchema,
   type SourceContext,
+  type SourceParticipant,
 } from "./schemas/source-context";
 import type { AssertedByKind } from "~/types/graph";
 import type { TypeId } from "~/types/typeid";
@@ -40,7 +41,7 @@ export function resolveTaskStatusProvenance(params: {
   isNewTask: boolean;
   context: SourceContext | null;
 }): AssertedByKind {
-  return params.isNewTask || isEmailContext(params.context)
+  return params.isNewTask || isPersonMessageContext(params.context)
     ? "assistant_inferred"
     : params.extractedKind;
 }
@@ -49,7 +50,7 @@ export function isActionableEmailStatusClaim(
   context: SourceContext,
   claim: LlmOutputAttributeClaim,
 ): boolean {
-  if (!isEmailContext(context)) return true;
+  if (!isPersonMessageContext(context)) return true;
   const lifecycle = claim.emailRequestEvidence?.lifecycle ?? "request";
   if (
     claim.predicate !== "HAS_TASK_STATUS" ||
@@ -74,24 +75,26 @@ export function isActionableEmailStatusClaim(
   }
 
   const evidence = claim.emailRequestEvidence;
-  const authenticatedEmail = context.authenticatedUser?.email.toLowerCase();
-  if (evidence == null || authenticatedEmail === undefined) return false;
+  const authenticatedUser = context.authenticatedUser;
+  if (evidence == null || authenticatedUser === undefined) return false;
 
   if (lifecycle !== "request") {
     return context.direction === "outgoing"
-      ? context.sender?.email.toLowerCase() === authenticatedEmail
+      ? sameParticipant(context.sender, authenticatedUser)
       : context.direction === "incoming" &&
           context.recipients?.some(
             (recipient) =>
-              recipient.email.toLowerCase() === authenticatedEmail &&
-              recipient.recipientRole === "to",
+              sameParticipant(recipient, authenticatedUser) &&
+              (recipient.recipientRole === "to" ||
+                (context.sourceKind === "message" &&
+                  recipient.recipientRole === undefined)),
           ) === true;
   }
 
   if (evidence.kind === "user_promise") {
     return (
       context.direction === "outgoing" &&
-      context.sender?.email.toLowerCase() === authenticatedEmail
+      sameParticipant(context.sender, authenticatedUser)
     );
   }
 
@@ -99,8 +102,10 @@ export function isActionableEmailStatusClaim(
     context.direction === "incoming" &&
     context.recipients?.some(
       (recipient) =>
-        recipient.email.toLowerCase() === authenticatedEmail &&
-        recipient.recipientRole === "to",
+        sameParticipant(recipient, authenticatedUser) &&
+        (recipient.recipientRole === "to" ||
+          (context.sourceKind === "message" &&
+            recipient.recipientRole === undefined)),
     ) === true
   );
 }
@@ -133,6 +138,44 @@ export function isEmailContext(
   );
 }
 
+export function isPersonMessageContext(
+  context: SourceContext | null,
+): context is SourceContext & {
+  sourceKind: "email" | "email_attachment" | "message";
+} {
+  return isEmailContext(context) || context?.sourceKind === "message";
+}
+
+export function participantIdentity(participant: SourceParticipant): string {
+  return participant.providerId ?? participant.email ?? "";
+}
+
+export function matchesParticipantIdentity(
+  participant: SourceParticipant | undefined,
+  identity: string | undefined | null,
+): boolean {
+  if (participant === undefined || identity == null) return false;
+  return participant.providerId !== undefined
+    ? participant.providerId === identity
+    : participant.email?.toLowerCase() === identity.toLowerCase();
+}
+
+export function sameParticipant(
+  left: SourceParticipant | undefined,
+  right: SourceParticipant | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return false;
+  if (left.providerId !== undefined || right.providerId !== undefined)
+    return (
+      left.providerId !== undefined && left.providerId === right.providerId
+    );
+  return (
+    left.email !== undefined &&
+    right.email !== undefined &&
+    left.email.toLowerCase() === right.email.toLowerCase()
+  );
+}
+
 /**
  * Render validated application facts apart from source text. The labels tell
  * the model which fields it may trust and which content remains evidence.
@@ -154,13 +197,14 @@ export function buildCommitmentRequestEvidence(params: {
   sourceIdsByRef: ReadonlyMap<string, TypeId<"source">>;
 }): CommitmentRequestEvidence | null {
   const { context, claim, claimSourceId, sourceIdsByRef } = params;
-  if (!isEmailContext(context)) return null;
+  if (!isPersonMessageContext(context)) return null;
   if (claim.predicate !== "HAS_TASK_STATUS") return null;
 
   const extracted = claim.emailRequestEvidence;
   if (extracted == null) return null;
 
-  const authenticatedUser = context.authenticatedUser?.email;
+  const authenticatedUser =
+    context.authenticatedUser && participantIdentity(context.authenticatedUser);
   if (authenticatedUser === undefined) return null;
 
   const supportingSourceIds = new Set<TypeId<"source">>([claimSourceId]);
@@ -182,7 +226,9 @@ export function buildCommitmentRequestEvidence(params: {
     kind: extracted.kind,
     requester:
       extracted.kind === "direct_request"
-        ? (context.sender?.email ?? null)
+        ? context.sender
+          ? participantIdentity(context.sender)
+          : null
         : null,
     intendedResponder: authenticatedUser,
     supportingSourceIds: [...supportingSourceIds],
