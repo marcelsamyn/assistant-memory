@@ -83,7 +83,7 @@ await client.ingestDocument({
 });
 ```
 
-`accountId` is a stable origin namespace within the user, such as a notes vault or connected mailbox. It is not a Petals account ID requirement. `purpose` describes why the source was supplied; it is not an instruction override or permission grant. Version 1 supports `document`, `file`, `email`, and `email_attachment`; conversation and transcript endpoints already carry roles and speakers.
+`accountId` is a stable origin namespace within the user, such as a notes vault or connected mailbox. It is not a Petals account ID requirement. `purpose` describes why the source was supplied; it is not an instruction override or permission grant. Version 1 supports `document`, `file`, `email`, `email_attachment`, and `message`. A message context requires `messageId`, `threadId`, and `authoredAt` so requests can be matched to their source and later revisions. A message participant needs an email address or a stable `providerId`; use the same provider identity for the authenticated user, sender, and recipients. Transcript ingestion accepts an optional `sourceKind` string (for example, `google_meet`) and stores it in the parent transcript source metadata.
 
 ## Contextual sources
 

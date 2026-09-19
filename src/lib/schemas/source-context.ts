@@ -5,12 +5,17 @@ import { z } from "zod";
 /** An application-owned participant. The message body never enters this contract. */
 export const sourceParticipantSchema = z
   .object({
-    email: z.string().email().max(320),
+    email: z.string().email().max(320).optional(),
+    /** Stable participant identity assigned by the connected provider. */
+    providerId: z.string().min(1).max(320).optional(),
     name: z.string().min(1).max(200).optional(),
     /** Recipient list supplied by the application, when this is a recipient. */
     recipientRole: z.enum(["to", "cc", "bcc"]).optional(),
   })
-  .strict();
+  .strict()
+  .refine((participant) => participant.email || participant.providerId, {
+    message: "A participant needs an email or providerId",
+  });
 
 export const sourceReferenceSchema = z
   .object({
@@ -28,7 +33,13 @@ export const sourceReferenceSchema = z
 export const sourceContextSchema = z
   .object({
     version: z.literal(1).optional().default(1),
-    sourceKind: z.enum(["email", "email_attachment", "document", "file"]),
+    sourceKind: z.enum([
+      "email",
+      "email_attachment",
+      "message",
+      "document",
+      "file",
+    ]),
     /** Why the caller supplied this source, in application-owned wording. */
     purpose: z.string().min(1).max(500),
     accountId: z.string().min(1).max(200),
@@ -77,7 +88,19 @@ export const sourceContextSchema = z
     sourceReferences: z.array(sourceReferenceSchema).max(100).optional(),
     completeness: z.enum(["complete", "partial", "unknown"]),
   })
-  .strict();
+  .strict()
+  .superRefine((context, issue) => {
+    if (context.sourceKind !== "message") return;
+    for (const field of ["messageId", "threadId", "authoredAt"] as const) {
+      if (context[field] === undefined) {
+        issue.addIssue({
+          code: "custom",
+          path: [field],
+          message: `${field} is required for message sources`,
+        });
+      }
+    }
+  });
 
 export type SourceContext = z.infer<typeof sourceContextSchema>;
 export type SourceParticipant = z.infer<typeof sourceParticipantSchema>;

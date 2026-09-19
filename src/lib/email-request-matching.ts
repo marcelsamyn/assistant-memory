@@ -1,5 +1,9 @@
 import { coerceTaskStatus } from "./claims/task-status";
-import { buildCommitmentRequestEvidence } from "./email-request-extraction";
+import {
+  buildCommitmentRequestEvidence,
+  matchesParticipantIdentity,
+  sameParticipant,
+} from "./email-request-extraction";
 import {
   readCommitmentRequestEvidence,
   type CommitmentRequestEvidence,
@@ -58,7 +62,10 @@ export async function loadEmailRequestCandidates(
   partitionKey: ContextPartitionKey | undefined,
   context: SourceContext,
 ): Promise<EmailRequestCandidate[]> {
-  if (context.sourceKind !== "email" || context.threadId === undefined)
+  if (
+    (context.sourceKind !== "email" && context.sourceKind !== "message") ||
+    context.threadId === undefined
+  )
     return [];
   const threadTasks = db
     .select({ id: claims.subjectNodeId })
@@ -345,15 +352,20 @@ export function resolveEmailRequest(params: {
   const origin = matching.find(
     (candidate) => candidate.evidence !== null,
   )?.evidence;
-  const ownerEmail = context.authenticatedUser?.email.toLowerCase();
-  if (origin && origin.intendedResponder.toLowerCase() !== ownerEmail)
+  if (
+    origin &&
+    !matchesParticipantIdentity(
+      context.authenticatedUser,
+      origin.intendedResponder,
+    )
+  )
     return null;
   // Promise evidence does not retain its original recipients. Only its author
   // can change it; sharing a mailbox thread does not authorize another sender.
   if (
     origin?.kind === "user_promise" &&
     (context.direction !== "outgoing" ||
-      context.sender?.email.toLowerCase() !== ownerEmail)
+      !sameParticipant(context.sender, context.authenticatedUser))
   )
     return null;
   // Incoming updates need a known original requester. Missing provenance
@@ -362,22 +374,20 @@ export function resolveEmailRequest(params: {
     matching.length > 0 &&
     context.direction === "incoming" &&
     (!origin?.requester ||
-      context.sender?.email.toLowerCase() !== origin.requester.toLowerCase())
+      !matchesParticipantIdentity(context.sender, origin.requester))
   )
     return null;
   if (
     matching.length > 0 &&
     context.direction === "outgoing" &&
-    (ownerEmail === undefined ||
-      context.sender?.email.toLowerCase() !== ownerEmail)
+    !sameParticipant(context.sender, context.authenticatedUser)
   )
     return null;
   if (
     origin?.requester &&
     context.direction === "outgoing" &&
-    !context.recipients?.some(
-      (recipient) =>
-        recipient.email.toLowerCase() === origin.requester?.toLowerCase(),
+    !context.recipients?.some((recipient) =>
+      matchesParticipantIdentity(recipient, origin.requester),
     )
   )
     return null;

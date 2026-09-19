@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { createError, defineEventHandler, readBody, type H3Event } from "h3";
 import db from "~/db";
 import { sources, type SourcesSelect } from "~/db/schema";
@@ -111,6 +111,9 @@ async function ingestTranscript(
           type: "meeting_transcript",
           externalId: body.transcriptId,
           scope: body.scope,
+          ...(body.sourceKind !== undefined
+            ? { metadata: { sourceKind: body.sourceKind } }
+            : {}),
           lastIngestedAt: now,
         })
         .onConflictDoNothing({
@@ -147,7 +150,14 @@ async function ingestTranscript(
       }
       const [updatedParent] = await tx
         .update(sources)
-        .set({ lastIngestedAt: now })
+        .set({
+          lastIngestedAt: now,
+          ...(body.sourceKind !== undefined
+            ? {
+                metadata: sql`coalesce(${sources.metadata}, '{}'::jsonb) || ${JSON.stringify({ sourceKind: body.sourceKind })}::jsonb`,
+              }
+            : {}),
+        })
         .where(eq(sources.id, parent.id))
         .returning({ version: sources.version });
       if (!updatedParent)

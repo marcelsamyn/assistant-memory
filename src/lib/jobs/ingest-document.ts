@@ -251,7 +251,9 @@ export async function ingestDocument({
         logLabel: resolvedTitle ?? documentId,
         ...(resolvedTitle !== undefined && { title: resolvedTitle }),
         ...(author !== undefined && { author }),
-        emailContent: metadata.sourceContext?.sourceKind === "email",
+        emailContent:
+          metadata.sourceContext?.sourceKind === "email" ||
+          metadata.sourceContext?.sourceKind === "message",
       });
     }
 

@@ -69,6 +69,25 @@ describe("source context contract", () => {
     ).toThrow();
   });
 
+  it("accepts stable provider identities without email addresses", () => {
+    const message = sourceContextSchema.parse({
+      ...context,
+      sourceKind: "message",
+      authenticatedUser: { providerId: "slack:owner", name: "Marcel" },
+      sender: { providerId: "slack:lena", name: "Lena" },
+      recipients: [{ providerId: "slack:owner" }],
+    });
+    expect(message.sender?.providerId).toBe("slack:lena");
+    expect(() =>
+      sourceContextSchema.parse({ ...message, sender: { name: "Lena" } }),
+    ).toThrow();
+    for (const field of ["messageId", "threadId", "authoredAt"] as const) {
+      expect(() =>
+        sourceContextSchema.parse({ ...message, [field]: undefined }),
+      ).toThrow();
+    }
+  });
+
   it("keeps the response additive for legacy callers", () => {
     expect(
       ingestDocumentResponseSchema.parse({

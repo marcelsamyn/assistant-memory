@@ -98,6 +98,26 @@ describe("contextual source identity", () => {
       }),
     );
     expect(
+      reclassifyContextualSourceExternalId({
+        ...input,
+        metadata: {
+          sourceContext: {
+            ...sourceContext,
+            sourceKind: "message",
+            messageId: "provider:é",
+            threadId: "thread-1",
+            authoredAt: "2026-09-19T08:00:00.000Z",
+          },
+        },
+      }),
+    ).toBe(
+      contextualSourceExternalId({
+        externalId: "provider:é",
+        accountId: "account",
+        partitionKey: partitionTwo,
+      }),
+    );
+    expect(
       reclassifyContextualSourceExternalId({ ...input, metadata: {} }),
     ).toBe(externalId);
     expect(

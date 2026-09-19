@@ -72,6 +72,7 @@ export const IngestTranscriptJobInputSchema = z.object({
   sourceId: typeIdSchema("source"),
   expectedSourceVersion: z.number().int().nonnegative(),
   transcriptId: z.string().min(1),
+  sourceKind: z.string().min(1).max(80).optional(),
   scope: ScopeEnum.optional().default("personal"),
   occurredAt: z.string().datetime().pipe(z.coerce.date()),
   content: transcriptContentJobSchema,

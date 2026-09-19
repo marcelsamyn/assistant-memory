@@ -38,6 +38,8 @@ export const ingestTranscriptRequestSchema = z.object({
   userId: z.string().min(1),
   partitionKey: contextPartitionKeySchema.optional(),
   transcriptId: z.string().min(1),
+  /** Origin supplied by the host, such as google_meet. */
+  sourceKind: z.string().min(1).max(80).optional(),
   scope: ScopeEnum.optional().default("personal"),
   occurredAt: z.string().datetime(),
   content: transcriptContentSchema,

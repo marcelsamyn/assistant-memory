@@ -40,7 +40,8 @@ export async function applyEmailDeadlineRemovals(
   for (const { claim, sourceMetadata } of rows) {
     if (claim.predicate !== "DUE_ON" || claim.status !== "active") continue;
     const context = readSourceContext(sourceMetadata);
-    if (context?.sourceKind !== "email") continue;
+    if (context?.sourceKind !== "email" && context?.sourceKind !== "message")
+      continue;
     const removal = removals
       .filter(
         (item) =>

@@ -11,7 +11,7 @@ import {
 } from "~/db/schema";
 import { applyClaimLifecycle } from "~/lib/claims/lifecycle";
 import {
-  isEmailContext,
+  isPersonMessageContext,
   readSourceContext,
 } from "~/lib/email-request-extraction";
 import { lockEmailRequestThread } from "~/lib/email-request-matching";
@@ -134,7 +134,7 @@ export async function lockSourceEmailRequestThread(
     .where(and(eq(sources.userId, userId), eq(sources.id, sourceId)))
     .limit(1);
   const context = readSourceContext(source?.metadata);
-  if (!source || !isEmailContext(context)) return;
+  if (!source || !isPersonMessageContext(context)) return;
   // The identity gate keeps stored context stable. Lock the old thread: the
   // incoming revision can change or remove the context being invalidated.
   await lockEmailRequestThread(

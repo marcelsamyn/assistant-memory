@@ -29,6 +29,7 @@ import {
   isActionableEmailStatusClaim,
   isAllowedEmailExtractionNode,
   isEmailContext,
+  isPersonMessageContext,
   readSourceContext,
   resolveTaskStatusProvenance,
 } from "./email-request-extraction";
@@ -193,7 +194,9 @@ export async function extractGraph({
   const db = await useDatabase();
   const parentSource = await _fetchSourceContext(db, userId, sourceId);
   const sourceContext = readSourceContext(parentSource.metadata);
-  const emailContext = isEmailContext(sourceContext) ? sourceContext : null;
+  const emailContext = isPersonMessageContext(sourceContext)
+    ? sourceContext
+    : null;
   const partitionKey = parentSource.partitionKey ?? undefined;
   await assertSourcePartition({
     db,
@@ -203,7 +206,7 @@ export async function extractGraph({
     ...(expectedSourceVersion !== undefined ? { expectedSourceVersion } : {}),
   });
   const attachments =
-    emailContext === null
+    emailContext === null || !isEmailContext(emailContext)
       ? []
       : await loadEmailAttachmentEvidence({
           db,
