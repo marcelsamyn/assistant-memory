@@ -1,6 +1,7 @@
 import { defineEventHandler, readBody } from "h3";
 import { batchQueue, DreamJobData } from "~/lib/queues";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import { dreamRequestSchema, dreamResponseSchema } from "~/lib/schemas/dream";
 import {
   assertWorkspaceOperationReady,
@@ -10,7 +11,7 @@ import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
   const { userId, partitionKey, assistantId, assistantDescription } =
-    dreamRequestSchema.parse(await readBody(event));
+    parseRequestBody(dreamRequestSchema, await readBody(event));
 
   const accessScope = getRequestAccessScope(event);
   const db = await useDatabase();

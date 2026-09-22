@@ -1,5 +1,6 @@
 import { defineEventHandler } from "h3";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   listSourcesRequestSchema,
   listSourcesResponseSchema,
@@ -9,8 +10,10 @@ import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
   const accessScope = getRequestAccessScope(event);
-  const { userId, partitionKey, type, limit, cursor } =
-    listSourcesRequestSchema.parse(await readBody(event));
+  const { userId, partitionKey, type, limit, cursor } = parseRequestBody(
+    listSourcesRequestSchema,
+    await readBody(event),
+  );
   const db = await useDatabase();
   const result = await listSourcesPage({
     db,

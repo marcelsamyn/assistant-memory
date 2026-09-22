@@ -52,10 +52,30 @@ export type TypeId<T extends IdType> = `${IdTypePrefix<T>}_${string}`;
 export const typeIdSchema = <T extends IdType>(type: T) =>
   z
     .string()
-    .startsWith(ID_TYPE_PREFIXES[type] + "_")
+    .startsWith(ID_TYPE_PREFIXES[type] + "_", {
+      abort: true,
+      error: (issue) => wrongPrefixMessage(type, issue.input),
+    })
     .length(
       ID_TYPE_PREFIXES[type].length + 1 + TYPE_ID_LENGTH,
     ) as unknown as z.ZodType<TypeId<T>, string>;
+
+// Callers (often LLM tools) mix up ID kinds, e.g. pass a source ID where a
+// node ID belongs. Naming the kind they passed tells them where it belongs.
+function wrongPrefixMessage(expected: IdType, input: unknown): string {
+  const expectation = `Expected a ${idTypeLabel(expected)} ID starting with "${ID_TYPE_PREFIXES[expected]}_"`;
+  const received =
+    typeof input === "string"
+      ? ID_TYPE_NAMES.find((type) =>
+          input.startsWith(`${ID_TYPE_PREFIXES[type]}_`),
+        )
+      : undefined;
+  if (received === undefined) return `${expectation}.`;
+  const label = idTypeLabel(received);
+  return `${expectation}, but received a ${label} ID. Use a ${label} operation for this ID instead.`;
+}
+
+const idTypeLabel = (type: IdType): string => type.replaceAll("_", " ");
 
 export const typeIdFromString = <T extends IdType>(
   type: T,

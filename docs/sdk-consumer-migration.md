@@ -10,6 +10,14 @@ has the _what to change_.
 
 ---
 
+## Invalid requests return 400
+
+Every REST route now rejects an invalid request body with `400 Invalid request body` instead of an unhandled `500`. The response `message` lists each problem with its field path, and `data.issues` holds the Zod issues. An ID of the wrong kind names the kind that was sent. For example, a source ID passed as `nodeId` returns `Expected a node ID starting with "node_", but received a source ID. Use a source operation for this ID instead.`
+
+Show this message to the model that made the call so it can correct the call. Do not retry the same request. `MemoryClient` already includes the response body in its error message.
+
+---
+
 ## Commitment self assignment
 
 Commitment create, owner-change, open, candidate, list, and detail responses now return `owner: null` for assignments to owned Person nodes explicitly marked with `isUserSelf: true`. Treat this as the user's work. A contact with the same label remains an external owner unless it has that marker.

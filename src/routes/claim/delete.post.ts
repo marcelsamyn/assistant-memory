@@ -2,6 +2,7 @@ import { defineEventHandler, createError } from "h3";
 import { deleteClaim, resolveClaimPartition } from "~/lib/claim";
 import { throwPartitionRouteError } from "~/lib/partition-route-errors";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   deleteClaimRequestSchema,
   deleteClaimResponseSchema,
@@ -9,7 +10,8 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const { userId, partitionKey, claimId } = deleteClaimRequestSchema.parse(
+  const { userId, partitionKey, claimId } = parseRequestBody(
+    deleteClaimRequestSchema,
     await readBody(event),
   );
   const accessScope = getRequestAccessScope(event);

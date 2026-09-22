@@ -1,5 +1,6 @@
 import { defineEventHandler, readBody } from "h3";
 import { backfillUserSelfIdentity } from "~/lib/jobs/backfill-user-self-identity";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   backfillUserSelfIdentityRequestSchema,
   backfillUserSelfIdentityResponseSchema,
@@ -7,8 +8,10 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const { userId, partitionKey, aliases } =
-    backfillUserSelfIdentityRequestSchema.parse(await readBody(event));
+  const { userId, partitionKey, aliases } = parseRequestBody(
+    backfillUserSelfIdentityRequestSchema,
+    await readBody(event),
+  );
   const db = await useDatabase();
   const result = await backfillUserSelfIdentity({
     db,

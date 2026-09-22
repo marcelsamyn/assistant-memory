@@ -9,6 +9,7 @@
  */
 import { searchMemory, searchReference } from "~/lib/context/search-cards";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   contextSearchRequestSchema,
   contextSearchResponseSchema,
@@ -17,7 +18,7 @@ import {
 export default defineEventHandler(async (event) => {
   const accessScope = getRequestAccessScope(event);
   const { userId, partitionKey, query, limit, scope, excludeNodeTypes } =
-    contextSearchRequestSchema.parse(await readBody(event));
+    parseRequestBody(contextSearchRequestSchema, await readBody(event));
 
   const fn = scope === "reference" ? searchReference : searchMemory;
   const result = await fn({

@@ -5,6 +5,7 @@ import { sources } from "~/db/schema";
 import { partitionAccessCondition } from "~/lib/partition-access";
 import { batchQueue } from "~/lib/queues";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import {
   assertWorkspaceOperationReady,
@@ -24,7 +25,8 @@ const requestSchema = z.object({
  * deterministic jobId de-dupes concurrent runs.
  */
 export default defineEventHandler(async (event) => {
-  const { userId, partitionKey, limit } = requestSchema.parse(
+  const { userId, partitionKey, limit } = parseRequestBody(
+    requestSchema,
     await readBody(event),
   );
   const db = await useDatabase();

@@ -4,11 +4,15 @@ import { resolveSourceProcessingPartition } from "~/lib/ingestion/source-process
 import { PartitionAccessError } from "~/lib/partition-access";
 import { throwPartitionRouteError } from "~/lib/partition-route-errors";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import { retrySourceProcessingRequestSchema } from "~/lib/schemas/source-processing";
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const input = retrySourceProcessingRequestSchema.parse(await readBody(event));
+  const input = parseRequestBody(
+    retrySourceProcessingRequestSchema,
+    await readBody(event),
+  );
   const accessScope = getRequestAccessScope(event);
   try {
     let partitionKey = input.partitionKey;

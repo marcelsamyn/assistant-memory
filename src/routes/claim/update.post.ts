@@ -2,6 +2,7 @@ import { defineEventHandler, createError } from "h3";
 import { resolveClaimPartition, updateClaim } from "~/lib/claim";
 import { throwPartitionRouteError } from "~/lib/partition-route-errors";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   updateClaimRequestSchema,
   updateClaimResponseSchema,
@@ -9,8 +10,10 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const { userId, partitionKey, claimId, status } =
-    updateClaimRequestSchema.parse(await readBody(event));
+  const { userId, partitionKey, claimId, status } = parseRequestBody(
+    updateClaimRequestSchema,
+    await readBody(event),
+  );
   const accessScope = getRequestAccessScope(event);
   try {
     const resolution = await resolveClaimPartition(

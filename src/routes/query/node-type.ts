@@ -6,6 +6,7 @@ import {
   type OneHopNode,
 } from "~/lib/graph";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   type QueryNodeTypeResponse,
   queryNodeTypeRequestSchema,
@@ -18,7 +19,7 @@ type LabeledOneHopNode = OneHopNode & { label: string };
 export default defineEventHandler(async (event) => {
   const accessScope = getRequestAccessScope(event);
   const { userId, partitionKey, types, date, includeFormattedResult } =
-    queryNodeTypeRequestSchema.parse(await readBody(event));
+    parseRequestBody(queryNodeTypeRequestSchema, await readBody(event));
   const db = await useDatabase();
 
   // Get the day node ID

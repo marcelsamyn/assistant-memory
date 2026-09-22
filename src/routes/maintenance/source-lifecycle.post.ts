@@ -1,5 +1,6 @@
 import { createError, defineEventHandler, readBody } from "h3";
 import { assertPartitionMaintenanceAuthorized } from "~/lib/partition-maintenance-auth";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   sourceLifecycleCommandRequestSchema,
   sourceLifecycleCommandResponseSchema,
@@ -16,7 +17,8 @@ import { useDatabase } from "~/utils/db";
 /** Server-to-server source erasure; never exposed through user bearer auth. */
 export default defineEventHandler(async (event) => {
   assertPartitionMaintenanceAuthorized(event);
-  const request = sourceLifecycleCommandRequestSchema.parse(
+  const request = parseRequestBody(
+    sourceLifecycleCommandRequestSchema,
     await readBody(event),
   );
   const db = await useDatabase();

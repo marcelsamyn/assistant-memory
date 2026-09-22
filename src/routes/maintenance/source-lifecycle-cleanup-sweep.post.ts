@@ -1,5 +1,6 @@
 import { defineEventHandler, readBody } from "h3";
 import { assertPartitionMaintenanceAuthorized } from "~/lib/partition-maintenance-auth";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   sourceLifecycleStorageCleanupSweepRequestSchema,
   sourceLifecycleStorageCleanupSweepResponseSchema,
@@ -11,7 +12,8 @@ import { useDatabase } from "~/utils/db";
 /** Retries opaque tombstone cleanup receipts after a storage failure. */
 export default defineEventHandler(async (event) => {
   assertPartitionMaintenanceAuthorized(event);
-  const request = sourceLifecycleStorageCleanupSweepRequestSchema.parse(
+  const request = parseRequestBody(
+    sourceLifecycleStorageCleanupSweepRequestSchema,
     (await readBody(event)) ?? {},
   );
   const db = await useDatabase();

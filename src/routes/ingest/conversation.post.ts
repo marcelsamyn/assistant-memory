@@ -12,6 +12,7 @@ import {
 import { throwPartitionRouteError } from "~/lib/partition-route-errors";
 import { batchQueue } from "~/lib/queues";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   ingestConversationRequestSchema,
   ingestConversationResponseSchema,
@@ -24,7 +25,10 @@ export default defineEventHandler(async (event) => {
       userId,
       partitionKey: requestedPartitionKey,
       conversation,
-    } = ingestConversationRequestSchema.parse(await readBody(event));
+    } = parseRequestBody(
+      ingestConversationRequestSchema,
+      await readBody(event),
+    );
     const accessScope = getRequestAccessScope(event);
     let partitionKey = requestedPartitionKey;
     if (accessScope === "workspace") {

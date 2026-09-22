@@ -5,6 +5,7 @@ import {
 } from "~/lib/ingestion/source-processing";
 import { throwPartitionRouteError } from "~/lib/partition-route-errors";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   getSourceProcessingRequestSchema,
   getSourceProcessingResponseSchema,
@@ -12,8 +13,10 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const { userId, partitionKey, operationId } =
-    getSourceProcessingRequestSchema.parse(await readBody(event));
+  const { userId, partitionKey, operationId } = parseRequestBody(
+    getSourceProcessingRequestSchema,
+    await readBody(event),
+  );
   const accessScope = getRequestAccessScope(event);
   const db = await useDatabase();
   try {

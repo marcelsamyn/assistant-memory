@@ -1,6 +1,7 @@
 import { defineEventHandler, createError } from "h3";
 import { getNodeById } from "~/lib/node";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   getNodeRequestSchema,
   getNodeResponseSchema,
@@ -8,8 +9,10 @@ import {
 
 export default defineEventHandler(async (event) => {
   const accessScope = getRequestAccessScope(event);
-  const { userId, partitionKey, nodeId, claimFilter } =
-    getNodeRequestSchema.parse(await readBody(event));
+  const { userId, partitionKey, nodeId, claimFilter } = parseRequestBody(
+    getNodeRequestSchema,
+    await readBody(event),
+  );
   const result = await getNodeById(
     userId,
     nodeId,

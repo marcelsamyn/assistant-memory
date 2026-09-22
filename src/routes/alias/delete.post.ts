@@ -1,6 +1,7 @@
 import { defineEventHandler, createError } from "h3";
 import { deleteAlias } from "~/lib/alias";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   deleteAliasRequestSchema,
   deleteAliasResponseSchema,
@@ -9,7 +10,8 @@ import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
   const accessScope = getRequestAccessScope(event);
-  const { userId, partitionKey, aliasId } = deleteAliasRequestSchema.parse(
+  const { userId, partitionKey, aliasId } = parseRequestBody(
+    deleteAliasRequestSchema,
     await readBody(event),
   );
   const db = await useDatabase();

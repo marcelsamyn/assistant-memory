@@ -1,5 +1,6 @@
 import { defineEventHandler, readBody } from "h3";
 import { assertPartitionMaintenanceAuthorized } from "~/lib/partition-maintenance-auth";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   sourceLifecycleReadModelRetractionSweepRequestSchema,
   sourceLifecycleReadModelRetractionSweepResponseSchema,
@@ -10,7 +11,8 @@ import { useDatabase } from "~/utils/db";
 /** Retracts durable projections left by pre-lifecycle soft-deleted sources. */
 export default defineEventHandler(async (event) => {
   assertPartitionMaintenanceAuthorized(event);
-  const request = sourceLifecycleReadModelRetractionSweepRequestSchema.parse(
+  const request = parseRequestBody(
+    sourceLifecycleReadModelRetractionSweepRequestSchema,
     (await readBody(event)) ?? {},
   );
   const result = await retryPendingLegacySourceReadModelRetraction(

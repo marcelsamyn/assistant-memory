@@ -132,12 +132,15 @@ describe("POST /query/change-feed", () => {
         startAt,
       }));
       await expect(handler({} as H3Event)).rejects.toMatchObject({
-        issues: [
-          {
-            path: ["startAt"],
-            message: "Specify either cursor or startAt, not both.",
-          },
-        ],
+        statusCode: 400,
+        data: {
+          issues: [
+            {
+              path: ["startAt"],
+              message: "Specify either cursor or startAt, not both.",
+            },
+          ],
+        },
       });
       expect(feedMocks.queryChangeFeed).not.toHaveBeenCalled();
     },

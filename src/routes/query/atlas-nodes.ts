@@ -6,6 +6,7 @@ import {
   getWorkspaceAssistantAtlasNodeIds,
 } from "~/lib/atlas";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   queryAtlasNodesRequestSchema,
   queryAtlasNodesResponseSchema,
@@ -13,8 +14,10 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const { userId, partitionKey, assistantId } =
-    queryAtlasNodesRequestSchema.parse(await readBody(event));
+  const { userId, partitionKey, assistantId } = parseRequestBody(
+    queryAtlasNodesRequestSchema,
+    await readBody(event),
+  );
   const accessScope = getRequestAccessScope(event);
   const db = await useDatabase();
   if (partitionKey === undefined && accessScope === "workspace") {

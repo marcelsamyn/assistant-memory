@@ -4,6 +4,7 @@ import {
   pruneStaleNodesWorkspace,
 } from "~/lib/jobs/prune-stale-nodes";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   pruneStaleNodesRequestSchema,
   pruneStaleNodesResponseSchema,
@@ -11,7 +12,10 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const params = pruneStaleNodesRequestSchema.parse(await readBody(event));
+  const params = parseRequestBody(
+    pruneStaleNodesRequestSchema,
+    await readBody(event),
+  );
   const db = await useDatabase();
   const accessScope = getRequestAccessScope(event);
   if (accessScope === "workspace" && params.partitionKey === undefined) {

@@ -1,5 +1,6 @@
 import { defineEventHandler, readBody } from "h3";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import { resolveCitations } from "~/lib/resolve-citations";
 import {
   resolveCitationsRequestSchema,
@@ -8,7 +9,8 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const { userId, partitionKey, ids } = resolveCitationsRequestSchema.parse(
+  const { userId, partitionKey, ids } = parseRequestBody(
+    resolveCitationsRequestSchema,
     await readBody(event),
   );
   const accessScope = getRequestAccessScope(event);

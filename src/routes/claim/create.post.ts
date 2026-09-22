@@ -7,6 +7,7 @@ import {
 import { resolveNodePartition } from "~/lib/partition-access";
 import { throwPartitionRouteError } from "~/lib/partition-route-errors";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   createClaimRequestSchema,
   createClaimResponseSchema,
@@ -14,7 +15,10 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const claimInput = createClaimRequestSchema.parse(await readBody(event));
+  const claimInput = parseRequestBody(
+    createClaimRequestSchema,
+    await readBody(event),
+  );
   const accessScope = getRequestAccessScope(event);
   try {
     const partitionKey = await resolveNodePartition(

@@ -5,13 +5,17 @@ import {
   TaskNotFoundError,
 } from "~/lib/commitments";
 import { withRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   setCommitmentDueRequestSchema,
   setCommitmentDueResponseSchema,
 } from "~/lib/schemas/set-commitment-due";
 
 export default defineEventHandler(async (event) => {
-  const params = setCommitmentDueRequestSchema.parse(await readBody(event));
+  const params = parseRequestBody(
+    setCommitmentDueRequestSchema,
+    await readBody(event),
+  );
   try {
     const result = await setCommitmentDue(
       withRequestAccessScope(event, params),

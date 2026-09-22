@@ -13,6 +13,7 @@ import {
 import { throwPartitionRouteError } from "~/lib/partition-route-errors";
 import { batchQueue } from "~/lib/queues";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   ingestTranscriptRequestSchema,
   ingestTranscriptResponseSchema,
@@ -23,7 +24,10 @@ import { assertWorkspaceOperationReady } from "~/lib/workspace-partitions";
 async function ingestTranscript(
   event: H3Event,
 ): Promise<IngestTranscriptResponse> {
-  const body = ingestTranscriptRequestSchema.parse(await readBody(event));
+  const body = parseRequestBody(
+    ingestTranscriptRequestSchema,
+    await readBody(event),
+  );
 
   const accessScope = getRequestAccessScope(event);
   let partitionKey = body.partitionKey;
