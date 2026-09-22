@@ -1,5 +1,6 @@
 import { getOpenCommitments } from "~/lib/query/open-commitments";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   openCommitmentsRequestSchema,
   openCommitmentsResponseSchema,
@@ -7,7 +8,7 @@ import {
 
 export default defineEventHandler(async (event) => {
   const params = {
-    ...openCommitmentsRequestSchema.parse(await readBody(event)),
+    ...parseRequestBody(openCommitmentsRequestSchema, await readBody(event)),
     accessScope: getRequestAccessScope(event),
   };
   const commitments = await getOpenCommitments(params);

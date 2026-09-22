@@ -12,6 +12,7 @@
 import { defineEventHandler } from "h3";
 import { batchQueue, redisConnection, ROLLUP_JOB_OPTIONS } from "~/lib/queues";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   rollupRequestSchema,
   rollupResponseSchema,
@@ -23,7 +24,7 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const params = rollupRequestSchema.parse(await readBody(event));
+  const params = parseRequestBody(rollupRequestSchema, await readBody(event));
   const db = await useDatabase();
   const accessScope = getRequestAccessScope(event);
   const resolvedPartitions = await resolveWorkspacePartitions(

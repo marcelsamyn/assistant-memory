@@ -4,14 +4,17 @@ import {
   deleteMetricDefinition,
 } from "~/lib/metrics/definitions";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   deleteMetricDefinitionRequestSchema,
   deleteMetricDefinitionResponseSchema,
 } from "~/lib/schemas/metric-write";
 
 export default defineEventHandler(async (event) => {
-  const { userId, metricDefinitionId } =
-    deleteMetricDefinitionRequestSchema.parse(await readBody(event));
+  const { userId, metricDefinitionId } = parseRequestBody(
+    deleteMetricDefinitionRequestSchema,
+    await readBody(event),
+  );
   const accessScope = getRequestAccessScope(event);
   try {
     const { deletedObservationCount } = await deleteMetricDefinition(

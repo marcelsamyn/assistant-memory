@@ -1,6 +1,7 @@
 import { defineEventHandler } from "h3";
 import { batchDeleteNodes } from "~/lib/node";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   batchDeleteNodesRequestSchema,
   batchDeleteNodesResponseSchema,
@@ -8,7 +9,8 @@ import {
 
 export default defineEventHandler(async (event) => {
   const accessScope = getRequestAccessScope(event);
-  const { userId, partitionKey, nodeIds } = batchDeleteNodesRequestSchema.parse(
+  const { userId, partitionKey, nodeIds } = parseRequestBody(
+    batchDeleteNodesRequestSchema,
     await readBody(event),
   );
   const count = await batchDeleteNodes(

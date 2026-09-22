@@ -1,6 +1,7 @@
 import { defineEventHandler } from "h3";
 import { listCommitments } from "~/lib/query/commitments-list";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   listCommitmentsRequestSchema,
   listCommitmentsResponseSchema,
@@ -8,7 +9,7 @@ import {
 
 export default defineEventHandler(async (event) => {
   const params = {
-    ...listCommitmentsRequestSchema.parse(await readBody(event)),
+    ...parseRequestBody(listCommitmentsRequestSchema, await readBody(event)),
     accessScope: getRequestAccessScope(event),
   };
   const result = await listCommitments(params);

@@ -2,6 +2,7 @@ import { getDeepResearchResult } from "~/lib/cache/deep-research-cache";
 import { formatSearchResultsAsXml } from "~/lib/formatting";
 import { searchMemory } from "~/lib/query/search";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   querySearchRequestSchema,
   QuerySearchResponse,
@@ -19,7 +20,7 @@ export default defineEventHandler(async (event) => {
     limit,
     excludeNodeTypes,
     conversationId,
-  } = querySearchRequestSchema.parse(await readBody(event));
+  } = parseRequestBody(querySearchRequestSchema, await readBody(event));
 
   // Get the standard search results
   const { searchResults } = await searchMemory({

@@ -5,6 +5,7 @@ import {
   seedClaimsCleanupForPlaceholders,
 } from "~/lib/jobs/cleanup-placeholders";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   cleanupPlaceholdersRequestSchema,
   cleanupPlaceholdersResponseSchema,
@@ -13,7 +14,10 @@ import { resolveWorkspacePartitions } from "~/lib/workspace-partitions";
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const params = cleanupPlaceholdersRequestSchema.parse(await readBody(event));
+  const params = parseRequestBody(
+    cleanupPlaceholdersRequestSchema,
+    await readBody(event),
+  );
   const accessScope = getRequestAccessScope(event);
   if (accessScope === "workspace" && params.triggerCleanup) {
     throw new PartitionedCleanupGraphUnsupportedError();

@@ -26,3 +26,23 @@ describe("typeIdSchema", () => {
     expect(() => typeIdSchema("source").parse("src_short")).toThrow();
   });
 });
+
+describe("typeIdSchema errors", () => {
+  it("names the ID kind a caller passed by mistake", () => {
+    const result = typeIdSchema("node").safeParse(
+      "src_01m34wpw4fesks6rketcme5875",
+    );
+
+    expect(result.error?.issues.map((issue) => issue.message)).toEqual([
+      'Expected a node ID starting with "node_", but received a source ID. Use a source operation for this ID instead.',
+    ]);
+  });
+
+  it("states the expected prefix for unknown IDs", () => {
+    const result = typeIdSchema("node").safeParse("Ada Lovelace");
+
+    expect(result.error?.issues.map((issue) => issue.message)).toEqual([
+      'Expected a node ID starting with "node_".',
+    ]);
+  });
+});

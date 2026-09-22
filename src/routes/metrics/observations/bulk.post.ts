@@ -3,6 +3,7 @@ import {
   resolveMetricObservationPartition,
 } from "~/lib/metrics/observations";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   bulkRecordMetricsRequestSchema,
   bulkRecordMetricsResponseSchema,
@@ -11,7 +12,7 @@ import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
   const { userId, partitionKey, sourceExternalId, observations } =
-    bulkRecordMetricsRequestSchema.parse(await readBody(event));
+    parseRequestBody(bulkRecordMetricsRequestSchema, await readBody(event));
   const accessScope = getRequestAccessScope(event);
   const resolvedPartitionKey = await resolveMetricObservationPartition(
     await useDatabase(),

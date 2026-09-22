@@ -2,6 +2,7 @@ import { defineEventHandler, readBody } from "h3";
 import { assertPartitionMaintenanceAuthorized } from "~/lib/partition-maintenance-auth";
 import { initializePartitionedUser } from "~/lib/partition-migration";
 import { throwPartitionRouteError } from "~/lib/partition-route-errors";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   initializePartitionedUserRequestSchema,
   initializePartitionedUserResponseSchema,
@@ -11,7 +12,8 @@ import { useDatabase } from "~/utils/db";
 /** Enables partition enforcement only while creating a brand-new identity. */
 export default defineEventHandler(async (event) => {
   assertPartitionMaintenanceAuthorized(event);
-  const request = initializePartitionedUserRequestSchema.parse(
+  const request = parseRequestBody(
+    initializePartitionedUserRequestSchema,
     await readBody(event),
   );
   const db = await useDatabase();

@@ -13,6 +13,7 @@
 // which is what lets the route test stub it via vi.stubGlobal.
 import { defineEventHandler } from "h3";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   searchRequestSchema,
   searchResponseSchema,
@@ -22,7 +23,7 @@ import { explicitSearch } from "~/lib/search/explicit-search";
 export default defineEventHandler(async (event) => {
   const accessScope = getRequestAccessScope(event);
   const { userId, partitionKey, query, limit, scope, filters } =
-    searchRequestSchema.parse(await readBody(event));
+    parseRequestBody(searchRequestSchema, await readBody(event));
 
   const result = await explicitSearch({
     userId,

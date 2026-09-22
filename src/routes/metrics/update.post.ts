@@ -4,13 +4,17 @@ import {
   MetricDefinitionValidationError,
   updateMetricDefinition,
 } from "~/lib/metrics/definitions";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   updateMetricDefinitionRequestSchema,
   updateMetricDefinitionResponseSchema,
 } from "~/lib/schemas/metric-write";
 
 export default defineEventHandler(async (event) => {
-  const body = updateMetricDefinitionRequestSchema.parse(await readBody(event));
+  const body = parseRequestBody(
+    updateMetricDefinitionRequestSchema,
+    await readBody(event),
+  );
   const { userId, metricDefinitionId, ...patch } = body;
   try {
     const definition = await updateMetricDefinition(

@@ -8,13 +8,17 @@
 import { defineEventHandler } from "h3";
 import { getDigest } from "~/lib/digest/get-digest";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   getDigestRequestSchema,
   getDigestResponseSchema,
 } from "~/lib/schemas/digest";
 
 export default defineEventHandler(async (event) => {
-  const params = getDigestRequestSchema.parse(await readBody(event));
+  const params = parseRequestBody(
+    getDigestRequestSchema,
+    await readBody(event),
+  );
   return getDigestResponseSchema.parse(
     await getDigest({
       ...params,

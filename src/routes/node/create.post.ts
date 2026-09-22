@@ -2,6 +2,7 @@ import { defineEventHandler, createError } from "h3";
 import { InvalidObjectValueError, NodesNotFoundError } from "~/lib/claim";
 import { createNode } from "~/lib/node";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   createNodeRequestSchema,
   createNodeResponseSchema,
@@ -10,7 +11,7 @@ import {
 export default defineEventHandler(async (event) => {
   const accessScope = getRequestAccessScope(event);
   const { userId, partitionKey, nodeType, label, description, initialClaims } =
-    createNodeRequestSchema.parse(await readBody(event));
+    parseRequestBody(createNodeRequestSchema, await readBody(event));
   try {
     const { initialClaimIds, ...node } = await createNode(
       userId,

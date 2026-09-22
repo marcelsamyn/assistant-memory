@@ -1,6 +1,7 @@
 import { defineEventHandler } from "h3";
 import { getNodeSources } from "~/lib/node";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   getNodeSourcesRequestSchema,
   getNodeSourcesResponseSchema,
@@ -8,7 +9,8 @@ import {
 
 export default defineEventHandler(async (event) => {
   const accessScope = getRequestAccessScope(event);
-  const { userId, partitionKey, nodeId } = getNodeSourcesRequestSchema.parse(
+  const { userId, partitionKey, nodeId } = parseRequestBody(
+    getNodeSourcesRequestSchema,
     await readBody(event),
   );
   const result = await getNodeSources(

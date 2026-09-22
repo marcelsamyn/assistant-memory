@@ -4,6 +4,7 @@ import {
   pruneOrphanNodesWorkspace,
 } from "~/lib/jobs/prune-orphan-nodes";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   pruneOrphanNodesRequestSchema,
   pruneOrphanNodesResponseSchema,
@@ -11,7 +12,10 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const params = pruneOrphanNodesRequestSchema.parse(await readBody(event));
+  const params = parseRequestBody(
+    pruneOrphanNodesRequestSchema,
+    await readBody(event),
+  );
   const db = await useDatabase();
   const accessScope = getRequestAccessScope(event);
   if (accessScope === "workspace" && params.partitionKey === undefined) {

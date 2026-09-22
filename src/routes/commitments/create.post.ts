@@ -5,13 +5,17 @@ import {
   CrossPartitionCommitmentError,
 } from "~/lib/commitments";
 import { withRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   createCommitmentRequestSchema,
   createCommitmentResponseSchema,
 } from "~/lib/schemas/create-commitment";
 
 export default defineEventHandler(async (event) => {
-  const params = createCommitmentRequestSchema.parse(await readBody(event));
+  const params = parseRequestBody(
+    createCommitmentRequestSchema,
+    await readBody(event),
+  );
   try {
     const result = await createCommitment(
       withRequestAccessScope(event, params),

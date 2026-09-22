@@ -1,6 +1,7 @@
 import { defineEventHandler, createError } from "h3";
 import { deleteNode } from "~/lib/node";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   deleteNodeRequestSchema,
   deleteNodeResponseSchema,
@@ -23,7 +24,8 @@ import {
  */
 export default defineEventHandler(async (event) => {
   const accessScope = getRequestAccessScope(event);
-  const { userId, partitionKey, nodeId } = deleteNodeRequestSchema.parse(
+  const { userId, partitionKey, nodeId } = parseRequestBody(
+    deleteNodeRequestSchema,
     await readBody(event),
   );
   const { deleted, affectedClaims } = await deleteNode(

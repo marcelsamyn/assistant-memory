@@ -10,12 +10,15 @@
 import { getConversationBootstrapContext } from "~/lib/context/assemble-bootstrap-context";
 import { contextBundleSchema } from "~/lib/context/types";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import { bootstrapMemoryRequestSchema } from "~/lib/schemas/context";
 
 export default defineEventHandler(async (event) => {
   const accessScope = getRequestAccessScope(event);
-  const { userId, partitionKey, forceRefresh } =
-    bootstrapMemoryRequestSchema.parse(await readBody(event));
+  const { userId, partitionKey, forceRefresh } = parseRequestBody(
+    bootstrapMemoryRequestSchema,
+    await readBody(event),
+  );
 
   const bundle = await getConversationBootstrapContext({
     userId,

@@ -97,12 +97,11 @@ describe("POST /sources/identity/lifecycle", () => {
       expect(response.status).toBe(400);
       const body = await response.json();
       expect(body).toMatchObject({
-        statusMessage: "Validation Error",
-        data: { name: "ZodError" },
+        statusMessage: "Invalid request body",
+        data: {
+          issues: [{ path: ["identities", 1, "type"], code: "invalid_value" }],
+        },
       });
-      expect(JSON.parse(body.data.message)).toMatchObject([
-        { path: ["identities", 1, "type"], code: "invalid_value" },
-      ]);
       expect(mocks.ensureUser).not.toHaveBeenCalled();
       expect(mocks.applySourceIdentityLifecycle).not.toHaveBeenCalled();
     },

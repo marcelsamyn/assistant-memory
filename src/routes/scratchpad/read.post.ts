@@ -1,3 +1,4 @@
+import { parseRequestBody } from "~/lib/request-body";
 import {
   scratchpadReadRequestSchema,
   scratchpadResponseSchema,
@@ -5,6 +6,9 @@ import {
 import { readScratchpad } from "~/lib/scratchpad";
 
 export default defineEventHandler(async (event) => {
-  const params = scratchpadReadRequestSchema.parse(await readBody(event));
+  const params = parseRequestBody(
+    scratchpadReadRequestSchema,
+    await readBody(event),
+  );
   return scratchpadResponseSchema.parse(await readScratchpad(params));
 });

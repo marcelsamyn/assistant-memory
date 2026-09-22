@@ -6,13 +6,17 @@ import {
   TaskNotFoundError,
 } from "~/lib/commitments";
 import { withRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   setCommitmentOwnerRequestSchema,
   setCommitmentOwnerResponseSchema,
 } from "~/lib/schemas/set-commitment-owner";
 
 export default defineEventHandler(async (event) => {
-  const params = setCommitmentOwnerRequestSchema.parse(await readBody(event));
+  const params = parseRequestBody(
+    setCommitmentOwnerRequestSchema,
+    await readBody(event),
+  );
   try {
     const result = await setCommitmentOwner(
       withRequestAccessScope(event, params),

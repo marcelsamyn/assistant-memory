@@ -1,6 +1,7 @@
 import { defineEventHandler, readBody } from "h3";
 import { batchQueue, SUMMARIZE_JOB_OPTIONS } from "~/lib/queues";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   summarizeRequestSchema,
   summarizeResponseSchema,
@@ -12,7 +13,8 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const { userId, partitionKey } = summarizeRequestSchema.parse(
+  const { userId, partitionKey } = parseRequestBody(
+    summarizeRequestSchema,
     await readBody(event),
   );
   const db = await useDatabase();

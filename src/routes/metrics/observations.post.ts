@@ -3,6 +3,7 @@ import {
   resolveMetricObservationPartition,
 } from "~/lib/metrics/observations";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   recordMetricRequestSchema,
   recordMetricResponseSchema,
@@ -17,7 +18,7 @@ export default defineEventHandler(async (event) => {
     value,
     occurredAt,
     note,
-  } = recordMetricRequestSchema.parse(await readBody(event));
+  } = parseRequestBody(recordMetricRequestSchema, await readBody(event));
   const accessScope = getRequestAccessScope(event);
   const partitionKey = await resolveMetricObservationPartition(
     await useDatabase(),

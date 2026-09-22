@@ -5,13 +5,17 @@ import {
   TaskNotFoundError,
 } from "~/lib/commitments";
 import { withRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   updateCommitmentRequestSchema,
   updateCommitmentResponseSchema,
 } from "~/lib/schemas/update-commitment";
 
 export default defineEventHandler(async (event) => {
-  const params = updateCommitmentRequestSchema.parse(await readBody(event));
+  const params = parseRequestBody(
+    updateCommitmentRequestSchema,
+    await readBody(event),
+  );
   try {
     const result = await updateCommitment(
       withRequestAccessScope(event, params),

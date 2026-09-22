@@ -4,6 +4,7 @@ import { resolveNodePartition } from "~/lib/partition-access";
 import { throwPartitionRouteError } from "~/lib/partition-route-errors";
 import { getCommitment } from "~/lib/query/commitment-detail";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   getCommitmentRequestSchema,
   getCommitmentResponseSchema,
@@ -11,7 +12,10 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const params = getCommitmentRequestSchema.parse(await readBody(event));
+  const params = parseRequestBody(
+    getCommitmentRequestSchema,
+    await readBody(event),
+  );
   try {
     const accessScope = getRequestAccessScope(event);
     const db = await useDatabase();

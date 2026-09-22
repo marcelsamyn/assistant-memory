@@ -9,6 +9,7 @@ import {
 import { CrossScopeMergeError } from "~/lib/node";
 import { throwPartitionRouteError } from "~/lib/partition-route-errors";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   reattributeClaimRequestSchema,
   reattributeClaimResponseSchema,
@@ -16,7 +17,10 @@ import {
 import { useDatabase } from "~/utils/db";
 
 export default defineEventHandler(async (event) => {
-  const input = reattributeClaimRequestSchema.parse(await readBody(event));
+  const input = parseRequestBody(
+    reattributeClaimRequestSchema,
+    await readBody(event),
+  );
   const accessScope = getRequestAccessScope(event);
   try {
     const resolution = await resolveClaimPartition(

@@ -1,6 +1,7 @@
 import { defineEventHandler, createError } from "h3";
 import { CrossScopeMergeError, mergeNodes } from "~/lib/node";
 import { getRequestAccessScope } from "~/lib/request-access";
+import { parseRequestBody } from "~/lib/request-body";
 import {
   mergeNodesRequestSchema,
   mergeNodesResponseSchema,
@@ -9,7 +10,7 @@ import {
 export default defineEventHandler(async (event) => {
   const accessScope = getRequestAccessScope(event);
   const { userId, partitionKey, nodeIds, targetLabel, targetDescription } =
-    mergeNodesRequestSchema.parse(await readBody(event));
+    parseRequestBody(mergeNodesRequestSchema, await readBody(event));
   let result;
   try {
     result = await mergeNodes(
