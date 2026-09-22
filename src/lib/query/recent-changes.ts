@@ -221,6 +221,7 @@ export async function queryRecentChanges(
     objectLabel: row.objectNodeLabel ?? row.objectValue,
     sourceId: row.sourceId,
     statedAt: row.statedAt,
+    changedAt: new Date(row.changedAt),
     changeKind: row.createdAt >= since ? "added" : "updated",
     assertedByKind: row.assertedByKind,
   }));
@@ -291,7 +292,7 @@ export async function queryRecentChanges(
   // Merge added + updated nodes, newest change first, capped at `limit`.
   // "Change time" is the createdAt for added nodes and the most recent
   // touching-claim change for updated ones.
-  type SortableNode = RecentChangeNode & { changedAt: Date | string };
+  type SortableNode = RecentChangeNode & { changedAt: Date };
   const mergedNodes: SortableNode[] = [
     ...addedNodeRows.map((row) => ({
       id: row.id,
@@ -313,14 +314,7 @@ export async function queryRecentChanges(
 
   const nodesOut: RecentChangeNode[] = mergedNodes
     .sort((a, b) => toTime(b.changedAt) - toTime(a.changedAt))
-    .slice(0, limit)
-    .map((node) => ({
-      id: node.id,
-      nodeType: node.nodeType,
-      label: node.label,
-      changeKind: node.changeKind,
-      firstSeenAt: node.firstSeenAt,
-    }));
+    .slice(0, limit);
 
   // --- Sources behind the returned claims ---------------------------------
   const sourceIds = Array.from(new Set(claimsOut.map((c) => c.sourceId)));

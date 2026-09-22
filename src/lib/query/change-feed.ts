@@ -74,6 +74,7 @@ function invalidCursor(
     throughSequence,
     events: [],
     nextCursor: null,
+    checkpointCursor: null,
     complete: false,
     pageComplete: false,
     cursorInvalid: {
@@ -176,8 +177,14 @@ export async function queryChangeFeed(
     }
   }
 
-  const throughSequence = cursor?.throughSequence ?? currentMaxSequence;
-  const afterSequence = cursor?.sequence ?? 0;
+  // A completed checkpoint starts a new sweep without replaying consumed
+  // events. Continuation cursors retain their original frozen watermark.
+  const throughSequence =
+    cursor === null || cursor.sequence === cursor.throughSequence
+      ? currentMaxSequence
+      : cursor.throughSequence;
+  const afterSequence =
+    cursor?.sequence ?? (params.startAt === "head" ? currentMaxSequence : 0);
   const rows = await db
     .select()
     .from(memoryChangeFeedEvents)
@@ -251,6 +258,16 @@ export async function queryChangeFeed(
         sequence: lastSequence,
         throughSequence,
       });
+  const checkpointCursor = complete
+    ? encodeCursor({
+        version: 1,
+        userId: params.userId,
+        partitionKey: partitionKey ?? null,
+        feedEpoch: currentFeedEpoch,
+        sequence: throughSequence,
+        throughSequence,
+      })
+    : null;
 
   return {
     feedSchemaEpoch: CHANGE_FEED_SCHEMA_EPOCH,
@@ -259,6 +276,7 @@ export async function queryChangeFeed(
     throughSequence,
     events,
     nextCursor,
+    checkpointCursor,
     complete,
     pageComplete: complete,
   };

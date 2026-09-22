@@ -838,8 +838,10 @@ export class MemoryClient {
   /**
    * Lossless, partition-aware lifecycle feed for durable projections. The
    * first page freezes a `throughSequence` watermark; pass `nextCursor` back
-   * unchanged until `complete` is true. A `cursorInvalid` response is typed
-   * recovery guidance rather than a partial page.
+   * unchanged until `complete` is true, then retain `checkpointCursor` for
+   * subsequent polls. Start with `startAt: "head"` to observe future changes
+   * without replaying history. A `cursorInvalid` response is typed recovery
+   * guidance rather than a partial page.
    */
   async queryChangeFeed(
     payload: QueryChangeFeedRequest,
