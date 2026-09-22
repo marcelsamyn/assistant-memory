@@ -89,13 +89,23 @@ export const changeFeedEventSchema = z.object({
 });
 export type ChangeFeedEvent = z.infer<typeof changeFeedEventSchema>;
 
-export const queryChangeFeedRequestSchema = z.object({
-  userId: z.string().min(1),
-  partitionKey: contextPartitionKeySchema.optional(),
-  /** Opaque keyset cursor returned by the previous page. */
-  cursor: z.string().min(1).max(2048).optional(),
-  limit: z.number().int().min(1).max(500).default(100),
-});
+export const queryChangeFeedRequestSchema = z
+  .object({
+    userId: z.string().min(1),
+    partitionKey: contextPartitionKeySchema.optional(),
+    /** Opaque keyset cursor returned by the previous page. */
+    cursor: z.string().min(1).max(2048).optional(),
+    /** First sweep only. Omission replays from the beginning. */
+    startAt: z.enum(["beginning", "head"]).optional(),
+    limit: z.number().int().min(1).max(500).default(100),
+  })
+  .refine(
+    (input) => input.cursor === undefined || input.startAt === undefined,
+    {
+      message: "Specify either cursor or startAt, not both.",
+      path: ["startAt"],
+    },
+  );
 export type QueryChangeFeedRequest = z.input<
   typeof queryChangeFeedRequestSchema
 >;
@@ -108,6 +118,8 @@ export const queryChangeFeedResponseSchema = z.object({
   throughSequence: z.number().int().nonnegative(),
   events: z.array(changeFeedEventSchema),
   nextCursor: z.string().nullable(),
+  /** Resume after a completed sweep. Absent on servers without tail polling. */
+  checkpointCursor: z.string().nullable().optional(),
   /** True when all events through `throughSequence` have been returned. */
   complete: z.boolean(),
   /** Alias retained for consumers that call the page boundary `pageComplete`. */

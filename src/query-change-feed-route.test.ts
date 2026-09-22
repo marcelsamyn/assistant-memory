@@ -47,6 +47,7 @@ describe("POST /query/change-feed", () => {
         },
       ],
       nextCursor: null,
+      checkpointCursor: "v1.completed-checkpoint",
       complete: true,
       pageComplete: true,
     });
@@ -62,6 +63,7 @@ describe("POST /query/change-feed", () => {
       feedSchemaEpoch: 1,
       throughSequence: 1,
       complete: true,
+      checkpointCursor: "v1.completed-checkpoint",
     });
   });
 
@@ -93,6 +95,53 @@ describe("POST /query/change-feed", () => {
     expect(response.cursorInvalid?.reason).toBe("malformed");
     expect(feedMocks.queryChangeFeed).toHaveBeenCalled();
   });
+
+  it("forwards an explicit head start", async () => {
+    vi.stubGlobal("readBody", async () => ({
+      userId: "user_feed",
+      startAt: "head",
+    }));
+    feedMocks.queryChangeFeed.mockResolvedValue({
+      feedSchemaEpoch: 1,
+      feedEpoch: 1,
+      partitionKey: null,
+      throughSequence: 12,
+      events: [],
+      nextCursor: null,
+      checkpointCursor: "v1.head-checkpoint",
+      complete: true,
+      pageComplete: true,
+    });
+    await expect(handler({} as H3Event)).resolves.toMatchObject({
+      events: [],
+      checkpointCursor: "v1.head-checkpoint",
+    });
+    expect(feedMocks.queryChangeFeed).toHaveBeenCalledWith({
+      userId: "user_feed",
+      startAt: "head",
+      limit: 100,
+    });
+  });
+
+  it.each(["beginning", "head"])(
+    "rejects cursor with startAt %s",
+    async (startAt) => {
+      vi.stubGlobal("readBody", async () => ({
+        userId: "user_feed",
+        cursor: "v1.checkpoint",
+        startAt,
+      }));
+      await expect(handler({} as H3Event)).rejects.toMatchObject({
+        issues: [
+          {
+            path: ["startAt"],
+            message: "Specify either cursor or startAt, not both.",
+          },
+        ],
+      });
+      expect(feedMocks.queryChangeFeed).not.toHaveBeenCalled();
+    },
+  );
 
   it("maps partition access conflicts to a stable client response", async () => {
     vi.stubGlobal("readBody", async () => ({

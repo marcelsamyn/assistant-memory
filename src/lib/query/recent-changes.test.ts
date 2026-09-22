@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -369,6 +370,8 @@ describeIfServer("recent changes query", () => {
         objectLabel: "Book",
         sourceId: srcConv,
         assertedByKind: "user",
+        statedAt: new Date("2026-05-28T10:01:00.000Z"),
+        changedAt: new Date("2026-05-28T10:01:00.000Z"),
       });
       expect(parsed.claims[1]).toMatchObject({
         id: claimUpdated,
@@ -376,6 +379,8 @@ describeIfServer("recent changes query", () => {
         predicate: "HAS_GOAL",
         // Attribute claims surface the literal objectValue as objectLabel.
         objectLabel: "finish draft by June 30",
+        statedAt: new Date("2026-01-05T00:00:00.000Z"),
+        changedAt: new Date("2026-05-27T10:00:00.000Z"),
       });
 
       // Nodes: added (personLena) plus existing nodes touched in the window
@@ -392,6 +397,23 @@ describeIfServer("recent changes query", () => {
       expect(nodeIds).not.toContain(dayNode);
       expect(nodeIds).not.toContain(oldPerson);
       expect(nodeIds).not.toContain(refNode);
+      expect(parsed.nodes).toEqual([
+        expect.objectContaining({
+          id: projectBook,
+          firstSeenAt: new Date("2026-01-01T00:00:00.000Z"),
+          changedAt: new Date("2026-05-28T10:01:00.000Z"),
+        }),
+        expect.objectContaining({
+          id: personLena,
+          firstSeenAt: new Date("2026-05-28T10:00:00.000Z"),
+          changedAt: new Date("2026-05-28T10:00:00.000Z"),
+        }),
+        expect.objectContaining({
+          id: goalNode,
+          firstSeenAt: new Date("2026-01-02T00:00:00.000Z"),
+          changedAt: new Date("2026-05-27T10:00:00.000Z"),
+        }),
+      ]);
 
       // Labels are carried on the node rows — no N+1 getNode required.
       expect(parsed.nodes.find((n) => n.id === personLena)?.label).toBe("Lena");
@@ -604,6 +626,36 @@ describeIfServer("recent changes query", () => {
           workspaceInactiveObjectNode,
         ]),
       );
+
+      // A later mutation ranks an old claim and its existing subject first,
+      // while their authored/creation dates remain unchanged.
+      const latestChange = new Date("2026-05-28T12:00:00.000Z");
+      await database
+        .update(schema.claims)
+        .set({ updatedAt: latestChange, objectValue: "finish draft by July 1" })
+        .where(eq(schema.claims.id, claimUpdated));
+      const latest = await queryRecentChanges({
+        userId,
+        since: SINCE,
+        until: UNTIL,
+        limit: 1,
+      });
+      expect(latest.claims).toEqual([
+        expect.objectContaining({
+          id: claimUpdated,
+          changeKind: "updated",
+          statedAt: new Date("2026-01-05T00:00:00.000Z"),
+          changedAt: latestChange,
+        }),
+      ]);
+      expect(latest.nodes).toEqual([
+        expect.objectContaining({
+          id: goalNode,
+          changeKind: "updated",
+          firstSeenAt: new Date("2026-01-02T00:00:00.000Z"),
+          changedAt: latestChange,
+        }),
+      ]);
     } finally {
       vi.doUnmock("~/utils/db");
       vi.resetModules();

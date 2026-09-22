@@ -6,12 +6,13 @@ import type { DrizzleDB } from "~/db";
 import { claims, sources } from "~/db/schema";
 import type { TypeId } from "~/types/typeid";
 
-/** Reapply removal evidence after date supersession, including delayed mail. */
-export async function applyEmailDeadlineRemovals(
+/** Find the first live removal after a deadline, including delayed mail. */
+export async function findEmailDeadlineRemoval(
   db: DrizzleDB,
   userId: string,
   taskId: TypeId<"node">,
-): Promise<void> {
+  deadlineClaimId: TypeId<"claim">,
+): Promise<Pick<typeof claims.$inferSelect, "id" | "statedAt"> | undefined> {
   const rows = await db
     .select({ claim: claims, sourceMetadata: sources.metadata })
     .from(claims)
@@ -25,6 +26,12 @@ export async function applyEmailDeadlineRemovals(
         isNull(sources.deletedAt),
       ),
     );
+  const deadline = rows.find(({ claim }) => claim.id === deadlineClaimId);
+  if (!deadline) return undefined;
+  const context = readSourceContext(deadline.sourceMetadata);
+  if (context?.sourceKind !== "email" && context?.sourceKind !== "message")
+    return undefined;
+
   const removals = rows.flatMap(({ claim }) => {
     if (claim.predicate !== "HAS_TASK_STATUS") return [];
     const evidence = readCommitmentRequestEvidence(claim.metadata);
@@ -35,35 +42,13 @@ export async function applyEmailDeadlineRemovals(
       !hasEmailDeadlineRemovalEvidence(evidence.emailThread.excerpt)
     )
       return [];
-    return [{ claim, thread: evidence.emailThread }];
+    return evidence.emailThread.accountId === context.accountId &&
+      evidence.emailThread.threadId === context.threadId &&
+      claim.statedAt > deadline.claim.statedAt
+      ? [claim]
+      : [];
   });
-  for (const { claim, sourceMetadata } of rows) {
-    if (claim.predicate !== "DUE_ON" || claim.status !== "active") continue;
-    const context = readSourceContext(sourceMetadata);
-    if (context?.sourceKind !== "email" && context?.sourceKind !== "message")
-      continue;
-    const removal = removals
-      .filter(
-        (item) =>
-          item.claim.subjectNodeId === claim.subjectNodeId &&
-          item.claim.statedAt > claim.statedAt &&
-          item.thread.accountId === context.accountId &&
-          item.thread.threadId === context.threadId,
-      )
-      .sort(
-        (a, b) => a.claim.statedAt.getTime() - b.claim.statedAt.getTime(),
-      )[0];
-    if (!removal) continue;
-    // The revision claim supplies the removal's timestamp and source citation;
-    // DUE_ON keeps its Temporal object and needs no invented "no date" value.
-    await db
-      .update(claims)
-      .set({
-        status: "superseded",
-        validTo: removal.claim.statedAt,
-        supersededByClaimId: removal.claim.id,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(claims.id, claim.id), eq(claims.status, "active")));
-  }
+  return removals.sort(
+    (a, b) => a.statedAt.getTime() - b.statedAt.getTime(),
+  )[0];
 }

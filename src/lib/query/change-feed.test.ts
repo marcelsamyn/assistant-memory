@@ -31,6 +31,7 @@ import {
   userProfiles,
   users,
 } from "~/db/schema";
+import { applyClaimLifecycle } from "~/lib/claims/lifecycle";
 import { findSimilarNodes } from "~/lib/graph";
 import { listMetrics } from "~/lib/metrics/list";
 import {
@@ -42,6 +43,7 @@ import { fetchNodesBySource } from "~/lib/nodes-by-source";
 import { resumePartitionNodeRecovery } from "~/lib/partition-artifact-recovery";
 import { reclassifySourcePartition } from "~/lib/partition-reclassification";
 import { queryChangeFeed } from "~/lib/query/change-feed";
+import type { CommitmentRequestEvidence } from "~/lib/schemas/commitment-request-evidence";
 import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import { reclassifySourcePartitionRequestSchema } from "~/lib/schemas/partition";
 import { sourceLifecycleCommandRequestSchema } from "~/lib/schemas/source-lifecycle";
@@ -121,6 +123,400 @@ describeIfServer("lossless lifecycle change feed", () => {
     );
     await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
     await admin.end();
+  });
+
+  it("checkpoints empty and completed sweeps without replaying earlier events", async () => {
+    const userId = "feed-checkpoint";
+    await database.insert(users).values({ id: userId });
+    const empty = await queryChangeFeed({ userId });
+    expect(empty).toMatchObject({
+      complete: true,
+      nextCursor: null,
+      throughSequence: 0,
+      events: [],
+      checkpointCursor: expect.any(String),
+    });
+
+    const firstNodeIds = [
+      newTypeId("node"),
+      newTypeId("node"),
+      newTypeId("node"),
+    ];
+    await database
+      .insert(nodes)
+      .values(
+        firstNodeIds.map((id) => ({ id, userId, nodeType: "Person" as const })),
+      );
+    const first = await queryChangeFeed({
+      userId,
+      cursor: empty.checkpointCursor ?? undefined,
+      limit: 1,
+    });
+    expect(first).toMatchObject({
+      complete: false,
+      checkpointCursor: null,
+      throughSequence: 3,
+      nextCursor: expect.any(String),
+    });
+
+    const laterNodeId = newTypeId("node");
+    await database
+      .insert(nodes)
+      .values({ id: laterNodeId, userId, nodeType: "Person" });
+    const last = await queryChangeFeed({
+      userId,
+      cursor: first.nextCursor ?? undefined,
+    });
+    expect(last).toMatchObject({
+      complete: true,
+      nextCursor: null,
+      throughSequence: first.throughSequence,
+      checkpointCursor: expect.any(String),
+    });
+    expect(
+      [...first.events, ...last.events].map((event) => event.entityId),
+    ).toEqual(firstNodeIds);
+
+    const tail = await queryChangeFeed({
+      userId,
+      cursor: last.checkpointCursor ?? undefined,
+    });
+    expect(tail.events.map((event) => event.entityId)).toEqual([laterNodeId]);
+    expect(tail).toMatchObject({
+      complete: true,
+      nextCursor: null,
+      throughSequence: 4,
+    });
+    const quiet = await queryChangeFeed({
+      userId,
+      cursor: tail.checkpointCursor ?? undefined,
+    });
+    expect(quiet.events).toEqual([]);
+    expect(quiet.checkpointCursor).toBe(tail.checkpointCursor);
+
+    await database
+      .update(memoryChangeFeedHeads)
+      .set({ feedEpoch: 2 })
+      .where(eq(memoryChangeFeedHeads.userId, userId));
+    const invalid = await queryChangeFeed({
+      userId,
+      cursor: quiet.checkpointCursor ?? undefined,
+    });
+    expect(invalid).toMatchObject({
+      complete: false,
+      nextCursor: null,
+      checkpointCursor: null,
+      cursorInvalid: { reason: "epoch_mismatch" },
+    });
+  });
+
+  it("starts at the authorized partition head and observes only later changes", async () => {
+    const userId = "feed-head-owner";
+    const otherUserId = "feed-head-other";
+    const partitionKey = contextPartitionKeySchema.parse("room:head");
+    const otherPartition = contextPartitionKeySchema.parse("room:elsewhere");
+    await database.insert(users).values([{ id: userId }, { id: otherUserId }]);
+    await database.insert(partitionMigrationState).values([
+      { userId, state: "migrating", version: 1 },
+      { userId: otherUserId, state: "migrating", version: 1 },
+    ]);
+    await database.insert(memoryPartitions).values([
+      { userId, partitionKey },
+      { userId, partitionKey: otherPartition },
+      { userId: otherUserId, partitionKey },
+    ]);
+    const historyId = newTypeId("node");
+    await database.insert(nodes).values([
+      { id: historyId, userId, partitionKey, nodeType: "Person" },
+      { userId, partitionKey: otherPartition, nodeType: "Person" },
+      { userId, partitionKey: otherPartition, nodeType: "Person" },
+      { userId: otherUserId, partitionKey, nodeType: "Person" },
+    ]);
+    const head = await queryChangeFeed({
+      userId,
+      partitionKey,
+      startAt: "head",
+    });
+    expect(head).toMatchObject({
+      events: [],
+      complete: true,
+      nextCursor: null,
+      throughSequence: 1,
+      checkpointCursor: expect.any(String),
+    });
+    const beginning = await queryChangeFeed({
+      userId,
+      partitionKey,
+      startAt: "beginning",
+    });
+    expect(beginning.events.map((event) => event.entityId)).toEqual([
+      historyId,
+    ]);
+
+    const laterId = newTypeId("node");
+    await database.insert(nodes).values([
+      { id: laterId, userId, partitionKey, nodeType: "Person" },
+      { userId, partitionKey: otherPartition, nodeType: "Person" },
+      { userId: otherUserId, partitionKey, nodeType: "Person" },
+    ]);
+    const tail = await queryChangeFeed({
+      userId,
+      partitionKey,
+      cursor: head.checkpointCursor ?? undefined,
+    });
+    expect(tail.events.map((event) => event.entityId)).toEqual([laterId]);
+    const wrongUser = await queryChangeFeed({
+      userId: otherUserId,
+      partitionKey,
+      cursor: head.checkpointCursor ?? undefined,
+    });
+    expect(wrongUser.cursorInvalid?.reason).toBe("user_mismatch");
+    const wrongPartition = await queryChangeFeed({
+      userId,
+      partitionKey: otherPartition,
+      cursor: head.checkpointCursor ?? undefined,
+    });
+    expect(wrongPartition.cursorInvalid?.reason).toBe("partition_mismatch");
+    await expect(
+      queryChangeFeed({
+        userId,
+        partitionKey: contextPartitionKeySchema.parse("room:unregistered"),
+        startAt: "head",
+      }),
+    ).rejects.toMatchObject({ code: "PARTITION_UNAUTHORIZED" });
+  });
+
+  it("emits lifecycle events only for changed stored claims", async () => {
+    const userId = "feed-stable-lifecycle";
+    const taskId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    await database.insert(users).values({ id: userId });
+    await database
+      .insert(nodes)
+      .values({ id: taskId, userId, nodeType: "Task" });
+    await database
+      .insert(sources)
+      .values({ id: sourceId, userId, type: "document", externalId: userId });
+    const initial = await database
+      .insert(claims)
+      .values([
+        {
+          userId,
+          subjectNodeId: taskId,
+          sourceId,
+          predicate: "HAS_TASK_STATUS",
+          statement: "Start the task",
+          objectValue: "pending",
+          assertedByKind: "user",
+          statedAt: new Date("2026-09-01"),
+          metadata: { nested: { b: 2, a: 1 } },
+        },
+        {
+          userId,
+          subjectNodeId: taskId,
+          sourceId,
+          predicate: "HAS_TASK_STATUS",
+          statement: "Work on the task",
+          objectValue: "in_progress",
+          assertedByKind: "user",
+          statedAt: new Date("2026-09-02"),
+        },
+        {
+          userId,
+          subjectNodeId: taskId,
+          sourceId,
+          predicate: "HAS_TASK_STATUS",
+          statement: "An inferred completion",
+          objectValue: "done",
+          assertedByKind: "assistant_inferred",
+          statedAt: new Date("2026-09-03"),
+        },
+      ])
+      .returning();
+    await applyClaimLifecycle(database, initial);
+    const before = await database
+      .select()
+      .from(claims)
+      .where(eq(claims.userId, userId))
+      .orderBy(claims.statedAt);
+    const eventCount = await database.$count(
+      memoryChangeFeedEvents,
+      eq(memoryChangeFeedEvents.userId, userId),
+    );
+    await applyClaimLifecycle(database, initial);
+    expect(
+      await database.$count(
+        memoryChangeFeedEvents,
+        eq(memoryChangeFeedEvents.userId, userId),
+      ),
+    ).toBe(eventCount);
+    expect(
+      await database
+        .select()
+        .from(claims)
+        .where(eq(claims.userId, userId))
+        .orderBy(claims.statedAt),
+    ).toEqual(before);
+
+    const added = await database
+      .insert(claims)
+      .values({
+        userId,
+        subjectNodeId: taskId,
+        sourceId,
+        predicate: "HAS_TASK_STATUS",
+        statement: "The user completed the task",
+        objectValue: "done",
+        assertedByKind: "user",
+        statedAt: new Date("2026-09-04"),
+        updatedAt: new Date("2026-09-04"),
+      })
+      .returning();
+    const afterInsertCount = await database.$count(
+      memoryChangeFeedEvents,
+      eq(memoryChangeFeedEvents.userId, userId),
+    );
+    await applyClaimLifecycle(database, added);
+    const after = await database
+      .select()
+      .from(claims)
+      .where(eq(claims.userId, userId))
+      .orderBy(claims.statedAt);
+    expect(after[0]).toEqual(before[0]);
+    expect(after.map((claim) => claim.status)).toEqual([
+      "superseded",
+      "superseded",
+      "superseded",
+      "active",
+    ]);
+    expect(after[3]?.updatedAt.getTime()).toBeGreaterThan(
+      new Date("2026-09-04").getTime(),
+    );
+    expect(
+      await database.$count(
+        memoryChangeFeedEvents,
+        eq(memoryChangeFeedEvents.userId, userId),
+      ),
+    ).toBe(afterInsertCount + 6);
+  });
+
+  it("persists changed email progress and source evidence before suppressing repeat events", async () => {
+    const userId = "feed-email-lifecycle";
+    const taskId = newTypeId("node");
+    const sourceIds = [
+      newTypeId("source"),
+      newTypeId("source"),
+      newTypeId("source"),
+    ];
+    await database.insert(users).values({ id: userId });
+    await database
+      .insert(nodes)
+      .values({ id: taskId, userId, nodeType: "Task" });
+    await database.insert(sources).values(
+      sourceIds.map((id) => ({
+        id,
+        userId,
+        type: "document" as const,
+        externalId: id,
+      })),
+    );
+    const insertStatus = async (input: {
+      sourceId: (typeof sourceIds)[number];
+      value: string;
+      day: string;
+      lifecycleEvidence: CommitmentRequestEvidence["lifecycleEvidence"];
+    }) =>
+      database
+        .insert(claims)
+        .values({
+          userId,
+          subjectNodeId: taskId,
+          sourceId: input.sourceId,
+          predicate: "HAS_TASK_STATUS",
+          statement: input.lifecycleEvidence,
+          objectValue: input.value,
+          assertedByKind: "document_author",
+          statedAt: new Date(input.day),
+          metadata: {
+            requestEvidence: {
+              kind: "direct_request",
+              requester: "sender@example.test",
+              intendedResponder: "user",
+              supportingSourceIds: [input.sourceId],
+              lifecycleEvidence: input.lifecycleEvidence,
+              emailThread: {
+                accountId: "account",
+                threadId: "thread",
+                messageId: input.day,
+                authoredAt: new Date(input.day).toISOString(),
+                excerpt: "Please prepare the draft.",
+                evidenceFingerprint: input.day.padEnd(64, "0"),
+              },
+            } satisfies CommitmentRequestEvidence,
+          },
+        })
+        .returning();
+    const requestSource = sourceIds[0];
+    const clarificationSource = sourceIds[1];
+    const completionSource = sourceIds[2];
+    if (!requestSource || !clarificationSource || !completionSource)
+      throw new Error("Missing test sources");
+    const request = await insertStatus({
+      sourceId: requestSource,
+      value: "pending",
+      day: "2026-09-01",
+      lifecycleEvidence: "current_message_direct_request",
+    });
+    const clarification = await insertStatus({
+      sourceId: clarificationSource,
+      value: "pending",
+      day: "2026-09-03",
+      lifecycleEvidence: "current_message_clarification",
+    });
+    await applyClaimLifecycle(database, [...request, ...clarification]);
+    const completion = await insertStatus({
+      sourceId: completionSource,
+      value: "done",
+      day: "2026-09-02",
+      lifecycleEvidence: "current_message_completion",
+    });
+    await applyClaimLifecycle(database, completion);
+    const settled = await database
+      .select()
+      .from(claims)
+      .where(eq(claims.userId, userId))
+      .orderBy(claims.statedAt);
+    expect(settled[2]).toMatchObject({
+      objectValue: "done",
+      status: "active",
+      metadata: {
+        requestEvidence: {
+          supportingSourceIds: [
+            clarificationSource,
+            completionSource,
+            requestSource,
+          ],
+        },
+      },
+    });
+    const eventCount = await database.$count(
+      memoryChangeFeedEvents,
+      eq(memoryChangeFeedEvents.userId, userId),
+    );
+    await applyClaimLifecycle(database, completion);
+    expect(
+      await database.$count(
+        memoryChangeFeedEvents,
+        eq(memoryChangeFeedEvents.userId, userId),
+      ),
+    ).toBe(eventCount);
+    expect(
+      await database
+        .select()
+        .from(claims)
+        .where(eq(claims.userId, userId))
+        .orderBy(claims.statedAt),
+    ).toEqual(settled);
   });
 
   it("freezes throughSequence, drains without duplicates, and covers direct mutations", async () => {

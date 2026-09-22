@@ -911,12 +911,44 @@ describeWithDatabase("email request extraction with PostgreSQL", () => {
       if (date !== null) addDeadline(next.sourceId, previous.taskId, date);
       embeddings.inputs = [];
       await extractGraph(next.params);
+      const beforeRecompute = await database
+        .select()
+        .from(schema.claims)
+        .where(
+          and(
+            eq(schema.claims.userId, userId),
+            eq(schema.claims.predicate, "DUE_ON"),
+          ),
+        )
+        .orderBy(schema.claims.id);
+      const eventCount = await database.$count(
+        schema.memoryChangeFeedEvents,
+        eq(schema.memoryChangeFeedEvents.userId, userId),
+      );
       await recomputeSingleValuedLifecycle(database, {
         userId,
         subjectNodeId: previous.taskId,
         subjectType: "Task",
         predicate: "DUE_ON",
       });
+      expect(
+        await database.$count(
+          schema.memoryChangeFeedEvents,
+          eq(schema.memoryChangeFeedEvents.userId, userId),
+        ),
+      ).toBe(eventCount);
+      expect(
+        await database
+          .select()
+          .from(schema.claims)
+          .where(
+            and(
+              eq(schema.claims.userId, userId),
+              eq(schema.claims.predicate, "DUE_ON"),
+            ),
+          )
+          .orderBy(schema.claims.id),
+      ).toEqual(beforeRecompute);
       const active = await database
         .select({ sourceId: schema.claims.sourceId })
         .from(schema.claims)
@@ -945,6 +977,71 @@ describeWithDatabase("email request extraction with PostgreSQL", () => {
         );
       }
     }
+  });
+
+  it("restores a deadline when its removal source is deleted", async () => {
+    const { recomputeSingleValuedLifecycle } = await import(
+      "./claims/lifecycle"
+    );
+    const userId = "email-deadline-removal-deleted";
+    const { previous } = await seedDatedRequest(userId);
+    const text =
+      "Please review the revised contract. There is no deadline now.";
+    const removal = await createMessage(
+      userId,
+      "removal",
+      "2026-09-10T10:00:00.000Z",
+      text,
+    );
+    output(removal.sourceId, [text], "revision", previous);
+    await extractGraph(removal.params);
+    const readDeadline = () =>
+      database
+        .select()
+        .from(schema.claims)
+        .where(
+          and(
+            eq(schema.claims.userId, userId),
+            eq(schema.claims.predicate, "DUE_ON"),
+          ),
+        );
+    expect(await readDeadline()).toMatchObject([{ status: "superseded" }]);
+
+    await database
+      .delete(schema.sources)
+      .where(eq(schema.sources.id, removal.sourceId));
+    await recomputeSingleValuedLifecycle(database, {
+      userId,
+      subjectNodeId: previous.taskId,
+      subjectType: "Task",
+      predicate: "HAS_TASK_STATUS",
+    });
+    const restored = await readDeadline();
+    expect(restored).toMatchObject([
+      {
+        status: "active",
+        sourceId: previous.sourceId,
+        validTo: null,
+        supersededByClaimId: null,
+      },
+    ]);
+    const eventCount = await database.$count(
+      schema.memoryChangeFeedEvents,
+      eq(schema.memoryChangeFeedEvents.userId, userId),
+    );
+    await recomputeSingleValuedLifecycle(database, {
+      userId,
+      subjectNodeId: previous.taskId,
+      subjectType: "Task",
+      predicate: "DUE_ON",
+    });
+    expect(await readDeadline()).toEqual(restored);
+    expect(
+      await database.$count(
+        schema.memoryChangeFeedEvents,
+        eq(schema.memoryChangeFeedEvents.userId, userId),
+      ),
+    ).toBe(eventCount);
   });
 
   it("keeps the same final requests and citations when later messages arrive out of order", async () => {

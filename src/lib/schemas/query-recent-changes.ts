@@ -69,6 +69,8 @@ export const recentChangeClaimSchema = z.object({
   objectLabel: z.string().nullable(),
   sourceId: typeIdSchema("source"),
   statedAt: z.coerce.date(),
+  /** Latest of claim creation and update time; the feed's sort key. Absent on older servers. */
+  changedAt: z.coerce.date().optional(),
   changeKind: changeKindEnum,
   assertedByKind: AssertedByKindEnum,
 });
@@ -81,6 +83,8 @@ export const recentChangeNodeSchema = z.object({
   changeKind: changeKindEnum,
   /** When the node first entered memory (`nodes.createdAt`). */
   firstSeenAt: z.coerce.date(),
+  /** Creation time for added nodes; newest touching claim change in this response for updated nodes. Absent on older servers. */
+  changedAt: z.coerce.date().optional(),
 });
 export type RecentChangeNode = z.infer<typeof recentChangeNodeSchema>;
 

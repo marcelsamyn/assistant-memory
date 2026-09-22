@@ -41,6 +41,7 @@ describe("POST /query/recent-changes", () => {
           objectLabel: "Book",
           sourceId,
           statedAt: new Date("2026-05-28T10:01:00.000Z"),
+          changedAt: new Date("2026-05-28T11:00:00.000Z"),
           changeKind: "added",
           assertedByKind: "user",
         },
@@ -52,6 +53,7 @@ describe("POST /query/recent-changes", () => {
           label: "Lena",
           changeKind: "added",
           firstSeenAt: new Date("2026-05-28T10:00:00.000Z"),
+          changedAt: new Date("2026-05-28T10:00:00.000Z"),
         },
       ],
       sources: [
@@ -81,10 +83,12 @@ describe("POST /query/recent-changes", () => {
       changeKind: "added",
       subjectLabel: "Lena",
       objectLabel: "Book",
+      changedAt: new Date("2026-05-28T11:00:00.000Z"),
     });
     expect(response.nodes[0]).toMatchObject({
       id: nodeId,
       changeKind: "added",
+      changedAt: new Date("2026-05-28T10:00:00.000Z"),
     });
     expect(response.sources[0]).toMatchObject({
       sourceId,

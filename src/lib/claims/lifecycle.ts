@@ -1,6 +1,5 @@
 /** Claim lifecycle transitions for sourced claims. Common aliases: supersession, claim lifecycle, single-valued claim policy. */
-import { hasEmailDeadlineRemovalEvidence } from "../email-deadline-evidence";
-import { applyEmailDeadlineRemovals } from "../email-deadline-lifecycle";
+import { findEmailDeadlineRemoval } from "../email-deadline-lifecycle";
 import {
   readCommitmentRequestEvidence,
   type CommitmentRequestEvidence,
@@ -10,6 +9,7 @@ import {
   resolvePredicatePolicy,
 } from "./predicate-policies";
 import { and, eq, inArray } from "drizzle-orm";
+import { isDeepStrictEqual } from "node:util";
 import type { DrizzleDB } from "~/db";
 import { claims, nodes } from "~/db/schema";
 import { logEvent } from "~/lib/observability/log";
@@ -112,6 +112,16 @@ async function singleCurrentValueSubjects(
       subjectType,
       predicate: claim.predicate,
     });
+    // Request revisions can remove a deadline without adding a DUE_ON claim.
+    // Recompute dates after statuses, including when removal evidence is deleted.
+    if (subjectType === "Task" && claim.predicate === "HAS_TASK_STATUS") {
+      subjects.set(`${claim.userId}|${claim.subjectNodeId}|DUE_ON`, {
+        userId: claim.userId,
+        subjectNodeId: claim.subjectNodeId,
+        subjectType,
+        predicate: "DUE_ON",
+      });
+    }
   }
   return [...subjects.values()];
 }
@@ -205,6 +215,11 @@ async function recomputeSingleValuedLifecycleForSubject(
   ).sort(compareLifecycleOrder);
 
   if (subjectClaims.length === 0) return;
+  // Email chronology can replace values and metadata below. Preserve their
+  // stored state so an unchanged lifecycle does not emit another feed event.
+  const persistedClaims = new Map(
+    subjectClaims.map((claim) => [claim.id, { ...claim }]),
+  );
 
   // A clarification carries the prior progress forward, including when an
   // earlier completion arrives after it. Recompute from authored chronology
@@ -262,10 +277,21 @@ async function recomputeSingleValuedLifecycleForSubject(
 
   // Latest active claim, used as the supersedor for every trust-demoted claim.
   const latestActive = orderedChain[orderedChain.length - 1];
+  const deadlineRemoval =
+    subject.subjectType === "Task" &&
+    subject.predicate === "DUE_ON" &&
+    latestActive?.assertedByKind === "assistant_inferred"
+      ? await findEmailDeadlineRemoval(
+          database,
+          subject.userId,
+          subject.subjectNodeId,
+          latestActive.id,
+        )
+      : undefined;
 
   for (let index = 0; index < orderedChain.length; index++) {
     const claim = orderedChain[index]!;
-    const nextClaim = orderedChain[index + 1];
+    const nextClaim = orderedChain[index + 1] ?? deadlineRemoval;
     const isLatestActive = nextClaim === undefined;
     const validFrom = claim.validFrom ?? claim.statedAt;
     const validTo = isLatestActive
@@ -274,18 +300,21 @@ async function recomputeSingleValuedLifecycleForSubject(
         : claim.validTo
       : nextClaim.statedAt;
 
+    const changes = {
+      objectValue: claim.objectValue,
+      metadata: claim.metadata,
+      status: isLatestActive ? "active" : "superseded",
+      validFrom,
+      validTo,
+      supersededByClaimId: isLatestActive ? null : nextClaim.id,
+    } satisfies Partial<ClaimRow>;
+    const persisted = persistedClaims.get(claim.id);
+    if (isDeepStrictEqual(persisted, { ...persisted, ...changes })) continue;
+
     updates.push(
       database
         .update(claims)
-        .set({
-          objectValue: claim.objectValue,
-          metadata: claim.metadata,
-          status: isLatestActive ? "active" : "superseded",
-          validFrom,
-          validTo,
-          supersededByClaimId: isLatestActive ? null : nextClaim.id,
-          updatedAt,
-        })
+        .set({ ...changes, updatedAt })
         .where(eq(claims.id, claim.id)),
     );
     if (!isLatestActive && claim.status !== "superseded") {
@@ -298,16 +327,19 @@ async function recomputeSingleValuedLifecycleForSubject(
 
   for (const demotedClaim of demotedClaims) {
     const validFrom = demotedClaim.validFrom ?? demotedClaim.statedAt;
+    const changes = {
+      status: "superseded",
+      validFrom,
+      validTo: demotedClaim.statedAt,
+      supersededByClaimId: latestActive ? latestActive.id : null,
+    } satisfies Partial<ClaimRow>;
+    const persisted = persistedClaims.get(demotedClaim.id);
+    if (isDeepStrictEqual(persisted, { ...persisted, ...changes })) continue;
+
     updates.push(
       database
         .update(claims)
-        .set({
-          status: "superseded",
-          validFrom,
-          validTo: demotedClaim.statedAt,
-          supersededByClaimId: latestActive ? latestActive.id : null,
-          updatedAt,
-        })
+        .set({ ...changes, updatedAt })
         .where(eq(claims.id, demotedClaim.id)),
     );
     if (demotedClaim.status !== "superseded") {
@@ -319,27 +351,6 @@ async function recomputeSingleValuedLifecycleForSubject(
   }
 
   await Promise.all(updates);
-
-  if (
-    subject.subjectType === "Task" &&
-    ((subject.predicate === "DUE_ON" &&
-      latestActive?.assertedByKind === "assistant_inferred") ||
-      subjectClaims.some((claim) => {
-        const evidence = emailLifecycleEvidence(claim);
-        return (
-          evidence?.matchStatus === "matched" &&
-          evidence.lifecycleEvidence === "current_message_revision" &&
-          evidence.emailThread !== undefined &&
-          hasEmailDeadlineRemovalEvidence(evidence.emailThread.excerpt)
-        );
-      }))
-  ) {
-    await applyEmailDeadlineRemovals(
-      database,
-      subject.userId,
-      subject.subjectNodeId,
-    );
-  }
 
   for (const transition of newlySuperseded) {
     logEvent("claim.superseded", {
@@ -358,11 +369,15 @@ export async function applyClaimLifecycle(
   changedClaims: ClaimRow[],
 ): Promise<void> {
   const subjects = await singleCurrentValueSubjects(database, changedClaims);
-  await Promise.all(
-    subjects.map((subject) =>
-      recomputeSingleValuedLifecycleForSubject(database, subject),
-    ),
-  );
+  for (const dueDates of [false, true]) {
+    await Promise.all(
+      subjects
+        .filter((subject) => (subject.predicate === "DUE_ON") === dueDates)
+        .map((subject) =>
+          recomputeSingleValuedLifecycleForSubject(database, subject),
+        ),
+    );
+  }
 }
 
 export async function fetchClaimsByIds(
@@ -385,4 +400,13 @@ export async function recomputeSingleValuedLifecycle(
   },
 ): Promise<void> {
   await recomputeSingleValuedLifecycleForSubject(database, subject);
+  if (
+    subject.subjectType === "Task" &&
+    subject.predicate === "HAS_TASK_STATUS"
+  ) {
+    await recomputeSingleValuedLifecycleForSubject(database, {
+      ...subject,
+      predicate: "DUE_ON",
+    });
+  }
 }

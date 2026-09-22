@@ -83,14 +83,43 @@ See [Ingestion](sdk/ingestion.md) for examples, transport support, and failure h
 
 ---
 
+## Recent changes — change timestamps
+
+`queryRecentChanges` now includes `changedAt` on each claim and node. Use it
+to rank recent changes. `statedAt` retains the claim's authored time, and
+`firstSeenAt` retains the node's creation time.
+
+- Claims use the latest of `createdAt` and `updatedAt`, matching their sort key.
+  Selection still accepts either timestamp within `[since, until]`; this is
+  a current-state display query, not a historical snapshot.
+- Added nodes use their creation time. Updated nodes use the newest change
+  among the returned claims that touch them. These claims are already capped
+  by `limit`; this timestamp is not a complete node modification history.
+- `changedAt` is optional in the SDK to accept older servers. An absent value
+  means the exact change time is unavailable.
+
 ## SDK addition — lossless lifecycle change feed
 
 - **NEW REST:** `POST /query/change-feed` and **NEW SDK methods**
   `MemoryClient.queryChangeFeed(payload)` / `getChangeFeed(payload)`.
-- Request: `{ userId, partitionKey?, cursor?, limit? }`. The opaque cursor is
+- Request: `{ userId, partitionKey?, cursor?, startAt?, limit? }`. The opaque cursor is
   a keyset cursor over a stable per-user/partition sequence; it is never an
   effective-time or bare-identity cursor. The first page freezes
   `throughSequence`; send `nextCursor` unchanged until `complete` is `true`.
+- For a new consumer that needs only future changes, use `startAt: "head"`.
+  The response has no historical events and supplies a completed checkpoint
+  at the current partition head. Later polls with that checkpoint return
+  only subsequent changes. Omit `startAt` or use `"beginning"` to replay all
+  retained events. Supplying both `startAt` and `cursor` is invalid.
+- Completed pages retain `nextCursor: null` and now include an opaque
+  `checkpointCursor`. Save that checkpoint after applying the page, then send
+  it as `cursor` on the next poll. The next sweep starts after the consumed
+  sequence and captures a new watermark. Empty polls also return a checkpoint.
+  Incomplete pages return `checkpointCursor: null`; continue with `nextCursor`
+  so events added during a sweep remain outside its frozen watermark.
+  `checkpointCursor` is optional in the SDK for older servers. Its absence
+  means incremental tail polling is unavailable; do not construct a cursor
+  from sequence fields or interpret an absent checkpoint as a fresh start.
 - Response events retain the memory authority's stable `eventId`, feed epoch,
   sequence/tie-breaker, opaque partition, effective change time, source and
   provenance references, freshness/status coverage, and a typed lifecycle
