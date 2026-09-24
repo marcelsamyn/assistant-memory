@@ -10,6 +10,14 @@ has the _what to change_.
 
 ---
 
+## Extracted self assignments
+
+Conversation ingestion now resolves the user's self node in the conversation's partition, creating it when missing, and gives it to the extraction model as the author of `role: "user"` messages. A task the user takes on in a conversation is assigned to that node, so commitment reads return `owner: null`. Transcript extraction applies the same rule to the user-self speaker. The dedup sweep no longer merges the self node into an older node with the same label.
+
+No request or response shape changes. Tasks extracted before this change keep their stored owner. See [self assignment](sdk/commitments.md#self-assignment).
+
+---
+
 ## Invalid requests return 400
 
 Every REST route now rejects an invalid request body with `400 Invalid request body` instead of an unhandled `500`. The response `message` lists each problem with its field path, and `data.issues` holds the Zod issues. An ID of the wrong kind names the kind that was sent. For example, a source ID passed as `nodeId` returns `Expected a node ID starting with "node_", but received a source ID. Use a source operation for this ID instead.`

@@ -164,6 +164,14 @@ interface ExtractGraphParams {
    */
   userIdentityNote?: string;
   /**
+   * The flagged user-self Person node, for sources where the user's own
+   * messages are marked by the host (conversation `role="user"` turns). The
+   * model gets this id for every claim about the user, including
+   * `ASSIGNED_TO` on the user's own tasks, so it never has to name the user
+   * and let identity resolution pick a same-named Person.
+   */
+  userSelfNodeId?: TypeId<"node">;
+  /**
    * Debug hook fired exactly once after the LLM call returns, before
    * dedup/identity-resolution runs. Receives the exact prompt sent and the
    * parsed response. Errors thrown by the hook are logged and swallowed so
@@ -189,6 +197,7 @@ export async function extractGraph({
   replaceClaimsForSources = true,
   contentNote,
   userIdentityNote,
+  userSelfNodeId,
   onLlmIO,
 }: ExtractGraphParams) {
   const db = await useDatabase();
@@ -294,6 +303,9 @@ export async function extractGraph({
   // then person nodes (most duplicated type), then embedding results, then
   // one-hop neighbors.
   const seenIds = new Set<TypeId<"node">>();
+  // The user's node has its own prompt section. Listed again as an anonymous
+  // existing Person, it could be picked for someone else.
+  if (userSelfNodeId) seenIds.add(userSelfNodeId);
   const similarNodesForProcessing: SimilarNodeForPrompt[] = [];
 
   for (const commitment of [
@@ -341,6 +353,9 @@ export async function extractGraph({
       idMap.set(entry.nodeId.toString(), entry.nodeId);
     }
   }
+  if (userSelfNodeId) {
+    idMap.set(userSelfNodeId.toString(), userSelfNodeId);
+  }
 
   const openCommitmentsPromptSection = _formatOpenCommitmentsSection(
     cappedOpenCommitments,
@@ -353,6 +368,7 @@ export async function extractGraph({
   );
 
   const speakerMapPromptSection = _formatSpeakerMapSection(speakerMap);
+  const userSelfPromptSection = _formatUserSelfSection(userSelfNodeId);
 
   const userIdentityPromptSection = userIdentityNote
     ? `${userIdentityNote}\n\n`
@@ -552,7 +568,7 @@ ${formatEmailRequestCandidates(emailRequestCandidates)}
 
 ${speakerMapPromptSection}
 
-${userIdentityPromptSection}${trustedSourceContextPromptSection}Extract the graph from the following ${sourceType}:
+${userSelfPromptSection}${userIdentityPromptSection}${trustedSourceContextPromptSection}Extract the graph from the following ${sourceType}:
 
 Allowed source refs:
 ${sourceRefsForPrompt}
@@ -1953,8 +1969,19 @@ function _formatSpeakerMapSection(
   });
   return `Speakers in this transcript:
 For each claim, set "assertedBySpeakerLabel" to the speaker who said it, using these labels exactly. Claims whose speaker label is missing or not in this list will be dropped.
-When a speaker states a fact about themselves (first-person "I…/my…"), use that speaker's nodeId above as the claim's subjectId — do NOT mint a new node for a speaker already listed here. In particular, attribute the user-self speaker's self-statements to their nodeId, never to a newly created same-named node.
+When a speaker states a fact about themselves (first-person "I…/my…"), use that speaker's nodeId above as the claim's subjectId — do NOT mint a new node for a speaker already listed here. When a speaker takes on a task ("I'll send it"), use that speaker's nodeId as the objectId of the task's ASSIGNED_TO claim. In particular, attribute the user-self speaker's self-statements and tasks to their nodeId, never to a newly created or existing same-named node.
 ${lines.join("\n")}`;
+}
+
+function _formatUserSelfSection(
+  userSelfNodeId: TypeId<"node"> | undefined,
+): string {
+  if (!userSelfNodeId) return "";
+  return `The user:
+- nodeId: ${userSelfNodeId}; the account owner, who writes the role="user" messages ("I", "me", "my").
+Use this nodeId for every claim about the user: as the subjectId of facts about the user, and as the objectId of ASSIGNED_TO for a task the user will do. Do NOT create a Person node for the user, and do NOT use another Person node for the user because its name matches. Never use this nodeId for anyone else.
+
+`;
 }
 
 async function _processAndInsertLlmAliases(

@@ -79,9 +79,11 @@ export const story03PersonNickname: EvalFixture = {
   expectations: {
     nodeCounts: [
       {
-        description: "single Person node — no nickname duplicate",
+        // Conversation ingestion also ensures the user's own Person node.
+        description:
+          "Jonathan plus the user's self node — no nickname duplicate",
         type: "Person",
-        exactCount: 1,
+        exactCount: 2,
       },
     ],
     aliases: [

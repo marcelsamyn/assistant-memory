@@ -13,7 +13,10 @@ import { type ConversationTurn } from "~/lib/conversation-store";
 import { contextPartitionKeySchema } from "~/lib/schemas/partition";
 import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import { getUserSelfAliases } from "~/lib/user-profile";
-import { buildUserIdentityNote } from "~/lib/user-self-identity";
+import {
+  buildUserIdentityNote,
+  ensureUserSelfPersonNode,
+} from "~/lib/user-self-identity";
 import { NodeTypeEnum } from "~/types/graph";
 import { TypeId } from "~/types/typeid";
 
@@ -73,9 +76,16 @@ export async function ingestConversation({
     timestamp: firstTurn.timestamp,
     nodeType: NodeTypeEnum.enum.Conversation,
   });
-  const userIdentityNote = buildUserIdentityNote(
-    await getUserSelfAliases(db, userId),
-  );
+  // The user writes the role="user" turns, so the flagged self node in this
+  // partition is who "I" and "me" refer to. Hand it to the model by id instead
+  // of by name: names can match another Person. Only a new self node takes
+  // its label and aliases from the stored profile; an existing one is left as
+  // is.
+  const [userSelfNodeId, userSelfAliases] = await Promise.all([
+    ensureUserSelfPersonNode(db, userId, partitionKey),
+    getUserSelfAliases(db, userId),
+  ]);
+  const userIdentityNote = buildUserIdentityNote(userSelfAliases);
   await extractGraph({
     userId,
     ...(partitionKey !== undefined ? { partitionKey } : {}),
@@ -85,6 +95,7 @@ export async function ingestConversation({
     linkedNodeId: conversationNodeId,
     sourceRefs,
     content: formatConversationAsXml(insertedTurns),
+    userSelfNodeId,
     ...(userIdentityNote ? { userIdentityNote } : {}),
   });
   return { insertedTurns };

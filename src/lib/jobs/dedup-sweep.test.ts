@@ -402,6 +402,96 @@ describeIfServer("runDedupSweep", () => {
     }
   });
 
+  it("keeps the user-self Person out of label merges while merging its same-named duplicates", async () => {
+    // The self node was named after the user's aliases after extraction had
+    // already minted two "Marcel Samyn" Persons. The oldest node survives a
+    // merge, so merging the self node would drop its isUserSelf flag and move
+    // the user's task assignments to a node that reads as someone else.
+    const userId = "user_dedup_self";
+    const olderDuplicateId = newTypeId("node");
+    const newerDuplicateId = newTypeId("node");
+    const selfId = newTypeId("node");
+    const taskId = newTypeId("node");
+    const sourceId = newTypeId("source");
+    const assignmentId = newTypeId("claim");
+
+    const client = new Client({ connectionString: dsnFor(dbName) });
+    await client.connect();
+    const database = drizzle(client, { schema, casing: "snake_case" });
+
+    try {
+      await createDedupTables(client);
+      await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
+      await client.query(
+        `INSERT INTO "sources" ("id", "user_id", "type", "external_id", "scope", "status")
+         VALUES ($1, $2, 'conversation', 'conv:user_dedup_self', 'personal', 'completed')`,
+        [sourceId, userId],
+      );
+      for (const id of [olderDuplicateId, newerDuplicateId]) {
+        await seedNode(client, {
+          userId,
+          nodeId: id,
+          nodeType: "Person",
+          canonicalLabel: "marcel samyn",
+          label: "Marcel Samyn",
+        });
+      }
+      await seedNode(client, {
+        userId,
+        nodeId: selfId,
+        nodeType: "Person",
+        canonicalLabel: "marcel samyn",
+        label: "Marcel Samyn",
+      });
+      await client.query(
+        `UPDATE "node_metadata" SET "additional_data" = '{"isUserSelf": true}'::jsonb WHERE "node_id" = $1`,
+        [selfId],
+      );
+      await seedNode(client, {
+        userId,
+        nodeId: taskId,
+        nodeType: "Task",
+        canonicalLabel: "send jan the contract",
+      });
+      await client.query(
+        `INSERT INTO "claims" (
+           "id", "user_id", "subject_node_id", "object_node_id", "predicate", "statement",
+           "source_id", "scope", "asserted_by_kind", "stated_at"
+         ) VALUES ($1, $2, $3, $4, 'ASSIGNED_TO', 'The user will send Jan the contract.', $5, 'personal', 'user', now())`,
+        [assignmentId, userId, taskId, selfId, sourceId],
+      );
+
+      const result = await runDedupSweep(userId, database);
+      expect(result.mergedGroups).toBe(1);
+      expect(result.mergedNodes).toBe(1);
+
+      const people = await client.query<{
+        id: string;
+        additional_data: unknown;
+      }>(
+        `SELECT n."id", m."additional_data"
+           FROM "nodes" n
+           JOIN "node_metadata" m ON m."node_id" = n."id"
+          WHERE n."user_id" = $1 AND n."node_type" = 'Person'`,
+        [userId],
+      );
+      expect(people.rows.map((row) => row.id).sort()).toEqual(
+        [olderDuplicateId, selfId].sort(),
+      );
+      expect(
+        people.rows.find((row) => row.id === selfId)?.additional_data,
+      ).toEqual({ isUserSelf: true });
+
+      const assignment = await client.query<{ object_node_id: string }>(
+        `SELECT "object_node_id" FROM "claims" WHERE "id" = $1`,
+        [assignmentId],
+      );
+      expect(assignment.rows[0]?.object_node_id).toBe(selfId);
+    } finally {
+      await client.end();
+    }
+  });
+
   it("does not merge record/occurrence node types sharing a label", async () => {
     // A daily task created for each day of the week, plus a recurring weekly
     // event, all share an exact label with a same-typed sibling. These are
