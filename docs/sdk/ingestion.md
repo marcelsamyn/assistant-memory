@@ -1,6 +1,16 @@
 # Ingestion
 
-Memory accepts inline documents and uploaded files from any client. Both paths return a source immediately and process its content in the background. Conversation and transcript ingestion keep their existing speaker-aware contracts.
+Memory accepts inline documents and uploaded files from any client. Both paths return a source immediately and process its content in the background. Conversation and transcript ingestion keep their speaker-aware request shapes; see [The user's own words](#the-users-own-words) for how they attribute the user.
+
+## The user's own words
+
+Conversation and transcript ingestion attribute what the user says to the user's self node, the Person flagged `isUserSelf`:
+
+- In a conversation, `role: "user"` messages are the user's. Ingestion resolves the self node in the conversation's partition, creating it when missing, and gives it to the extraction model. Facts about the user use it as their subject, and a task the user takes on uses it as the `ASSIGNED_TO` object.
+- In a transcript, the speaker matched by the user's self aliases resolves to the self node and follows the same rules. A speaker the aliases don't match is treated as someone else.
+- In documents, only an exact multi-word self alias resolves to the self node of the same partition. Email and message sources never store `ASSIGNED_TO`.
+
+Commitment reads return a task assigned to the self node with `owner: null`. Tasks extracted before this rule keep their stored owner. See [self assignment](commitments.md#self-assignment).
 
 ## Choose a partition access scope
 

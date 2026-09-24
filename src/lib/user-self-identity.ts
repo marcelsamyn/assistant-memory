@@ -29,9 +29,6 @@ import type {
 import { userProfileMetadataSchema } from "~/lib/schemas/user-profile-metadata";
 import type { TypeId } from "~/types/typeid";
 
-/** The user-self Person's label before any alias names the user. */
-export const UNNAMED_SELF_LABEL = "Me";
-
 /** Count whitespace-separated tokens in an alias (after trimming). */
 function tokenCount(alias: string): number {
   return alias
@@ -220,12 +217,14 @@ async function resolveUserSelfPersonNode(
   if (!newNode) {
     throw new Error(`Failed to create user-self Person node for ${userId}`);
   }
-  // Until the user's aliases name them, the node reads as "Me" in their
-  // graph rather than a raw id. The flag, not the label, marks it as the user.
+  // The placeholder label must never equal a name extraction could propose:
+  // identity resolution maps a Person to a node by a unique canonical label,
+  // so a readable placeholder such as "Me" would attribute any "Me" to the
+  // user. The user id can't collide; aliases replace it with the user's name.
   await db.insert(nodeMetadata).values({
     nodeId: newNode.id,
-    label: UNNAMED_SELF_LABEL,
-    canonicalLabel: normalizeLabel(UNNAMED_SELF_LABEL),
+    label: userId,
+    canonicalLabel: normalizeLabel(userId),
     additionalData: { isUserSelf: true },
   });
   return {
