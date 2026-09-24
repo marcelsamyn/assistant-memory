@@ -848,7 +848,7 @@ export async function promoteAssertion(
     );
   }
 
-  // createClaim runs lifecycle + embedding insertion. Single-valued predicates
+  // createClaim runs lifecycle and queues the embedding. Single-valued predicates
   // will supersede the original automatically (trust ranking puts
   // user_confirmed > assistant_inferred); multi-valued coexist.
   // `statedAt` is passed explicitly (rather than relying on createClaim's

@@ -362,6 +362,11 @@ const worker = new Worker<SummarizeJobData | DreamJobData>(
           userId,
           sourceId: sourceId as TypeId<"source">,
         });
+      } else if (job.name === "embed-claim") {
+        const { embedClaim, EmbedClaimJobInputSchema } = await import(
+          "./jobs/embed-claim"
+        );
+        await embedClaim(db, EmbedClaimJobInputSchema.parse(job.data));
       } else if (job.name === "cleanup-graph") {
         const data = CleanupGraphJobInputSchema.parse({
           ...job.data,

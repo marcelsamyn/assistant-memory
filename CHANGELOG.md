@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Claim writes no longer wait for the embedding API.** `createClaim`, `reattributeClaim`, and the commitment writes that assert claims (`setCommitmentStatus`, `setCommitmentDue`, `setCommitmentOwner`, `confirmCommitment`, `createCommitment`) return once the claim and its lifecycle changes commit. The batch worker then writes the claim's search embedding in an `embed-claim` job with three attempts. Response shapes do not change. A new manual claim appears in semantic claim search after that job runs, and an embedding API failure no longer fails a write that has already committed. Node embeddings from `createCommitment` and `updateCommitment` are still written during the request.
+
 - **BREAKING: MCP tool names normalized to snake_case to satisfy the MCP tool-name format spec.** The SDK now warns at registration when a tool name contains spaces, flagging it as a future compatibility risk (see [SEP: Specify Format for Tool Names](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/986)). The following tools were renamed to match the snake_case convention already used by `bootstrap_memory`, `search_memory`, `list_open_commitments`, etc. — their schemas, descriptions, and request/response shapes are unchanged:
 
   | Old                                                        | New                                                        |
