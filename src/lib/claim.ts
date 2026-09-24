@@ -1,9 +1,12 @@
 /** Claim operations: create, retract, delete, reattribute. */
 import { and, eq, inArray, isNull } from "drizzle-orm";
-import { claims, claimEmbeddings, nodeMetadata, nodes } from "~/db/schema";
+import { claims, nodeMetadata, nodes } from "~/db/schema";
 import { applyClaimLifecycle, fetchClaimsByIds } from "~/lib/claims/lifecycle";
 import { assertRelationshipPredicateShape } from "~/lib/claims/predicate-shapes";
-import { generateEmbeddings } from "~/lib/embeddings";
+import {
+  EMBED_CLAIM_JOB_OPTIONS,
+  type EmbedClaimJobInput,
+} from "~/lib/jobs/embed-claim";
 import { CrossScopeMergeError } from "~/lib/node";
 import { getEffectiveNodeScopes } from "~/lib/node-scope";
 import { logEvent } from "~/lib/observability/log";
@@ -228,29 +231,29 @@ async function fetchOwnedNodes(
   );
 }
 
-async function insertClaimEmbedding(
-  db: Database,
+/**
+ * Queue the search embedding so a claim write does not wait on the external
+ * embedding API. The text is captured now, so the stored vector matches the
+ * claim as written even if its lifecycle status changes before the job runs.
+ */
+async function enqueueClaimEmbedding(
   claim: Pick<
     ClaimSelect,
-    "id" | "predicate" | "statement" | "status" | "statedAt"
+    "id" | "userId" | "predicate" | "statement" | "status" | "statedAt"
   >,
 ): Promise<void> {
   if (shouldSkipEmbeddingPersistence()) return;
 
-  const embResponse = await generateEmbeddings({
-    model: "jina-embeddings-v3",
-    task: "retrieval.passage",
-    input: [claimEmbeddingText(claim)],
-    truncate: true,
-  });
-  const embedding = embResponse.data[0]?.embedding;
-  if (!embedding) return;
-
-  await db.insert(claimEmbeddings).values({
-    claimId: claim.id,
-    embedding,
-    modelName: "jina-embeddings-v3",
-  });
+  const { batchQueue } = await import("./queues");
+  await batchQueue.add(
+    "embed-claim",
+    {
+      userId: claim.userId,
+      claimId: claim.id,
+      text: claimEmbeddingText(claim),
+    } satisfies EmbedClaimJobInput,
+    { jobId: `embed-claim:${claim.id}`, ...EMBED_CLAIM_JOB_OPTIONS },
+  );
 }
 
 /** Create a sourced claim. Uses the per-user manual source when sourceId is omitted. */
@@ -385,7 +388,7 @@ export async function createClaim(
   const [finalized] = await fetchClaimsByIds(db, [inserted.id]);
   if (!finalized) throw new Error("Failed to fetch created claim");
 
-  await insertClaimEmbedding(db, finalized);
+  await enqueueClaimEmbedding(finalized);
   return {
     ...finalized,
     subjectLabel: ownedNodes.get(input.subjectNodeId)?.label ?? null,
@@ -691,7 +694,7 @@ export async function reattributeClaim(
   });
 
   // Run the lifecycle pass over both touched claims so single-current
-  // predicates settle correctly, then refresh the embedding for the new claim.
+  // predicates settle correctly, then queue the embedding for the new claim.
   const lifecycleStartedAt = new Date();
   await applyClaimLifecycle(db, [inserted]);
   const { maybeEnqueueAtlasInvalidation } = await import(
@@ -701,7 +704,7 @@ export async function reattributeClaim(
   const [finalized] = await fetchClaimsByIds(db, [inserted.id]);
   if (!finalized) throw new Error("Failed to fetch reattributed claim");
 
-  await insertClaimEmbedding(db, finalized);
+  await enqueueClaimEmbedding(finalized);
 
   const nodeMap = await fetchOwnedNodes(
     db,

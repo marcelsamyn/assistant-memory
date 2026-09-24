@@ -4,8 +4,8 @@
  * Mirrors the DB-integration style used in `dedup-sweep.test.ts` and
  * `lifecycle.test.ts`: real Postgres on the non-default test port, hand-rolled
  * DDL (no migrator, no pgvector), `createClaim` reaches `useDatabase()` which
- * we mock so it routes back to the test DB. Embeddings + atlas-invalidation
- * are mocked to no-ops so we don't pull in the worker stack.
+ * we mock so it routes back to the test DB. Embeddings, the batch queue, and
+ * atlas-invalidation are mocked to no-ops so we don't pull in the worker stack.
  */
 import { TemporaryIdMapper } from "../temporary-id-mapper";
 import "dotenv/config";
@@ -278,13 +278,16 @@ describeIfServer("cleanup operation helpers", () => {
 
     // The dispatcher's helpers call `createClaim` which calls
     // `useDatabase()` directly. Reroute to our test DB and stub the
-    // embedding + atlas-invalidation modules.
+    // queue, embedding, and atlas-invalidation modules.
     vi.resetModules();
     vi.doMock("~/utils/db", () => ({
       useDatabase: async () => database,
     }));
-    // Return no embedding so `insertClaimEmbedding` short-circuits and we
-    // don't need a pgvector extension in the test DB.
+    // Claim writes queue their embedding job; a no-op queue keeps the BullMQ
+    // worker out of this suite and the test DB needs no pgvector extension.
+    vi.doMock("~/lib/queues", () => ({
+      batchQueue: { add: async () => undefined },
+    }));
     vi.doMock("~/lib/embeddings", () => ({
       generateEmbeddings: async () => ({
         data: [{}],
@@ -306,6 +309,7 @@ describeIfServer("cleanup operation helpers", () => {
 
   afterAll(async () => {
     vi.doUnmock("~/utils/db");
+    vi.doUnmock("~/lib/queues");
     vi.doUnmock("~/lib/embeddings");
     vi.doUnmock("~/lib/jobs/atlas-invalidation");
     vi.resetModules();
