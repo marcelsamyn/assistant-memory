@@ -63,10 +63,14 @@ jobs:
 
       - name: Start MinIO
         run: |
+          # MinIO no longer publishes public images (quay.io returns 401 and
+          # Docker Hub has no minio/minio). Chainguard builds MinIO from source.
+          # /data must be a volume, or MinIO fails renames in its tmp folder.
           docker run --detach --publish 9000:9000 \
+            --volume /data \
             --env MINIO_ROOT_USER=minio \
             --env MINIO_ROOT_PASSWORD=minio123 \
-            quay.io/minio/minio:latest server /data
+            cgr.dev/chainguard/minio:latest server /data
           for attempt in {1..20}; do
             curl --fail --silent http://127.0.0.1:9000/minio/health/ready && exit 0
             sleep 1
