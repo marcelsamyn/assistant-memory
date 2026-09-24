@@ -29,6 +29,9 @@ import type {
 import { userProfileMetadataSchema } from "~/lib/schemas/user-profile-metadata";
 import type { TypeId } from "~/types/typeid";
 
+/** The user-self Person's label before any alias names the user. */
+export const UNNAMED_SELF_LABEL = "Me";
+
 /** Count whitespace-separated tokens in an alias (after trimming). */
 function tokenCount(alias: string): number {
   return alias
@@ -217,10 +220,12 @@ async function resolveUserSelfPersonNode(
   if (!newNode) {
     throw new Error(`Failed to create user-self Person node for ${userId}`);
   }
+  // Until the user's aliases name them, the node reads as "Me" in their
+  // graph rather than a raw id. The flag, not the label, marks it as the user.
   await db.insert(nodeMetadata).values({
     nodeId: newNode.id,
-    label: userId,
-    canonicalLabel: normalizeLabel(userId),
+    label: UNNAMED_SELF_LABEL,
+    canonicalLabel: normalizeLabel(UNNAMED_SELF_LABEL),
     additionalData: { isUserSelf: true },
   });
   return {

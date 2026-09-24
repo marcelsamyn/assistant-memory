@@ -22,6 +22,8 @@ You can pass a self node ID to `createCommitment` or `setCommitmentOwner`. Memor
 
 Filters continue to describe stored assignments: `ownedBy: selfNodeId` matches that node's assignments; `unowned: true` matches only tasks with no visible active `ASSIGNED_TO` claim. To clear a stored assignment, call `setCommitmentOwner` with `ownedBy: null`.
 
+Extraction gives the model the self node where the source marks the user's own words: `role: "user"` messages in conversation ingestion, and the speaker matched by the user's self aliases in transcript ingestion. Conversation ingestion creates the self node in the source's partition when it does not exist. In documents, only an exact multi-word self alias resolves to the self node of the same partition. Email and message sources never store `ASSIGNED_TO`. The label-based dedup sweep never merges the self node.
+
 ---
 
 ## Creating and editing

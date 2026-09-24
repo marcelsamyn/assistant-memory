@@ -8,6 +8,9 @@
  * Scope-bounded: nodes with the same canonical label but different effective
  * scope (`personal` vs `reference`) are not merged. Such collisions are logged
  * and counted under `crossScopeCollisionsSkipped`.
+ *
+ * Identity-bounded: unresolved-speaker placeholders and the user-self Person
+ * are never merged by label.
  */
 import {
   rewireNodeClaims,
@@ -69,6 +72,11 @@ async function findDuplicateGroupingsByScope(
   // refer to different real people, so collapsing them by label alone would
   // destroy distinct identities ("speaker placeholder explosion" trap).
   //
+  // The user-self Person is excluded too. A label never proves self identity,
+  // and merging keeps the oldest node: an older same-named Person would
+  // absorb the self node, drop its `isUserSelf` flag, and make every task the
+  // user owns look like someone else's.
+  //
   // Only `LABEL_MERGEABLE_NODE_TYPES` (nominal entities) are considered.
   // Record / occurrence types — Task, Event, Document, Conversation, … — can
   // legitimately recur with identical labels (e.g. a task per day of the
@@ -123,6 +131,7 @@ async function findDuplicateGroupingsByScope(
         isNotNull(nodeMetadata.canonicalLabel),
         sql`trim(${nodeMetadata.canonicalLabel}) != ''`,
         sql`(${nodeMetadata.additionalData} ->> 'unresolvedSpeaker') IS DISTINCT FROM 'true'`,
+        sql`(${nodeMetadata.additionalData} ->> 'isUserSelf') IS DISTINCT FROM 'true'`,
       ),
     )
     .groupBy(nodes.id, nodes.nodeType, nodeMetadata.canonicalLabel);

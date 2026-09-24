@@ -196,15 +196,17 @@ describeIfServer("ensureUserSelfIdentity", () => {
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
       const database = drizzle(client, { schema, casing: "snake_case" });
 
-      const { ensureUserSelfIdentity } = await import("./user-self-identity");
+      const { ensureUserSelfIdentity, UNNAMED_SELF_LABEL } = await import(
+        "./user-self-identity"
+      );
       const nodeId = await ensureUserSelfIdentity(database, userId, ["Marcel"]);
 
       const meta = await client.query<{ label: string }>(
         `SELECT label FROM node_metadata WHERE node_id = $1`,
         [nodeId],
       );
-      // No multi-token alias → primary label stays the placeholder (userId).
-      expect(meta.rows[0]?.label).toBe(userId);
+      // No multi-token alias → the label stays the human placeholder.
+      expect(meta.rows[0]?.label).toBe(UNNAMED_SELF_LABEL);
 
       const aliasRows = await client.query<{ id: string }>(
         `SELECT id FROM aliases WHERE user_id = $1 AND canonical_node_id = $2`,

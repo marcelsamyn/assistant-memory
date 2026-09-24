@@ -816,6 +816,7 @@ describeIfServer("ingestTranscript", () => {
 
     // Captured so the LLM stub can emit the real self node id as subjectId.
     let selfNodeIdForStub = "";
+    let prompt = "";
 
     await applyCommonMocks(database);
     vi.doMock("../ai", async (importOriginal) => ({
@@ -823,32 +824,37 @@ describeIfServer("ingestTranscript", () => {
       createCompletionClient: async () => ({
         chat: {
           completions: {
-            parse: async () => ({
-              choices: [
-                {
-                  message: {
-                    parsed: {
-                      nodes: [
-                        { id: "loc_1", type: "Location", label: "Lisbon" },
-                      ],
-                      relationshipClaims: [
-                        {
-                          subjectId: selfNodeIdForStub,
-                          objectId: "loc_1",
-                          predicate: "LOCATED_IN",
-                          statement: "Marcel lives in Lisbon.",
-                          sourceRef: `${transcriptId}:0`,
-                          assertionKind: "user",
-                          assertedBySpeakerLabel: "Marcel",
-                        },
-                      ],
-                      attributeClaims: [],
-                      aliases: [],
+            parse: async (input: { messages: Array<{ content: string }> }) => {
+              prompt = input.messages
+                .map((message) => message.content)
+                .join("\n");
+              return {
+                choices: [
+                  {
+                    message: {
+                      parsed: {
+                        nodes: [
+                          { id: "loc_1", type: "Location", label: "Lisbon" },
+                        ],
+                        relationshipClaims: [
+                          {
+                            subjectId: selfNodeIdForStub,
+                            objectId: "loc_1",
+                            predicate: "LOCATED_IN",
+                            statement: "Marcel lives in Lisbon.",
+                            sourceRef: `${transcriptId}:0`,
+                            assertionKind: "user",
+                            assertedBySpeakerLabel: "Marcel",
+                          },
+                        ],
+                        attributeClaims: [],
+                        aliases: [],
+                      },
                     },
                   },
-                },
-              ],
-            }),
+                ],
+              };
+            },
           },
         },
       }),
@@ -903,6 +909,12 @@ describeIfServer("ingestTranscript", () => {
       expect(locatedIn.rows[0]?.subject_node_id).toBe(selfNodeId);
       expect(locatedIn.rows[0]?.subject_node_id).not.toBe(otherMarcelId);
       expect(locatedIn.rows[0]?.asserted_by_kind).toBe("user");
+      expect(prompt).toContain(
+        `speakerLabel: Marcel; nodeId: ${selfNodeId}; role: user-self`,
+      );
+      expect(prompt).toContain(
+        "use that speaker's nodeId as the objectId of the task's ASSIGNED_TO claim",
+      );
     } finally {
       unmockCommon();
       await client.end();
