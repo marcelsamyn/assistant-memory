@@ -15,6 +15,7 @@ import type { DrizzleDB } from "~/db";
 import { claims } from "~/db/schema";
 import type { ContextPartitionKey } from "~/lib/schemas/partition";
 import type { Predicate } from "~/types/graph";
+import { shouldSkipJobEnqueue } from "~/utils/test-overrides";
 
 /**
  * Predicates whose supersession invalidates derived read-model artifacts
@@ -77,6 +78,7 @@ export async function enqueueAtlasUserRefreshOnSupersede(
   userId: string,
   partitionKey?: ContextPartitionKey,
 ): Promise<void> {
+  if (shouldSkipJobEnqueue()) return;
   const { batchQueue } = await import("../queues");
   await batchQueue.add(
     "atlas-user",
