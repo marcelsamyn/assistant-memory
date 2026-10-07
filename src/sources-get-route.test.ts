@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   fetchRaw: vi.fn(),
   getSourceSummary: vi.fn(),
   getSourceIngestionOperation: vi.fn(),
+  loadSourceConversation: vi.fn(),
 }));
 
 const requestAccessMocks = vi.hoisted(() => ({
@@ -22,6 +23,10 @@ vi.mock("~/lib/ingestion/source-processing", () => ({
 
 vi.mock("~/lib/sources", () => ({
   sourceService: { fetchRaw: mocks.fetchRaw },
+}));
+
+vi.mock("~/lib/source-conversation", () => ({
+  loadSourceConversation: mocks.loadSourceConversation,
 }));
 
 vi.mock("~/lib/sources-read", () => ({
@@ -39,6 +44,7 @@ describe("POST /sources/get", () => {
     vi.unstubAllGlobals();
     vi.clearAllMocks();
     mocks.getSourceIngestionOperation.mockResolvedValue(null);
+    mocks.loadSourceConversation.mockResolvedValue(null);
   });
 
   it("does not fetch or return content by default", async () => {
@@ -52,6 +58,7 @@ describe("POST /sources/get", () => {
     const response = await handler({} as H3Event);
 
     expect(mocks.fetchRaw).not.toHaveBeenCalled();
+    expect(mocks.loadSourceConversation).not.toHaveBeenCalled();
     expect(response.source).toEqual(source);
     expect(response.source).not.toHaveProperty("content");
   });
@@ -81,6 +88,41 @@ describe("POST /sources/get", () => {
       text: "# Stored markdown",
       format: "markdown",
     });
+  });
+
+  it("returns a transcript's messages alongside its empty own content", async () => {
+    const source = makeSourceSummary("meeting_transcript");
+    vi.stubGlobal("readBody", async () => ({
+      userId: "user_source",
+      sourceId: source.sourceId,
+      includeContent: true,
+    }));
+    mocks.getSourceSummary.mockResolvedValue(source);
+    mocks.fetchRaw.mockResolvedValue([]);
+    const conversation = {
+      sourceKind: "google_meet",
+      messages: [
+        {
+          sourceId: newTypeId("source"),
+          speaker: "Bob",
+          speakerNodeId: newTypeId("node"),
+          role: null,
+          timestamp: new Date("2026-06-10T08:00:00.000Z"),
+          text: "I'll send the deck.",
+        },
+      ],
+    };
+    mocks.loadSourceConversation.mockResolvedValue(conversation);
+
+    const response = await handler({} as H3Event);
+
+    expect(mocks.loadSourceConversation).toHaveBeenCalledWith(
+      expect.anything(),
+      "user_source",
+      source,
+    );
+    expect(response.source.content).toBeNull();
+    expect(response.source.conversation).toEqual(conversation);
   });
 
   it("returns null content instead of decoding a blob", async () => {

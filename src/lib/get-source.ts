@@ -7,6 +7,7 @@ import {
   getSourceResponseSchema,
 } from "~/lib/schemas/sources";
 import { sourceContentFromRaw } from "~/lib/source-content";
+import { loadSourceConversation } from "~/lib/source-conversation";
 import { sourceService } from "~/lib/sources";
 import { getSourceSummary } from "~/lib/sources-read";
 import { useDatabase } from "~/utils/db";
@@ -49,10 +50,13 @@ export async function getSource({
     return getSourceResponseSchema.parse({ source: { ...source, processing } });
   }
 
-  const [raw] = await sourceService.fetchRaw(userId, [sourceId]);
+  const [[raw], conversation] = await Promise.all([
+    sourceService.fetchRaw(userId, [sourceId]),
+    loadSourceConversation(db, userId, source),
+  ]);
   const content = sourceContentFromRaw(raw, source.type);
 
   return getSourceResponseSchema.parse({
-    source: { ...source, content, processing },
+    source: { ...source, content, conversation, processing },
   });
 }

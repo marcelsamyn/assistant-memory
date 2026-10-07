@@ -102,6 +102,28 @@ export const sourceContentSchema = z.object({
 });
 export type SourceContent = z.infer<typeof sourceContentSchema>;
 
+export const sourceMessageSchema = z.object({
+  sourceId: typeIdSchema("source"),
+  /** Transcript speaker label, or the chat turn's name/role. */
+  speaker: z.string().nullable(),
+  /** Resolved speaker node, when transcript speaker resolution found one. */
+  speakerNodeId: typeIdSchema("node").nullable(),
+  /** Chat role (`user`, `assistant`, …); `null` for transcript utterances. */
+  role: z.string().nullable(),
+  /** `null` when the host supplied no time; utterances may share one. */
+  timestamp: z.coerce.date().nullable(),
+  text: z.string(),
+});
+export type SourceMessage = z.infer<typeof sourceMessageSchema>;
+
+export const sourceConversationSchema = z.object({
+  /** Host-supplied origin of a transcript, such as `google_meet`. */
+  sourceKind: z.string().nullable(),
+  /** Child messages in conversation order. */
+  messages: z.array(sourceMessageSchema),
+});
+export type SourceConversation = z.infer<typeof sourceConversationSchema>;
+
 export const getSourceResponseSchema = z.object({
   source: sourceSummarySchema.extend({
     /**
@@ -110,6 +132,12 @@ export const getSourceResponseSchema = z.object({
      * decoded or returned by this endpoint.
      */
     content: sourceContentSchema.nullable().optional(),
+    /**
+     * Present only when `includeContent` is true. Conversations and
+     * transcripts keep their text on child messages, not on this source;
+     * `null` when the source has no child messages.
+     */
+    conversation: sourceConversationSchema.nullable().optional(),
     processing: sourceProcessingSchema.nullable().optional(),
   }),
 });
