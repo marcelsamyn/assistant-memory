@@ -175,10 +175,13 @@ describeIfServer("createCommitment", () => {
       await provisionSchema(client);
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { createCommitment } = await import("./commitments");
@@ -245,10 +248,13 @@ describeIfServer("createCommitment", () => {
         [newTypeId("node_metadata"), ownerNodeId],
       );
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { createCommitment } = await import("./commitments");
@@ -331,10 +337,13 @@ describeIfServer("setCommitmentStatus", () => {
       await provisionSchema(client);
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { createCommitment, setCommitmentStatus } = await import(
@@ -394,10 +403,13 @@ describeIfServer("setCommitmentStatus", () => {
       await provisionSchema(client);
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { createCommitment, setCommitmentStatus } = await import(
@@ -479,10 +491,13 @@ describeIfServer("setCommitmentStatus", () => {
         [sourceId, userId, `manual:${userId}`],
       );
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { setCommitmentStatus } = await import("./commitments");
@@ -523,10 +538,13 @@ describeIfServer("setCommitmentStatus", () => {
       await provisionSchema(client);
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { createCommitment, setCommitmentStatus } = await import(
@@ -588,10 +606,13 @@ describeIfServer("setCommitmentStatus", () => {
         [newTypeId("node_metadata"), personNodeId],
       );
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { setCommitmentStatus, TaskNotFoundError } = await import(
@@ -672,10 +693,13 @@ describeIfServer("setCommitmentOwner", () => {
         ],
       );
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { createCommitment, setCommitmentOwner } = await import(
@@ -758,10 +782,13 @@ describeIfServer("setCommitmentOwner", () => {
         [newTypeId("node_metadata"), ownerNodeId],
       );
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { createCommitment, setCommitmentOwner } = await import(
@@ -822,10 +849,13 @@ describeIfServer("setCommitmentOwner", () => {
       await provisionSchema(client);
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { createCommitment, setCommitmentOwner } = await import(
@@ -889,10 +919,13 @@ describeIfServer("setCommitmentOwner", () => {
         ],
       );
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { setCommitmentOwner, TaskNotFoundError } = await import(
@@ -957,10 +990,13 @@ describeIfServer("updateCommitment", () => {
       await provisionSchema(client);
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { createCommitment, updateCommitment } = await import(
@@ -1008,10 +1044,13 @@ describeIfServer("updateCommitment", () => {
       await provisionSchema(client);
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { createCommitment, updateCommitment } = await import(
@@ -1061,10 +1100,13 @@ describeIfServer("updateCommitment", () => {
       await provisionSchema(client);
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { createCommitment, updateCommitment } = await import(
@@ -1119,10 +1161,13 @@ describeIfServer("updateCommitment", () => {
       await provisionSchema(client);
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { createCommitment, updateCommitment } = await import(
@@ -1181,10 +1226,13 @@ describeIfServer("updateCommitment", () => {
         [newTypeId("node_metadata"), personNodeId],
       );
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { updateCommitment, TaskNotFoundError } = await import(
@@ -1225,10 +1273,13 @@ describeIfServer("updateCommitment", () => {
       await provisionSchema(client);
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { updateCommitment, TaskNotFoundError } = await import(
@@ -1293,10 +1344,13 @@ describeIfServer("commitment due time", () => {
       await provisionSchema(client);
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { createCommitment } = await import("./commitments");
@@ -1350,10 +1404,13 @@ describeIfServer("commitment due time", () => {
       await provisionSchema(client);
       await client.query(`INSERT INTO "users" ("id") VALUES ($1)`, [userId]);
 
-      const { setSkipEmbeddingPersistence, resetTestOverrides } = await import(
-        "~/utils/test-overrides"
-      );
+      const {
+        setSkipEmbeddingPersistence,
+        setSkipJobEnqueue,
+        resetTestOverrides,
+      } = await import("~/utils/test-overrides");
       setSkipEmbeddingPersistence(true);
+      setSkipJobEnqueue(true);
 
       try {
         const { createCommitment, setCommitmentDue } = await import(
