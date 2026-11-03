@@ -133,6 +133,12 @@ const accepted = await client.ingestDocument({
 
 `sourceContext` is optional. Calls that omit it keep the existing document and file behavior.
 
+## Conversion without ingestion
+
+Use `POST /convert/file` or `client.convertFile({ file, filename, mimeType })` when you need Markdown without storing a source or extracting claims. HTTP requests use multipart form data with a `file` part (including its filename) and an optional `mimeType` field that overrides the part's content type. The response is `{ markdown: string, title: string | null }`.
+
+Set the server's `MEMORY_API_KEY` and supply the same Bearer key through the SDK's `apiKey` option. An unset server key returns 503; missing or incorrect credentials return 401. The API accepts PDF, DOCX, PPTX, XLSX, JSON, and `text/*`, including code and CSV. Empty files return 400, unsupported types return 415, and uploads larger than the smaller of 10 MiB and `INGEST_FILE_MAX_BYTES` return 413. Converter failures return 502. Conversion uses MarkItDown synchronously and creates no source, claim, processing receipt, or queue job. No user or partition is needed. JSON and plain text formats return their UTF-8 content directly; HTML, RTF, and binary documents use MarkItDown. MIME types are compared without parameters or letter case. The complete multipart request is limited to the file limit plus 64 KiB for form fields and headers. Sidecar conversions time out after 120 seconds, and Markdown longer than 10 Mi characters is rejected with 502.
+
 ## Files and attachments
 
 `ingestFile` sends bytes as multipart form data. Memory stores the bytes before conversion, then uses its MarkItDown service for supported PDF, Word, RTF, plain-text, Markdown, and HTML files. Use a stable `externalId` for retry-safe attachment identity and link the file to its parent source in `sourceContext`.

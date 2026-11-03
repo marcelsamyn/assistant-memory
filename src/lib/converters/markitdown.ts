@@ -16,6 +16,7 @@ interface ConvertParams {
   buffer: Buffer;
   filename: string;
   mimeType: string;
+  signal?: AbortSignal;
 }
 
 export async function convertToMarkdown(
@@ -30,7 +31,11 @@ export async function convertToMarkdown(
   form.append("content_type", mimeType);
 
   const url = `${env.MARKITDOWN_URL.replace(/\/$/, "")}/convert`;
-  const response = await fetch(url, { method: "POST", body: form });
+  const response = await fetch(url, {
+    method: "POST",
+    body: form,
+    ...(params.signal === undefined ? {} : { signal: params.signal }),
+  });
 
   if (!response.ok) {
     let detail = "";

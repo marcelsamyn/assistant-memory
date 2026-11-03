@@ -3,6 +3,9 @@ import { z } from "zod";
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
 
+  /** Bearer credential for the conversion-only HTTP API; unset disables it. */
+  MEMORY_API_KEY: z.string().min(1).optional(),
+
   /** Dedicated server-to-server credential for partition maintenance APIs. */
   PARTITION_MAINTENANCE_TOKEN: z.string().min(32).optional(),
 

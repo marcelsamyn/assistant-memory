@@ -10,6 +10,10 @@ Memory is a shared store for clients such as Petals, Claude Code, Codex, and oth
 
 A stored source and the facts extracted from it are separate. Memory retains source content even when extraction finds no task. Summaries, claims, and possible commitments are derived views; processing completion does not mean every fact has become a graph claim. Read the source text when those views are insufficient.
 
+## File conversion without storage
+
+`POST /convert/file` accepts a multipart `file` and optional `mimeType`, and returns `{ markdown, title }`. `MemoryClient.convertFile` wraps this API. Conversion creates no source, claim, extraction, or queue job. Supported types are PDF, DOCX, PPTX, XLSX, JSON, and `text/*`. The file must be nonempty and no larger than 10 MiB or `INGEST_FILE_MAX_BYTES`, whichever is smaller. Set `MEMORY_API_KEY` on the server and send it as a Bearer credential; an unset key disables this endpoint with 503. The MarkItDown service must be available. JSON and plain text formats return their UTF-8 content directly; HTML, RTF, and binary documents use MarkItDown. MIME types are compared without parameters or letter case. The complete multipart request is limited to the file limit plus 64 KiB for form fields and headers. Sidecar conversions time out after 120 seconds, and Markdown longer than 10 Mi characters is rejected with 502.
+
 ## Partition access
 
 `MemoryClient` uses strict partition access by default. Pass an explicit

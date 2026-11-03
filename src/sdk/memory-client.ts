@@ -56,6 +56,11 @@ import {
   bootstrapMemoryRequestSchema,
 } from "../lib/schemas/context.js";
 import {
+  type ConvertFileRequest,
+  type ConvertFileResponse,
+  convertFileResponseSchema,
+} from "../lib/schemas/convert-file.js";
+import {
   CreateCommitmentRequest,
   CreateCommitmentResponse,
   createCommitmentResponseSchema,
@@ -593,6 +598,32 @@ export class MemoryClient {
       ingestDocumentResponseSchema,
       payload,
     );
+  }
+
+  /** Convert a file without storing a source or running extraction. */
+  async convertFile(payload: ConvertFileRequest): Promise<ConvertFileResponse> {
+    const form = new FormData();
+    const blob =
+      payload.file instanceof Blob
+        ? payload.file
+        : new Blob([new Uint8Array(payload.file)], { type: payload.mimeType });
+    form.append("file", blob, payload.filename);
+    form.append("mimeType", payload.mimeType);
+    const headers: HeadersInit = {};
+    if (this.options.apiKey)
+      headers["Authorization"] = `Bearer ${this.options.apiKey}`;
+    const response = await fetch(`${this.options.baseUrl}/convert/file`, {
+      method: "POST",
+      headers,
+      body: form,
+    });
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(
+        `API request failed: ${response.status} ${response.statusText}${errorBody ? ` - ${errorBody}` : ""}`,
+      );
+    }
+    return convertFileResponseSchema.parse(await response.json());
   }
 
   /**
