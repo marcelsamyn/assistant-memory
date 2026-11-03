@@ -10,6 +10,12 @@ has the _what to change_.
 
 ---
 
+## Conversion-only file API
+
+`POST /convert/file` and `MemoryClient.convertFile` return `{ markdown, title }` without ingestion or persistence. Send multipart `file` bytes with a filename and optional `mimeType`. Configure the server's `MEMORY_API_KEY` and pass it as the Bearer credential. The endpoint returns 503 when the key is unset and 401 for missing or incorrect credentials. It accepts PDF, DOCX, PPTX, XLSX, JSON, and `text/*`, up to the smaller of 10 MiB and `INGEST_FILE_MAX_BYTES`. The complete multipart body is limited to the file limit plus 64 KiB. MIME parameters and letter case are normalized before conversion. Sidecar conversions have a 120-second timeout; converted Markdown is limited to 10 Mi characters. Existing ingestion calls retain their behavior. See [conversion without ingestion](sdk/ingestion.md#conversion-without-ingestion).
+
+---
+
 ## Extracted self assignments
 
 Conversation ingestion now resolves the user's self node in the conversation's partition, creating it when missing, and gives it to the extraction model as the author of `role: "user"` messages. A task the user takes on in a conversation is assigned to that node, so commitment reads return `owner: null`. Transcript extraction applies the same rule to the user-self speaker. The dedup sweep no longer merges the self node into an older node with the same label.
